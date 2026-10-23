@@ -124,12 +124,22 @@ wire::Bytes state_payload(const wire::Config& config,const hex_instance::Capture
     wire::number(out,state.component_bytes,4);wire::number(out,state.controller_bytes,4);
     out.insert(out.end(),state.bytes.begin(),state.bytes.begin()+state.component_bytes+state.controller_bytes);return out;
 }
+wire::Bytes facts_body(const wire::Config& config,uint32 latency,bool presentation_available) {
+    wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
+    out.insert(out.end(),config.executable_hash.begin(),config.executable_hash.end());
+    out.insert(out.end(),config.info_hash.begin(),config.info_hash.end());
+    uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
+    wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
+    wire::number(out,latency,4);wire::number(out,presentation_available?1:0,1);return out;
+}
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
-    uint32 latency,hex_instance::Instance::PresentationResult presentation) {
+    uint32 latency,hex_instance::Instance::PresentationResult presentation,const std::optional<wire::Presentation>& supplied) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
     wire::number(out,latency,4);wire::number(out,static_cast<uint32>(presentation),1);
+    wire::number(out,supplied?1:0,1);
+    if(supplied) { wire::number(out,supplied->input,4);wire::number(out,supplied->output,4); }
     // State existence is not availability or an application/graph ACK.
     wire::number(out,state.component?1:0,1);auto payload=state_payload(config,state);
     wire::number(out,payload.size(),2);out.insert(out.end(),payload.begin(),payload.end());
@@ -164,16 +174,30 @@ int main(int argc,char** argv) {
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
             if(instance.configure(setup)!=hex_instance::ConfigurationResult::Prepared) throw Refusal{};
+            failure=HostControl;instance.dispatch_host_callbacks();
+            if(instance.host_refusals()) throw Refusal{};
+            auto latency=instance.reported_latency_on_control();
+            auto available=instance.presentation_latency_available_on_control();
+            if(!latency || !available) throw Refusal{};
+            failure=ProtocolFailure;
+            if(!wire::send(channel,"HXVIFA01",facts_body(*config,*latency,*available))) throw Refusal{};
+            std::optional<wire::Presentation> supplied;
+            if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
-            const auto presentation=instance.set_presentation_latency(config->input_latency,config->output_latency);
-            if(presentation!=hex_instance::Instance::PresentationResult::Applied &&
-                presentation!=hex_instance::Instance::PresentationResult::Absent) throw Refusal{};
+            auto presentation=hex_instance::Instance::PresentationResult::Absent;
+            if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
+            else if(*available) throw Refusal{}; // unknown is never substituted with zero
+            if((presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
+                (presentation!=hex_instance::Instance::PresentationResult::Applied &&
+                 presentation!=hex_instance::Instance::PresentationResult::Absent)) throw Refusal{};
             failure=Capture;hex_instance::CapturedState state{};
             if(!instance.capture_initial_state_on_control(state)) throw Refusal{};
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
-            auto latency=instance.reported_latency_on_control();if(!latency) throw Refusal{};
-            const auto hello=ready_body(*config,state,*latency,presentation);
+            const auto final_latency=instance.reported_latency_on_control();
+            failure=Presentation;
+            if(!final_latency || *final_latency!=*latency) throw Refusal{}; // caller's plan became stale
+            const auto hello=ready_body(*config,state,*latency,presentation,supplied);
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             std::thread worker([&] {
@@ -229,7 +253,7 @@ int main(int argc,char** argv) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
-            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD01",hello);
+            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD02",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             // Pump the helper main lane, never the Hex callback. Unsupported

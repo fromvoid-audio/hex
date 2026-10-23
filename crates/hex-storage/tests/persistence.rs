@@ -138,7 +138,7 @@ fn current_format_roundtrips_return_devices_sends_and_strict_fields() {
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -304,7 +304,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -478,7 +478,7 @@ fn current_format_preserves_opaque_instrument_state_and_requires_its_field() {
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -543,7 +543,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     assert_eq!(json["tracks"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
@@ -699,7 +699,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -788,9 +788,9 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     let mut future = json.clone();
-    future["version"] = 36.into();
+    future["version"] = (json["version"].as_u64().unwrap() + 1).into();
     assert!(decode(&serde_json::to_vec(&future).unwrap()).is_err());
     let mut unknown = json.clone();
     unknown["unrecognized"] = true.into();
@@ -887,7 +887,7 @@ fn current_format_roundtrips_converted_media_phase_loop_tempo_and_meter() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 35);
+    assert_eq!(current_json["version"], 37);
     assert_eq!(decode(&bytes).unwrap(), project);
     assert_eq!(current_json["assets"][0]["source_sample_rate"], 44_100);
     assert_eq!(current_json["assets"][0]["playback_frames"], 48_000);
@@ -1256,7 +1256,7 @@ fn current_audio_clip_gains_roundtrip_and_refuse_invalid_values() {
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 35);
+    assert_eq!(json["version"], 37);
     assert_eq!(decode(&bytes).unwrap(), *editor.project());
     for value in [
         serde_json::json!(-60_001),

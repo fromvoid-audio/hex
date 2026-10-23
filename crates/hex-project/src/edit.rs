@@ -15,6 +15,33 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Paint a structural Main-lane marker; no musical content is created.
+    AddArrangementSection {
+        name: String,
+        color: crate::ElementColor,
+        start: crate::BeatTime,
+        end: crate::BeatTime,
+    },
+    /// Marker-only placement/resize; music is never stretched or moved.
+    SetArrangementSectionRange {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+        end: crate::BeatTime,
+    },
+    RenameArrangementSection {
+        section: crate::SectionId,
+        name: String,
+    },
+    SetArrangementSectionColor {
+        section: crate::SectionId,
+        color: crate::ElementColor,
+    },
+    RemoveArrangementSection(crate::SectionId),
+    /// One song-wide cut-and-insert permutation, resolved against stable IDs.
+    ReorderSectionBefore {
+        section: crate::SectionId,
+        before: crate::SectionId,
+    },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
@@ -334,6 +361,11 @@ pub enum Command {
     },
     MasterGain {
         gain: f32,
+    },
+    /// Replace all project tempo points and retain musical clip onsets.
+    /// Unwarped audio keeps its source processing and natural frame duration.
+    SetProjectTempo {
+        tempo: crate::Tempo,
     },
     SetTempoPoint {
         beat: crate::BeatTime,
@@ -815,6 +847,7 @@ pub struct MidiNoteInsert {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Created {
+    ArrangementSection(crate::SectionId),
     Track(TrackId),
     ReturnTrack(ReturnId),
     Device(DeviceId),
@@ -1176,6 +1209,10 @@ pub(crate) fn split_clip_at_tempo(
     if cut <= edit.view_start || cut >= edit.view_end {
         return Err(Invalid("split has no positive musical crop"));
     }
+    let reference_start = edit
+        .reference_start_raw()
+        .map(|_| edit.reference_beat_at_destination(original, frame, tempo))
+        .transpose()?;
     let mut left = original.clone();
     let mut right = original.clone();
     left.audio_edit_mut()
@@ -1185,11 +1222,18 @@ pub(crate) fn split_clip_at_tempo(
         .audio_edit_mut()
         .ok_or(Invalid("audio domain missing"))?;
     view.view_start = cut;
-    if view.musical_start.is_some() {
-        view.musical_start = Some(tempo.frame_to_beat(frame)?);
-    }
+    view.set_reference_start_raw(reference_start)?;
     right.id = right_id;
     right.start = frame;
+    if edit.processing_projection.is_some() {
+        left.audio_edit_mut()
+            .ok_or(Invalid("audio domain missing"))?
+            .retain_frame_bounds(original.start, frame, tempo)?;
+        right
+            .audio_edit_mut()
+            .ok_or(Invalid("audio domain missing"))?
+            .retain_frame_bounds(frame, end, tempo)?;
+    }
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
     Ok((left, right))
@@ -1382,6 +1426,14 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            command @ (Command::AddArrangementSection { .. }
+            | Command::SetArrangementSectionRange { .. }
+            | Command::RenameArrangementSection { .. }
+            | Command::SetArrangementSectionColor { .. }
+            | Command::RemoveArrangementSection(_)
+            | Command::ReorderSectionBefore { .. }) => {
+                crate::arrangement_sections::apply(self, command)
+            }
             Command::SetTuning(tuning) => {
                 self.tuning = tuning;
                 Ok(Created::None)
@@ -2012,11 +2064,28 @@ impl Project {
                 self.master_gain = gain;
                 Ok(Created::None)
             }
+            Command::SetProjectTempo { tempo } => {
+                self.set_project_tempo(tempo)?;
+                Ok(Created::None)
+            }
             Command::SetTempoPoint { beat, tempo } => {
                 let mut candidate = self.clone();
                 candidate.tempo_map = candidate
                     .tempo_map
                     .replace_point(TempoPoint::new(beat, tempo))?;
+                // A structural reorder retains complete processing roots from
+                // their original tempo context. Rebase is not yet supported;
+                // silently projecting a new length would trim/pad their PCM.
+                if candidate.tempo_map != self.tempo_map
+                    && self.tracks.iter().flat_map(|t| t.clips()).any(|clip| {
+                        clip.audio_edit()
+                            .is_some_and(|edit| edit.processing_projection.is_some())
+                    })
+                {
+                    return Err(Invalid(
+                        "tempo changes after audio section reorder require an unsupported processing rebase; undo the reorder first",
+                    ));
+                }
                 let map = candidate.tempo_map.clone();
                 for track in &mut candidate.tracks {
                     for clip in &mut track.content.audio_clips {

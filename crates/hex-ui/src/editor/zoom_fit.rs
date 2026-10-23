@@ -206,6 +206,15 @@ impl EditorView {
                 .map(|r| (r.start(), r.end()))
                 .or_else(|| self.selected_clip.and_then(clip_range))
                 .or_else(|| {
+                    self.sections.selected.and_then(|id| {
+                        let section = project.arrangement_section(id)?;
+                        Some((
+                            project.tempo_map().beat_to_frame(section.start()).ok()?,
+                            project.tempo_map().beat_to_frame(section.end()).ok()?,
+                        ))
+                    })
+                })
+                .or_else(|| {
                     project
                         .tracks()
                         .iter()
@@ -215,6 +224,12 @@ impl EditorView {
                                 .filter_map(audio_range)
                                 .chain(t.midi_clips().iter().filter_map(midi_range))
                         })
+                        .chain(project.arrangement_sections().iter().filter_map(|section| {
+                            Some((
+                                project.tempo_map().beat_to_frame(section.start()).ok()?,
+                                project.tempo_map().beat_to_frame(section.end()).ok()?,
+                            ))
+                        }))
                         .fold(None, |bounds, (a, b)| {
                             Some(bounds.map_or((a, b), |(first, last): (u64, u64)| {
                                 (first.min(a), last.max(b))

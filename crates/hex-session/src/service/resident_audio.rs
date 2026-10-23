@@ -227,6 +227,72 @@ impl Inputs<'_> {
         };
         self.publish_tagged(snapshot, project, sink, metadata)
     }
+    fn publish_stopped_section(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+        cursor: hex_project::BeatTime,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let destination = project.tempo_map().beat_to_frame(cursor)?;
+        let mut playback = if snapshot.prepared.arrangement_seek_requires_preroll() {
+            let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
+                hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
+            ).map_err(|error| SessionError::NativeAudio(format!("section stopped preparation refused: {error:?}")))?;
+            Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
+                SessionError::NativeAudio(format!("section stopped runtime refused: {error:?}"))
+            })?
+        } else {
+            // Stateless arrangements need no replay. Preserve the raw stopped
+            // cursor, including late positions and positions outside an enabled loop.
+            let mut playback = Playback::try_from_prepared_with_device_resources(
+                Arc::clone(&snapshot.prepared),
+                &snapshot.resources,
+            )
+            .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+            playback
+                .try_apply_action(hex_engine::PlaybackAction::Transport(
+                    hex_engine::PlaybackCommand::Seek(destination),
+                ))
+                .map_err(|error| {
+                    SessionError::NativeAudio(format!(
+                        "section stopped positioning refused: {error:?}"
+                    ))
+                })?;
+            playback
+        };
+        if playback.position() != destination || playback.playing() {
+            return Err(SessionError::Invalid(
+                "section edit cannot retain the stopped musical cursor",
+            ));
+        }
+        let previous = snapshot.inputs.clone();
+        let mut selected = previous.clone();
+        selected.attach(project, &mut playback)?;
+        selected.selected_after(&previous)?;
+        let accepted = self.publish_runtime(
+            snapshot,
+            playback,
+            sink,
+            ResidentPublicationMetadata {
+                context,
+                device_preview: None,
+                tuning_preview: None,
+                seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: None,
+                requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+            },
+            ResidentPublicationPolicy::StoppedArrangement,
+            selected.allowance()?,
+        )?;
+        selected.cancel_retired_from(&previous);
+        snapshot.inputs = selected;
+        Ok(accepted)
+    }
     fn publish_tagged(
         &self,
         snapshot: &mut Snapshot,
@@ -682,8 +748,18 @@ pub(super) fn import_file(
 
 enum Transition {
     Command(Box<Command>),
-    History { redo: bool },
+    History {
+        redo: bool,
+    },
     MidiCommand(Box<Command>),
+    SectionCommand {
+        command: Box<Command>,
+        cursor: hex_project::BeatTime,
+    },
+    SectionHistory {
+        redo: bool,
+        cursor: hex_project::BeatTime,
+    },
 }
 
 impl Session {
@@ -1164,6 +1240,37 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
+    pub(super) fn section_history_requires_stop(&self, redo: bool) -> bool {
+        self.editor
+            .inspect_history(redo, |source, target| {
+                source.arrangement_sections() != target.arrangement_sections()
+                    && (source.tracks() != target.tracks()
+                        || source.tempo_map() != target.tempo_map()
+                        || source.meter_map() != target.meter_map())
+            })
+            .unwrap_or(false)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn stopped_section_snapshot(
+        &mut self,
+        command: Option<Command>,
+        redo: bool,
+        frame: u64,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        let cursor = self.project().tempo_map().frame_to_beat(frame)?;
+        let transition = match command {
+            Some(command) => Transition::SectionCommand {
+                command: Box::new(command),
+                cursor,
+            },
+            None => Transition::SectionHistory { redo, cursor },
+        };
+        self.resident_transition(transition, context, sink, admission, current, None)
+    }
     pub(super) fn command_resident_snapshot(
         &mut self,
         command: Command,
@@ -1277,7 +1384,10 @@ impl Session {
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
-        if let Transition::Command(command) | Transition::MidiCommand(command) = &transition {
+        if let Transition::Command(command)
+        | Transition::MidiCommand(command)
+        | Transition::SectionCommand { command, .. } = &transition
+        {
             crate::validate_command_media(command)?;
             if let Command::PlaceClip { asset, .. } = command.as_ref()
                 && self.native_assets.contains(*asset)
@@ -1307,6 +1417,11 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
+        let stopped_cursor = match &transition {
+            Transition::SectionCommand { cursor, .. }
+            | Transition::SectionHistory { cursor, .. } => Some(*cursor),
+            _ => None,
+        };
         let prepare = |source: &Project, project: &Project| {
             let mut snapshot =
                 inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
@@ -1318,11 +1433,15 @@ impl Session {
             } else {
                 context
             };
-            inputs.publish(&mut snapshot, project, sink, context)?;
+            if let Some(cursor) = stopped_cursor {
+                inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
+            } else {
+                inputs.publish(&mut snapshot, project, sink, context)?;
+            }
             Ok(snapshot)
         };
         match transition {
-            Transition::Command(command) => self
+            Transition::Command(command) | Transition::SectionCommand { command, .. } => self
                 .editor
                 .execute_prepared_transition(*command, prepare)
                 .map(Some),
@@ -1330,7 +1449,7 @@ impl Session {
                 .editor
                 .execute_midi_prepared_transition(*command, prepare)
                 .map(Some),
-            Transition::History { redo } => {
+            Transition::History { redo } | Transition::SectionHistory { redo, .. } => {
                 let result = if redo {
                     self.editor.redo_prepared_transition(prepare)
                 } else {

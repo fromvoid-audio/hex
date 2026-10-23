@@ -141,10 +141,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema35 envelope with required tuning and complete
+/// Encode the single current schema37 envelope with required tuning and complete
 /// device asset and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV35::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV37::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -160,6 +160,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if !project.arrangement_sections().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save arrangement sections",
+        ));
+    }
     if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| !clip.volume().points().is_empty())
         || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if !clip.volume().points().is_empty()))
     {
@@ -241,9 +246,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         version: u32,
     }
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
-    if header.format != "hex-project" || header.version != 35 {
+    if header.format != "hex-project" || header.version != 37 {
         return Err(StorageError::Invalid(
-            "unsupported project format or version; current format is 35",
+            "unsupported project format or version; current format is 37",
         ));
     }
     schema::DocumentV11::decode(bytes)

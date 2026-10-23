@@ -95,7 +95,7 @@ fn unavailable_recovery_cancel_preserves_old_journal_and_confirm_starts_current_
         assert!(view.state.as_ref().unwrap().unsaved);
         assert!(
             format!("{:?}", view.error)
-                .contains("unsupported project format or version; current format is 35")
+                .contains("unsupported project format or version; current format is 37")
         );
     });
     assert_eq!(std::fs::read(&path).unwrap(), original);

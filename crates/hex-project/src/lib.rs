@@ -1,6 +1,9 @@
 //! # Purpose
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
-//! transactional history. Clip-local MIDI volume has independent immutable identity
+//! transactional history. Main-lane song sections are stable named/color/range
+//! objects, separate from DSP clips. Structural reorder permutes complete
+//! supported song content atomically through retained source/history contracts.
+//! Clip-local MIDI volume has independent immutable identity
 //! from note/source data, with bounded current-format and history fidelity.
 //! Arrangement clips sharing a hybrid TrackId have disjoint
 //! half-open occupancy. Newly placed/extended material replaces older occupancy;
@@ -17,18 +20,24 @@
 //! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
 //! preparation must preserve project, IDs and history.
 mod arrangement_occupancy;
+mod arrangement_sections;
+pub use arrangement_sections::{
+    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS, SectionReorderPreview,
+};
 mod audio_events;
+mod project_tempo;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
-    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
-    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
-    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
+    AudioProcessingProjection, AudioViewMode, AudioViewOccurrence, AudioViewPlacement,
+    AudioViewProjection, AudioViewResize, AudioViewResizeOperation, BeatsPreserve, BeatsTail,
+    MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
+    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
+    audio_projection_frame, default_audio_warp, preview_audio_clip_stretch,
+    preview_audio_view_resize, preview_view_resize,
 };
 mod appearance;
 mod clip_conversion;
@@ -152,6 +161,7 @@ identifier!(SceneId);
 identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
+identifier!(SectionId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,6 +537,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) arrangement_sections: Vec<ArrangementSection>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
@@ -550,6 +561,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            arrangement_sections: Vec::new(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
@@ -577,6 +589,7 @@ impl Project {
     /// Used by prepared tuning publications; it does not authorize playback itself.
     pub fn same_except_tuning(&self, other: &Self) -> bool {
         let Self {
+            arrangement_sections,
             tuning: _,
             routing,
             audio_feeds,
@@ -594,7 +607,8 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        routing == &other.routing
+        arrangement_sections == &other.arrangement_sections
+            && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
             && import_provenance == &other.import_provenance

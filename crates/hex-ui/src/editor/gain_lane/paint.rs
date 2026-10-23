@@ -82,6 +82,7 @@ pub(in crate::editor) fn view(
                                 return;
                             };
                             let point = GainPoint {
+                                incoming_gain: None,
                                 beat,
                                 gain,
                                 outgoing: GainInterpolation::Linear,
