@@ -114,7 +114,27 @@ impl EditorView {
         .ok()
     }
 
-    pub(super) fn begin_main_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
+    /// A Shift-click can extend only a live cursor in the current document.
+    fn time_selection_cursor_anchor(&self, extend: bool) -> Option<EditCursor> {
+        if !extend {
+            return None;
+        }
+        self.edit_cursor.filter(|cursor| {
+            cursor.generation == self.project_generation
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+        })
+    }
+
+    pub(super) fn begin_main_time_selection_gesture(
+        &mut self,
+        x: f32,
+        y: f32,
+        free: bool,
+        extend: bool,
+    ) -> bool {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
@@ -161,29 +181,30 @@ impl EditorView {
         ) else {
             return false;
         };
+        let anchor = self.time_selection_cursor_anchor(extend);
         let generation = self.project_generation;
         let revision = state.revision;
         let selection = TimeSelection {
             anchor_track: first_track,
             end_track: last_track,
-            anchor_frame: frame,
+            anchor_frame: anchor.map_or(frame, |cursor| cursor.frame),
             end_frame: frame,
         };
         self.advance_selection_intent();
         self.time_selection_project_scope = true;
-        self.edit_cursor = Some(EditCursor {
+        self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
             track: first_track,
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
-        });
+        }));
         self.time_selection = Some(selection);
         self.time_selection_gesture = Some(TimeSelectionGesture {
             selection,
             generation,
             revision,
-            moved: false,
+            moved: anchor.is_some(),
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
@@ -269,7 +290,13 @@ impl EditorView {
         true
     }
 
-    pub(super) fn begin_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
+    pub(super) fn begin_time_selection_gesture(
+        &mut self,
+        x: f32,
+        y: f32,
+        free: bool,
+        extend: bool,
+    ) -> bool {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
@@ -310,32 +337,33 @@ impl EditorView {
         ) else {
             return false;
         };
-        if !inside_selection && self.clip_handle_at_pointer(track, x, y, viewport) {
+        if (extend || !inside_selection) && self.clip_handle_at_pointer(track, x, y, viewport) {
             return false;
         }
+        let anchor = self.time_selection_cursor_anchor(extend);
         let generation = self.project_generation;
         let revision = state.revision;
         let selection = TimeSelection {
-            anchor_track: track,
+            anchor_track: anchor.map_or(track, |cursor| cursor.track),
             end_track: track,
-            anchor_frame: frame,
+            anchor_frame: anchor.map_or(frame, |cursor| cursor.frame),
             end_frame: frame,
         };
         self.advance_selection_intent();
-        self.edit_cursor = Some(EditCursor {
+        self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
             track,
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
-        });
+        }));
         self.time_selection = Some(selection);
         self.time_selection_project_scope = false;
         self.time_selection_gesture = Some(TimeSelectionGesture {
             selection,
             generation,
             revision,
-            moved: false,
+            moved: anchor.is_some(),
             pointer_x: x,
             pointer_y: y,
             free_modifier: free,
@@ -1338,3 +1366,6 @@ mod duplicate_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod retained_duplicate_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod shift_click_tests;

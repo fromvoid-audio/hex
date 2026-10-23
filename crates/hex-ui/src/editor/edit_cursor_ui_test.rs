@@ -1033,7 +1033,12 @@ fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
             start: 100_000,
             length: 100_000,
         });
-        assert!(view.begin_time_selection_gesture(f32::from(start.x), f32::from(start.y), true));
+        assert!(view.begin_time_selection_gesture(
+            f32::from(start.x),
+            f32::from(start.y),
+            true,
+            false
+        ));
         assert!(view.update_time_selection_gesture(
             f32::from(lane.origin.x + lane.size.width + px(10.0)),
             f32::from(start.y),
@@ -1049,7 +1054,12 @@ fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
         assert_eq!(view.visible_viewport(384_000), before_stale_tick);
     });
     editor.update(cx, |view, _| {
-        assert!(view.begin_time_selection_gesture(f32::from(start.x), f32::from(start.y), true));
+        assert!(view.begin_time_selection_gesture(
+            f32::from(start.x),
+            f32::from(start.y),
+            true,
+            false
+        ));
         assert!(view.update_time_selection_gesture(
             f32::from(lane.origin.x + lane.size.width + px(10.0)),
             f32::from(start.y),
