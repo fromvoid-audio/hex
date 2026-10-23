@@ -193,7 +193,7 @@ mod tests {
                     .err()
                     .unwrap()
                     .to_string()
-                    .contains("unsupported alpha project format 31")
+                    .contains("unsupported project format or version; current format is 35")
             );
             let token = JournalRestartToken::capture(path.clone()).unwrap();
             (path, bytes, token)
@@ -223,7 +223,7 @@ mod tests {
             load_journal(&preserved)
                 .unwrap_err()
                 .to_string()
-                .contains("unsupported alpha project format 31")
+                .contains("unsupported project format or version; current format is 35")
         );
         assert_eq!(load_journal(&path).unwrap(), project);
         let mut journal = outcome.journal.unwrap();

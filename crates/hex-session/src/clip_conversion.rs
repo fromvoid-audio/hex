@@ -182,6 +182,7 @@ fn isolated_source(
             source.source_length()
         };
         MidiClipSnapshot {
+            volume: item.volume().clone(),
             name: item.name().to_owned(),
             flavor: hex_project::ClipFlavor::default(),
             id: clip.value(),
@@ -272,3 +273,77 @@ fn isolated_source(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+    use hex_project::{
+        BeatTime, Command, Created, Editor, MidiClipGain, MidiClipVolume, MidiClipVolumePoint,
+    };
+    #[test]
+    fn isolated_console_and_arrangement_bounce_preserve_volume_before_preparation_refuses() {
+        for console in [false, true] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: "volume".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            let clip = if console {
+                let Created::Scene(scene) = editor
+                    .execute(Command::AddScene {
+                        name: "scene".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("scene")
+                };
+                let Created::SessionClip(clip) = editor
+                    .execute(Command::CreateSessionMidiClip {
+                        track,
+                        scene,
+                        name: "clip".into(),
+                        source_length: BeatTime::ONE,
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                clip
+            } else {
+                let Created::Clip(clip) = editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::ONE,
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                clip
+            };
+            let volume = MidiClipVolume::new(
+                vec![MidiClipVolumePoint::linear(
+                    BeatTime::ZERO,
+                    MidiClipGain::new(0.5).unwrap(),
+                )],
+                BeatTime::ONE,
+            )
+            .unwrap();
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: volume.clone(),
+                })
+                .unwrap();
+            let (isolated, owner, _) = isolated_source(editor.project(), clip).unwrap();
+            assert_eq!(owner, track);
+            assert_eq!(isolated.midi_clip(clip).unwrap().volume(), &volume);
+            assert!(hex_engine::compile::project(&isolated, &BTreeMap::new()).is_err());
+        }
+    }
+}

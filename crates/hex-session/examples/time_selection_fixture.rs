@@ -58,6 +58,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 });
             }
             midi_clips.push(MidiClipSnapshot {
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip,

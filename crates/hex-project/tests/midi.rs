@@ -1360,6 +1360,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![hex_project::MidiClipSnapshot {
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: other_clip_id,

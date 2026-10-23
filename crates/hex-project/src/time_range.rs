@@ -5,6 +5,7 @@ use crate::{
 };
 use std::sync::Arc;
 mod insert;
+mod midi_volume;
 pub(crate) use insert::insert;
 pub(crate) use insert::insert_on_source_tracks;
 
@@ -86,6 +87,7 @@ impl RangeClipboard {
 }
 #[derive(Debug, Clone)]
 struct MidiFragment {
+    volume: midi_volume::FrameVolume,
     name: String,
     flavor: crate::ClipFlavor,
     row: usize,
@@ -226,6 +228,7 @@ impl Project {
                 }
                 reserve(&mut result.midi, 1)?;
                 result.midi.push(MidiFragment {
+                    volume: midi_volume::FrameVolume::capture(clip, self.tempo_map(), start, end)?,
                     name: clip.name().into(),
                     flavor: clip.flavor,
                     row,
@@ -461,6 +464,9 @@ fn paste_rows_with_source(
             notes,
         };
         let clip = MidiClip {
+            volume: fragment
+                .volume
+                .paste(project.tempo_map(), start_frame, end_frame)?,
             name: fragment.name.clone(),
             flavor: fragment.flavor,
             id: ClipId(0),
