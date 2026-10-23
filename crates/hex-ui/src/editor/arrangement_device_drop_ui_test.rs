@@ -161,8 +161,10 @@ fn arrangement_catalog_pointer_refuses_stale_busy_main_and_escape_without_edits(
                     let state = view.state.as_ref().unwrap();
                     view.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: state.project.clone(),
                         waveforms: state.waveforms.clone(),
+                        source_overviews: state.source_overviews.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                         gain_preview: state.gain_preview.clone(),
                         midi_preview: state.midi_preview.clone(),

@@ -22,8 +22,11 @@ fn zero(info: AllocationInfo) {
 
 fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "capture".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(id) => id,
         _ => return Err("track expected".into()),
@@ -69,6 +72,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: utility_state()?,
@@ -77,6 +81,7 @@ fn source() -> Result<(Project, TrackId, hex_project::ReturnId), Box<dyn Error>>
     snapshot.return_tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: utility_state()?,

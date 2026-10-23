@@ -30,6 +30,7 @@ def load_helper(name: str, path: Path):
 
 ci = load_helper("hex_launch_local_ci", ROOT / "scripts/local-ci.py")
 delivery = load_helper("hex_launch_delivery", ROOT / "scripts/hex-test-build.py")
+restart = load_helper("hex_launch_restart", ROOT / "scripts/launch-restart.py")
 
 
 class LaunchError(Exception):
@@ -185,15 +186,37 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         raise LaunchError("could not restart ./launch from the updated main source")
     included = included_revisions(source, root)
     app = configured_app(root)
+    recovery_args = []
+    if "--force-restart" in (argv or []):
+        owner_hash = restart.prepare(root, app, source, ci, delivery, assert_no_raw_desktop_process)
+        if owner_hash is not None:
+            recovery_args = ["--adopt-release-target", "--expected-release-owner-sha256", owner_hash]
     try:
         delivery.assert_inactive(app)
         assert_no_raw_desktop_process(root)
     except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
-        raise LaunchError(f"configured app must be saved and quit before launch; no process was terminated: {error}") from error
+        raise LaunchError(f"configured app is not inactive; replacement was not started: {error}") from error
+
+    if "--recover-release-target" in (argv or []):
+        authority = restart.inspect_recreated_target(root, app, source, ci, delivery,
+                                                     assert_no_raw_desktop_process)
+        identity = authority["target_identity"]
+        recovery_args = ["--adopt-release-target", "--expected-release-owner-sha256", authority["owner_sha256"],
+                         "--expected-recreated-target-device", str(identity["device"]),
+                         "--expected-recreated-target-inode", str(identity["inode"])]
 
     tested = "--test" in (argv or [])
     if tested:
-        runner = ci.LocalCiRunner(root, mode="full")
+        verification = {}
+        if "--recover-release-target" in (argv or []):
+            # Release recovery is not authority to adopt a stale DEV cache.
+            # Retain this fresh invocation-owned target and its normal CI owner;
+            # packaging still inherits the original release target environment.
+            artifacts = root / "artifacts/launch"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            target = Path(tempfile.mkdtemp(prefix="verification-target-", dir=artifacts))
+            verification["env"] = {**os.environ, "CARGO_TARGET_DIR": str(target)}
+        runner = ci.LocalCiRunner(root, mode="full", **verification)
         result = runner.run()
         if result != 0 or runner.summary.get("status") != "passed":
             raise LaunchError(f"full local CI failed; see {runner.summary_path}")
@@ -213,7 +236,7 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
     included_path.write_text(json.dumps(included, indent=2) + "\n")
     checklist_path.write_text(checklist(source, tested=tested))
     checked(
-        ["sh", "scripts/bundle-macos.sh", *verification_args,
+        ["sh", "scripts/bundle-macos.sh", *verification_args, *recovery_args,
          "--candidate", source, "--included", str(included_path), "--checklist", str(checklist_path)],
         cwd=root,
         capture=False,
@@ -229,14 +252,29 @@ def main(argv: list[str] | None = None) -> int:
                        help="open the installed optimized app without updating source or building")
     modes.add_argument("--test", action="store_true",
                        help="update clean main, run full local checks, build/install the optimized app, then open it")
+    parser.add_argument("--force-restart", action="store_true",
+                        help="quit the verified stable development app; after a bounded normal-quit wait, "
+                             "force it if necessary (unsaved work may be lost); recover matching owned "
+                             "pending state, rebuild latest main, then start it; tests remain opt-in")
+    parser.add_argument("--recover-release-target", action="store_true",
+                        help="explicitly recover this repository's inspected pending or recreated release target; "
+                             "requires hex already stopped, never signals an app; rebuild/install/open "
+                             "latest main normally, tests remain opt-in")
     arguments = list(sys.argv[1:] if argv is None else argv)
     options = parser.parse_args(arguments)
+    if options.recover_release_target and (options.open or options.force_restart):
+        parser.error("--recover-release-target cannot be combined with --open or --force-restart")
+    if options.open and options.force_restart:
+        parser.error("--force-restart cannot be combined with installed-only --open")
     try:
         if options.open:
             launch_installed()
         else:
             run_launch(argv=arguments)
-    except (LaunchError, ci.InterruptedRun, ci.TargetCacheError, OSError,
+    except KeyboardInterrupt:
+        print("launch interrupted; no further app termination, cleanup or launch attempted", file=sys.stderr)
+        return 130
+    except (LaunchError, restart.RestartError, delivery.DeliveryError, ci.InterruptedRun, ci.TargetCacheError, OSError,
             ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print(f"launch stopped: {error}", file=sys.stderr)
         return 1

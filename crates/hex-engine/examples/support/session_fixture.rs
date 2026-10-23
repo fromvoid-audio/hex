@@ -51,12 +51,15 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: instrument,
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip,
@@ -78,10 +81,12 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
                 track,
                 scene: 1,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: clip,
                     name: format!("session {index:03}"),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 4 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,
@@ -94,6 +99,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -154,6 +161,8 @@ pub fn finite_oracle(
                 return Err("oracle source is not midi".into());
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: clip.source.one_shot_boundary,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip.id,

@@ -73,6 +73,11 @@ impl CapturedBinding {
                         .iter()
                         .find(|device| device.id() == self.key.device)
                 }),
+            (Some(DevicePanelOwner::Main), NativeDeviceClass::Effect) => state
+                .project
+                .main_devices()
+                .iter()
+                .find(|device| device.id() == self.key.device),
             _ => None,
         };
         let Some(device) = device else {
@@ -180,7 +185,6 @@ pub(super) enum ControlPresentation {
     CompactDial,
     MiniDial,
     MicroDial,
-    WideMicroDial,
     InlineValue,
     DeviceMeters,
     CompactButton,
@@ -383,10 +387,6 @@ pub(super) fn render_parameter(
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
-                ControlPresentation::WideMicroDial => (
-                    hex_widgets::WIDE_MICRO_DIAL_WIDTH,
-                    hex_widgets::MICRO_DIAL_HEIGHT,
-                ),
                 ControlPresentation::InlineValue => (46.0, 14.0),
                 ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
                 _ => (136.0, 26.0),
@@ -570,8 +570,7 @@ fn create_parameter_control(
             let kind = match presentation {
                 ControlPresentation::CompactDial
                 | ControlPresentation::MiniDial
-                | ControlPresentation::MicroDial
-                | ControlPresentation::WideMicroDial => NumericControlKind::Knob,
+                | ControlPresentation::MicroDial => NumericControlKind::Knob,
                 ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
                 _ => NumericControlKind::HorizontalSlider,
             };
@@ -579,7 +578,6 @@ fn create_parameter_control(
                 ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
                 ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
                 ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
-                ControlPresentation::WideMicroDial => NumericControlAppearance::WideMicroDial,
                 ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
                 ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,
                 _ => NumericControlAppearance::Standard,

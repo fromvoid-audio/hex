@@ -36,6 +36,7 @@ fn fixture(frames: usize) -> Fixture {
 }
 fn point(beat: BeatTime, gain: f32, outgoing: GainInterpolation) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat,
         gain,
         outgoing,
@@ -352,10 +353,31 @@ fn gain_balance_mute_is_once_before_sends_return_feeds_and_master() {
 #[test]
 fn automated_hybrid_track_matches_static_unity_oracle_and_tempo_edit_reprepares_at_position() {
     let mut f = fixture(48000);
+    let Created::Track(source) = f
+        .editor
+        .execute(Command::AddTrack {
+            name: "silent midi source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("source track")
+    };
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetMidiSource {
+            destination: f.track,
+            source: Some(source),
+        })
+        .unwrap();
     let Created::Clip(clip) = f
         .editor
         .execute(Command::PlaceMidiClip {
-            track: f.track,
+            track: source,
             start: BeatTime::ZERO,
             length: BeatTime::ONE,
         })

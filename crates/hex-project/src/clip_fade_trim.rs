@@ -43,7 +43,7 @@ pub(crate) fn preview(
         TrimEdge::Right if fade.fade_out() > 0 => frame.max(out_top + 1),
         _ => frame,
     };
-    let frame = if let Some(edit) = clip.audio_edit() {
+    let frame = if let Some(edit) = clip.audio_edit().filter(|edit| edit.placement.is_none()) {
         let (_, full, start, _) = edit.projected_domain(tempo)?;
         let origin = i128::from(clip.start) - i128::from(start);
         let first = origin.max(0) as u64;
@@ -87,12 +87,9 @@ pub(crate) fn preview(
             0,
         ),
     };
-    let next = ClipFade::new(trimmed.duration, 0, fade_in, fade_out)?.with_shape(
-        in_start,
-        out_end_offset,
-        fade.in_curve(),
-        fade.out_curve(),
-    )?;
+    let next = ClipFade::new(trimmed.duration, 0, fade_in, fade_out)?
+        .with_shape(in_start, out_end_offset, fade.in_curve(), fade.out_curve())?
+        .with_curve_positions(fade.in_position(), fade.out_position())?;
     if trimmed.audio_edit().is_some() {
         crate::audio_edit::set_clip_fade_envelope(&mut trimmed, next, tempo)?;
     } else {

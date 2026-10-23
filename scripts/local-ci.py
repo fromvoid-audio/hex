@@ -10,11 +10,16 @@ from datetime import datetime, timezone
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
+import math
 import os
+import re
+import shlex
 import shutil
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +29,16 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
+_PLAN_SPEC = importlib.util.spec_from_file_location("hex_ci_plan", Path(__file__).with_name("ci_plan.py"))
+if _PLAN_SPEC is None or _PLAN_SPEC.loader is None:
+    raise RuntimeError("local CI planner unavailable")
+ci_plan = importlib.util.module_from_spec(_PLAN_SPEC)
+_PLAN_SPEC.loader.exec_module(ci_plan)
+_INPUT_SPEC = importlib.util.spec_from_file_location("hex_build_inputs", Path(__file__).with_name("build_inputs.py"))
+if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
+    raise RuntimeError("Cargo input identity helper unavailable")
+build_inputs = importlib.util.module_from_spec(_INPUT_SPEC)
+_INPUT_SPEC.loader.exec_module(build_inputs)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
@@ -81,12 +96,21 @@ def terminal_progress(label: str, *, announce: bool = True):
 
 @dataclass(frozen=True)
 class Step:
+    """A check with a 1–100 character ASCII ID starting with a letter or digit.
+
+    Remaining characters may be letters, digits, underscores or hyphens.
+    The runner validates the entire plan before executing any command. IDs are
+    used verbatim in numbered log basenames; the index keeps repeated IDs distinct.
+    """
+
     step_id: str
     argv: tuple[str, ...]
     uses_cargo_target: bool = False
+    requires_tests: bool = False
 
 
 QUICK_STEPS = (
+    Step("changelog", ("python3", "scripts/changelog.py", "validate", "--if-present")),
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
     Step("dependency-patches", ("python3", "scripts/check-dependency-patches.py")),
@@ -95,12 +119,14 @@ QUICK_STEPS = (
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
 
+# Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
+    *QUICK_STEPS,
     Step(
         "runner-tests",
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
+        uses_cargo_target=True,
     ),
-    *QUICK_STEPS,
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
@@ -117,8 +143,190 @@ FULL_STEPS = (
 )
 
 
+def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
+    """Diagnostic wall estimates from Cargo/harness logs, never qualification evidence.
+
+    Cargo's Finished duration includes its build phase, not just compiler CPU.
+    Rounded or nested harness output can overlap; do not invent a negative residual.
+    """
+    build = [3600 * float(h or 0) + 60 * float(m or 0) + float(s)
+             for h, m, s in re.findall(
+                 r"^\s*Finished [^\n]* in (?:(\d+)h )?(?:(\d+)m )?(\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    rust = [float(s) for s in re.findall(r"^test result: [^\n]*finished in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    python = [float(s) for s in re.findall(r"^Ran \d+ tests? in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    result = {name: sum(values) if values and math.isfinite(sum(values)) else None
+              for name, values in (("cargo_build_phase_seconds", build),
+                                   ("rust_harness_seconds", rust), ("python_harness_seconds", python))}
+    known = sum(value for value in result.values() if value is not None)
+    result["unclassified_seconds"] = round(duration - known, 6) if known <= duration else None
+    return result
+
+
+def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
+                   features: str = "", lib: bool = False, test: str | None = None) -> dict:
+    """Validate an explicit edit target; omissions keep Cargo's package-wide behavior."""
+    packages = [item for item in inventory if item["name"] == package]
+    if len(packages) != 1 or not test_filter.strip():
+        raise ValueError("edit feedback requires one known workspace package and a nonempty test filter")
+    owner = packages[0]
+    requested_features = {name for name in features.split(",") if name}
+    if requested_features - owner["features"].keys():
+        raise ValueError("unknown workspace package feature")
+    selection = {"package": package, "filter": test_filter, "features": features}
+    if lib or test is not None:
+        if lib and test is not None:
+            raise ValueError("select either a library or a named integration test")
+        library_kinds = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+        targets = [target for target in owner["targets"]
+                   if (bool(library_kinds.intersection(target["kind"])) if lib else
+                       "test" in target["kind"] and target["name"] == test)]
+        if len(targets) != 1:
+            raise ValueError("unknown or ambiguous edit test target")
+        enabled = requested_features | ({"default"} if "default" in owner["features"] else set())
+        pending = list(enabled)
+        while pending:
+            for feature in owner["features"].get(pending.pop(), []):
+                if feature not in enabled:
+                    enabled.add(feature)
+                    pending.append(feature)
+        if set(targets[0].get("required-features", [])) - enabled:
+            raise ValueError("edit test target requires features that are not enabled")
+        selection["target"] = {"kind": "lib" if lib else "test", "name": targets[0]["name"]}
+    return selection
+
+
+def boundary_steps(plan: dict) -> tuple[Step, ...]:
+    """Compile consumers even when reviewed device behavior tests are narrower."""
+    boundary = plan["boundary"]
+    inventory = plan["cargo_inventory"]
+    names = {p["name"] for p in inventory}
+    affected = boundary["lint_packages"]
+    if not affected or len(set(affected)) != len(affected) or set(affected) - names:
+        raise ValueError("boundary plan requires nonempty known affected packages")
+    if sorted(affected) != sorted(plan["affected_packages"]):
+        raise ValueError("boundary consumers do not match resolved Cargo closure")
+    packages = tuple(arg for p in affected for arg in ("-p", p))
+    steps = [*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
+    if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
+    tests = boundary["tests"]
+    if boundary["kind"] == "packages":
+        if sorted(boundary["test_packages"]) != sorted(affected) or tests:
+            raise ValueError("package boundary must test every affected consumer")
+        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+    elif boundary["kind"] == "compressor":
+        if not tests:
+            raise ValueError("device boundary has no contract targets")
+        for index, test in enumerate(tests):
+            # Reuse the edit target validator, not a second Cargo selector.
+            selected = edit_selection(inventory, package=test["package"],
+                                      test_filter=test["filter"] or "target-validation",
+                                      features=test.get("features", ""), lib=test.get("lib", False),
+                                      test=test.get("test"))
+            target = selected["target"]
+            feature = ("--features", selected["features"]) if selected["features"] else ()
+            selector = ("--lib",) if target["kind"] == "lib" else ("--test", target["name"])
+            steps.append(Step(f"contract-{index}-{selected['package']}",
+                              ("cargo", "test", "-p", selected["package"], *feature, *selector,
+                               "--locked", *([test["filter"]] if test["filter"] else []))))
+    else:
+        raise ValueError("unknown ownership boundary")
+    steps.append(Step("affected-clippy", ("cargo", "clippy", *packages, "--all-targets", "--locked", "--", "-D", "warnings")))
+    # Keep separate default/feature configurations, including feature-gated
+    # examples and allocation probes. Do not deduplicate by overlapping names.
+    covered_features = {"hex-ui": {"ui-test-support"}, "hex-export": {"instrument-test-support"},
+                        "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
+                        "hex-desktop": {"allocation-probe"}}
+    for step in FULL_STEPS:
+        if "--features" not in step.argv:
+            continue
+        owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
+        selected = [p for p in owners if p in affected]
+        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+            continue
+        argv = list(step.argv)
+        for owner in set(owners) - set(selected):
+            index = argv.index(owner)
+            del argv[index - 1:index + 1]
+        steps.append(Step(step.step_id, tuple(argv)))
+    for package in inventory:
+        if package["name"] not in affected or boundary["kind"] == "compressor":
+            continue
+        extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
+        # Preserve each declared configuration; all-features alone can mask
+        # mutually exclusive cfg branches. Feature interaction contracts still
+        # need reviewed configuration rules rather than a guessed power set.
+        for index, feature in enumerate(sorted(extra)):
+            for command in ("test", "clippy"):
+                steps.append(Step(f"feature-{command}-{package['name']}-{index}",
+                                  ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
+                                   *(("--", "-D", "warnings") if command == "clippy" else ()))))
+    if "hex-desktop" in affected:
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
+    return tuple(steps)
+
+
+def planned_steps(plan: dict) -> tuple[Step, ...]:
+    """Select complete configurations, never deduplicate by test-name overlap."""
+    scope = plan["scope"]
+    if plan.get("edit"):
+        edit = plan["edit"]
+        feature = ("--features", edit["features"]) if edit["features"] else ()
+        selected = edit.get("target")
+        target = () if selected is None else (("--lib",) if selected["kind"] == "lib" else ("--test", selected["name"]))
+        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, *target, "--locked", edit["filter"], "--", "--nocapture"),
+                     requires_tests=True),
+                Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
+                next(s for s in QUICK_STEPS if s.step_id == "format"))
+    if plan.get("reuse"):
+        return (Step("metadata-continuation", ("python3", "scripts/ci_plan.py", "--check-metadata",
+                                             "--base", plan["reuse"]["source"], "--source", plan["source"]),
+                     uses_cargo_target=True),)
+    if scope == "full":
+        steps = FULL_STEPS
+    elif scope == "rust":
+        steps = boundary_steps(plan)
+    elif scope == "metadata":
+        return (Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
+                                  "--base", plan["base"], "--source", plan["source"])),)
+    elif scope == "tooling":
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"))
+    elif scope == "ui":
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
+                 Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
+                 next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
+                 next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
+                 Step("ui-default-clippy", ("cargo", "clippy", "-p", "hex-ui", "-p", "hex-widgets", "-p", "hex-desktop", "--all-targets", "--locked", "--", "-D", "warnings")),
+                 next(s for s in FULL_STEPS if s.step_id == "ui-feature-clippy"),
+                 next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
+    else:
+        raise ValueError("unsupported resolved scope")
+    return tuple(Step(s.step_id,
+                      ci_plan.python_tests.argv(plan["python_tests"])
+                      if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
+                      s.uses_cargo_target,
+                      s.argv[:2] == ("cargo", "test") or s.step_id == "runner-tests") for s in steps)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def reusable_plan(root: Path, plan: dict, report: Path) -> dict:
+    evidence = json.loads(report.read_bytes())
+    old_plan = evidence.get("plan")
+    if old_plan and old_plan.get("reuse"):
+        raise ValueError("reference the original runtime report, not a chain of metadata reports")
+    expected = planned_steps(old_plan or {"scope": "full"})
+    if [(s.get("step_id"), s.get("argv")) for s in evidence.get("steps", [])] != [
+            (s.step_id, list(s.argv)) for s in expected]:
+        raise ValueError("runtime report does not contain its complete required configurations")
+    for required, actual in zip(expected, evidence["steps"]):
+        results = actual.get("test_results", {})
+        if required.requires_tests and sum(results.get("rust_passed_by_binary", [])) + sum(
+                results.get("python_executions", [])) - sum(results.get("python_skipped", [])) <= 0:
+            raise ValueError("runtime report has a zero-match test configuration")
+    return ci_plan.reuse_checks(root, plan, report)
 
 
 def command_output(argv: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -247,9 +455,10 @@ class LocalCiRunner:
         min_free_bytes: int | None = None,
         adopt_target: bool = False,
         target_state_dir: Path | None = None,
+        plan: dict | None = None,
     ) -> None:
         self.root = root.resolve()
-        default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode == "full" else 0
+        default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
         self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
         if (
             isinstance(self.min_free_bytes, bool)
@@ -258,18 +467,22 @@ class LocalCiRunner:
         ):
             raise ValueError("minimum free space must be a bounded nonnegative integer byte count")
         self.mode = mode
+        self.plan = plan
         self.adopt_target = adopt_target
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
         self.env = dict(os.environ if env is None else env)
-        self.steps = steps or (QUICK_STEPS if mode == "quick" else FULL_STEPS)
+        self.steps = steps or (planned_steps(plan) if plan else QUICK_STEPS if mode == "quick"
+                               else planned_steps({"scope": "full"}))
         self.output_dir = self.root / "artifacts" / "local-ci" / self.run_id
         self.summary_path = self.output_dir / "summary.json"
         self.started_monotonic = time.monotonic()
         self.summary: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": self.run_id,
             "mode": self.mode,
+            "platform": sys.platform,
+            "python_version": sys.version,
             "status": "incomplete",
             "repo_root": str(self.root),
             "commit": None,
@@ -280,12 +493,21 @@ class LocalCiRunner:
             "exit_code": None,
             "invocation_argv": list(sys.argv),
             "steps": [],
+            "plan": plan,
+            "time_to_first_result_seconds": None,
         }
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
+        self._lexical_cargo_target: Path | None = None
         self.target_lock: CargoTargetLock | None = None
         self.target_owner_path: Path | None = None
         self.target_owner_claimed = False
+        self._release_metadata = None
+        self._dependency_inputs = None
+        self._compiler_inputs = None
+        self._workspace_inputs = None
+        self._path_inputs = []
+        self._invalidate_dependency_profile = False
 
     def _write_summary(self) -> None:
         temporary = self.summary_path.with_suffix(".json.tmp")
@@ -363,6 +585,17 @@ class LocalCiRunner:
         }
         self.summary[key] = snapshot
         if key == "start_tree":
+            self.summary["runtime_inputs"] = ci_plan.runtime_inputs(self.root, self.env)
+            if self.mode in {"full", "merge", "release"}:
+                try:
+                    ci_plan.require_qualifying_inputs(self.summary["runtime_inputs"])
+                except ValueError as error:
+                    self.summary["repository_error"] = str(error)
+                    return False
+            if re.fullmatch(r"[0-9a-f]{40}", snapshot["commit"]):
+                self.env["HEX_GUARDED_BUILD_SOURCE"] = (
+                    snapshot["commit"] + ":" + snapshot["content_sha256"] + ":"
+                    + ("dirty" if snapshot["dirty"] else "clean"))
             root_path = Path(top_level.stdout.strip()).resolve()
             common_path = Path(common_dir.stdout.strip())
             if not common_path.is_absolute():
@@ -436,6 +669,7 @@ class LocalCiRunner:
             target = Path(raw_target)
             if not target.is_absolute():
                 target = self.root / target
+            self._lexical_cargo_target = target.absolute()
             target = target.resolve()
             by_id = {
                 package["id"]: package
@@ -507,7 +741,7 @@ class LocalCiRunner:
         return {"device": status.st_dev, "inode": status.st_ino}
 
     def _load_target_owner(self, owner_path: Path, target: Path) -> dict[str, object] | None:
-        if not owner_path.exists():
+        if not owner_path.exists() and not owner_path.is_symlink():
             return None
         try:
             if owner_path.is_symlink():
@@ -518,7 +752,7 @@ class LocalCiRunner:
             owner = value.get("workspace_owner")
             target_identity = value.get("target_identity")
             if (
-                value.get("schema_version") != 1
+                type(value.get("schema_version")) is not int or value["schema_version"] not in {1, 2}
                 or value.get("target_directory") != str(target)
                 or not isinstance(owner, dict)
                 or not isinstance(owner.get("workspace_root"), str)
@@ -533,6 +767,20 @@ class LocalCiRunner:
                 )
             ):
                 raise ValueError("owner fields have invalid types")
+            if value["schema_version"] == 2 and not isinstance(value.get("dependency_inputs"), dict):
+                raise ValueError("dependency input identity is missing")
+            if "dependency_inputs" in value:
+                dependency = value["dependency_inputs"]
+                if (not isinstance(dependency, dict) or set(dependency) != {"version", "sha256", "packages"}
+                        or type(dependency["version"]) is not int or dependency["version"] != 1
+                        or not isinstance(dependency["sha256"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", dependency["sha256"])
+                        or not isinstance(dependency["packages"], list)
+                        or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec", "sha256"}
+                               or not all(isinstance(v, str) and v for v in p.values())
+                               or not re.fullmatch(r"[0-9a-f]{64}", p["sha256"])
+                               for p in dependency["packages"])):
+                    raise ValueError("malformed dependency input identity")
             return value
         except (OSError, json.JSONDecodeError, ValueError) as error:
             raise TargetCacheError(
@@ -540,10 +788,12 @@ class LocalCiRunner:
                 "use a fresh target or explicitly adopt it after checking ownership"
             ) from error
 
-    def _write_target_owner(self, path: Path, owner: dict[str, object]) -> None:
+    def _write_target_owner(self, path: Path, owner: dict[str, object], *, checked=False) -> None:
         temporary = path.with_name(f"{path.name}.{os.getpid()}.{self.run_id}.tmp")
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "dependency_inputs": self._dependency_inputs,
+            "cache_inputs": self._cache_provenance(checked=checked),
             "target_directory": self.cargo_identity["target_directory"] if self.cargo_identity else None,
             "workspace_owner": {
                 "workspace_root": owner["workspace_root"],
@@ -590,6 +840,11 @@ class LocalCiRunner:
                 "git_common_dir": self.git_identity["git_common_dir"],
             }
             target_identity = self._directory_identity(target)
+            dependency_inputs = self._dependency_context()
+            self._dependency_inputs = dependency_inputs
+            self._path_inputs = dependency_inputs["packages"]
+            self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
+            self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = dependency_inputs["sha256"]
             ownership_action = "reuse"
             cleanup_argv: list[str] | None = None
             previous_workspace = None
@@ -634,6 +889,34 @@ class LocalCiRunner:
                     ownership_action = "worktree-handoff"
                     cleanup_argv = self._workspace_clean_argv(target)
 
+            if owner_record and owner_record.get("dependency_inputs") != dependency_inputs:
+                if ownership_action == "reuse":
+                    ownership_action = "dependency-input-handoff"
+                cleanup_argv = self._workspace_clean_argv(target)
+            invalidated = self._provenance_cleanup(owner_record) if owner_record else []
+            if self._invalidate_dependency_profile:
+                ownership_action = "compiler-profile-handoff"
+                cleanup_argv = self._workspace_clean_argv(target)[:8]
+            if invalidated:
+                if ownership_action == "reuse":
+                    ownership_action = "source-or-compiler-handoff"
+                if cleanup_argv is None:
+                    cleanup_argv = self._workspace_clean_argv(target)[:8]
+                for spec in invalidated:
+                    name = self._clean_package_name(spec)
+                    if name not in cleanup_argv:
+                        cleanup_argv.extend(("--package", name))
+            if cleanup_argv is not None:
+                current = {p["name"]: p for p in dependency_inputs["packages"]}
+                previous = owner_record.get("dependency_inputs", {}) if owner_record else {}
+                for old in (previous or {}).get("packages", []):
+                    if old["name"] not in current or current[old["name"]]["version"] != old["version"]:
+                        raise TargetCacheError("removed/version-changed path dependency requires a fresh target")
+                old_by_name = {p["name"]: p for p in (previous or {}).get("packages", [])}
+                for package in dependency_inputs["packages"]:
+                    if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
+                        cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
+
             self.summary["target_cache"] = {
                 "action": ownership_action,
                 "previous_workspace_owner": previous_workspace,
@@ -643,6 +926,7 @@ class LocalCiRunner:
                 "cleanup_status": "not_needed" if cleanup_argv is None else "pending",
                 "lock_path": str(lock_path),
                 "lock_acquired": True,
+                "dependency_inputs": dependency_inputs,
             }
             if cleanup_argv is not None:
                 result = self._run_target_cleanup(cleanup_argv)
@@ -663,6 +947,10 @@ class LocalCiRunner:
                 self.summary["target_lock_release_error"] = release_error
             self.target_lock = None
             return False
+        except BaseException:
+            lock.release()
+            self.target_lock = None
+            raise
 
     def _workspace_clean_argv(self, target: Path) -> list[str]:
         if self.cargo_identity is None:
@@ -683,18 +971,39 @@ class LocalCiRunner:
         for package in packages:
             if not isinstance(package, dict) or not isinstance(package.get("spec"), str):
                 raise TargetCacheError("workspace package metadata is malformed")
-            argv.extend(("--package", package["spec"]))
+            argv.extend(("--package", self._clean_package_name(package["spec"])))
         return argv
+
+    def _clean_package_name(self, spec: str) -> str:
+        """Cargo 1.94 clean matches names, ignoring ID URL/version qualifiers.
+
+        Keep full IDs in provenance, but only clean a name when current complete
+        metadata proves it identifies exactly one workspace or path package.
+        Never use a qualifier to imply a narrower cleanup than Cargo performs.
+        """
+        if not isinstance(self._release_metadata, dict):
+            raise TargetCacheError("complete cleanup package metadata is unavailable")
+        packages = self._release_metadata["packages"]
+        matches = [p for p in packages if p["id"] == spec]
+        if len(matches) != 1:
+            raise TargetCacheError("cleanup package is absent or ambiguous in current metadata")
+        name = matches[0]["name"]
+        if (not isinstance(name, str) or not name
+                or sum(p["name"] == name for p in packages) != 1
+                or matches[0].get("source") is not None):
+            raise TargetCacheError("cleanup requires a unique workspace/path package name")
+        return name
 
     def _release_scope(self) -> list[dict[str, str]]:
         """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
         result = command_output(
-            ["cargo", "metadata", "--format-version", "1", "--locked"], self.root, self.env
+            ["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], self.root, self.env
         )
         if result.returncode != 0:
             raise TargetCacheError(f"release package metadata failed: {result.stderr.strip()}")
         try:
             metadata = json.loads(result.stdout)
+            self._release_metadata = metadata
             members = set(metadata["workspace_members"])
             packages = metadata["packages"]
             scope = sorted(
@@ -716,6 +1025,107 @@ class LocalCiRunner:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise TargetCacheError(f"unsafe release package selection: {error}") from error
 
+    def _release_build_inputs(self, argv: list[str]) -> str:
+        tools = {}
+        search = os.pathsep.join(str((self.root / entry).resolve()) if not Path(entry).is_absolute() else entry
+                                 for entry in self.env.get("PATH", os.defpath).split(os.pathsep))
+        for tool in ("cargo", "rustc"):
+            result = command_output([tool, "-Vv"], self.root, self.env)
+            resolved = shutil.which(tool, path=search)
+            if result.returncode != 0 or not result.stdout.strip() or resolved is None:
+                raise TargetCacheError("cannot identify release toolchain: " + tool)
+            path = Path(resolved).resolve(strict=True)
+            info = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+            tools[tool] = {"path": str(path), "version": result.stdout,
+                           "sha256": digest.hexdigest(), "mode": info.st_mode}
+        key = build_inputs.fingerprint(self.root, self.env, self._release_metadata, tools)
+        self.summary["toolchain"] = tools
+        self._compiler_inputs = build_inputs.fingerprint(self.root, self.env, self._release_metadata, tools, compiler_only=True)
+        return hashlib.sha256((key + json.dumps(argv)).encode()).hexdigest()
+
+    def _dependency_context(self) -> dict:
+        # Full feature metadata includes optional/dev path dependencies. Read it
+        # inside the target lock, before even Python's private Cargo fixtures.
+        self._release_scope()
+        self._path_inputs = self._path_dependency_inputs()
+        return {"version": 1, "sha256": self._release_build_inputs(["guarded-dev-inputs-v1"]),
+                "packages": self._path_inputs}
+
+    def _path_dependency_inputs(self) -> list[dict]:
+        metadata = self._release_metadata
+        members = set(metadata["workspace_members"])
+        packages = [{"name": p["name"], "version": p["version"], "spec": p["id"],
+                     "sha256": build_inputs.fingerprint(self.root, {}, metadata, {},
+                                                         paths=(Path(p["manifest_path"]).parent,))}
+                    for p in metadata["packages"] if p["id"] not in members and p.get("source") is None]
+        for package in packages:
+            if sum(p["name"] == package["name"] for p in metadata["packages"]) != 1:
+                raise TargetCacheError("path dependency cleanup has an ambiguous package name")
+        return sorted(packages, key=lambda p: p["name"])
+
+    def _cache_provenance(self, *, checked=False) -> dict | None:
+        if self._compiler_inputs is None:
+            return None
+        witness = dict(self._workspace_inputs)
+        source = self.summary.get("start_tree", {})
+        witness.update(commit=source.get("commit"), dirty=source.get("dirty"), checked=checked)
+        return {"compiler_sha256": self._compiler_inputs, "workspace": witness, "dependencies": self._path_inputs}
+
+    def _provenance_cleanup(self, owner: dict) -> list[str]:
+        self._invalidate_dependency_profile = False
+        previous = owner.get("cache_inputs")
+        # Existing bounded ownership records without cache witnesses get a
+        # one-time conservative invalidation; ownership/adoption is independent.
+        if previous is not None:
+            if (not isinstance(previous, dict) or set(previous) not in ({"compiler_sha256", "workspace"}, {"compiler_sha256", "workspace", "dependencies"})
+                    or not isinstance(previous["compiler_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", previous["compiler_sha256"])
+                    or not isinstance(previous["workspace"], dict)):
+                raise TargetCacheError("malformed cache input provenance")
+            witness = previous["workspace"]
+            if (set(witness) != {"packages", "observed_ns", "commit", "dirty", "checked"}
+                    or type(witness["observed_ns"]) is not int or witness["observed_ns"] <= 0
+                    or type(witness["checked"]) is not bool or type(witness["dirty"]) is not bool
+                    or not isinstance(witness["commit"], str) or not isinstance(witness["packages"], list)
+                    or any(not isinstance(p, dict) or set(p) != {"spec", "path", "sha256", "timestamps"}
+                           or not all(isinstance(v, str) and v for v in p.values())
+                           or any(not re.fullmatch(r"[0-9a-f]{64}", p[k]) for k in ("sha256", "timestamps"))
+                           for p in witness["packages"])):
+                raise TargetCacheError("malformed workspace cache provenance")
+        dependencies = previous.get("dependencies", []) if previous else []
+        if (not isinstance(dependencies, list) or any(not isinstance(p, dict)
+                or set(p) != {"name", "version", "spec", "sha256"}
+                or not all(isinstance(v, str) and v for v in p.values())
+                or not re.fullmatch(r"[0-9a-f]{64}", p["sha256"]) for p in dependencies)):
+            raise TargetCacheError("malformed path dependency cache provenance")
+        current = {p["name"]: p for p in self._path_inputs}
+        for old in dependencies:
+            if old["name"] not in current or current[old["name"]]["version"] != old["version"]:
+                raise TargetCacheError("removed/version-changed path dependency requires a fresh target")
+        if previous is None or previous["compiler_sha256"] != self._compiler_inputs:
+            # Toolchain changes invalidate this owned profile's dependencies,
+            # including registry/previously selected versions, not just members.
+            # Cargo owns the profile cleanup; dev and release remain separate.
+            self._invalidate_dependency_profile = True
+            return []
+        changed = [p["spec"] for p in self._path_inputs if p not in dependencies]
+        return changed + build_inputs.stale_workspace_packages(self.root, self.env, previous["workspace"], self._workspace_inputs)
+
+    def _completed_workspace_inputs(self) -> None:
+        current = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
+        if current["packages"] != self._workspace_inputs["packages"]:
+            raise TargetCacheError("workspace source content/timestamps changed during guarded build")
+        self._workspace_inputs = current
+
+    def validate_release_inputs(self, report: dict) -> None:
+        """Refuse drift before handing an executable to a staging consumer."""
+        if report.get("build_cache_key") is not None and self._release_build_inputs(report["build_argv"]) != report["build_cache_key"]:
+            raise TargetCacheError("release toolchain/config/dependency inputs changed during build")
+
     @staticmethod
     def _write_release_owner(path: Path, payload: dict[str, object]) -> None:
         if path.is_symlink():
@@ -733,8 +1143,99 @@ class LocalCiRunner:
         finally:
             os.close(descriptor)
 
+    def inspect_recreated_release_target(self) -> dict[str, object]:
+        """Read-only explicit recovery authority, while the target lock is held.
+
+        This never adopts an unknown/foreign owner or certifies its old artifact.
+        The caller must revalidate the returned hash and replacement identity at
+        the guarded mutation boundary; ordinary automatic restart stays stricter.
+        """
+        if self.target_lock is None or self.cargo_identity is None:
+            raise TargetCacheError("recreated-target inspection requires target ownership")
+        target = Path(str(self.cargo_identity["target_directory"]))
+        lexical = self._lexical_cargo_target
+        if lexical is None:
+            raise TargetCacheError("recreated target has no lexical path evidence")
+        for path in (lexical, *lexical.parents):
+            if path.is_symlink():
+                raise TargetCacheError("recreated target path contains a symlink")
+        identity = self._directory_identity(target)
+        if identity is None:
+            raise TargetCacheError("recreated target must exist")
+        _, dev_owner = target_state_paths(target, self.target_state_dir)
+        owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
+        try:
+            descriptor = os.open(owner, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("owner is not regular")
+                raw = stream.read(128 * 1024 + 1)
+            if len(raw) > 128 * 1024:
+                raise ValueError("owner exceeds bounded metadata size")
+            record = json.loads(raw)
+            workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
+            previous = record["source"]
+            old_identity = record["target_identity"]
+            def hex_string(value, size):
+                return (isinstance(value, str) and len(value) == size
+                        and all(c in "0123456789abcdef" for c in value))
+            if (type(record.get("schema_version")) is not int or record["schema_version"] != 1
+                    or record.get("profile") != "release"
+                    or record.get("state") not in {"pending", "ready"}
+                    or record.get("target_directory") != str(target)
+                    or record.get("workspace_owner") != workspace
+                    or not isinstance(old_identity, dict) or set(old_identity) != {"device", "inode"}
+                    or any(type(old_identity[k]) is not int or old_identity[k] < (1 if k == "inode" else 0)
+                           for k in ("device", "inode"))
+                    or (old_identity == identity and record["state"] != "pending")
+                    or not isinstance(previous, dict)
+                    or set(previous) != {"commit", "dirty", "dirty_files", "content_sha256"}
+                    or previous["dirty"] is not False or previous["dirty_files"] != []
+                    or not hex_string(previous["commit"], 40)
+                    or not hex_string(previous["content_sha256"], 64)):
+                raise ValueError("owner is not this repository's prior target")
+            scope = self._release_scope()
+            packages = record["packages"]
+            if (not isinstance(packages, list) or not packages
+                    or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec"}
+                           or not all(isinstance(v, str) and v for v in p.values()) for p in packages)):
+                raise ValueError("invalid prior package scope")
+            names = {p["name"] for p in packages}
+            if len(names) != len(packages) or packages != [p for p in scope if p["name"] in names]:
+                raise ValueError("prior package ownership changed")
+            source = self.summary["start_tree"]
+            if not hex_string(source["commit"], 40):
+                raise ValueError("current source has no exact commit")
+            ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", previous["commit"],
+                                      source["commit"]], cwd=self.root, env=self.env,
+                                     capture_output=True, check=False)
+            if ancestry.returncode != 0:
+                raise ValueError("prior owner source is not an ancestor of current source")
+            if record["state"] == "ready":
+                artifact = record["artifact"]
+                argv = record["build_argv"]
+                if (not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}
+                        or not isinstance(artifact["path"], str)
+                        or not Path(artifact["path"]).is_absolute()
+                        or ".." in Path(artifact["path"]).parts
+                        or target / "release" not in Path(artifact["path"]).parents
+                        or not hex_string(artifact["sha256"], 64)
+                        or not isinstance(argv, list) or not all(isinstance(a, str) for a in argv)
+                        or argv[:2] != ["cargo", "build"] or "--release" not in argv):
+                    raise ValueError("malformed historical release artifact")
+            if (not self._capture_repository_state("recovery_inspected_tree")
+                    or self.summary["recovery_inspected_tree"] != source
+                    or self._directory_identity(target) != identity):
+                raise ValueError("source or replacement changed during inspection")
+            return {"owner_sha256": hashlib.sha256(raw).hexdigest(), "target_identity": identity}
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise TargetCacheError(f"recreated release target inspection refused: {error}") from error
+
     @contextmanager
-    def guarded_release(self, *, adopt: bool = False):
+    def guarded_release(self, *, adopt: bool = False, expected_owner_sha256: str | None = None,
+                        expected_recreated_target_identity: dict[str, int] | None = None,
+                        recovery_inactive_check=None, requested_build_argv: list[str] | None = None,
+                        verification_check=None):
         """Explicit release handoff; caller must identify its artifact before exit.
 
         Uses the dev driver's SAME target-wide lock, but a separate durable
@@ -746,6 +1247,10 @@ class LocalCiRunner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         if not self._capture_repository_state("start_tree") or self.summary["start_tree"]["dirty"]:
             raise TargetCacheError("release preparation requires exact clean source")
+        try:
+            ci_plan.require_qualifying_inputs(self.summary["runtime_inputs"])
+        except ValueError as error:
+            raise TargetCacheError(str(error)) from error
         if not self._resolve_cargo_identity() or not self._check_disk_headroom():
             raise TargetCacheError(f"release preparation failed: {self.summary}")
         target = Path(str(self.cargo_identity["target_directory"]))
@@ -758,10 +1263,47 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            replacement = expected_recreated_target_identity
+            if replacement is not None:
+                if (not adopt or expected_owner_sha256 is None
+                        or not isinstance(replacement, dict) or set(replacement) != {"device", "inode"}
+                        or any(type(replacement[k]) is not int or replacement[k] < (1 if k == "inode" else 0)
+                               for k in ("device", "inode"))
+                        or not callable(recovery_inactive_check)):
+                    raise TargetCacheError("explicit recreated-target recovery requires identity, owner hash and inactivity check")
+                inspected = self.inspect_recreated_release_target()
+                if inspected != {"owner_sha256": expected_owner_sha256, "target_identity": replacement}:
+                    raise TargetCacheError("recreated target or owner changed since inspection")
+            expected_owner_bytes = None
+            if expected_owner_sha256 is not None:
+                if (not adopt or len(expected_owner_sha256) != 64
+                        or any(c not in "0123456789abcdef" for c in expected_owner_sha256)):
+                    raise TargetCacheError("expected release owner requires explicit adoption and its SHA256")
+                try:
+                    descriptor = os.open(owner_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(descriptor, "rb") as stream:
+                        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                            raise TargetCacheError("expected release owner is not a regular file")
+                        expected_owner_bytes = stream.read(128 * 1024 + 1)
+                    if (len(expected_owner_bytes) > 128 * 1024
+                            or hashlib.sha256(expected_owner_bytes).hexdigest() != expected_owner_sha256):
+                        raise TargetCacheError("release owner changed since restart inspection; preserved unchanged")
+                except OSError as error:
+                    raise TargetCacheError("expected release owner is unavailable; preserved unchanged") from error
             # Recheck source after acquiring ownership; a changed checkout refuses.
             if not self._capture_repository_state("release_locked_tree") or self.summary["release_locked_tree"] != self.summary["start_tree"]:
                 raise TargetCacheError("release source changed before lock acquisition")
             scope = self._release_scope()
+            if verification_check is not None:
+                verification_check()
+            cache_key = None
+            if requested_build_argv is not None:
+                try:
+                    cache_key = self._release_build_inputs(requested_build_argv)
+                except (KeyError, ValueError, TypeError, OSError) as error:
+                    raise TargetCacheError(f"cannot identify incremental release inputs: {error}") from error
+            self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
+            self._path_inputs = self._path_dependency_inputs()
             workspace = {k: self.git_identity[k] for k in ("workspace_root", "git_common_dir")}
             source = self.summary["start_tree"]
             identity = self._directory_identity(target)
@@ -771,7 +1313,7 @@ class LocalCiRunner:
                 try:
                     if owner_path.is_symlink():
                         raise ValueError("symlink marker")
-                    record = json.loads(owner_path.read_text())
+                    record = json.loads(expected_owner_bytes if expected_owner_bytes is not None else owner_path.read_text())
                     if (not isinstance(record, dict) or record.get("schema_version") != 1
                             or not {"target_identity", "source", "workspace_owner", "packages"}.issubset(record)
                             or record.get("profile") != "release" or record.get("target_directory") != str(target)
@@ -805,11 +1347,17 @@ class LocalCiRunner:
                                 or not isinstance(record.get("build_argv"), list)):
                             raise ValueError("invalid release artifact fields")
                 except (ValueError, TypeError, OSError) as error:
-                    if not adopt:
+                    if not adopt or expected_owner_sha256 is not None:
                         raise TargetCacheError(f"malformed release ownership: {error}") from error
                     record = None
                     malformed = True
             if record is not None:
+                # Automatic restart recovery retains the inspected owner, not
+                # manual adoption's permission to take over another target.
+                if expected_owner_sha256 is not None and (
+                        (replacement is None and record["target_identity"] != identity)
+                        or record["workspace_owner"] != workspace):
+                    raise TargetCacheError("release target identity/workspace changed since restart inspection; preserved unchanged")
                 old_scope = [(p["name"], p["version"]) for p in record["packages"]]
                 old_names = {name for name, _version in old_scope}
                 retained_scope = [(p["name"], p["version"]) for p in scope if p["name"] in old_names]
@@ -827,20 +1375,39 @@ class LocalCiRunner:
                 raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
             reuse = bool(record and record["state"] == "ready" and not adopt
                          and record.get("target_identity") == identity
-                         and record["workspace_owner"] == workspace and record["source"] == source)
+                         and record["workspace_owner"] == workspace
+                         and (record["source"] == source if requested_build_argv is None else
+                              cache_key is not None and record.get("build_cache_key") == cache_key))
+            invalidated = self._provenance_cleanup(record) if record else []
             pending = {"schema_version": 1, "profile": "release", "state": "pending",
                        "target_directory": str(target), "target_identity": identity,
                        "workspace_owner": workspace, "source": source, "packages": scope,
-                       "recorded_at": utc_now()}
+                       "recorded_at": utc_now(), "cache_inputs": self._cache_provenance()}
+            if cache_key is not None:
+                pending["build_cache_key"] = cache_key
+                self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = cache_key
             report = {**pending, "owner_path": str(owner_path), "lock_path": str(lock_path),
-                      "action": "reuse" if reuse else ("adopted" if adopt else "handoff"),
+                      "action": ("compiler-profile-handoff" if self._invalidate_dependency_profile else
+                                 "source-or-dependency-handoff" if invalidated and reuse else
+                                 "reuse" if reuse else ("adopted" if adopt else "handoff")),
                       "cleanup_status": "not_needed", "previous_owner": record,
                       "malformed_previous_owner": malformed}
+            if replacement is not None:
+                # Last check before pending ownership/cleanup, under the SAME
+                # target lock. No process control is permitted by this callback.
+                recovery_inactive_check()
+                if self.inspect_recreated_release_target() != inspected:
+                    raise TargetCacheError("recreated target or owner changed before mutation")
+                report["explicit_recreated_target"] = inspected
             self.summary["release_target_cache"] = report
             self._write_release_owner(owner_path, pending)
-            if not reuse and populated:
-                argv = self._workspace_clean_argv(target)
+            if (not reuse or invalidated or self._invalidate_dependency_profile) and populated:
+                argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
+                for spec in invalidated:
+                    name = self._clean_package_name(spec)
+                    if name not in argv:
+                        argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
                 # Keep release and dev cleanup evidence independent.
@@ -854,6 +1421,10 @@ class LocalCiRunner:
                     raise TargetCacheError("release cleanup failed; pending owner retained")
                 report["cleanup_status"] = "passed"
             yield report
+            if requested_build_argv is not None and report.get("build_argv") != requested_build_argv:
+                raise TargetCacheError("release build arguments differ from locked cache identity")
+            if requested_build_argv is not None and self._release_build_inputs(requested_build_argv) != cache_key:
+                raise TargetCacheError("release toolchain/config/dependency inputs changed during build")
             if not isinstance(report.get("artifact"), dict) or report.get("build_exit_code") != 0:
                 raise TargetCacheError("release artifact identification is required")
             artifact = report["artifact"]
@@ -861,6 +1432,8 @@ class LocalCiRunner:
                 raise TargetCacheError("release artifact changed before ownership completion")
             if not self._capture_repository_state("release_end_tree") or self.summary["release_end_tree"] != source:
                 raise TargetCacheError("release source changed during build")
+            self._completed_workspace_inputs()
+            pending["cache_inputs"] = self._cache_provenance(checked=True)
             pending.update(state="ready", target_identity=self._directory_identity(target),
                            artifact=report["artifact"], build_argv=report.get("build_argv"), recorded_at=utc_now())
             self._write_release_owner(owner_path, pending)
@@ -970,6 +1543,9 @@ class LocalCiRunner:
         return True
 
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
+        started = time.monotonic()
+        text = None
+        phase = "opening step log"
         log_path = self.output_dir / f"{index:02d}-{step.step_id}.log"
         entry: dict[str, object] = {
             "step_id": step.step_id,
@@ -977,6 +1553,9 @@ class LocalCiRunner:
             "status": "running",
             "started_at": utc_now(),
             "ended_at": None,
+            "start_offset_seconds": round(started - self.started_monotonic, 6),
+            "duration_seconds": None,
+            "timing_estimates": None,
             "exit_code": None,
             "log": str(log_path.relative_to(self.root)),
             "error": None,
@@ -986,9 +1565,13 @@ class LocalCiRunner:
         steps.append(entry)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: running", flush=True)
+        if step.step_id == "runner-tests" and self.summary.get("plan") and "python_tests" in self.summary["plan"]:
+            selection = self.summary["plan"]["python_tests"]
+            print("python self-tests: " + json.dumps(selection, sort_keys=True), flush=True)
         try:
             with log_path.open("w", encoding="utf-8") as log, \
                     terminal_progress(f"checking {step.step_id}", announce=False):
+                phase = "running command"
                 result = subprocess.run(
                     list(step.argv),
                     cwd=self.root,
@@ -999,26 +1582,134 @@ class LocalCiRunner:
                 )
             entry["exit_code"] = result.returncode
             entry["status"] = "passed" if result.returncode == 0 else "failed"
+            phase = "reading step log"
+            text = log_path.read_text(errors="replace")
+            rust_counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]
+            python_counts = [int(n) for n in re.findall(r"^Ran (\d+) tests? in ", text, re.MULTILINE)]
+            skipped = [int(n) for n in re.findall(r"^OK \(skipped=(\d+)\)", text, re.MULTILINE)]
+            entry["test_results"] = {"rust_passed_by_binary": rust_counts,
+                                     "python_executions": python_counts, "python_skipped": skipped}
+            if step.requires_tests and result.returncode == 0 and sum(rust_counts) + sum(python_counts) - sum(skipped) <= 0:
+                entry["status"] = "failed"
+                entry["error"] = "requested test scope executed no passing tests; zero-match/all-skipped is not qualification"
         except FileNotFoundError as error:
             entry["status"] = "failed"
-            entry["error"] = f"required executable not found: {error.filename}"
-            log_path.write_text(entry["error"] + "\n", encoding="utf-8")
+            entry["error"] = (f"required executable not found: {error.filename}"
+                              if phase == "running command" else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
         except InterruptedRun:
             entry["status"] = "interrupted"
             entry["error"] = "pipeline interrupted"
             entry["exit_code"] = 130
             entry["ended_at"] = utc_now()
-            with log_path.open("a", encoding="utf-8") as log:
-                log.write("\npipeline interrupted\n")
+            self._retain_step_error(log_path, entry)
             raise
         except OSError as error:
             entry["status"] = "failed"
-            entry["error"] = str(error)
-            log_path.write_text(f"command could not run: {error}\n", encoding="utf-8")
-        entry["ended_at"] = utc_now()
+            entry["error"] = (f"command could not run: {error}" if phase == "running command"
+                              else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
+        finally:
+            ended = time.monotonic()
+            duration = ended - started
+            entry["ended_at"] = utc_now()
+            entry["duration_seconds"] = round(duration, 6)
+            if self.summary["time_to_first_result_seconds"] is None:
+                self.summary["time_to_first_result_seconds"] = round(ended - self.started_monotonic, 6)
+            if text is None:
+                try:
+                    text = log_path.read_text(errors="replace")
+                except OSError:
+                    pass  # Missing diagnostics do not change the step's result.
+            if text is not None:
+                entry["timing_estimates"] = log_timing_estimates(text, duration)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: {entry['status']}", flush=True)
         return entry
+
+    @staticmethod
+    def _retain_step_error(log_path: Path, entry: dict[str, object]) -> None:
+        # Never replace captured output or let a second log error hide the actual failure.
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"\n{entry['error']}\n")
+        except OSError as error:
+            entry["log_error"] = str(error)
+
+    def _diagnostic_text(self, text: str) -> str:
+        # Console excerpts are not raw logs. Remove terminal controls and known sensitive
+        # environment values without printing the environment or altering retained evidence.
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        sensitive = r"token|password|passwd|secret|credential|authorization|(?:api|access|private)[_-]?key"
+        for key, value in sorted(self.env.items(), key=lambda item: len(item[1]), reverse=True):
+            if value and re.search(sensitive, key, re.IGNORECASE):
+                text = text.replace(value, "[redacted]")
+        text = re.sub(r"(?im)(\b[\w-]*(?:" + sensitive + r")[\w-]*\s*[:=]\s*)[^\n]+",
+                      r"\1[redacted]", text)
+        text = re.sub(r"(?i)(--[\w-]*(?:" + sensitive + r")[\w-]*\s+)(?:'[^']*'|\"[^\"]*\"|\S+)",
+                      r"\1[redacted]", text)
+        return text
+
+    def _print_failure_details(self) -> None:
+        """Present the settled result; diagnostics never confer qualification or execute retries."""
+        status = self.summary.get("status")
+        if status not in {"failed", "interrupted", "stale", "incomplete"}:
+            return
+        executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
+        step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
+                    executed[-1] if executed else None)
+        category = "preflight refusal"
+        excerpt = ""
+        log_note = "log unavailable; see summary"
+        if step:
+            if step["log"]:
+                path = self.root / step["log"]
+                log_note = str(path)
+                try:
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        log.seek(max(0, log.tell() - 65536))
+                        tail = log.read(65536).decode("utf-8", errors="replace")
+                    lines = self._diagnostic_text(tail).splitlines()
+                    marker = r"^\s*(?:error(?:\[|:)|thread .*panicked at|---- .* stdout ----|FAIL:|ERROR:|Traceback \()"
+                    start = next((i for i, line in enumerate(lines) if re.search(marker, line)), None)
+                    if start is not None:
+                        excerpt = "\n".join(line[:240] for line in lines[start:start + 20])[:4000]
+                except OSError:
+                    log_note += " (unreadable; failure retained in summary)"
+            error = str(step.get("error") or "")
+            category = ("interrupted" if step["status"] == "interrupted" else
+                        "no passing tests" if "no passing tests" in error else
+                        "missing executable" if "required executable not found" in error else
+                        "log I/O failure" if "log I/O failure" in error else
+                        "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
+                        "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
+                        "command failure")
+        result = "stale (source changed; prior results do not qualify)" if status == "stale" else status
+        details = [f"local ci diagnostic: {result}", f"profile: {self.mode}",
+                   f"step: {step['step_id'] if step else 'not started'} ({category})",
+                   f"summary: {self.summary_path}", f"log: {log_note}"]
+        if step:
+            command = self._diagnostic_text(shlex.join(step["argv"]))
+            truncated = len(command) > 2000
+            if truncated:
+                command = command[:2000] + " ... [truncated; exact argv retained in summary]"
+            details.extend((f"command: {command}", f"cwd: {self.root}"))
+            if step.get("error"):
+                details.append(self._diagnostic_text(str(step["error"]))[:2000])
+            if excerpt:
+                details.extend(("failure excerpt (at most 20 lines / 4000 characters from last 64 KiB):", excerpt))
+            else:
+                details.append("no recognized compiler/test excerpt; inspect the retained log")
+            rerun = "use the exact argv retained in the summary" if truncated else command
+            details.append(f"rerun (diagnostic only; partial, not merge qualification): {rerun}")
+        else:
+            details.extend(self._diagnostic_text(str(value))[:2000]
+                           for key, value in self.summary.items() if key.endswith("_error"))
+        if status == "stale":
+            details.append("freeze the intended candidate and rerun its required plan before qualification")
+        print(self._diagnostic_text("\n".join(details)), flush=True)
 
     def run(self) -> int:
         self.output_dir.mkdir(parents=True, exist_ok=False)
@@ -1033,10 +1724,23 @@ class LocalCiRunner:
 
         failed = False
         try:
-            if not self._capture_repository_state("start_tree"):
+            invalid_ids = [step.step_id for step in self.steps
+                           if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", step.step_id) is None]
+            if invalid_ids:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
+                                                  "alphanumeric first, then alphanumeric, underscore or hyphen")
+                print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif self.plan and self.plan["qualifies_merge"] and (
+                    self.summary["start_tree"]["dirty"]
+                    or self.summary["start_tree"]["commit"] != self.plan["source"]
+                    or ci_plan.runtime_inputs(self.root) != self.plan["runtime_inputs"]):
+                self.summary.update(status="failed", exit_code=2,
+                                    metadata_error="resolved plan source/inputs changed or are dirty")
             elif any(self._uses_cargo_target(step) for step in self.steps) and not self._resolve_cargo_identity():
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
@@ -1049,7 +1753,7 @@ class LocalCiRunner:
             else:
                 self._write_summary()
                 for index, step in enumerate(self.steps, start=1):
-                    if self.mode == "full" and self._uses_cargo_target(step) and not self._check_disk_headroom():
+                    if self.mode in {"full", "merge", "release"} and self._uses_cargo_target(step) and not self._check_disk_headroom():
                         print(self.summary["disk_error"], file=sys.stderr, flush=True)
                         failed = True
                         break
@@ -1062,11 +1766,16 @@ class LocalCiRunner:
                             )
                             failed = True
                             break
+                        if self.plan and self.plan.get("reuse") and self.plan["reuse"]["dependency_inputs"] != self._dependency_inputs:
+                            self.summary["reuse_error"] = "runtime report toolchain/config/dependency inputs differ"
+                            failed = True
+                            break
                     result = self._run_step(step, index)
                     if result["status"] != "passed":
                         failed = True
                         break
-                self.summary["verification_status"] = "failed" if failed else ("partial" if self.mode == "quick" else "passed")
+                partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
+                self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
                 self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0
         except InterruptedRun:
@@ -1080,53 +1789,81 @@ class LocalCiRunner:
                         entry["ended_at"] = utc_now()
                         entry["error"] = "pipeline interrupted"
         finally:
-            if self.target_lock is not None:
-                if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
+            try:
+                if self.target_lock is not None:
                     try:
-                        self._write_target_owner(self.target_owner_path, self.git_identity)
-                    except (OSError, TargetCacheError) as error:
-                        self.summary["target_owner_update_error"] = str(error)
+                        if self.target_owner_claimed and self.target_owner_path is not None and self.git_identity is not None:
+                            try:
+                                if self._dependency_context() != self._dependency_inputs:
+                                    raise TargetCacheError("dependency inputs changed during guarded checks")
+                                self._completed_workspace_inputs()
+                                self._write_target_owner(self.target_owner_path, self.git_identity, checked=self.summary.get("exit_code") == 0)
+                            except InterruptedRun:
+                                self.summary.update(status="interrupted", exit_code=130,
+                                                    target_owner_update_error="dependency identity interrupted; owner not advanced")
+                            except Exception as error:
+                                # Fingerprinting can refuse malformed paths, cycles or
+                                # unsupported file types. None may bypass cleanup.
+                                self.summary.update(status="incomplete", exit_code=2,
+                                                    target_owner_update_error=f"{type(error).__name__}: {error}")
+                    finally:
+                        try:
+                            release_error = self.target_lock.release()
+                            if release_error is not None:
+                                self.summary["target_lock_release_error"] = release_error
+                        except InterruptedRun:
+                            self.summary.update(status="interrupted", exit_code=130,
+                                                target_lock_release_error="lock release interrupted")
+                        except Exception as error:
+                            self.summary.update(status="incomplete", exit_code=2,
+                                                target_lock_release_error=f"{type(error).__name__}: {error}")
+                        finally:
+                            self.target_lock = None
+                self.summary["ended_at"] = utc_now()
+                if self.summary.get("start_tree") is not None:
+                    if self._capture_repository_state("end_tree"):
+                        start_tree = self.summary["start_tree"]
+                        end_tree = self.summary["end_tree"]
+                        stale = start_tree != end_tree
+                        self.summary["stale"] = stale
+                        if stale:
+                            self.summary["verification_status"] = self.summary.get("status")
+                            self.summary["status"] = "stale"
+                            self.summary["exit_code"] = 3
+                    else:
+                        self.summary["stale"] = None
                         self.summary["status"] = "incomplete"
                         self.summary["exit_code"] = 2
-                release_error = self.target_lock.release()
-                if release_error is not None:
-                    self.summary["target_lock_release_error"] = release_error
-                self.target_lock = None
-            self.summary["ended_at"] = utc_now()
-            self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 3)
-            if self.summary.get("start_tree") is not None:
-                if self._capture_repository_state("end_tree"):
-                    start_tree = self.summary["start_tree"]
-                    end_tree = self.summary["end_tree"]
-                    stale = start_tree != end_tree
-                    self.summary["stale"] = stale
-                    if stale:
-                        self.summary["verification_status"] = self.summary.get("status")
-                        self.summary["status"] = "stale"
-                        self.summary["exit_code"] = 3
-                else:
-                    self.summary["stale"] = None
-                    self.summary["status"] = "incomplete"
-                    self.summary["exit_code"] = 2
-            steps = self.summary["steps"]
-            if isinstance(steps, list):
-                next_index = len(steps) + 1
-                for index, step in enumerate(self.steps[next_index - 1 :], start=next_index):
-                    steps.append(
-                        {
-                            "step_id": step.step_id,
-                            "argv": list(step.argv),
-                            "status": "not_run",
-                            "started_at": None,
-                            "ended_at": None,
-                            "exit_code": None,
-                            "log": None,
-                            "error": "pipeline stopped before this step",
-                        }
-                    )
-            self._write_summary()
-            for signum, handler in previous_handlers.items():
-                signal.signal(signum, handler)
+                steps = self.summary["steps"]
+                if isinstance(steps, list):
+                    next_index = len(steps) + 1
+                    for index, step in enumerate(self.steps[next_index - 1 :], start=next_index):
+                        steps.append(
+                            {
+                                "step_id": step.step_id,
+                                "argv": list(step.argv),
+                                "status": "not_run",
+                                "started_at": None,
+                                "ended_at": None,
+                                "start_offset_seconds": None,
+                                "duration_seconds": None,
+                                "timing_estimates": None,
+                                "exit_code": None,
+                                "log": None,
+                                "error": "pipeline stopped before this step",
+                            }
+                        )
+                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 6)
+                self._write_summary()
+            finally:
+                # Even an end-snapshot or summary-write exception must restore
+                # the caller's process-wide signal handlers.
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
+        try:
+            self._print_failure_details()
+        except (OSError, ValueError):
+            pass  # Console failure must not replace the recorded result or cleanup.
         return int(self.summary["exit_code"] if self.summary["exit_code"] is not None else 2)
 
 
@@ -1137,6 +1874,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run architecture/UI/GPUI guards and formatting only; this is not full CI",
     )
+    parser.add_argument("--profile", choices=("edit", "merge", "full", "release"),
+                        help="explicit deterministic scope; default remains full audit")
+    parser.add_argument("--base", help="immutable integrated comparison base for scoped checks")
+    parser.add_argument("--source", help="exact current candidate commit for scoped checks")
+    parser.add_argument("--reuse-report", type=Path,
+                        help="explicit prior runtime certificate for a prose-only continuation")
+    parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
+    parser.add_argument("--test-filter", help="explicit nonempty Rust test filter for partial edit feedback")
+    parser.add_argument("--features", default="", help="explicit package features for partial edit feedback")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--lib", action="store_true", help="test only the package library in an explicit edit plan")
+    target.add_argument("--test", metavar="NAME", help="test only this named integration target in an explicit edit plan")
     parser.add_argument(
         "--min-free-gib", type=int,
         help="read-only free-space floor in GiB; default 2 for full and 0 for quick; never deletes files",
@@ -1146,14 +1895,54 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="assert sole ownership of an unowned Cargo target and clean only this workspace's dev artifacts",
     )
+    parser.add_argument("--prepare-changelog", action="store_true",
+                        help="generate notes before freezing source, then exit without running sealed checks")
+    parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
+    parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
     arguments = parser.parse_args(argv)
+    if arguments.prepare_changelog:
+        command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
+                   "--source", arguments.changelog_through]
+        if arguments.changelog_base:
+            command.extend(["--base", arguments.changelog_base])
+        return subprocess.run(command, cwd=ROOT).returncode
+    if arguments.changelog_base or arguments.changelog_through != "HEAD":
+        parser.error("changelog range arguments require --prepare-changelog")
     if arguments.min_free_gib is not None and not 0 <= arguments.min_free_gib <= sys.maxsize // GIB:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
     mode = "quick" if arguments.quick else "full"
+    plan = None
+    if arguments.profile in {"merge", "edit"} or arguments.base or arguments.source:
+        if arguments.quick or not arguments.profile or not arguments.base or not arguments.source:
+            parser.error("scoped profiles require --profile, --base and --source; cannot combine --quick")
+        try:
+            metadata = json.loads(command_output(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], ROOT, dict(os.environ)).stdout)
+            plan = ci_plan.resolve(ROOT, profile=arguments.profile, base=arguments.base,
+                                   source=arguments.source, metadata=metadata)
+            if arguments.reuse_report:
+                plan = reusable_plan(ROOT, plan, arguments.reuse_report)
+            if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
+                if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
+                    raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")
+                plan["edit"] = edit_selection(plan["cargo_inventory"], package=arguments.package,
+                                              test_filter=arguments.test_filter, features=arguments.features,
+                                              lib=arguments.lib, test=arguments.test)
+                plan.pop("plan_sha256")
+                plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+        except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+            parser.error(f"cannot resolve conservative check plan: {error}")
+        mode = arguments.profile
+    elif arguments.profile and arguments.quick:
+        parser.error("--profile cannot be combined with --quick")
+    elif arguments.reuse_report:
+        parser.error("--reuse-report requires an explicit merge plan")
+    elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
+        parser.error("package/filter/features require an explicit edit plan")
     runner = LocalCiRunner(
         mode=mode,
         min_free_bytes=None if arguments.min_free_gib is None else arguments.min_free_gib * GIB,
         adopt_target=arguments.adopt_target,
+        plan=plan,
     )
     try:
         exit_code = runner.run()
