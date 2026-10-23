@@ -4,6 +4,7 @@ use hex_project::{
 };
 fn point(raw: u64, gain: f32) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat: BeatTime::from_raw(raw),
         gain,
         outgoing: GainInterpolation::Linear,

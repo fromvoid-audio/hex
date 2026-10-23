@@ -1,9 +1,20 @@
-//! Versioned, bounded persistence of canonical metadata; no media or callback work.
+//! # Purpose
+//! Own strict bounded serialization and recoverable publication of canonical project metadata.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
+//!
+//! # Does not own
+//! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
+//! formats. Unsupported/malformed input refuses without rewriting the original file.
 mod files;
 mod journal;
 pub mod preset;
 pub mod tuning_library;
-pub use journal::{Journal, journal_path, load_journal};
+pub use journal::{
+    Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
+    restart_journal,
+};
 mod audio_edit;
 mod replacement;
 mod schema;
@@ -14,6 +25,9 @@ pub use replacement::{
     replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
+
+/// Current saved-project schema; independent of the application version.
+pub const CURRENT_SCHEMA_VERSION: u32 = 39;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -130,10 +144,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema31 envelope with required tuning and complete
-/// device asset manifests, preserving all other active project capabilities.
+/// Encode schema39 with required MIDI one-shot policies, fade positions, tuning and device asset
+/// and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV31::from_project(project)?)
+    encode_document(&schema::midi_one_shot::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -149,6 +163,34 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)
+        || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)) {
+        return Err(StorageError::Invalid("older schema cannot save midi one-shot boundaries"));
+    }
+
+    if !project.arrangement_sections().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save arrangement sections",
+        ));
+    }
+    if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| !clip.volume().points().is_empty())
+        || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if !clip.volume().points().is_empty()))
+    {
+        return Err(StorageError::Invalid("older schema cannot save midi clip volume"));
+    }
+    if project
+        .assets()
+        .any(|asset| asset.original_source().is_some())
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save device-original source identities",
+        ));
+    }
+    if !project.main_devices().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save main devices",
+        ));
+    }
     if project.tuning() != hex_tuning::ProjectTuning::default() {
         return Err(StorageError::Invalid(
             "older schema cannot save project tuning",
@@ -202,9 +244,45 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     result?;
     Ok(output.bytes)
 }
+/// Open current and evidenced historical schemas without file/media I/O.
+/// Schemas1–33 select frozen readers and branch-aware adapters using the version
+/// and complete field inventories. Only absent-by-design fields acquire their
+/// original defaults; authored metadata is never discarded to accept a file.
+/// Pre38 schemas default horizontal fade positions to center, preserving their
+/// original sample-exact rational laws.
+/// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
+/// Schema36 had independent tempo and sections branches, selected by presence of
+/// the section inventory. Historical audio timing, projection/offset and gain
+/// seam/source metadata migrate by those exact branch contracts; other fields
+/// remain strict. No tempo-map collapse,
+/// overlap repair or opaque device-state conversion is performed. Older projects
+/// violating current model invariants refuse rather than lose musical data.
+/// Newer/unknown fields, duplicate keys and malformed inventories refuse.
+/// Saving uses the current schema through existing atomic publication/recovery.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(StorageError::Invalid("project document exceeds byte limit"));
     }
-    schema::DocumentV11::decode(bytes)
+    #[derive(serde::Deserialize)]
+    struct CurrentHeader<'a> {
+        format: &'a str,
+        version: u32,
+    }
+    let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
+    if header.format != "hex-project" {
+        return Err(StorageError::Invalid("unsupported project format"));
+    }
+    match header.version {
+        CURRENT_SCHEMA_VERSION => schema::midi_one_shot::decode(bytes),
+        38 => schema::fade_curve_positions::decode(bytes),
+        37 => schema::DocumentV11::decode(bytes),
+        1..=33 => schema::legacy::decode(bytes, header.version),
+        34..=36 => schema::tuning::decode_version(bytes, header.version),
+        version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
+            "project uses a newer schema; open it with a newer hex version; original file unchanged",
+        )),
+        _ => Err(StorageError::Invalid(
+            "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
+        )),
+    }
 }

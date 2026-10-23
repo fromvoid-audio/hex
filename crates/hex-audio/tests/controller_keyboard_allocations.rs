@@ -14,8 +14,11 @@ use std::{collections::BTreeMap, error::Error, sync::Arc};
 fn held_keyboard_controller_publication_note_off_and_retirement_have_zero_callback_allocations()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 8)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "vector keyboard".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
     })?
     else {
         return Err("track missing".into());

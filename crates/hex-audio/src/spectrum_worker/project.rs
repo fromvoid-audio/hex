@@ -830,6 +830,34 @@ fn channel_with_return_capacity(
     ))
 }
 
+/// The normal native constructor's fixed packet pool, analysis and result data.
+pub(super) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    let packet = MAX_PROJECT_LAYERS
+        .checked_mul(MAX_CAPTURE_FRAMES)?
+        .checked_mul(std::mem::size_of::<Frame>())?
+        .checked_add(std::mem::size_of::<ProjectPacket>())?;
+    let core = MAX_PROJECT_LAYERS
+        .checked_mul(FFT_SIZE)?
+        .checked_add(FFT_SIZE)?
+        .checked_mul(std::mem::size_of::<Frame>())?
+        .checked_add(SpectrumKernel::heap_storage_quote()?)?
+        .checked_add(MAX_PROJECT_LAYERS.checked_mul(std::mem::size_of::<Option<SpectrumFrame>>())?)?
+        .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?;
+    let bytes = ChannelStorage::ring_bytes::<Box<ProjectPacket>>(CAPTURE_QUEUE_CAPACITY)?
+        .checked_add(ChannelStorage::ring_bytes::<Box<ProjectPacket>>(
+            PROJECT_PACKET_OWNERS,
+        )?)?
+        .checked_add(std::mem::size_of::<ProjectWorker>())?
+        .checked_add(PROJECT_PACKET_OWNERS.checked_mul(packet)?)?
+        .checked_add(core)?
+        .checked_add(std::mem::size_of::<PublishedProjectSpectrum>())?
+        .checked_add(
+            2usize.checked_mul(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?,
+        )?;
+    (bytes <= MAX_PROJECT_PAYLOAD_BYTES).then_some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

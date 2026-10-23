@@ -19,7 +19,12 @@ fn fixture(routed: bool) -> Fixture {
     let mut tracks = Vec::new();
     for _ in 0..3 {
         let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack { name: "bus".into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: "bus".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            })
             .unwrap()
         else {
             panic!("track")
@@ -190,7 +195,11 @@ fn routed_midi_arrangement_session_fanout_stop_relaunch_match_local_pcm_across_p
     let local = fixture(false);
     let revision = prepare(&routed, None);
     assert!(
-        revision.arrangement().signal_graph.is_none(),
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .is_some_and(|graph| !graph.needs_runtime()),
         "logical MIDI routing must retain the zero-latency block renderer"
     );
     let reference = prepare(&local, None);

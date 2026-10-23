@@ -66,6 +66,8 @@ pub(super) struct TuningState {
     midi_spans: Option<Box<hex_engine::MidiSpanBuffer>>,
     recent_keys: [Option<Instant>; 128],
     pub client: TuningGestureClient,
+    // Ignore the remaining widget events after declining its Begin during preview recovery.
+    numeric_begin_refused: bool,
     pub(super) value: ProjectTuning,
     generation: u64,
     focus: FocusHandle,
@@ -124,6 +126,7 @@ impl TuningState {
             midi_spans: None,
             recent_keys: [None; 128],
             client: TuningGestureClient::default(),
+            numeric_begin_refused: false,
             value,
             generation: 0,
             focus: cx.focus_handle(),
@@ -391,7 +394,7 @@ impl EditorView {
             if let Some(control) = self.tuning.controls.get(&field) {
                 control.entity.update(cx, |input, cx| {
                     let _ = input.set_external_value(value, cx);
-                    let _ = input.set_external_style(super::device_panel::control_style(), cx);
+                    let _ = input.set_external_style(theme::control_style(), cx);
                 });
                 continue;
             }
@@ -401,7 +404,7 @@ impl EditorView {
                 NumericControlKind::HorizontalSlider,
                 spec,
                 value,
-                super::device_panel::control_style(),
+                theme::control_style(),
             );
             let Ok(config) = config else { continue };
             let appearance = if matches!(
@@ -505,6 +508,7 @@ impl EditorView {
             super::device_gesture::retire_failed_finalize_barriers(&mut self.pending_requests);
         if effects.save_refused {
             self.saving_project = false;
+            self.cancel_open_after_save();
         }
         if effects.export_refused {
             self.export_pending = false;
@@ -593,6 +597,22 @@ impl EditorView {
             self.tuning.reach = event.value as f32;
             self.refresh_tuning_variations(cx);
             cx.notify();
+            return;
+        }
+        if event.phase == NumericEventPhase::Begin {
+            self.tuning.numeric_begin_refused = false;
+            if self.tuning.client.is_recovery_pending() {
+                self.tuning.numeric_begin_refused = true;
+                self.tuning.error = self
+                    .tuning
+                    .client
+                    .begin(self.project_generation, self.tuning.value)
+                    .err()
+                    .map(str::to_owned);
+                cx.notify();
+                return;
+            }
+        } else if self.tuning.numeric_begin_refused {
             return;
         }
         if event.phase == NumericEventPhase::Cancel {
@@ -810,6 +830,17 @@ impl EditorView {
                 self.tuning.selected = index;
             }
             self.tuning.context = hit;
+            cx.notify();
+            return;
+        }
+        if self.tuning.client.is_recovery_pending() {
+            self.tuning.error = self
+                .tuning
+                .client
+                .begin(self.project_generation, self.tuning.value)
+                .err()
+                .map(str::to_owned);
+            self.tuning.drag = None;
             cx.notify();
             return;
         }
