@@ -92,7 +92,7 @@ and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
-track's color a saturated fill; **use muted flavor** uses a pale tint. selection
+track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
 
 drag the bottom edge of a track header to resize that row. hold **option** while
