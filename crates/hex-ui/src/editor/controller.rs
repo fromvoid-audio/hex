@@ -957,6 +957,7 @@ impl EditorView {
         visible_change |= self.tuning.broadcast.tick(cx);
         visible_change |= self.tick_tuning_midi_activity();
         visible_change |= self.tick_controller_input(cx);
+        visible_change |= self.tick_midi_pitch_feedback();
         visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
