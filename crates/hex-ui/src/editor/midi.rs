@@ -630,6 +630,7 @@ impl EditorView {
             self.error = Some("edit would move the note outside its clip".into());
             return;
         }
+        self.finish_live_midi_marquees();
         self.enqueue(Request::Edit(Command::UpdateMidiNote {
             note: note_id,
             start: BeatTime::from_raw(start),

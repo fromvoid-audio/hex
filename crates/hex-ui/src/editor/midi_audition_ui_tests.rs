@@ -603,56 +603,69 @@ fn explicit_note_actions_adopt_live_membership_and_retire_both_pointer_owners(
         shift: true,
         ..Modifiers::default()
     };
-    for velocity in [false, true] {
-        editor.update(&mut visual, |v, cx| {
-            v.midi_selection.set_single(baseline);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        let [start, one, _] = marquee_points(&mut visual, &editor, velocity);
-        visual.simulate_mouse_down(start, MouseButton::Left, shift);
-        visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
-        visual.run_until_parked();
-        visual.simulate_keystrokes("right");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.len(), 2);
-            assert!(v.midi_marquee.is_none());
-            assert!(!v.velocity_marquee_active());
-            let notes = v
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .midi_source(clip)
-                .unwrap()
-                .notes();
-            assert_eq!(
-                notes.iter().map(|n| n.start().raw()).collect::<Vec<_>>(),
-                [5 * BeatTime::ONE.raw() / 4, 13 * BeatTime::ONE.raw() / 4]
-            );
-        });
-        visual.simulate_mouse_up(one, MouseButton::Left, shift);
-        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
-            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
-        });
-        // Even a selection action that keeps identical IDs/primary retires capture.
-        visual.simulate_keystrokes("cmd-a");
-        visual.run_until_parked();
-        visual.simulate_mouse_down(start, MouseButton::Left, shift);
-        visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
-        visual.run_until_parked();
-        visual.simulate_keystrokes("cmd-a");
-        visual.run_until_parked();
-        editor.read_with(&visual, |v, _| {
-            assert!(v.midi_marquee.is_none());
-            assert!(!v.velocity_marquee_active());
-            assert_eq!(v.midi_selection.len(), 2);
-        });
-        visual.simulate_mouse_up(one, MouseButton::Left, shift);
-        visual.run_until_parked();
+    for group in [false, true] {
+        for velocity in [false, true] {
+            editor.update(&mut visual, |v, cx| {
+                if group {
+                    v.midi_selection.set_single(baseline);
+                } else {
+                    v.midi_selection.clear();
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let [start, one, _] = marquee_points(&mut visual, &editor, velocity);
+            visual.simulate_mouse_down(start, MouseButton::Left, shift);
+            visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+            visual.run_until_parked();
+            visual.simulate_keystrokes("right");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.midi_selection.len(), if group { 2 } else { 1 });
+                assert!(v.midi_marquee.is_none());
+                assert!(!v.velocity_marquee_active());
+                let notes = v
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .midi_source(clip)
+                    .unwrap()
+                    .notes();
+                assert_eq!(
+                    notes.iter().map(|n| n.start().raw()).collect::<Vec<_>>(),
+                    [
+                        5 * BeatTime::ONE.raw() / 4,
+                        if group {
+                            13 * BeatTime::ONE.raw() / 4
+                        } else {
+                            3 * BeatTime::ONE.raw()
+                        }
+                    ]
+                );
+            });
+            visual.simulate_mouse_up(one, MouseButton::Left, shift);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+            });
+            // Even a selection action that keeps identical IDs/primary retires capture.
+            visual.simulate_keystrokes("cmd-a");
+            visual.run_until_parked();
+            visual.simulate_mouse_down(start, MouseButton::Left, shift);
+            visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+            visual.run_until_parked();
+            visual.simulate_keystrokes("cmd-a");
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!(v.midi_marquee.is_none());
+                assert!(!v.velocity_marquee_active());
+                assert_eq!(v.midi_selection.len(), 2);
+            });
+            visual.simulate_mouse_up(one, MouseButton::Left, shift);
+            visual.run_until_parked();
+        }
     }
 }
 
