@@ -341,19 +341,26 @@ fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
 where
     f32: FromSample<T>,
 {
-    let staged = rendered.is_ok() && callback.stage_output_transport(source);
-    let converted = staged && copy_host_chunk(output, source, channels);
-    let delivery = callback.finish_output_transport(converted);
-    let valid = finish_transport_copy(
-        delivery,
-        converted,
-        rendered.is_ok(),
-        output,
-        source,
-        channels,
-    );
+    let valid = if callback.output_transport_quantum().is_some() {
+        let staged = rendered.is_ok() && callback.stage_output_transport(source);
+        let converted = staged && copy_host_chunk(output, source, channels);
+        let delivery = callback.finish_output_transport(converted);
+        finish_transport_copy(
+            delivery,
+            converted,
+            rendered.is_ok(),
+            output,
+            source,
+            channels,
+        )
+    } else {
+        // Keep ordinary output on its existing direct conversion path.
+        rendered.is_ok() && copy_host_chunk(output, source, channels)
+    };
     let _ = callback.finish_spectrum_block(capture_start, valid);
     if !valid {
+        output.fill(T::from_sample(0.0));
+        source.fill([0.0; 2]);
         let transport_error = callback.output_transport_error();
         callback.report_render_fault(
             rendered.as_ref().err().or(transport_error.as_ref()),
