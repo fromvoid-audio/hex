@@ -146,6 +146,40 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        if let Some(failure) = self.recovery_failure.as_ref().cloned() {
+            let can_restart = failure.can_restart();
+            bar = bar.child(
+                div()
+                    .id("automatic-recovery-unavailable")
+                    .debug_selector(|| "automatic-recovery-unavailable".into())
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text(if can_restart {
+                        "recovery unavailable"
+                    } else {
+                        "recovery needs attention"
+                    }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::display_error::RecoveryTooltip {
+                            failure: std::sync::Arc::clone(&failure),
+                        })
+                        .into()
+                    }),
+            );
+            if can_restart {
+                bar = bar.child(
+                    div()
+                        .id("restart-automatic-recovery")
+                        .debug_selector(|| "restart-automatic-recovery".into())
+                        .px_1()
+                        .cursor_pointer()
+                        .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                        .child(theme::text("start fresh recovery"))
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.restart_recovery_dialog(window, cx)
+                        })),
+                );
+            }
+        }
         bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
             bar = bar.child(
@@ -333,6 +367,8 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_zoom_fit();
+        self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
@@ -751,7 +787,7 @@ impl Render for EditorView {
                     view.cancel_time_selection_gesture() | view.cancel_clip_paint();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
-                    view.midi_selection.clear()
+                    view.midi_selection.clear() | view.clear_midi_time_selection()
                 } else {
                     false
                 };
@@ -868,7 +904,7 @@ impl Render for EditorView {
                     view.midi_focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
-                        view.nudge_selected_note(false);
+                        view.navigate_piano_cursor(false);
                     }
                     super::session_navigation::ArrowTarget::Session => {
                         view.navigate_session(
@@ -894,7 +930,7 @@ impl Render for EditorView {
                     view.midi_focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
-                        view.nudge_selected_note(true);
+                        view.navigate_piano_cursor(true);
                     }
                     super::session_navigation::ArrowTarget::Session => {
                         view.navigate_session(
@@ -1064,6 +1100,13 @@ impl Render for EditorView {
                 {
                     return;
                 }
+                if view.midi_focus.is_focused(window) {
+                    if !view.duplicate_midi_time_selection() {
+                        view.duplicate_piano_notes();
+                    }
+                    cx.notify();
+                    return;
+                }
                 if view.duplicate_time_selection(window) {
                     cx.notify();
                     return;
@@ -1131,6 +1174,20 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &ZoomOut, _, cx| {
                 view.zoom_timeline(false);
                 cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::ZoomToFit, window, cx| {
+                if view.zoom_fit_key(false, window, cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|view, _: &super::ZoomBack, window, cx| {
+                if view.zoom_fit_key(true, window, cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|view, _: &FitTimeline, _, cx| {
                 view.fit_timeline();

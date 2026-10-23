@@ -170,6 +170,12 @@ pub(super) fn action_matches_project(
         SessionPlaybackCommand::LaunchClip { clip, .. } => project.session_cells().iter().any(
             |cell| matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip),
         ),
+        SessionPlaybackCommand::CueMidiClip { track, clip, .. } => {
+            project.session_cells().iter().any(|cell| {
+                cell.track() == track
+                    && matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip)
+            })
+        }
         SessionPlaybackCommand::LaunchScene { scene, .. } => {
             project.scenes().iter().any(|item| item.id() == scene)
         }
@@ -1510,6 +1516,9 @@ impl EditorView {
     }
 
     pub(super) fn select_session_midi(&mut self, track: TrackId, scene: SceneId, clip: ClipId) {
+        if self.detail_clip_id() != Some(clip) {
+            self.zoom_fit.clear_clip();
+        }
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {
@@ -1538,6 +1547,7 @@ impl EditorView {
     }
 
     pub(super) fn select_session_scene(&mut self, scene: SceneId) {
+        self.zoom_fit.clear_clip();
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {
@@ -1565,6 +1575,9 @@ impl EditorView {
     }
 
     pub(super) fn select_session_cell(&mut self, track: TrackId, scene: SceneId) {
+        if self.selected_cell != Some((track, scene)) {
+            self.zoom_fit.clear_clip();
+        }
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {

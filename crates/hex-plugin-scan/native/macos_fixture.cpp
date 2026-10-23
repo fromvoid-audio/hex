@@ -16,14 +16,14 @@ static const TUID class_id = {0x48,0x45,0x58,0x33,0x01,0x02,0x03,0x04,
                              0x05,0x06,0x07,0x08,0x09,0x10,0x11,HEX_INSTRUMENT};
 static bool same(const TUID a, const TUID b) { return std::memcmp(a,b,16)==0; }
 
-class Processor final : public IComponent, public IAudioProcessor {
+class Processor : public IComponent, public IAudioProcessor {
     std::atomic<uint32> refs{1};
     bool initialized=false, configured=false, active=false, processing=false;
     bool output=false, input=false;
     int32 maximum=0;
 public:
     Processor() { ++objects; }
-    ~Processor() { --objects; }
+    virtual ~Processor() { --objects; }
     uint32 PLUGIN_API addRef() override { return ++refs; }
     uint32 PLUGIN_API release() override {
         auto n=--refs; if(!n) delete this; return n;
@@ -105,6 +105,8 @@ public:
     uint32 PLUGIN_API getTailSamples() override { return kNoTail; }
 };
 
+// The lifecycle fixture reuses the original DSP, with independent lifecycle oracles.
+#ifndef HEX_LIFECYCLE_FIXTURE
 class Factory final : public IPluginFactory {
     std::atomic<uint32> refs{0};
 public:
@@ -142,3 +144,5 @@ static Factory factory;
 extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) { return true; }
 extern "C" __attribute__((visibility("default"))) bool bundleExit() { return objects.load()==0 && factory.count()==0; }
 extern "C" __attribute__((visibility("default"))) IPluginFactory* GetPluginFactory() { factory.addRef(); return &factory; }
+
+#endif // HEX_LIFECYCLE_FIXTURE

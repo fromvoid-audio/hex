@@ -135,7 +135,7 @@ impl SessionPlayback {
                 }
                 frame
             }
-            RouteOwner::Session { clip, launch } => {
+            RouteOwner::Session { clip, origin } => {
                 let frame = previous.performance_frame;
                 let end = frame
                     .checked_add(1)
@@ -148,7 +148,7 @@ impl SessionPlayback {
                 }
                 prepared
                     .instrument_template()
-                    .query(launch, timing, frame, end, spans)
+                    .query_with_origin(origin, timing, frame, end, spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans().copied() {
                     let Some(slot) = candidates.get_mut(count) else {
@@ -313,17 +313,14 @@ impl SessionPlayback {
             for route in &mut self.route_scratch {
                 if let Some(old) = previous.routes.iter().find(|old| old.id == route.id) {
                     route.owner = match old.owner {
-                        RouteOwner::Session { clip, .. }
+                        RouteOwner::Session { clip, origin }
                             if self
                                 .revision
                                 .session()
                                 .midi_clip(clip)
                                 .is_some_and(|clip| clip.track == route.id) =>
                         {
-                            RouteOwner::Session {
-                                clip,
-                                launch: BeatTime::ZERO,
-                            }
+                            RouteOwner::Session { clip, origin }
                         }
                         RouteOwner::SessionAudio { clip, .. }
                             if self
@@ -1002,7 +999,7 @@ impl SessionPlayback {
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     active
                 }
-                RouteOwner::Session { clip, launch } => {
+                RouteOwner::Session { clip, origin } => {
                     let Some(prepared) = self
                         .revision
                         .session()
@@ -1022,7 +1019,13 @@ impl SessionPlayback {
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                         prepared
                             .instrument_template()
-                            .query(launch, &candidate_timing, frame, end, &mut self.spans)
+                            .query_with_origin(
+                                origin,
+                                &candidate_timing,
+                                frame,
+                                end,
+                                &mut self.spans,
+                            )
                             .map_err(SessionPlaybackError::Midi)?;
                         self.spans
                             .spans()
@@ -1076,14 +1079,14 @@ impl SessionPlayback {
                 match old_route.owner {
                     RouteOwner::Arrangement => RouteOwner::Arrangement,
                     RouteOwner::Silence => RouteOwner::Silence,
-                    RouteOwner::Session { clip, launch } => {
+                    RouteOwner::Session { clip, origin } => {
                         if self
                             .revision
                             .session()
                             .midi_clip_for_track(clip, new_route.id)
                             .is_some_and(|prepared| prepared.track == new_route.id)
                         {
-                            RouteOwner::Session { clip, launch }
+                            RouteOwner::Session { clip, origin }
                         } else {
                             RouteOwner::Silence
                         }
@@ -1352,7 +1355,7 @@ impl SessionPlayback {
             route.owner = match old_route.owner {
                 RouteOwner::Arrangement => RouteOwner::Arrangement,
                 RouteOwner::Silence => RouteOwner::Silence,
-                RouteOwner::Session { clip, launch } => {
+                RouteOwner::Session { clip, origin } => {
                     if let Some(next) = self
                         .revision
                         .session()
@@ -1400,7 +1403,7 @@ impl SessionPlayback {
                                         Some(floor.map_or(old_beat, |prior| prior.max(old_beat)));
                                 }
                             }
-                            RouteOwner::Session { clip, launch }
+                            RouteOwner::Session { clip, origin }
                         }
                     } else {
                         source_changed = true;
@@ -1936,7 +1939,7 @@ impl SessionPlayback {
                 if !midi_route_changed.get(old_index).copied().unwrap_or(false) {
                     continue;
                 }
-                let RouteOwner::Session { clip, launch } = old_route.owner else {
+                let RouteOwner::Session { clip, origin } = old_route.owner else {
                     continue;
                 };
                 let old_clip = previous
@@ -1954,8 +1957,8 @@ impl SessionPlayback {
                 let old_template = old_clip.instrument_template();
                 if let Some(floor) = previous.historical_floor_for(old_index) {
                     old_template
-                        .query_after_onset(
-                            launch,
+                        .query_after_onset_with_origin(
+                            origin,
                             &old_clock,
                             previous.performance_frame,
                             end,
@@ -1965,8 +1968,8 @@ impl SessionPlayback {
                         .map_err(SessionPlaybackError::Midi)?;
                 } else {
                     old_template
-                        .query(
-                            launch,
+                        .query_with_origin(
+                            origin,
                             &old_clock,
                             previous.performance_frame,
                             end,
@@ -1998,7 +2001,7 @@ impl SessionPlayback {
                             candidate.track == old_route.id && candidate.instrument_enabled()
                         })
                         .and_then(|candidate| {
-                            candidate.occurrence(span.note, span.iteration, launch)
+                            candidate.occurrence_with_origin(span.note, span.iteration, origin)
                         });
                     let matches = candidate_occurrence.is_some_and(|occurrence| {
                         occurrence.onset == span.onset_beat
@@ -3521,7 +3524,7 @@ fn remap_release_gate(
     else {
         return Ok(None);
     };
-    let RouteOwner::Session { clip, launch } =
+    let RouteOwner::Session { clip, origin } =
         effective_midi_route(&previous.revision, &previous.routes, index)?.owner
     else {
         return Ok(None);
@@ -3542,7 +3545,7 @@ fn remap_release_gate(
     if !next.instrument_enabled() {
         return Ok(None);
     }
-    let Some(occurrence) = next.occurrence(key.note, key.iteration, launch) else {
+    let Some(occurrence) = next.occurrence_with_origin(key.note, key.iteration, origin) else {
         return Ok(None);
     };
     let matches = occurrence.onset == continuation.onset_beat
@@ -3632,11 +3635,12 @@ fn retune_inline_release(
                 .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
             sampler
         }
-        RouteOwner::Session { clip, launch } => candidate
+        RouteOwner::Session { clip, origin } => candidate
             .session()
             .midi_clip_for_track(clip, release.track_id)
             .and_then(|clip| {
-                let occurrence = clip.occurrence(owned.key.note, owned.key.iteration, launch)?;
+                let occurrence =
+                    clip.occurrence_with_origin(owned.key.note, owned.key.iteration, origin)?;
                 if clip.id != owned.key.clip
                     || occurrence.onset != owned.onset_beat
                     || occurrence.gate_end != owned.gate_end_beat

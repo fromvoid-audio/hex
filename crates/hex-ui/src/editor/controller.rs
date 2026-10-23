@@ -981,6 +981,8 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_created_note_selection = None;
+                    self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_pending_clip_move();
@@ -989,6 +991,9 @@ impl EditorView {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
+        }
+        if !self.edit_pending() {
+            self.midi_step.cancel_pending();
         }
         visible_change |= self.poll_editor_audio_events();
         visible_change |= self.poll_export(cx);
@@ -999,10 +1004,14 @@ impl EditorView {
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
+                let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
                             self.worker_requests_pending.saturating_add(1);
+                        if time_copy_request {
+                            self.time_copy_submitted();
+                        }
                         if resize_request {
                             self.trim_request_submitted();
                         }
@@ -1037,10 +1046,16 @@ impl EditorView {
                         if clip_move_request {
                             self.retire_pending_clip_move();
                         }
+                        if time_copy_request {
+                            self.pending_created_note_selection = None;
+                        }
                         visible_change |=
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        if time_copy_request {
+                            self.pending_created_note_selection = None;
+                        }
                         if resize_request {
                             self.retire_pending_trim();
                         }
@@ -1805,6 +1820,7 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
@@ -1812,6 +1828,8 @@ impl EditorView {
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
+        let midi_step_complete = self.take_completed_midi_step(&event);
+        let created_note_selection = self.take_created_note_selection(&event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -1941,27 +1959,38 @@ impl EditorView {
             }
         }
         if let Some(request_id) = event.computer_keyboard_complete {
-            let current = self.computer_keyboard.enabled
-                && !self.computer_keyboard.suspended
-                && request_id == self.computer_keyboard.request_id
-                && self.computer_keyboard.target
-                    == self
-                        .selected_track
-                        .map(|track| (self.project_generation, event.state.revision, track))
-                && self
-                    .computer_keyboard
-                    .input
-                    .as_ref()
-                    .is_some_and(|input| !input.is_cancelled())
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == event.state.revision);
+            let note_audition =
+                self.midi_audition_preparation_matches(request_id, event.state.revision);
+            let current = note_audition
+                || (self.computer_keyboard.enabled
+                    && !self.computer_keyboard.suspended
+                    && request_id == self.computer_keyboard.request_id
+                    && self.computer_keyboard.target
+                        == self
+                            .selected_track
+                            .map(|track| (self.project_generation, event.state.revision, track))
+                    && self
+                        .computer_keyboard
+                        .input
+                        .as_ref()
+                        .is_some_and(|input| !input.is_cancelled())
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == event.state.revision));
             if current {
+                let audition_ok = note_audition && event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
                     self.cancel_computer_keyboard();
                     self.computer_keyboard.suspended = true;
+                }
+                if audition_ok {
+                    if let Err(error) = self.trigger_prepared_midi_audition() {
+                        self.error = Some(error.to_string().into());
+                        self.cancel_computer_keyboard();
+                        return None;
+                    }
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -2053,7 +2082,7 @@ impl EditorView {
             .as_ref()
             .is_some_and(|state| state.revision != revision)
         {
-            self.cancel_midi_note_gesture();
+            self.cancel_stale_midi_creation_gestures(revision);
         }
         self.drag_lanes
             .retain(|track, _| event.state.project.track(*track).is_some());
@@ -2252,7 +2281,7 @@ impl EditorView {
                 .and_then(|clip| state.project.midi_source(clip))
             {
                 // Source markers and Arrangement duration may change independently.
-                // Preserve zoom-out space across ACKs; only the start follows source bounds.
+                // Preserve manual navigation across ACKs within the bounded authoring domain.
                 let source_length = clip.source_length().raw();
                 self.piano_beat_span = hex_project::BeatTime::from_raw(
                     self.piano_beat_span
@@ -2350,30 +2379,6 @@ impl EditorView {
             self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
-        } else if let Some(hex_project::Created::Note(note)) = event.created {
-            self.midi_selection.set_single(note);
-        } else if let Some(hex_project::Created::Notes { clip, first, last }) = event.created {
-            if let Some(current) = self
-                .state
-                .as_ref()
-                .and_then(|state| state.project.midi_source(clip))
-            {
-                match super::midi_draw::created_range_ids(
-                    self.detail_clip_id(),
-                    clip,
-                    current.notes(),
-                    first,
-                    last,
-                ) {
-                    Ok(Some(created)) => {
-                        if let Err(error) = self.midi_selection.select_all(created) {
-                            self.error = Some(error.into());
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => self.error = Some(error.into()),
-                }
-            }
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state
@@ -2650,11 +2655,31 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
+        self.apply_created_note_selection(created_note_selection);
+        self.apply_completed_midi_step(midi_step_complete);
         successfully_opened_path
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
-        self.enqueue_request(request, false)
+        let selection = self.created_note_selection_intent(&request);
+        let pending_before = self.worker_requests_pending;
+        let accepted = self.enqueue_request(request, false);
+        if accepted && let Some(mut selection) = selection {
+            self.bind_created_selection_terminal(&mut selection);
+            self.pending_created_note_selection = Some(selection);
+            // Immediate submission happens inside enqueue_request, before this
+            // intent is installed. Queued/tuning-barrier requests are stamped
+            // only when their actual Service submission succeeds in tick.
+            let queued = self
+                .pending_requests
+                .iter()
+                .chain(self.device_gesture_barriers.iter())
+                .any(|request| self.pending_time_copy_matches(request));
+            if !queued && self.worker_requests_pending > pending_before {
+                self.time_copy_submitted();
+            }
+        }
+        accepted
     }
 
     fn enqueue_duplicate_continuation(&mut self, clip: hex_project::ClipId) -> bool {
@@ -3437,6 +3462,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.midi_step.cancel_pending();
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.

@@ -15,7 +15,9 @@ use crate::prepared_tempo::{
 use crate::{
     Frame, PreparedRevision,
     midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK,
-    midi_template::{MidiOccurrenceSuppression, MidiReleaseVoice, MidiSpanBuffer},
+    midi_template::{
+        MidiOccurrenceSuppression, MidiReleaseVoice, MidiSpanBuffer, SessionMidiOrigin,
+    },
     mutable_instrument::{
         MutableInstrumentTail, MutableInstrumentTrackRuntime, MutableOnsetBuffer,
     },
@@ -48,6 +50,14 @@ pub enum SessionPlaybackCommand {
     LaunchClip {
         clip: ClipId,
         quantization: LaunchQuantization,
+    },
+    /// Immediately cue an already active Session MIDI source without seeking
+    /// either transport clock or changing the saved source/play-start markers.
+    CueMidiClip {
+        track: TrackId,
+        clip: ClipId,
+        source_beat: BeatTime,
+        expected_route_generation: u64,
     },
     LaunchScene {
         scene: SceneId,
@@ -88,7 +98,8 @@ pub enum SessionRouteTarget {
 pub struct SessionRouteStatus {
     pub track: TrackId,
     pub owner: SessionPlaybackOwner,
-    pub active_launch: Option<BeatTime>,
+    /// Present only for a Session MIDI owner; both coordinates remain global/cued as typed.
+    pub active_origin: Option<SessionMidiOrigin>,
     pub pending: Option<SessionPendingRouteStatus>,
 }
 
@@ -223,8 +234,14 @@ enum RouteTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RouteOwner {
     Arrangement,
-    Session { clip: ClipId, launch: BeatTime },
-    SessionAudio { clip: ClipId, launch_frame: u64 },
+    Session {
+        clip: ClipId,
+        origin: SessionMidiOrigin,
+    },
+    SessionAudio {
+        clip: ClipId,
+        launch_frame: u64,
+    },
     Silence,
 }
 
@@ -1529,6 +1546,12 @@ impl SessionPlayback {
         self.playing
     }
 
+    /// Scalar translation used by the effective performance clock. Observers
+    /// must correlate it with this runtime's applied revision and route snapshot.
+    pub fn clock_anchor(&self) -> Option<SessionClockAnchor> {
+        self.anchor
+    }
+
     /// Opaque change stamp for the displayed route state. It wraps on change;
     /// callers compare for equality and must not use it for musical arithmetic.
     pub fn route_state_generation(&self) -> u64 {
@@ -1543,10 +1566,10 @@ impl SessionPlayback {
     /// Read one route without allocation. `None` means the index is out of range.
     pub fn route_status(&self, index: usize) -> Option<SessionRouteStatus> {
         let route = self.routes.get(index)?;
-        let (owner, active_launch) = match route.owner {
+        let (owner, active_origin) = match route.owner {
             RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None),
-            RouteOwner::Session { clip, launch } => {
-                (SessionPlaybackOwner::Session { clip }, Some(launch))
+            RouteOwner::Session { clip, origin } => {
+                (SessionPlaybackOwner::Session { clip }, Some(origin))
             }
             RouteOwner::SessionAudio { clip, .. } => (SessionPlaybackOwner::Session { clip }, None),
             RouteOwner::Silence => (SessionPlaybackOwner::Silence, None),
@@ -1563,7 +1586,7 @@ impl SessionPlayback {
         Some(SessionRouteStatus {
             track: route.id,
             owner,
-            active_launch,
+            active_origin,
             pending,
         })
     }
@@ -1745,7 +1768,10 @@ impl SessionPlayback {
                 }
             }
             RouteTarget::Session(clip) if self.revision.session().midi_clip(clip).is_some() => {
-                RouteOwner::Session { clip, launch: beat }
+                RouteOwner::Session {
+                    clip,
+                    origin: SessionMidiOrigin::launch(beat),
+                }
             }
             RouteTarget::Session(_) => return Err(SessionPlaybackError::UnknownClip),
         })

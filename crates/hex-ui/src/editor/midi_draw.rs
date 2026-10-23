@@ -80,7 +80,6 @@ impl EditorView {
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.midi_marquee = None;
-                self.midi_selection.clear();
                 self.midi_focus.focus(window);
                 self.midi_stroke = Some(stroke);
                 true
@@ -302,6 +301,9 @@ pub(super) fn created_range_ids(
         let id = note.id();
         (id >= first && id <= last).then_some(id)
     }));
+    if created.len() != range_len {
+        return Err("created midi note range is incomplete");
+    }
     Ok(Some(created))
 }
 

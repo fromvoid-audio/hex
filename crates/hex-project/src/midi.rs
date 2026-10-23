@@ -2,8 +2,14 @@
 //!
 //! MIDI timing uses checked Q32.32 quarter-note beats, independent of audio frame anchors. Source
 //! extent/start and retained loop markers are independent of a clip's finite Arrangement length.
-//! Notes keep stable distinct IDs even at equal pitch; channel, pitch, velocity and positive
-//! duration are validated before mutation. Source shrink refuses notes it would invalidate.
+//! Notes on the same pitch cannot overlap inside one source, irrespective of channel.
+//! New/moved/resized authors win, retaining only an older left prefix with its ID and
+//! expression; no right fragment is resurrected. Batch originals are excluded
+//! together, then authors resolve in input order, later members winning. Other pitches remain
+//! polyphonic. Current-format loading refuses overlapping authored notes without
+//! rewriting files; loop occurrences and DSP releases retain their separate semantics.
+//! Channel, pitch, velocity and positive duration are validated before mutation.
+//! Source shrink refuses notes it would invalidate.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
@@ -11,9 +17,9 @@
 use crate::edit::{Command, MidiNoteUpdate};
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiSourcePlayback, NoteId, Project,
-    Track, TrackId,
+    Track,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 /// Independently-owned MIDI event source shared by Arrangement and Session clips.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,40 +422,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             track,
             start,
             length,
-        } => {
-            validate_clip(start, length)?;
-            let end = BeatTime::from_raw(
-                start
-                    .raw()
-                    .checked_add(length.raw())
-                    .ok_or(Invalid("midi clip timeline end overflow"))?,
-            );
-            project
-                .track(track)
-                .ok_or(Invalid("track no longer exists"))?;
-            // Fully covered MIDI victims only free capacity. Retire them on
-            // this private paint candidate before audio splitting so each
-            // existing helper's admission is bounded by the final hybrid count.
-            // Editor still rolls back the complete candidate on any refusal.
-            project.track_mut(track)?.content.midi_clips.retain(|clip| {
-                !(clip.start >= start
-                    && clip
-                        .start
-                        .raw()
-                        .checked_add(clip.length.raw())
-                        .is_some_and(|clip_end| clip_end <= end.raw()))
-            });
-            crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
-            overwrite_midi_interval(project, track, start, end, ClipId(0))?;
-            apply(
-                project,
-                Command::PlaceMidiClip {
-                    track,
-                    start,
-                    length,
-                },
-            )
-        }
+        } => apply(
+            project,
+            Command::PlaceMidiClip {
+                track,
+                start,
+                length,
+            },
+        ),
         Command::PlaceMidiClip {
             track,
             start,
@@ -459,27 +439,20 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             project
                 .track(track)
                 .ok_or(Invalid("track no longer exists"))?;
-            if clip_count(project) >= MAX_CLIPS {
-                return Err(Invalid("clip limit reached"));
-            }
-            let id = ClipId(project.allocate_id()?);
-            let clips = &mut project.track_mut(track)?.content.midi_clips;
-            clips.push(MidiClip {
+            let incoming = MidiClip {
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
-                id,
+                id: ClipId(0),
                 start,
                 length,
-                source: Arc::new(MidiSource {
-                    source_length: length,
-                    source_start: BeatTime::ZERO,
-                    loop_start: BeatTime::ZERO,
-                    loop_end: length,
-                    looping: false,
-                    notes: Vec::new(),
-                }),
-            });
-            Ok(Created::Clip(id))
+                source: Arc::new(MidiSource::defaults(length)),
+            };
+            crate::clip_group::place_one(
+                project,
+                track,
+                crate::ClipGroupContent::Midi(incoming),
+                true,
+            )
         }
         Command::TrimMidiClipEdge { clip, edge, beat } => {
             let original = project
@@ -492,11 +465,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             {
                 return Ok(Created::None);
             }
-            let target = project
-                .midi_clips_mut(clip)?
-                .iter_mut()
-                .find(|item| item.id == clip)
-                .ok_or(Invalid("midi clip no longer exists"))?;
+            let mut target = original.clone();
             if preview.source_prefix != BeatTime::ZERO {
                 let shifted = |value: BeatTime| {
                     value
@@ -521,7 +490,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             if target.source_start() != preview.source_start {
                 target.source_start = preview.source_start;
             }
-            Ok(Created::None)
+            crate::clip_group::replace_midi(project, target)
         }
         Command::SplitMidiClip { clip, beat } => {
             let (track, clip_index) = project
@@ -685,18 +654,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     note.velocity,
                 )?;
             }
-            let target = project
-                .midi_clips_mut(clip)?
-                .iter_mut()
-                .find(|item| item.id == clip)
-                .ok_or(Invalid("midi clip no longer exists"))?;
+            let mut target = target.clone();
             target.length = length;
             target.source_length = source_length;
             target.source_start = source_start;
             target.loop_start = loop_start;
             target.loop_end = loop_end;
             target.looping = looping;
-            Ok(Created::None)
+            crate::clip_group::replace_midi(project, target)
         }
         Command::AddMidiNote {
             clip,
@@ -706,29 +671,21 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             channel,
             velocity,
         } => {
-            let length = project
-                .midi_source(clip)
-                .ok_or(Invalid("midi clip no longer exists"))?
-                .source_length;
-            validate_note(start, duration, length, pitch, channel, velocity)?;
-            if note_count(project) >= MAX_NOTES {
-                return Err(Invalid("note limit reached"));
+            match crate::midi_batch::edit(
+                project,
+                clip,
+                Vec::new(),
+                vec![crate::MidiNoteInsert {
+                    start,
+                    duration,
+                    pitch,
+                    channel,
+                    velocity,
+                }],
+            )? {
+                Created::Notes { first, .. } => Ok(Created::Note(first)),
+                _ => Err(Invalid("single midi note authoring returned no note")),
             }
-            let id = NoteId(project.allocate_id()?);
-            let target = project.midi_source_mut(clip)?;
-            target
-                .notes
-                .try_reserve(1)
-                .map_err(|_| Invalid("could not reserve midi note storage"))?;
-            target.notes.push(MidiNote {
-                id,
-                start,
-                duration,
-                pitch,
-                channel,
-                velocity,
-            });
-            Ok(Created::Note(id))
         }
         Command::AddMidiNotes { clip, notes } => {
             crate::midi_batch::edit(project, clip, Vec::new(), notes)
@@ -743,6 +700,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             remove,
             insert,
         } => crate::midi_batch::edit(project, clip, remove, insert),
+        Command::DuplicateMidiSourceRange { clip, start, end } => {
+            crate::midi_source_range::duplicate(project, clip, start, end)
+        }
         Command::UpdateMidiNote {
             note,
             start,
@@ -751,21 +711,22 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             channel,
             velocity,
         } => {
-            let (clip_id, length) =
+            let (clip_id, _) =
                 find_note_source(project, note).ok_or(Invalid("midi note no longer exists"))?;
-            validate_note(start, duration, length, pitch, channel, velocity)?;
-            let target = project
-                .midi_source_mut(clip_id)?
-                .notes
-                .iter_mut()
-                .find(|n| n.id == note)
-                .ok_or(Invalid("midi note no longer exists"))?;
-            target.start = start;
-            target.duration = duration;
-            target.pitch = pitch;
-            target.channel = channel;
-            target.velocity = velocity;
-            Ok(Created::None)
+            apply(
+                project,
+                Command::UpdateMidiNotes {
+                    clip: clip_id,
+                    notes: vec![MidiNoteUpdate {
+                        note,
+                        start,
+                        duration,
+                        pitch,
+                        channel,
+                        velocity,
+                    }],
+                },
+            )
         }
         Command::UpdateMidiNotes { clip, notes } => {
             let target = project
@@ -782,6 +743,32 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     update.velocity,
                 )?;
             }
+            let mut removed = Vec::new();
+            let mut authored = Vec::new();
+            removed
+                .try_reserve_exact(notes.len())
+                .map_err(|_| Invalid("could not reserve selected midi identities"))?;
+            authored
+                .try_reserve_exact(notes.len())
+                .map_err(|_| Invalid("could not reserve authored midi geometry"))?;
+            for update in &notes {
+                removed.push(update.note);
+                authored.push(crate::MidiNoteInsert {
+                    start: update.start,
+                    duration: update.duration,
+                    pitch: update.pitch,
+                    channel: update.channel,
+                    velocity: update.velocity,
+                });
+            }
+            let mut plan = target.preview_note_overwrite(&removed, &authored)?;
+            for (&index, gate) in indices.iter().zip(&plan.authored) {
+                let retained = plan
+                    .retained
+                    .get_mut(index)
+                    .ok_or(Invalid("midi note no longer exists in target clip"))?;
+                *retained = *gate;
+            }
             let target = project.midi_source_mut(clip)?;
             for (index, update) in indices.into_iter().zip(notes) {
                 let note = target
@@ -790,6 +777,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     .ok_or(Invalid("midi note no longer exists in target clip"))?;
                 apply_note_update(note, update);
             }
+            crate::midi_note_overwrite::retain_gates(target, &plan.retained)?;
             Ok(Created::None)
         }
         Command::RemoveMidiNote(note) => {
@@ -823,63 +811,36 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             Ok(Created::Track(track))
         }
         Command::MoveMidiClipWithOverwrite { clip, track, start } => {
-            let (source_track, old_start, length) = project
-                .tracks
-                .iter()
-                .find_map(|candidate| {
-                    candidate
-                        .midi_clips()
-                        .iter()
-                        .find(|item| item.id == clip)
-                        .map(|item| (candidate.id, item.start, item.length))
-                })
-                .ok_or(Invalid("midi clip no longer exists"))?;
-            if source_track == track && old_start == start {
-                return Ok(Created::None);
-            }
-            let end = start
-                .raw()
-                .checked_add(length.raw())
-                .map(BeatTime::from_raw)
-                .ok_or(Invalid("midi timeline end overflow"))?;
-            project
-                .track(track)
-                .ok_or(Invalid("destination track no longer exists"))?;
-            crate::edit::overwrite_audio_in_beats(project, track, start, end, clip)?;
-            overwrite_midi_interval(project, track, start, end, clip)?;
             apply(project, Command::MoveMidiClip { clip, track, start })
         }
         Command::CopyMidiClipTo { clip, track, start } => {
             crate::clip_copy::midi_to(project, clip, track, start)
         }
         Command::MoveMidiClip { clip, track, start } => {
-            let (source_id, length, old_start) = project
+            let source_id = project
                 .tracks
                 .iter()
-                .find_map(|t| {
-                    t.midi_clips()
-                        .iter()
-                        .find(|c| c.id == clip)
-                        .map(|c| (t.id, c.length, c.start))
-                })
+                .find(|t| t.midi_clips().iter().any(|c| c.id == clip))
+                .map(|t| t.id)
                 .ok_or(Invalid("midi clip no longer exists"))?;
-            validate_clip(start, length)?;
+            let mut incoming = project
+                .midi_clip(clip)
+                .cloned()
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            validate_clip(start, incoming.length)?;
             project
                 .track(track)
                 .ok_or(Invalid("destination track no longer exists"))?;
-            if source_id == track && old_start == start {
+            if source_id == track && incoming.start == start {
                 return Ok(Created::None);
             }
-            let source = project.midi_clips_mut(clip)?;
-            let index = source
-                .iter()
-                .position(|c| c.id == clip)
-                .ok_or(Invalid("midi clip no longer exists"))?;
-            let mut moved = source.remove(index);
-            moved.start = start;
-            let dest = &mut project.track_mut(track)?.content.midi_clips;
-            dest.push(moved);
-            Ok(Created::None)
+            incoming.start = start;
+            crate::clip_group::place_one(
+                project,
+                track,
+                crate::ClipGroupContent::Midi(incoming),
+                false,
+            )
         }
         Command::RemoveMidiClip(clip) => {
             let clips = project.midi_clips_mut(clip)?;
@@ -893,56 +854,20 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         Command::DuplicateMidiClip(clip) => {
             let source = project
                 .midi_clip(clip)
-                .ok_or(Invalid("midi clip no longer exists"))?
-                .clone();
-            let start_raw = source
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let start = source
                 .start
                 .raw()
                 .checked_add(source.length.raw())
+                .map(BeatTime::from_raw)
                 .ok_or(Invalid("midi clip timeline end overflow"))?;
-            let start = BeatTime::from_raw(start_raw);
-            validate_clip(start, source.length)?;
-            if clip_count(project) >= MAX_CLIPS {
-                return Err(Invalid("clip limit reached"));
-            }
-            if note_count(project)
-                .checked_add(source.notes.len())
-                .ok_or(Invalid("note count overflow"))?
-                > MAX_NOTES
-            {
-                return Err(Invalid("note limit reached"));
-            }
             let track = project
                 .tracks
                 .iter()
                 .find(|t| t.midi_clips().iter().any(|c| c.id == clip))
-                .ok_or(Invalid("midi clip track missing"))?
-                .id;
-            let id = ClipId(project.allocate_id()?);
-            let mut notes = Vec::with_capacity(source.notes.len());
-            for n in source.source.notes.clone() {
-                notes.push(MidiNote {
-                    id: NoteId(project.allocate_id()?),
-                    ..n
-                });
-            }
-            let clips = &mut project.track_mut(track)?.content.midi_clips;
-            clips.push(MidiClip {
-                name: source.name.clone(),
-                flavor: source.flavor,
-                id,
-                start,
-                length: source.length,
-                source: Arc::new(MidiSource {
-                    source_length: source.source_length,
-                    source_start: source.source_start,
-                    loop_start: source.loop_start,
-                    loop_end: source.loop_end,
-                    looping: source.looping,
-                    notes,
-                }),
-            });
-            Ok(Created::Clip(id))
+                .map(|t| t.id)
+                .ok_or(Invalid("midi clip track missing"))?;
+            crate::clip_copy::midi_to(project, clip, track, start)
         }
         _ => Err(Invalid("not a midi command")),
     }
@@ -1052,38 +977,6 @@ pub(crate) fn note_count(project: &Project) -> usize {
             .sum::<usize>()
 }
 
-struct MidiOverwriteFragments {
-    original_id: ClipId,
-    left: Option<MidiClip>,
-    right: Option<MidiClip>,
-    right_id_is_new: bool,
-}
-
-pub(crate) fn overwrite_midi_in_frames(
-    project: &mut Project,
-    track: TrackId,
-    start_frame: u64,
-    end_frame: u64,
-    excluded: ClipId,
-) -> Result<(), Invalid> {
-    overwrite_midi_in_frames_excluding(project, track, start_frame, end_frame, |id| id == excluded)
-}
-
-pub(crate) fn overwrite_midi_in_frames_excluding(
-    project: &mut Project,
-    track: TrackId,
-    start_frame: u64,
-    end_frame: u64,
-    excluded: impl Fn(ClipId) -> bool,
-) -> Result<(), Invalid> {
-    if start_frame >= end_frame {
-        return Ok(());
-    }
-    let (start, end) = midi_overwrite_frame_bounds(project.tempo_map(), start_frame, end_frame)?;
-
-    overwrite_midi_interval_excluding(project, track, start, end, excluded)
-}
-
 pub(crate) fn midi_overwrite_frame_bounds(
     tempo: &crate::TempoMap,
     start_frame: u64,
@@ -1188,218 +1081,6 @@ pub(crate) fn materialize_overwrite_ranges(
         }
     }
     Ok(fragments)
-}
-
-pub(crate) fn overwrite_midi_interval(
-    project: &mut Project,
-    track: TrackId,
-    start: BeatTime,
-    end: BeatTime,
-    excluded: ClipId,
-) -> Result<(), Invalid> {
-    overwrite_midi_interval_excluding(project, track, start, end, |id| id == excluded)
-}
-
-pub(crate) fn overwrite_midi_interval_excluding(
-    project: &mut Project,
-    track: TrackId,
-    start: BeatTime,
-    end: BeatTime,
-    excluded: impl Fn(ClipId) -> bool,
-) -> Result<(), Invalid> {
-    if start >= end {
-        return Ok(());
-    }
-    let clips = project
-        .track(track)
-        .ok_or(Invalid("destination track no longer exists"))?
-        .midi_clips();
-    let mut snapshot = Vec::new();
-    snapshot
-        .try_reserve_exact(clips.len())
-        .map_err(|_| Invalid("could not reserve midi overwrite planning storage"))?;
-    snapshot.extend(clips.iter().cloned());
-
-    let mut plans = Vec::new();
-    plans
-        .try_reserve_exact(snapshot.len())
-        .map_err(|_| Invalid("could not reserve midi overwrite fragment storage"))?;
-    let mut occurrence_bound = 0_usize;
-    for clip in snapshot {
-        if excluded(clip.id) {
-            continue;
-        }
-        let clip_end_raw = clip
-            .start
-            .raw()
-            .checked_add(clip.length.raw())
-            .ok_or(Invalid("midi timeline end overflow"))?;
-        if clip.start >= end || start.raw() >= clip_end_raw {
-            continue;
-        }
-        let keep_left = clip.start < start;
-        let keep_right = clip_end_raw > end.raw();
-        let left = if keep_left {
-            let clip_start_frame = project.tempo_map().beat_to_frame(clip.start)?;
-            let left_end_frame = project.tempo_map().beat_to_frame(start)?;
-            if clip_start_frame < left_end_frame {
-                let mut left = clip.clone();
-                left.length = BeatTime::from_raw(start.raw() - clip.start.raw());
-                Some(left)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let right_range = if keep_right {
-            let right_start = BeatTime::from_raw(end.raw());
-            let right_end = BeatTime::from_raw(clip_end_raw);
-            let right_start_frame = project.tempo_map().beat_to_frame(right_start)?;
-            let right_end_frame = project.tempo_map().beat_to_frame(right_end)?;
-            (right_start_frame < right_end_frame).then_some((end.raw(), clip_end_raw))
-        } else {
-            None
-        };
-        let mut plan_occurrences = 0_usize;
-        if right_range.is_some() {
-            plan_occurrences = overwrite_occurrence_count(&clip)?;
-            occurrence_bound = occurrence_bound
-                .checked_add(plan_occurrences)
-                .ok_or(Invalid("midi overwrite occurrence count overflow"))?;
-            if occurrence_bound > MAX_NOTES {
-                return Err(Invalid(
-                    "midi overwrite note expansion exceeds project limit",
-                ));
-            }
-        }
-        let right_id_is_new = left.is_some() && right_range.is_some();
-        plans.push((
-            clip.clone(),
-            left,
-            right_range,
-            plan_occurrences,
-            right_id_is_new,
-        ));
-    }
-    if plans.is_empty() {
-        return Ok(());
-    }
-
-    let total_clips = project.tracks.iter().try_fold(0_usize, |total, item| {
-        total
-            .checked_add(item.clips().len())
-            .and_then(|value| value.checked_add(item.midi_clips().len()))
-            .ok_or(Invalid("clip count overflow"))
-    })?;
-    let final_clips = plans
-        .iter()
-        .try_fold(total_clips, |count, (_, left, right, _, _)| {
-            let retained = usize::from(left.is_some()) + usize::from(right.is_some());
-            count
-                .checked_sub(1)
-                .and_then(|value| value.checked_add(retained))
-                .ok_or(Invalid("clip count overflow"))
-        })?;
-    if final_clips > MAX_CLIPS {
-        return Err(Invalid("clip limit reached"));
-    }
-
-    let mut prepared = Vec::new();
-    prepared
-        .try_reserve_exact(plans.len())
-        .map_err(|_| Invalid("could not reserve midi overwrite candidate storage"))?;
-    let mut generated_notes_total = 0_usize;
-    let mut removed_notes_total = 0_usize;
-    for (original, left, right_range, _occurrence_count, right_id_is_new) in plans {
-        if left.is_none() {
-            removed_notes_total = removed_notes_total
-                .checked_add(original.notes().len())
-                .ok_or(Invalid("midi note count overflow"))?;
-        }
-        let right = if let Some((right_start, right_end)) = right_range {
-            let mut right = materialize_overwrite_ranges(&original, &[(right_start, right_end)])?
-                .pop()
-                .ok_or(Invalid("midi overwrite fragment missing"))?;
-            right.id = if right_id_is_new {
-                ClipId(0)
-            } else {
-                original.id
-            };
-            generated_notes_total = generated_notes_total
-                .checked_add(right.notes().len())
-                .ok_or(Invalid("midi note count overflow"))?;
-            Some(right)
-        } else {
-            None
-        };
-        prepared.push(MidiOverwriteFragments {
-            original_id: original.id,
-            left,
-            right,
-            right_id_is_new,
-        });
-    }
-    let current_notes = note_count(project);
-    let final_notes = current_notes
-        .checked_sub(removed_notes_total)
-        .and_then(|value| value.checked_add(generated_notes_total))
-        .ok_or(Invalid("midi note count overflow"))?;
-    if final_notes > MAX_NOTES {
-        return Err(Invalid("midi note limit reached"));
-    }
-
-    let old_len = project
-        .track(track)
-        .ok_or(Invalid("destination track no longer exists"))?
-        .midi_clips()
-        .len();
-    let replacement_count = prepared.iter().try_fold(0_usize, |count, plan| {
-        count
-            .checked_add(usize::from(plan.left.is_some()))
-            .and_then(|value| value.checked_add(usize::from(plan.right.is_some())))
-            .ok_or(Invalid("clip count overflow"))
-    })?;
-    let new_len = old_len
-        .checked_sub(prepared.len())
-        .and_then(|value| value.checked_add(replacement_count))
-        .ok_or(Invalid("clip count overflow"))?;
-    let mut replacements = Vec::new();
-    replacements
-        .try_reserve_exact(new_len)
-        .map_err(|_| Invalid("could not reserve overwritten midi clips"))?;
-    let mut by_id = HashMap::new();
-    by_id
-        .try_reserve(prepared.len())
-        .map_err(|_| Invalid("could not reserve midi overwrite lookup"))?;
-    for mut plan in prepared {
-        let right = plan.right.as_mut();
-        if let Some(right) = right {
-            if plan.right_id_is_new {
-                right.id = ClipId(project.allocate_id()?);
-            }
-            let source = Arc::make_mut(&mut right.source);
-            for note in &mut source.notes {
-                note.id = NoteId(project.allocate_id()?);
-            }
-        }
-        by_id.insert(plan.original_id, plan);
-    }
-    let old = std::mem::take(&mut project.track_mut(track)?.content.midi_clips);
-    for clip in old {
-        if let Some(plan) = by_id.remove(&clip.id) {
-            if let Some(left) = plan.left {
-                replacements.push(left);
-            }
-            if let Some(right) = plan.right {
-                replacements.push(right);
-            }
-        } else {
-            replacements.push(clip);
-        }
-    }
-    project.track_mut(track)?.content.midi_clips = replacements;
-    Ok(())
 }
 
 pub(crate) fn find_note_source(project: &Project, note: NoteId) -> Option<(ClipId, BeatTime)> {

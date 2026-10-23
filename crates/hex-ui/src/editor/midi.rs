@@ -246,6 +246,55 @@ impl EditorView {
         self.midi_group_gesture = None;
         if let Err(error) = self.midi_selection.select_all(notes) {
             self.error = Some(error.into());
+        } else {
+            self.clear_midi_time_selection();
+            self.audition_midi_selection();
+        }
+    }
+
+    /// With a note selection, arrows retain musical nudge behavior. Otherwise they
+    /// move the local insertion cursor, never transport or canonical project time.
+    /// Grid-off navigation uses the existing sixteenth-note movement step.
+    pub(super) fn navigate_piano_cursor(&mut self, right: bool) {
+        if self.midi_step.enabled && right {
+            self.enter_midi_step();
+            return;
+        }
+        if !self.midi_step.enabled && !self.midi_selection.is_empty() {
+            self.nudge_selected_note(right);
+            return;
+        }
+        if self.edit_pending() || self.detail_midi_clip_data().is_none() {
+            return;
+        }
+        self.clear_midi_time_selection();
+        self.cancel_midi_note_gesture();
+        let current = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
+        let step = self.midi_snap_grid.movement_step();
+        let next = if right {
+            let Some(next) = current.checked_add(step).filter(|value| *value < u64::MAX) else {
+                return;
+            };
+            next
+        } else {
+            current.saturating_sub(step)
+        };
+        self.midi_marker = Some(next);
+        self.reveal_piano_cursor(next);
+    }
+
+    pub(super) fn reveal_piano_cursor(&mut self, next: u64) {
+        let step = self.midi_snap_grid.movement_step();
+        // Keep the insertion position visible without changing zoom or source extent.
+        let span = self.piano_beat_span.raw().max(1);
+        let start = self.piano_beat_start.raw();
+        if next < start {
+            self.piano_beat_start = BeatTime::from_raw(next);
+        } else if next >= start.saturating_add(span) {
+            self.piano_beat_start = BeatTime::from_raw(
+                next.saturating_sub(span.saturating_sub(step.min(span / 2).max(1))),
+            )
+            .min(BeatTime::from_raw(u64::MAX - span));
         }
     }
 

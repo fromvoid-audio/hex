@@ -56,6 +56,173 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(BOOT.verify(self.receipt, run=True), {
             "version": 1, "scope": "original-macos-bootstrap", "effect_frames": 64, "instrument_frames": 64})
 
+    def lifecycle(self, mode, failure, expected_exit=0):
+        # Own original helper only; source/inventory admission before execution.
+        BOOT.verify(self.receipt)
+        run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--lifecycle-self-test",
+                              str(mode), str(failure)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, expected_exit, run.stdout + run.stderr)
+        self.assertLessEqual(len(run.stdout.encode()), 4096)
+        value = json.loads(run.stdout)
+        self.assertEqual(value["version"], 1)
+        self.assertEqual(value["scope"], "original-macos-instance-lifecycle")
+        self.assertEqual((value["mode"], value["failure"]), (mode, failure))
+        observation = value["observation"]
+        self.assertLessEqual(len(observation), 135)
+        self.assertGreaterEqual(len(observation), 7)
+        self.assertEqual(observation[6], len(observation) - 7)
+        self.assertEqual(observation[0], 0, value)  # independent SDK order/thread/ref oracle
+        self.assertTrue(value["pcm"], value)  # two literal, different block outputs
+        self.assertTrue(value["stable_close"], value)  # no repeated foreign teardown
+        return value, observation[7:]
+
+    def test_persistent_component_controller_lifecycle_and_transition_failures(self):
+        for mode in range(3):  # absent, separate, combined controller
+            with self.subTest(mode=mode, failure=0):
+                normal, trace = self.lifecycle(mode, 0)
+                for field in ("opened", "configured", "started", "processed", "stopped", "closed", "unloaded"):
+                    self.assertTrue(normal[field], normal)
+                observation = normal["observation"]
+                self.assertEqual(observation[1:6], [1, int(mode == 1), 2, 0, 1])
+                # One actual component persists across both process calls. Combined
+                # interfaces get no duplicate initialization/termination or self-connect.
+                self.assertEqual(trace.count(2), 1)
+                self.assertEqual(trace.count(24), 1)
+                self.assertEqual(trace.count(5), int(mode == 1))
+                self.assertEqual(trace.count(23), int(mode == 1))
+                self.assertEqual(trace.count(7), int(mode == 1))
+                self.assertEqual(trace.count(8), int(mode == 1))
+                self.assertEqual(trace.count(15), 2)
+                for before, after in ((2, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 24)):
+                    self.assertLess(trace.index(before), trace.index(after))
+                if mode == 1:
+                    self.assertLess(trace.index(7), trace.index(13))
+                    self.assertLess(trace.index(20), trace.index(23))
+                    self.assertLess(trace.index(21), trace.index(24))
+            # Only real transitions for this variant, not duplicate no-op cases.
+            for failure in sorted(set(trace)):
+                with self.subTest(mode=mode, failure=failure):
+                    value, failed_trace = self.lifecycle(mode, failure)
+                    self.assertIn(failure, failed_trace)
+                    if failure >= 16:
+                        # A refused teardown leaves resources in the isolated helper.
+                        # No later calls, repeat cleanup, live release or module unload.
+                        self.assertFalse(value["closed"], value)
+                        self.assertFalse(value["unloaded"], value)
+                        self.assertGreater(value["observation"][4], 0, value)
+                        self.assertEqual(failed_trace[-1], failure)
+                    else:
+                        self.assertTrue(value["closed"], value)
+                        self.assertTrue(value["unloaded"], value)
+                        self.assertEqual(value["observation"][4], 0, value)
+                    if failure <= 8:
+                        self.assertFalse(value["opened"], value)
+                    elif failure <= 13:
+                        self.assertEqual(failed_trace.count(failure), 1, "partial preparation is not replayed")
+                        self.assertFalse(value["configured"], value)
+                    elif failure == 14:
+                        self.assertEqual(failed_trace.count(14), 1, "failed processing start is not replayed")
+                        self.assertFalse(value["started"], value)
+                    elif failure == 15:
+                        self.assertEqual(failed_trace.count(15), 1, "failed foreign DSP is never replayed")
+                        self.assertFalse(value["processed"], value)
+                        self.assertTrue(value["stopped"], value)
+
+    def test_factory_alias_never_initializes_the_component_twice(self):
+        value, trace = self.lifecycle(1, 25)
+        self.assertFalse(value["opened"], value)
+        self.assertTrue(value["closed"], value)
+        self.assertTrue(value["unloaded"], value)
+        self.assertEqual(value["observation"][1:6], [1, 0, 0, 0, 1])
+        self.assertEqual(trace.count(2), 1)
+        self.assertNotIn(5, trace)
+        self.assertEqual(trace.count(24), 1)
+
+    def test_refused_module_exit_is_not_followed_by_live_unload(self):
+        value, _trace = self.lifecycle(1, 26, expected_exit=1)
+        self.assertTrue(value["closed"], value)  # component/controller retired
+        self.assertFalse(value["unloaded"], value)  # module remains owned until child exit
+        self.assertEqual(value["observation"][4], 0)
+
+    def test_lifecycle_arguments_refuse_unsupported_inputs(self):
+        for mode, failure in (("3", "0"), ("0", "27"), ("-1", "0"), ("0", "999999999999"), ("a", "0")):
+            with self.subTest(mode=mode, failure=failure):
+                run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--lifecycle-self-test", mode, failure],
+                                     capture_output=True, timeout=10)
+                self.assertEqual(run.returncode, 2)
+                self.assertEqual(run.stdout, b"")
+
+    def host_control(self, scenario):
+        BOOT.verify(self.receipt)
+        run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--host-self-test", str(scenario)],
+                             capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertLessEqual(len(run.stdout.encode()), 4096)
+        value = json.loads(run.stdout)
+        self.assertEqual((value["version"], value["scope"], value["scenario"]),
+                         (1, "original-macos-host-control", scenario))
+        self.assertEqual(value["violations"], 0, value)
+        self.assertTrue(value["pcm"], value)  # same instance, same worker, two different literal blocks
+        self.assertEqual(value["before_revision"], 1)
+        self.assertEqual(value["before_value"], 0.25)
+        return value
+
+    def test_real_host_messages_and_editor_metadata_refresh(self):
+        value = self.host_control(0)
+        self.assertEqual(value["message"], 0, value)
+        self.assertEqual(value["received"], 1)
+        self.assertEqual(value["disposition"], 1)
+        self.assertEqual(value["after_revision"], 2)
+        self.assertEqual(value["after_value"], 0.75)
+        self.assertTrue(value["refusals"] & 512, "message pool exhaustion was explicit")
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_unknown_and_graph_restart_classes_refuse_without_partial_cache_update(self):
+        value = self.host_control(1)
+        for field in ("unknown", "graph", "known"):
+            self.assertNotEqual(value[field], 0, value)
+        self.assertEqual(value["dispatched"], 0)
+        self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
+        self.assertEqual(value["refusals"] & (2 | 4 | 128), 2 | 4 | 128)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_restart_queue_has_bounded_ordered_backpressure(self):
+        value = self.host_control(2)
+        self.assertEqual((value["enqueued"], value["dispatched"]), (8, 8))
+        self.assertNotEqual(value["callback"], 0)
+        self.assertEqual((value["first_sequence"], value["last_sequence"]), (2, 9))
+        self.assertEqual((value["after_revision"], value["after_value"]), (9, 0.75))
+        self.assertTrue(value["refusals"] & 8)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_malformed_recursive_and_over_capacity_metadata_preserves_the_last_snapshot(self):
+        for scenario in range(3, 10):
+            with self.subTest(scenario=scenario):
+                value = self.host_control(scenario)
+                self.assertEqual(value["callback"], 0, "callback acknowledges queued work, not application")
+                self.assertEqual(value["dispatched"], 1)
+                disposition, refusal = (4, 16) if scenario == 8 else (7, 1024) if scenario == 7 else (2, 32)
+                self.assertEqual(value["disposition"], disposition)
+                self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
+                self.assertTrue(value["refusals"] & refusal)
+                self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_processing_thread_callbacks_refuse_before_controller_or_message_work(self):
+        value = self.host_control(10)
+        self.assertNotEqual(value["processing_callback"], 0)
+        self.assertNotEqual(value["processing_message"], 0)
+        self.assertEqual(value["worker_dispatch"], 6)
+        self.assertEqual(value["dispatched"], 0)
+        self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
+        self.assertTrue(value["refusals"] & 1)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_retained_message_keeps_host_pool_and_module_until_process_retirement(self):
+        value = self.host_control(11)
+        self.assertEqual(value["message"], 0)
+        self.assertFalse(value["closed"])
+        self.assertFalse(value["unloaded"])
+
     def test_absent_helper_refuses_before_execution(self):
         (self.root / BOOT.EXECUTABLE).unlink()
         with self.assertRaisesRegex(ValueError, "missing or changed"):
@@ -93,7 +260,7 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertIn("original fixture smoke failed", result.stderr)
 
     def test_redirected_bundle_executable_never_runs_even_after_resealing(self):
-        sdk = BOOT.ROOT / "artifacts/vst3-sdk"
+        sdk = Path(os.environ.get("HEX_VST3_MACOS_SDK", BOOT.ROOT / "artifacts/vst3-sdk"))
         if not sdk.is_dir():
             self.skipTest("pinned native build SDK required for executable-selection regression")
         bundle = self.root / BOOT.APP / "Contents/Resources/fixtures/effect.vst3"
@@ -133,7 +300,7 @@ __attribute__((constructor)) static void marker() {
             BOOT.verify(self.receipt, run=True)
 
     def test_hung_signing_is_bounded_and_publishes_no_receipt(self):
-        sdk = BOOT.ROOT / "artifacts/vst3-sdk"
+        sdk = Path(os.environ.get("HEX_VST3_MACOS_SDK", BOOT.ROOT / "artifacts/vst3-sdk"))
         if not sdk.is_dir():
             self.skipTest("pinned native build SDK required for signing-failure injection")
         run = subprocess.run

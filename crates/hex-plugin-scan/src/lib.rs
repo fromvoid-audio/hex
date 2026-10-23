@@ -1,12 +1,15 @@
 //! # Purpose
 //! Own controlled native plugin-discovery records, protocols and helper supervision.
+//! Original macOS helper fixtures also exercise a native-only persistent component/controller
+//! lifecycle and bounded host message/controller-metadata transactions. No foreign interface
+//! pointer enters this Rust API; controller metadata is not canonical/audio application.
 //!
 //! # Dependencies
 //! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported
 //! helper process.
 //!
 //! # Does not own
-//! Does not expose an app-side plugin loader, persistent instance or realtime audio bridge. Exact
+//! Does not expose an app-side plugin loader, product instance admission or realtime audio bridge. Exact
 //! helper/artifact identity and bounded protocol validation remain required.
 pub mod macos;
 pub mod offline_protocol;

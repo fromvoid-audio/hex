@@ -1,5 +1,7 @@
 use super::*;
+use crate::routed_midi_fixture;
 mod authored_history;
+mod cue;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -2731,7 +2733,7 @@ fn with_instrument_bypassed(project: &Project, bypassed: bool) -> Project {
         .as_mut()
         .expect("MIDI fixture has a canonical instrument slot");
     instrument.bypassed = bypassed;
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn session_only_project(project: &Project) -> Project {
@@ -2853,7 +2855,7 @@ fn with_test_instrument(
         .expect("MIDI fixture has an instrument slot");
     instrument.state =
         hex_lattice_contract::NativeDeviceState::new(type_id, 1, vec![state_value]).unwrap();
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
@@ -4093,7 +4095,8 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         state: gain_state,
     }];
     snapshot.tracks[0].instrument_position = Some(0);
-    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
+    let project = Project::from_snapshot(snapshot).unwrap();
     let asset_id = project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5256,7 +5259,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         midi_clips,
     };
     source.tracks[0].instrument_position = Some(1);
-    let old_project = legacy_project_from_snapshot(source).unwrap();
+    routed_midi_fixture::separate_midi(&mut source, 0);
+    let old_project = Project::from_snapshot(source).unwrap();
     let asset_id = old_project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5312,8 +5316,11 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         audio_clips.clear();
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut tail_snapshot.tracks[1].content {
+        midi_clips.clear();
+    }
     tail_snapshot.session.cells.clear();
-    let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
+    let tail_project = Project::from_snapshot(tail_snapshot).unwrap();
     let mut tail_candidate =
         SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
     tail_candidate
@@ -5326,8 +5333,13 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     {
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut candidate_snapshot.tracks[1].content
+    {
+        midi_clips.clear();
+    }
     candidate_snapshot.session.cells.clear();
-    let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let candidate_source = Project::from_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(empty_revision).unwrap();
@@ -7540,8 +7552,8 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     assert!(before_cut.iter().any(|frame| frame[0] != 0.0));
 
     let mut old_spans = MidiSpanBuffer::default();
-    let launch = match old.routes[0].owner {
-        RouteOwner::Session { launch, .. } => launch,
+    let origin = match old.routes[0].owner {
+        RouteOwner::Session { origin, .. } => origin,
         _ => panic!("Session source is selected"),
     };
     old.revision
@@ -7549,7 +7561,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
         .midi_clip(clip)
         .unwrap()
         .instrument_template()
-        .query(launch, &old.timing_view(), 100_000, 100_001, &mut old_spans)
+        .query_with_origin(origin, &old.timing_view(), 100_000, 100_001, &mut old_spans)
         .unwrap();
     let repeated = old_spans
         .spans()
@@ -7823,7 +7835,7 @@ fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
         Some(SessionPlaybackOwner::Session { clip })
     );
     assert!(
-        matches!(candidate.routes[0].owner, RouteOwner::Session { launch, .. } if launch == BeatTime::ZERO)
+        matches!(candidate.routes[0].owner, RouteOwner::Session { origin, .. } if origin == SessionMidiOrigin::launch(BeatTime::ZERO))
     );
 }
 
@@ -8328,10 +8340,10 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         candidate.owner(track),
         Some(SessionPlaybackOwner::Session { clip })
     );
-    let RouteOwner::Session { launch, .. } = candidate.routes[0].owner else {
+    let RouteOwner::Session { origin, .. } = candidate.routes[0].owner else {
         panic!("due launch selects the Session clip");
     };
-    assert_eq!(launch, effective_cut);
+    assert_eq!(origin, SessionMidiOrigin::launch(effective_cut));
     let mut spans = MidiSpanBuffer::default();
     candidate
         .revision
@@ -8339,7 +8351,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         .midi_clip(clip)
         .unwrap()
         .instrument_template()
-        .query(launch, &candidate.timing_view(), 96_000, 96_001, &mut spans)
+        .query_with_origin(origin, &candidate.timing_view(), 96_000, 96_001, &mut spans)
         .unwrap();
     assert!(spans.spans().any(|span| span.start_frame == 96_000));
 }
@@ -9099,7 +9111,7 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     let route = playback.route_status(0).unwrap();
     assert_eq!(route.track, track);
     assert_eq!(route.owner, SessionPlaybackOwner::Arrangement);
-    assert_eq!(route.active_launch, None);
+    assert_eq!(route.active_origin, None);
     assert_eq!(route.pending, None);
 
     playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -9114,7 +9126,10 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     assert_eq!(launched, initial.wrapping_add(1));
     let route = playback.route_status(0).unwrap();
     assert_eq!(route.owner, SessionPlaybackOwner::Session { clip });
-    assert_eq!(route.active_launch, Some(BeatTime::ZERO));
+    assert_eq!(
+        route.active_origin,
+        Some(SessionMidiOrigin::launch(BeatTime::ZERO))
+    );
 
     let mut advance = [[0.0; 2]; 64];
     playback.render(&mut advance).unwrap();
@@ -9167,8 +9182,8 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     );
     assert_eq!(playback.performance_frame(), 0);
     assert_eq!(
-        playback.route_status(0).unwrap().active_launch,
-        Some(BeatTime::ZERO)
+        playback.route_status(0).unwrap().active_origin,
+        Some(SessionMidiOrigin::launch(BeatTime::ZERO))
     );
 }
 
@@ -10397,7 +10412,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 60,
+                pitch: 61,
                 channel: 0,
                 velocity: 100,
             });
@@ -10413,7 +10428,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10558,7 +10573,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10571,7 +10586,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -11555,3 +11570,5 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
     refuses_without_emitting(&empty); // runtime-only population
     refuses_without_emitting(&main); // prepared-only population
 }
+
+mod cue_isolation;

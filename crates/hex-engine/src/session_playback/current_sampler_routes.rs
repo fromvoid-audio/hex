@@ -189,7 +189,7 @@ impl SessionPlayback {
                         return Err(e);
                     }
                 }
-                RouteOwner::Session { clip, launch } => {
+                RouteOwner::Session { clip, origin } => {
                     let prepared = self
                         .revision
                         .session()
@@ -199,7 +199,7 @@ impl SessionPlayback {
                         timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
                     prepared
                         .instrument_template()
-                        .query(launch, &timing, start, cut, &mut self.spans)
+                        .query_with_origin(origin, &timing, start, cut, &mut self.spans)
                         .map_err(SessionPlaybackError::Midi)?;
                     for span in self.spans.spans() {
                         if span.start_frame < now || span.start_frame >= cut {
@@ -232,7 +232,7 @@ impl SessionPlayback {
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         let (incoming_voices, incoming_onsets) = match next {
-            RouteOwner::Session { clip, launch } => {
+            RouteOwner::Session { clip, origin } => {
                 let prepared = self
                     .revision
                     .session()
@@ -242,7 +242,7 @@ impl SessionPlayback {
                     timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
                 prepared
                     .instrument_template()
-                    .query(launch, &timing, cut, end, &mut self.spans)
+                    .query_with_origin(origin, &timing, cut, end, &mut self.spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 (
                     prepared.work.active_voices,

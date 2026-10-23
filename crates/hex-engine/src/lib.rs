@@ -3207,6 +3207,7 @@ pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,
     MIDI_TEMPLATE_QUERY_FRAMES, MidiEdgeBuffer, MidiInstrumentRenderContext, MidiRenderSpan,
     MidiSpanBuffer, MidiTemplateError, PreparedMidiInstrumentTemplate, PreparedMidiSourceTemplate,
+    SessionMidiOrigin,
 };
 pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
@@ -3215,7 +3216,7 @@ pub use playback::{
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
 pub use prepared_tempo::{
-    MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
+    MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap, SessionClockAnchor,
 };
 pub use session_inventory::{
     PreparedSessionAudioClip, PreparedSessionCell, PreparedSessionCellContent,
@@ -3233,3 +3234,7 @@ pub use session_playback::{
 
 #[cfg(test)]
 mod main_chain_review_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/routed_midi_fixture.rs"]
+mod routed_midi_fixture;

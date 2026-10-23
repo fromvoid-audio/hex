@@ -185,7 +185,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
                         gain: hex_project::ClipGain::UNITY,
                         id: 3 + index as u64,
                         asset: 1,
-                        start: 0,
+                        start: 2 * index as u64,
                         duration: 2,
                         source_offset: 0,
                         source_length: 2,
