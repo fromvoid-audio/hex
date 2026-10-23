@@ -141,6 +141,18 @@ press **command+shift+t** to add a track for notes. select the intended track an
 piano roll. note position, length and pitch belong to the clip; selecting a device
 is a different operation.
 
+in arrange, drag a midi clip edge normally to trim its visible region. hold
+**shift** while dragging either edge to stretch its notes: note positions and
+lengths scale together, while pitch and velocity stay the same. the opposite edge
+stays fixed. **command** temporarily changes grid snapping; shift can be pressed
+or released during the drag. **escape** cancels the gesture. the note preview stays
+visible until the edit finishes; undo restores the whole stretch in one step.
+
+stretching also scales retained source offsets, loop markers and clip-volume
+points. extremely small intervals that cannot retain a positive duration are
+refused with the original clip preserved. per-note expression is not currently
+stored by hex.
+
 load a sample into the sampler on a selected midi track. sample loading requires
 the supported project/track state. replacing the current instrument is currently
 limited to the sampler's classic mode. check the selected track and loading status

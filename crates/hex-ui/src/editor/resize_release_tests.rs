@@ -1415,7 +1415,7 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
                     super::snapped_midi_edge_beat(drag, p, f32::from(released.x), lane, viewport)
                         .unwrap();
                 let expected = drag.clip.preview_edge_trim(drag.edge, beat).unwrap();
-                assert_ne!(Some(expected), *drag.preview.borrow());
+                assert_ne!(Some(expected.into()), *drag.preview.borrow());
                 (None, Some(expected))
             } else {
                 let drag = v.active_trim_drag.as_ref().expect("real audio capture");

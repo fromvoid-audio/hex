@@ -557,7 +557,11 @@ impl Render for EditorView {
                         event.modifiers.shift,
                         cx,
                     );
-                    view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
+                    view.refresh_midi_trim_snap_modifier(
+                        event.modifiers.platform,
+                        event.modifiers.shift,
+                        cx,
+                    );
                 });
                 window.refresh();
             })

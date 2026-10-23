@@ -458,6 +458,7 @@ impl Command {
             | Self::NudgeClip { clip, .. }
             | Self::TrimClipEndBy { clip, .. }
             | Self::TrimMidiClipEdge { clip, .. }
+            | Self::StretchMidiClipEdge { clip, .. }
             | Self::SplitMidiClip { clip, .. }
             | Self::MoveMidiClip { clip, .. }
             | Self::MoveMidiClipWithOverwrite { clip, .. }
