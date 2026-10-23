@@ -188,7 +188,7 @@ fn worker_raw_import_and_midi_placement_carve_literal_pcm_and_saved_history() {
         assert_eq!(render(&opened, 89), literal);
         // Corrupt only a clip's placement in a separate current-format document.
         let mut document: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(document["version"], 37);
+        assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
         let clips = document
             .pointer_mut("/tracks/0/audio_clips")
             .unwrap()
@@ -309,4 +309,71 @@ fn global_tempo_worker_publishes_natural_audio_onset_and_reopens_frozen_timing()
     assert!(reopened.open_complete && reopened.project_replaced);
     assert_eq!(reopened.state.project, changed.state.project);
     render_onset(&reopened, 8_000);
+}
+
+#[test]
+fn selection_warp_is_one_worker_publication_with_per_source_settings_and_history() {
+    use hex_project::{ClipEdit, WarpMode};
+    let files = Directory::new();
+    let service = Service::new(8_000, 32, 8_000_000).unwrap();
+    assert!(receive(&service).error.is_none());
+    let imported = run(
+        &service,
+        Request::Import(files.wav("selection-a.wav", 1_000, 8_192)),
+    );
+    let first = imported.state.project.tracks()[0].clips()[0].id();
+    let before = run(
+        &service,
+        Request::Import(files.wav("selection-b.wav", 500, -4_096)),
+    );
+    let second = before.state.project.tracks()[1].clips()[0].id();
+    let warped = run(
+        &service,
+        Request::Edit(Command::EditClips {
+            clips: vec![first, second],
+            edit: ClipEdit::WarpEnabled { enabled: true },
+        }),
+    );
+    assert_eq!(warped.state.revision, before.state.revision + 1);
+    for (clip, frames) in [(first, 1_000), (second, 500)] {
+        let domain = &warped
+            .state
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain;
+        assert!(domain.warp_enabled);
+        let settings = domain.warp.as_ref().unwrap();
+        assert!(matches!(settings.mode, WarpMode::Beats { .. }));
+        assert_eq!(settings.markers.last().unwrap().source_frame, frames);
+    }
+    let undo = run(&service, Request::Undo);
+    assert_eq!(undo.state.project, before.state.project);
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project, warped.state.project);
+    let natural = run(
+        &service,
+        Request::Edit(Command::EditClips {
+            clips: vec![first, second],
+            edit: ClipEdit::WarpEnabled { enabled: false },
+        }),
+    );
+    let expected = (0..1_000)
+        .map(|frame| [if frame < 500 { 0.125 } else { 0.25 }; 2])
+        .collect::<Vec<_>>();
+    assert_eq!(render(&natural, 61), expected);
+    let path = files.0.join("group.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    run(
+        &service,
+        Request::Edit(Command::EditClips {
+            clips: vec![first, second],
+            edit: ClipEdit::Gain { millidb: -6_000 },
+        }),
+    );
+    let opened = run(&service, Request::Open(path));
+    assert_eq!(opened.state.project, natural.state.project);
+    assert_eq!(render(&opened, 127), expected);
 }

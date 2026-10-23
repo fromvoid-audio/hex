@@ -164,7 +164,7 @@ fn current_volume_roundtrips_both_owners_unity_discontinuities_history_and_file_
     );
     let encoded = encode(editor.project()).unwrap();
     let value: Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(value["version"], 37);
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     let rows = value["midi_clip_volumes"]["clips"].as_array().unwrap();
     assert_eq!(rows.len(), 3, "unity is an explicit complete inventory row");
     assert!(

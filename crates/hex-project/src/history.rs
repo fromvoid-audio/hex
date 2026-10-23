@@ -162,7 +162,7 @@ impl Editor {
         commands: Vec<Command>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
-        self.execute_batch_prepared(commands, false, prepare)
+        self.execute_batch_prepared(commands, None, prepare)
     }
 
     /// Import an Arrangement audio batch as one replacement plan. Console imports
@@ -171,6 +171,22 @@ impl Editor {
     pub fn execute_audio_imports_prepared<T, E: From<Invalid>>(
         &mut self,
         commands: Vec<Command>,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
+        self.execute_audio_imports_with_warp_prepared(
+            commands,
+            crate::AudioImportWarp::Off,
+            prepare,
+        )
+    }
+
+    /// Apply the captured import policy to each new Arrangement source before
+    /// placement and preparation. Refusal preserves the complete previous history.
+    /// Console imports remain unwarped and reject a non-Off policy.
+    pub fn execute_audio_imports_with_warp_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
         let arrangement = !commands.is_empty()
@@ -182,13 +198,18 @@ impl Editor {
                         | Command::ImportPreparedAudioClipWithOverwrite { .. }
                 )
             });
-        self.execute_batch_prepared(commands, arrangement, prepare)
+        if !arrangement && warp != crate::AudioImportWarp::Off {
+            return Err(E::from(Invalid(
+                "auto-warp requires arrangement audio imports",
+            )));
+        }
+        self.execute_batch_prepared(commands, arrangement.then_some(warp), prepare)
     }
 
     fn execute_batch_prepared<T, E: From<Invalid>>(
         &mut self,
         commands: Vec<Command>,
-        arrangement_import: bool,
+        arrangement_import: Option<crate::AudioImportWarp>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
         if commands.len() > crate::MAX_CLIPS {
@@ -199,8 +220,8 @@ impl Editor {
             .try_reserve_exact(commands.len())
             .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
         let mut candidate = self.project.clone();
-        if arrangement_import {
-            results = candidate.apply_audio_imports(commands)?;
+        if let Some(warp) = arrangement_import {
+            results = candidate.apply_audio_imports(commands, warp)?;
         } else {
             for command in commands {
                 results.push(candidate.apply(command)?);

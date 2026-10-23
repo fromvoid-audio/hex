@@ -149,7 +149,7 @@ fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext
 }
 
 #[gpui::test]
-fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
+fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     cx: &mut TestAppContext,
 ) {
     cx.update(super::bind_editor_keys);
@@ -212,13 +212,22 @@ fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
             .is_some()
     );
 
+    let before = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    assert!(visual.debug_bounds("section-edit-cursor").is_some());
     visual.simulate_keystrokes("cmd-e");
     editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::SplitTracksAtFrame { tracks, frame })
-                if tracks == &[audio_track, midi_track] && *frame == view.edit_cursor.unwrap().frame
-        ));
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "a gap must not fall through to song-wide clip splitting"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|e| e.contains("strictly inside a section"))
+        );
     });
 }
 
@@ -1310,6 +1319,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        document_format_upgrade_required: false,
         open_complete: false,
         project_replaced: false,
         stopped_playback_restore_complete: false,

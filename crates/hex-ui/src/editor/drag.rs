@@ -2094,4 +2094,4 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "group_drag_ui_test.rs"]
-mod group_drag_ui_test;
+pub(super) mod group_drag_ui_test;

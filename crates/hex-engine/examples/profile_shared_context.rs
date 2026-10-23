@@ -284,6 +284,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),

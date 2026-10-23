@@ -1,13 +1,13 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
-    CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
-    MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
-    OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
-    PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
-    RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
-    SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
+    FitTimeline, ImportAudio, InsertTimeSelection, LoopSelection, MergeSections, MidiOctaveDown,
+    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
+    OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
+    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
+    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
+    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
+    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme;
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -371,7 +371,9 @@ impl Render for EditorView {
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
+        self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_track_resize(window, cx);
+        self.reconcile_track_reorder(window);
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
         self.sync_tuning(cx);
@@ -518,12 +520,6 @@ impl Render for EditorView {
                         view.clear_browser_audio_drag(&drag);
                         cx.notify();
                     });
-                }
-                if event.button == MouseButton::Left && view.active_fade_drag.is_some() {
-                    view.update_fade_gesture(event.position, event.modifiers.platform, cx);
-                    view.finish_fade_gesture(window, cx);
-                    cx.stop_propagation();
-                    return;
                 }
                 if view.finish_trim_pointer_release(event, false, window, cx) {
                     cx.stop_active_drag(window);
@@ -709,9 +705,13 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
-                if view.cancel_trim_gesture(cx) | view.cancel_track_resize(cx) {
+                if view.cancel_trim_gesture(cx)
+                    | view.cancel_track_resize(cx)
+                    | view.cancel_track_reorder()
+                {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.cancel_active_browser_audio_drag() {
@@ -759,15 +759,18 @@ impl Render for EditorView {
                 view.cancel_active_browser_audio_drag();
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
+                view.cancel_track_reorder();
                 view.device_panel.navigation.cancel();
                 view.stop();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                view.cancel_duplicate_chain();
                 if view.cancel_loop_rail_gesture()
                     | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
+                    | view.cancel_track_reorder()
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
@@ -1036,6 +1039,18 @@ impl Render for EditorView {
                 view.insert_time_selection(window);
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &DeleteSectionMarker, window, cx| {
+                if !view.delete_section_kind(true, window) {
+                    cx.propagate();
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &MergeSections, window, cx| {
+                if !view.merge_sections(window) {
+                    cx.propagate();
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
                 if view.delete_section(window) {
                     cx.notify();
@@ -1113,6 +1128,10 @@ impl Render for EditorView {
                 {
                     return;
                 }
+                if view.duplicate_section(window) {
+                    cx.notify();
+                    return;
+                }
                 if view.midi_focus.is_focused(window) {
                     if !view.duplicate_midi_time_selection() {
                         view.duplicate_piano_notes();
@@ -1133,8 +1152,6 @@ impl Render for EditorView {
                     && view.selected_scene.is_some()
                 {
                     view.duplicate_selected_scene();
-                } else if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                    view.duplicate_midi_clip(clip);
                 } else if view.mode == super::EditorMode::Session {
                     view.error = Some("session cell duplication is not available yet".into());
                 } else {
@@ -1160,8 +1177,10 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SplitClip, _, cx| {
-                view.split_at_edit_cursor();
+            .on_action(cx.listener(|view, _: &SplitClip, window, cx| {
+                if !view.split_section_at_cursor(window) {
+                    view.split_at_edit_cursor();
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ExportProject, window, cx| {

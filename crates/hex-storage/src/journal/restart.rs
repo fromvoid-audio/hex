@@ -182,7 +182,7 @@ mod tests {
             let path = self.0.join("untitled.hex-journal");
             let mut bytes = replacement::encode_envelope(
                 "untitled.hex-journal",
-                br#"{"format":"hex-project","version":31}"#,
+                br#"{"format":"hex-project","version":0}"#,
             )
             .unwrap();
             bytes[..8].copy_from_slice(MAGIC);
@@ -193,7 +193,7 @@ mod tests {
                     .err()
                     .unwrap()
                     .to_string()
-                    .contains("unsupported project format or version; current format is 37")
+                    .contains("unsupported older project schema")
             );
             let token = JournalRestartToken::capture(path.clone()).unwrap();
             (path, bytes, token)
@@ -223,7 +223,7 @@ mod tests {
             load_journal(&preserved)
                 .unwrap_err()
                 .to_string()
-                .contains("unsupported project format or version; current format is 37")
+                .contains("unsupported older project schema")
         );
         assert_eq!(load_journal(&path).unwrap(), project);
         let mut journal = outcome.journal.unwrap();
