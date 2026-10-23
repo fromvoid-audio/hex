@@ -66,9 +66,9 @@ pub use numeric_control::{
     NumericEventPhase, bind_numeric_control_keys,
 };
 pub use response_graph::{
-    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,
-    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent,
-    ResponseGraphScrollPhase, bind_response_graph_keys,
+    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
+    ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraphScrollEvent, ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
     ActionStyle, CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle,
