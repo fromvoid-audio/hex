@@ -137,6 +137,7 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
             .execute(Command::ReplaceTrackGainEnvelope {
                 track,
                 points: vec![hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 1.0,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -437,11 +438,13 @@ fn assert_transformed_warp_export(mode: hex_project::WarpMode) {
             track,
             points: vec![
                 GainPoint {
+                    incoming_gain: None,
                     beat: BeatTime::ZERO,
                     gain: 0.25,
                     outgoing: GainInterpolation::Linear,
                 },
                 GainPoint {
+                    incoming_gain: None,
                     beat: BeatTime::ONE,
                     gain: 0.75,
                     outgoing: GainInterpolation::Step,

@@ -205,10 +205,31 @@ fn lane_concatenation_uses_converted_lengths_and_existing_overwrite() {
 #[test]
 fn single_file_equivalent_to_existing_methods_for_both_destinations() {
     for lane in [false, true] {
-        let mut old = session();
-        let mut new = session();
-        let old_track = track(&mut old);
-        let new_track = track(&mut new);
+        // Both import routes start from the same authored project. Cyan is the
+        // only unused hue, so creation remains deterministic without replacing
+        // production randomness or discarding colors from the comparison.
+        let mut fixture = hex_project::Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        for color in hex_project::ElementColor::TRACK_CHOICES
+            .into_iter()
+            .filter(|color| *color != hex_project::ElementColor::Cyan)
+        {
+            let Created::Track(track) = fixture
+                .execute(hex_project::Command::AddTrack {
+                    name: "authored color fixture".into(),
+                })
+                .unwrap()
+            else {
+                panic!("expected track")
+            };
+            fixture
+                .execute(hex_project::Command::SetTrackColor { track, color })
+                .unwrap();
+        }
+        let baseline = fixture.project().clone();
+        let mut old = Session::from_loaded(baseline.clone(), 16, 8_000_000, Vec::new()).unwrap();
+        let mut new = Session::from_loaded(baseline, 16, 8_000_000, Vec::new()).unwrap();
+        let old_track = old.project().tracks()[0].id();
+        let new_track = new.project().tracks()[0].id();
         let a = media(24_000, 6, 100);
         let mut b = media(24_000, 6, 100);
         b.path = a.path.clone();
@@ -231,10 +252,26 @@ fn single_file_equivalent_to_existing_methods_for_both_destinations() {
             }
         };
         import(&mut new, vec![b], destination);
+        if !lane {
+            assert_eq!(
+                old.project().tracks()[0].color(),
+                hex_project::ElementColor::Cyan
+            );
+        }
         assert_eq!(old.project(), new.project());
         assert_eq!(old.resident_frames(), new.resident_frames());
         assert_eq!(old.resident_waveform_bins(), new.resident_waveform_bins());
         assert_eq!(old.resident_waveform_bytes(), new.resident_waveform_bytes());
+        let after = old.project().clone();
+        assert!(old.undo() && new.undo());
+        assert_eq!(
+            old.project(),
+            new.project(),
+            "complete canonical undo states"
+        );
+        assert!(old.redo() && new.redo());
+        assert_eq!(old.project(), &after);
+        assert_eq!(new.project(), &after);
     }
 }
 
@@ -517,5 +554,92 @@ fn unsupported_metadata_in_middle_or_end_never_imports_other_members() {
             .is_err()
         );
         assert_unchanged(&s, &before, 0, 0, false, false);
+    }
+}
+
+#[test]
+fn final_admission_refusal_preserves_exact_current_waveform_owners() {
+    for warp in [
+        hex_project::AudioImportWarp::Off,
+        hex_project::AudioImportWarp::Beats,
+    ] {
+        let mut s = session();
+        import(
+            &mut s,
+            vec![media(48_000, 24_000, 8192)],
+            empty_destination(),
+        );
+        // Raw clips use their asset summary rather than a derived clip view.
+        // Seed a real processed view so refusal must preserve an existing owner.
+        let clip = s.project().tracks()[0].clips()[0].id();
+        s.command_prepared_revision(Command::SetAudioClipPitch { clip, cents: 100 }, None)
+            .unwrap();
+        let before = s.project().clone();
+        let waveforms = s.audio_clip_waveforms().unwrap();
+        assert_eq!(waveforms.len(), 1);
+        let frames = s.resident_frames();
+        let bank = s.media.len();
+        let cache_bytes = s.audio_transforms.cached_pcm_bytes().unwrap();
+        let pending = media(48_000, 12_000, -4096);
+        let rejected_pcm = pending.audio.clone();
+        let mut calls = 0;
+        let refused = s.import_prepared_batch_revision_using(
+            vec![pending],
+            empty_destination(),
+            &before,
+            None,
+            AudioImportOptions {
+                warp,
+                ..Default::default()
+            },
+            || {
+                calls += 1;
+                if calls == 2 {
+                    Err(SessionError::Invalid("injected final admission refusal"))
+                } else {
+                    Ok(())
+                }
+            },
+            |input, admit| {
+                let staged = input.waveforms;
+                prepare_asset_free(input, &mut || {
+                    if warp == hex_project::AudioImportWarp::Beats {
+                        assert!(
+                            staged
+                                .borrow()
+                                .keys()
+                                .any(|clip| !waveforms.contains_key(clip)),
+                            "the final refusal must discard a genuinely staged new waveform owner"
+                        );
+                    }
+                    admit()
+                })
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(calls, 2, "the refusal must follow completed preparation");
+        assert_unchanged(&s, &before, bank, frames, true, false);
+        let after = s.audio_clip_waveforms().unwrap();
+        assert_eq!(
+            after.keys().collect::<Vec<_>>(),
+            waveforms.keys().collect::<Vec<_>>()
+        );
+        for (clip, old) in &waveforms {
+            let current = &after[clip];
+            assert!(Arc::ptr_eq(&old.waveform, &current.waveform));
+            assert_eq!((current.offset, current.length), (old.offset, old.length));
+        }
+        assert!(
+            after
+                .values()
+                .all(|view| !view.waveform.shares_audio_with(&rejected_pcm))
+        );
+        if warp == hex_project::AudioImportWarp::Off {
+            // The raw refusal has no paid transform cache: no unpublished PCM
+            // may escape through either canonical waveform or transform storage.
+            assert_eq!(s.audio_transforms.cached_pcm_bytes().unwrap(), cache_bytes);
+        }
+        // Beats transforms retain their existing independently charged bounded
+        // cache contract. This check targets the uncharged canonical display map.
     }
 }

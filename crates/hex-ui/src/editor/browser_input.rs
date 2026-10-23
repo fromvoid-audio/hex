@@ -1,4 +1,6 @@
 //! Native GPUI text input used by the browser filter, including IME and clipboard.
+//! Only query mode reserves a clear-action slot. Pointer and accessibility actions
+//! clear/refocus this same input; semantic receipts never own filtering or history.
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
@@ -42,9 +44,15 @@ pub(super) struct BrowserSearch {
     reversed: bool,
     marked: Option<Range<usize>>,
     mouse_selection: Option<MouseSelection>,
+    text_click: hex_widgets::TextClickSelection,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     last_origin_x: Option<Pixels>,
+    // Display-only semantic receipt; filtering still reads `content` directly.
+    // Revisions distinguish native button actions from an older text/composition.
+    clear_accessibility_lifetime: gpui::AccessibilityLifetime,
+    clear_accessibility_revision: Option<u64>,
+    clear_accessibility_source: (String, Option<Range<usize>>),
 }
 
 impl BrowserSearch {
@@ -57,9 +65,13 @@ impl BrowserSearch {
             reversed: false,
             marked: None,
             mouse_selection: None,
+            text_click: hex_widgets::TextClickSelection::default(),
             last_layout: None,
             last_bounds: None,
             last_origin_x: None,
+            clear_accessibility_lifetime: gpui::AccessibilityLifetime::default(),
+            clear_accessibility_revision: Some(0),
+            clear_accessibility_source: (String::new(), None),
         }
     }
 
@@ -79,30 +91,123 @@ impl BrowserSearch {
     }
     pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         self.focus(window);
         self.unmark_text(window, cx);
         self.select_all(&BrowserSelectAll, window, cx);
     }
 
-    // Results share this input's FocusHandle. Their explicit mouse entry into
-    // text mode selects all too, while retaining the current down-point for drag.
-    pub(super) fn select_all_on_mouse_entry(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let selection = self.mouse_selection;
-        self.focus_and_select_all(window, cx);
-        self.mouse_selection = selection;
-    }
-
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         self.content.clear();
         self.selected = 0..0;
         self.reversed = false;
         self.marked = None;
         cx.notify();
+    }
+
+    fn has_committed_search_text(&self) -> bool {
+        !self.clip_name
+            && !self.content.is_empty()
+            && self
+                .marked
+                .as_ref()
+                .is_none_or(|marked| marked.start > 0 || marked.end < self.content.len())
+    }
+
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_committed_search_text() {
+            self.clear(cx);
+            self.focus(window);
+        }
+    }
+
+    fn clear_search_slot(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        if self.clear_accessibility_source.0 != self.content
+            || self.clear_accessibility_source.1 != self.marked
+        {
+            // Exhaustion retires native actions rather than reusing a receipt;
+            // ordinary pointer/text input remains available on the actual owner.
+            self.clear_accessibility_revision = self
+                .clear_accessibility_revision
+                .and_then(|revision| revision.checked_add(1));
+            self.clear_accessibility_source = (self.content.clone(), self.marked.clone());
+        }
+        let active = self.has_committed_search_text();
+        div()
+            .debug_selector(|| "browser-search-clear-slot".into())
+            .w(px(20.0))
+            .h(px(20.0))
+            .flex_shrink_0()
+            .children(active.then(|| {
+                let button =
+                    hex_widgets::action(crate::theme::text("×"), crate::theme::action_style())
+                        .id("browser-search-clear")
+                        .debug_selector(|| "browser-search-clear".into())
+                        .size(px(20.0))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| super::transport::MiniTooltip {
+                                description: crate::theme::text("clear search"),
+                            })
+                            .into()
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|input, _, window, cx| {
+                                cx.stop_propagation();
+                                input.clear_search(window, cx);
+                            }),
+                        );
+                let Some(revision) = self.clear_accessibility_revision else {
+                    return button;
+                };
+                let entity = cx.entity();
+                let owner = entity.downgrade();
+                let source = self.clear_accessibility_source.clone();
+                button.accessibility(
+                    gpui::AccessibilityDescriptor {
+                        id: gpui::AccessibilityId(entity.entity_id().as_u64()),
+                        revision,
+                        lifetime: self.clear_accessibility_lifetime.weak(),
+                        name: crate::theme::text("clear search"),
+                        value: gpui::AccessibilityValue::Button,
+                        enabled: true,
+                        focused: self.focus.is_focused(window),
+                        status: None,
+                    },
+                    move |request, window, cx| {
+                        owner
+                            .update(cx, |input, cx| {
+                                if input.clear_accessibility_revision != Some(request.revision)
+                                    || (input.content.as_str(), &input.marked)
+                                        != (source.0.as_str(), &source.1)
+                                    || !input.has_committed_search_text()
+                                {
+                                    return false;
+                                }
+                                match request.action {
+                                    gpui::AccessibilityAction::Focus => input.focus(window),
+                                    gpui::AccessibilityAction::Press => {
+                                        input.clear_search(window, cx)
+                                    }
+                                    _ => return false,
+                                }
+                                true
+                            })
+                            .unwrap_or(false)
+                    },
+                )
+            }))
+    }
+
+    /// Browser-owned location restoration, without focus or a text edit event.
+    pub(super) fn restore_query(&mut self, content: &str, cx: &mut Context<Self>) {
+        // Reuse clear's complete input/gesture invariants (including any shared
+        // selection policy), then publish only the final value at update end.
+        self.clear(cx);
+        self.content.push_str(content);
+        self.selected = self.content.len()..self.content.len();
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -135,6 +240,7 @@ impl BrowserSearch {
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let offset = offset.min(self.content.len());
         if self.reversed {
             self.selected.start = offset;
@@ -150,6 +256,7 @@ impl BrowserSearch {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let offset = offset.min(self.content.len());
         self.selected = offset..offset;
         self.reversed = false;
@@ -204,6 +311,7 @@ impl BrowserSearch {
 
     fn select_all(&mut self, _: &BrowserSelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         self.selected = 0..self.content.len();
         self.reversed = false;
         cx.notify();
@@ -291,6 +399,19 @@ impl BrowserSearch {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.focus.is_focused(window);
+        let mut gesture = self.text_click;
+        if !focused || event.modifiers.shift {
+            gesture.clear();
+        }
+        let toggle = (!event.modifiers.shift)
+            .then(|| {
+                gesture.selection_for_down(
+                    event.click_count,
+                    focused && !self.content.is_empty() && self.selected == (0..self.content.len()),
+                )
+            })
+            .flatten();
         let offset = self.index_for_point(event.position);
         let anchor = if event.modifiers.shift && self.focus.is_focused(window) {
             if self.reversed {
@@ -304,20 +425,26 @@ impl BrowserSearch {
         self.unmark_text(window, cx);
         if !self.clip_name && !self.focus.is_focused(window) {
             self.focus_and_select_all(window, cx);
+        } else if let Some(all) = toggle {
+            if all {
+                self.select_all(&BrowserSelectAll, window, cx);
+            } else {
+                self.move_to(offset, cx);
+            }
         } else if event.modifiers.shift {
             self.select_to(offset, cx);
         } else {
             self.move_to(offset, cx);
         }
+        self.text_click = gesture;
         self.focus.focus(window);
         self.mouse_selection = Some(MouseSelection {
             anchor,
             origin: event.position,
             dragging: false,
         });
-        if self.clip_name {
-            cx.stop_propagation();
-        }
+        // The field owns this click; its browser parent owns non-text clicks.
+        cx.stop_propagation();
     }
 
     fn mouse_move(
@@ -331,6 +458,7 @@ impl BrowserSearch {
         };
         if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
             self.mouse_selection = None;
+            self.text_click.clear();
             return;
         }
         // A focus click stays Select All through ordinary pointer jitter. A
@@ -341,6 +469,7 @@ impl BrowserSearch {
         {
             return;
         }
+        self.text_click.clear();
         if let Some(selection) = self.mouse_selection.as_mut() {
             selection.dragging = true;
         }
@@ -387,6 +516,7 @@ impl EntityInputHandler for BrowserSearch {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.marked = None;
+        self.text_click.clear();
     }
 
     fn replace_text_in_range(
@@ -397,6 +527,7 @@ impl EntityInputHandler for BrowserSearch {
         cx: &mut Context<Self>,
     ) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -430,6 +561,7 @@ impl EntityInputHandler for BrowserSearch {
         cx: &mut Context<Self>,
     ) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -545,8 +677,8 @@ impl Focusable for BrowserSearch {
 }
 
 impl gpui::Render for BrowserSearch {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = div()
             .debug_selector({
                 let name = self.clip_name;
                 move || {
@@ -584,8 +716,21 @@ impl gpui::Render for BrowserSearch {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-            .child(BrowserSearchElement { input: cx.entity() })
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down));
+        if self.clip_name {
+            input.child(BrowserSearchElement { input: cx.entity() })
+        } else {
+            input
+                .child(
+                    div()
+                        .debug_selector(|| "browser-search-text".into())
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(BrowserSearchElement { input: cx.entity() }),
+                )
+                .child(self.clear_search_slot(window, cx))
+        }
     }
 }
 
@@ -781,7 +926,9 @@ impl Element for BrowserSearchElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = state.selection.take() {
+        if focus.is_focused(window)
+            && let Some(selection) = state.selection.take()
+        {
             window.paint_quad(selection);
         }
         if let Some(line) = state.line.take() {

@@ -343,6 +343,29 @@ fn maximum_cyclic_arc_overlap(
     Ok(maximum)
 }
 
+// Upper bound for the existing linear, periodic and first-tail temporary arrays.
+// If the tail is shorter than a period, reserve two edges per repeat plus
+// every intro. Longer tails admit at most128 repeat occurrences (256 edges).
+pub(super) fn current_sampler_workspace_quote(
+    notes: usize,
+) -> Result<usize, crate::AudioStorageError> {
+    use std::mem::size_of;
+    notes
+        .checked_mul(
+            2 * size_of::<(u128, bool)>()
+                + size_of::<(u128, u128)>()
+                + 4 * size_of::<(u128, bool)>(),
+        )
+        .and_then(|n| {
+            n.checked_add(
+                notes
+                    .checked_add(256)?
+                    .checked_mul(size_of::<TailEvent>())?,
+            )
+        })
+        .ok_or(crate::AudioStorageError::Overflow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

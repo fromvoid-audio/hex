@@ -154,6 +154,24 @@ impl TestAppContext {
         }
     }
 
+    /// Opt into real macOS font registration and shaping for a disposable test.
+    /// Call before opening any window. This retains the deterministic test
+    /// platform and never creates an OS window or changes system font settings.
+    /// Default test contexts continue to use the no-op text system.
+    #[cfg(all(target_os = "macos", feature = "font-kit"))]
+    pub fn use_native_text_system(&mut self) -> Result<()> {
+        let mut app = self.app.borrow_mut();
+        if !app.windows.is_empty() {
+            bail!("native test text system must be selected before opening windows");
+        }
+        let text_system = Arc::new(TextSystem::new(Arc::new(
+            crate::platform::MacTextSystem::new(),
+        )));
+        app.text_system = Arc::clone(&text_system);
+        self.text_system = text_system;
+        Ok(())
+    }
+
     /// Create a single TestAppContext, for non-multi-client tests
     pub fn single() -> Self {
         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
@@ -315,6 +333,38 @@ impl TestAppContext {
         select_path: impl FnOnce(&std::path::Path) -> Option<std::path::PathBuf>,
     ) {
         self.test_platform.simulate_new_path_selection(select_path);
+    }
+
+    /// Whether the test platform has an outstanding Open picker request.
+    pub fn did_prompt_for_paths(&self) -> bool {
+        self.test_platform.did_prompt_for_paths()
+    }
+
+    /// Complete the test platform Open picker; this does not show a native picker.
+    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
+        self.test_platform.simulate_paths_selection(paths);
+    }
+
+    /// Arguments of the pending injected Open request; never a native panel probe.
+    pub fn pending_open_directory(&self) -> Option<Option<std::path::PathBuf>> {
+        self.test_platform.pending_open_directory()
+    }
+    /// Initial directory and suggested name of an injected Save request.
+    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
+        self.test_platform.pending_save_options()
+    }
+    /// Complete the injected Open request with a platform error, without a panel.
+    pub fn simulate_paths_error(&self, message: &str) {
+        self.test_platform.simulate_paths_error(message);
+    }
+    /// Complete the injected Save request with a platform error, without a panel.
+    pub fn simulate_new_path_error(&self, message: &str) {
+        self.test_platform.simulate_new_path_error(message);
+    }
+    /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
+    #[cfg(target_os = "macos")]
+    pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+        crate::MacPlatform::picker_directory_url_for_test(directory)
     }
 
     /// Simulates clicking a button in an platform-level alert dialog.
@@ -708,6 +758,29 @@ impl VisualTestContext {
                 .rev()
                 .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
                 .map(|quad| quad.background)
+        })
+    }
+
+    /// Filled quad fragments inside a debug element in the completed scene,
+    /// clipped to its bounds and each replay/content mask. Canvas primitives do
+    /// not have individual element selectors. This is scene geometry, not native
+    /// framebuffer readback; it draws no frame and injects no input.
+    pub fn rendered_filled_quads(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<(Bounds<crate::ScaledPixels>, crate::Background)> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.quads.iter().filter_map(|quad| {
+                let visible = quad.bounds.intersect(&scaled).intersect(&quad.content_mask.bounds);
+                (!quad.background.is_transparent()
+                    && visible.size.width > crate::ScaledPixels(0.0)
+                    && visible.size.height > crate::ScaledPixels(0.0))
+                    .then(|| (visible, quad.background.clone()))
+            }).collect()
         })
     }
 

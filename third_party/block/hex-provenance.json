@@ -10,6 +10,6 @@
     "src/test_utils.rs": "271bd579b67e2440134227cf8ee52c1b8c22854eb0c7923b46306b51810c2cf1"
   },
   "patched_files": {
-    "src/lib.rs": "e4f938c6b43dec86560f60799c84502565d52d80f66f92d4fc9517fcd59d8973"
+    "src/lib.rs": "bf799f4d01bb497fdcffe7a5e28d998e721ed45c1be866ed1b454df39ce876a9"
   }
 }

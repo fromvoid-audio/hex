@@ -18,9 +18,9 @@ impl Gallery {
             theme::device_header_action_style(
                 self.selected,
                 if self.bypassed {
-                    theme::DeviceActionRole::Muted
+                    theme::DeviceActionRole::Bypassed
                 } else {
-                    theme::DeviceActionRole::Normal
+                    theme::DeviceActionRole::Enabled
                 },
             ),
         )
@@ -112,6 +112,7 @@ impl Gallery {
                     .child(fixture.number(1))
                     .child(fixture.number(2)),
             ),
+            Entry::Eq => eq::body(fixture),
             Entry::Eq8 => {
                 let mut bands = device_composition::rail_column()
                     .w(px(96.0))

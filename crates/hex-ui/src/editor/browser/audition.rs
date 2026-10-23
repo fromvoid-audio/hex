@@ -1,7 +1,6 @@
 //! One bounded sample transport row; cached peaks never decode during painting.
 use super::*;
 use gpui::{Bounds, fill, point, size};
-use hex_session::{CachedPeak, CachedWaveform};
 
 /// Normalize hit geometry without trusting stale or zero-width bounds.
 fn hit_fraction(x: f32, left: f32, width: f32) -> Option<f64> {
@@ -20,50 +19,6 @@ pub(super) fn frame_at_fraction(frames: usize, fraction: f64) -> usize {
         return frames;
     }
     ((frames as f64 * fraction).floor() as usize).min(frames)
-}
-
-fn combined_peak(channels: &[CachedPeak; 2]) -> CachedPeak {
-    CachedPeak {
-        min: channels[0].min.min(channels[1].min),
-        max: channels[0].max.max(channels[1].max),
-    }
-}
-
-fn mini_waveform(waveform: Arc<CachedWaveform>) -> Div {
-    div().absolute().inset_0().child(
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let width = f32::from(bounds.size.width);
-                let height = f32::from(bounds.size.height);
-                if width <= 0.0 || height <= 0.0 || waveform.bins.is_empty() {
-                    return;
-                }
-                let step = width / waveform.bins.len() as f32;
-                let half = (height - 2.0).max(0.0) * 0.5;
-                let color = rgb(theme::color(theme::PaletteRole::Muted));
-                for (index, channels) in waveform.bins.iter().enumerate() {
-                    let peak = combined_peak(channels);
-                    let x = index as f32 * step;
-                    let top = (half - peak.max.clamp(-1.0, 1.0) * half) + 1.0;
-                    let bottom = (half - peak.min.clamp(-1.0, 1.0) * half) + 1.0;
-                    let bar_width = step.max(1.0).min((width - x).max(0.0));
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            bounds.origin + point(px(x), px(top.min(height))),
-                            size(
-                                px(bar_width),
-                                px((bottom - top).max(1.0).min((height - top).max(0.0))),
-                            ),
-                        ),
-                        color,
-                    ));
-                }
-            },
-        )
-        .absolute()
-        .inset_0(),
-    )
 }
 
 impl EditorView {
@@ -102,6 +57,7 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
+                    view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
                     action(view, cx);
@@ -187,6 +143,7 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
                     if let (Some(path), Some(bounds)) = (&click_path, bounds.get())
@@ -224,7 +181,13 @@ impl EditorView {
             }
             let metadata = slot.metadata.borrow().clone();
             if let Some(metadata) = metadata {
-                waveform = waveform.child(mini_waveform(Arc::clone(&metadata.waveform)));
+                waveform = waveform.child(super::super::overview_waveform::render(
+                    super::super::overview_waveform::Source::Browser(Arc::clone(
+                        &metadata.waveform,
+                    )),
+                    Rc::clone(&self.overview_waveform_cache),
+                    None,
+                ));
             } else {
                 let label = if slot.error.borrow().is_some() {
                     "unavailable"
@@ -318,22 +281,5 @@ mod tests {
             assert!(hit_fraction(1.0, 0.0, width).is_none());
         }
         assert!(hit_fraction(f32::NAN, 0.0, 10.0).is_none());
-    }
-
-    #[test]
-    fn combined_waveform_keeps_opposite_phase_channel_peaks() {
-        assert_eq!(
-            combined_peak(&[
-                CachedPeak { min: 0.8, max: 0.8 },
-                CachedPeak {
-                    min: -0.8,
-                    max: -0.8
-                },
-            ]),
-            CachedPeak {
-                min: -0.8,
-                max: 0.8
-            }
-        );
     }
 }
