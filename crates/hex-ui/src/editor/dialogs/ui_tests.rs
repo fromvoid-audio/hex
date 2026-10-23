@@ -50,7 +50,7 @@ fn native_new_action_survives_editor_focus_loss(cx: &mut TestAppContext) {
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.opening_project || view.pending_new_mode.is_some(),
+            view.opening_project || view.project_open.busy(),
             "native New action was silently lost without a focused editor element"
         )
     });
@@ -141,10 +141,7 @@ fn project_actions_preserve_confirmation_and_dispatch_once_after_rerender(cx: &m
     visual.dispatch_action(NewProject);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.pending_new_mode,
-            Some(hex_session::DocumentAudioMode::Resident)
-        );
+        assert!(view.project_open.busy());
         assert!(
             !view.opening_project,
             "one click must not confirm its own replacement"
@@ -156,6 +153,10 @@ fn project_actions_preserve_confirmation_and_dispatch_once_after_rerender(cx: &m
     visual.run_until_parked();
     visual.update(|window, cx| editor.read(cx).focus.focus(window));
     visual.simulate_keystrokes("cmd-n");
+    visual.run_until_parked();
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("don't save");
+    visual.run_until_parked();
     pump(&editor, cx, |view| {
         settled(view) && view.project_generation > before.1
     });
@@ -255,20 +256,15 @@ fn project_fallback_targets_only_active_editor_not_another_window(cx: &mut TestA
     });
     cx.update(|cx| cx.dispatch_action(&NewProject));
     second_visual.run_until_parked();
-    first.read_with(cx, |view, _| assert!(view.pending_new_mode.is_none()));
-    second.read_with(cx, |view, _| {
-        assert_eq!(
-            view.pending_new_mode,
-            Some(hex_session::DocumentAudioMode::Resident)
-        )
-    });
+    first.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    second.read_with(cx, |view, _| assert!(view.project_open.busy()));
     let unrelated = *cx.add_window(|_, _| gpui::Empty);
     cx.update_window(unrelated, |_, window, _| window.activate_window())
         .unwrap();
     cx.update(|cx| cx.dispatch_action(&NewProject));
     second_visual.run_until_parked();
     second.read_with(cx, |view, _| assert!(!view.opening_project));
-    first.read_with(cx, |view, _| assert!(view.pending_new_mode.is_none()));
+    first.read_with(cx, |view, _| assert!(!view.project_open.busy()));
 }
 
 #[gpui::test]
@@ -286,8 +282,8 @@ fn project_menu_without_active_or_after_closed_window_cannot_touch_another_edito
     first_visual.deactivate_window();
     cx.update(|cx| cx.dispatch_action(&NewProject));
     first_visual.run_until_parked();
-    first.read_with(cx, |view, _| assert!(view.pending_new_mode.is_none()));
-    second.read_with(cx, |view, _| assert!(view.pending_new_mode.is_none()));
+    first.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    second.read_with(cx, |view, _| assert!(!view.project_open.busy()));
     first_visual.update(|window, _| window.remove_window());
     cx.update_window(second_handle, |_, window, _| {
         window.activate_window();
@@ -296,12 +292,7 @@ fn project_menu_without_active_or_after_closed_window_cannot_touch_another_edito
     .unwrap();
     cx.update(|cx| cx.dispatch_action(&NewProject));
     cx.run_until_parked();
-    second.read_with(cx, |view, _| {
-        assert_eq!(
-            view.pending_new_mode,
-            Some(hex_session::DocumentAudioMode::Resident)
-        )
-    });
+    second.read_with(cx, |view, _| assert!(view.project_open.busy()));
 }
 
 #[gpui::test]
@@ -319,10 +310,7 @@ fn focused_file_action_keeps_one_confirmation_and_pending_project_action_refuses
     });
     visual.dispatch_action(NewProject);
     editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.pending_new_mode,
-            Some(hex_session::DocumentAudioMode::Resident)
-        );
+        assert!(view.project_open.busy());
         assert!(
             !view.opening_project,
             "focused handler and fallback must not both run"
@@ -330,11 +318,11 @@ fn focused_file_action_keeps_one_confirmation_and_pending_project_action_refuses
     });
     editor.update(cx, |view, _| {
         view.opening_project = true;
-        view.pending_new_mode = None;
+        view.cancel_open_after_save();
     });
     visual.update(|window, _| window.blur());
     visual.dispatch_action(NewProject);
-    editor.read_with(cx, |view, _| assert!(view.pending_new_mode.is_none()));
+    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
 }
 
 #[gpui::test]
@@ -351,7 +339,7 @@ fn unfocused_streaming_file_actions_preserve_explicit_mode_refusal(cx: &mut Test
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
     visual.dispatch_action(super::super::NewStreamingProject);
     // If content requires confirmation, the second invocation confirms only this mode.
-    if editor.read_with(cx, |view, _| view.pending_new_mode.is_some()) {
+    if editor.read_with(cx, |view, _| view.project_open.busy()) {
         visual.dispatch_action(super::super::NewStreamingProject);
     }
     editor.read_with(cx, |view, _| {
@@ -994,7 +982,7 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     visual.dispatch_action(NewProject);
     editor.read_with(cx, |view, _| {
         assert!(
-            view.pending_new_mode.is_some(),
+            view.project_open.busy(),
             "New remains reachable after refused Save"
         );
         assert!(!view.opening_project);
@@ -1155,3 +1143,256 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
 }
 
 mod recovery_name_tests;
+
+#[gpui::test]
+fn one_new_action_prompts_and_cancel_preserves_the_complete_current_document(
+    cx: &mut TestAppContext,
+) {
+    let directory = Directory::new();
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| {
+        window.activate_window();
+        window.blur();
+    });
+    visual.dispatch_action(NewProject);
+    visual.run_until_parked();
+    assert!(
+        cx.has_pending_prompt(),
+        "one New must present save / don't save / cancel"
+    );
+    cx.simulate_prompt_answer("cancel");
+    visual.run_until_parked();
+    assert_document_unchanged(&editor, cx, &before);
+}
+
+fn select_new(visual: &mut VisualTestContext, cx: &TestAppContext) {
+    visual.update(|window, _| {
+        window.activate_window();
+        window.blur();
+    });
+    visual.dispatch_action(NewProject);
+    visual.run_until_parked();
+    assert!(cx.has_pending_prompt());
+}
+
+#[gpui::test]
+fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    for named in [false, true] {
+        let directory = Directory::new();
+        let (handle, editor) = directory.window(cx);
+        add_track(&editor, cx);
+        let path = directory.0.join("preserved.hex");
+        if named {
+            editor.update(cx, |view, _| {
+                assert!(view.enqueue(Request::SaveNew(path.clone())))
+            });
+            pump(&editor, cx, |view| {
+                settled(view) && view.state.as_ref().unwrap().document_path.is_some()
+            });
+            add_track(&editor, cx);
+        }
+        let (current, generation, saved_revision) = editor.read_with(cx, |view, _| {
+            (
+                view.state.as_ref().unwrap().project.clone(),
+                view.project_generation,
+                view.state.as_ref().unwrap().revision,
+            )
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        select_new(&mut visual, cx);
+        cx.simulate_prompt_answer("save");
+        visual.run_until_parked();
+        assert_eq!(cx.did_prompt_for_new_path(), !named);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.project_generation, generation)
+        });
+        // Further menu actions cannot replace this captured destination.
+        visual.dispatch_action(NewProject);
+        visual.dispatch_action(OpenProject);
+        visual.run_until_parked();
+        assert!(!cx.did_prompt_for_paths());
+        if !named {
+            cx.simulate_new_path_selection(|_| Some(path.clone()));
+            visual.run_until_parked();
+        }
+        pump(&editor, cx, |view| {
+            settled(view) && view.project_generation == generation + 1
+        });
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert!(state.project.tracks().is_empty() && !state.can_undo && !state.unsaved);
+            assert!(state.document_path.is_none() && !view.project_open.busy());
+            assert_eq!(
+                view.document_audio_mode,
+                hex_session::DocumentAudioMode::Resident
+            );
+        });
+        // A duplicate/late save terminal cannot run the captured New again.
+        editor.update(cx, |view, _| {
+            view.complete_open_save(true, saved_revision);
+            view.complete_open_save(false, saved_revision);
+            assert_eq!(view.worker_requests_pending, 0);
+            assert_eq!(view.project_generation, generation + 1);
+        });
+        select_open(&mut visual, cx, path);
+        assert!(!cx.has_pending_prompt());
+        pump(&editor, cx, |view| {
+            settled(view) && view.project_generation == generation + 2
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, current)
+        });
+        // A clean saved document with content needs no discard prompt for New.
+        visual.dispatch_action(NewProject);
+        visual.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        pump(&editor, cx, |view| {
+            settled(view) && view.project_generation == generation + 3
+        });
+        assert!(editor.read_with(cx, |view, _| {
+            view.state.as_ref().unwrap().project.tracks().is_empty()
+        }));
+    }
+}
+
+#[gpui::test]
+fn one_new_cancelled_or_failed_save_aborts_continuation_before_a_later_save(
+    cx: &mut TestAppContext,
+) {
+    for failure in [false, true] {
+        let directory = Directory::new();
+        let (handle, editor) = directory.window(cx);
+        add_track(&editor, cx);
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+        let generation = editor.read_with(cx, |view, _| view.project_generation);
+        let collision = directory.0.join("external.hex");
+        std::fs::write(&collision, b"preserve external bytes").unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        select_new(&mut visual, cx);
+        cx.simulate_prompt_answer("save");
+        visual.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| failure.then_some(collision.clone()));
+        visual.run_until_parked();
+        pump(&editor, cx, |view| {
+            settled(view) && !view.save_dialog_open && !view.saving_project
+        });
+        assert_document_unchanged(&editor, cx, &before);
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve external bytes"
+        );
+        let saved = directory.0.join("later.hex");
+        editor.update(cx, |view, cx| view.save_project(cx));
+        visual.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| Some(saved.clone()));
+        visual.run_until_parked();
+        pump(&editor, cx, |view| {
+            settled(view)
+                && !view.saving_project
+                && view.state.as_ref().unwrap().document_path.is_some()
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.project_generation, generation);
+            assert_eq!(view.state.as_ref().unwrap().project, before.project);
+            assert!(!view.project_open.busy());
+        });
+        assert!(saved.is_file());
+    }
+}
+
+#[gpui::test]
+fn one_new_waits_for_admitted_edits_and_stale_answers_cannot_replace_again(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::Request;
+    for answer in ["save", "don't save"] {
+        let directory = Directory::new();
+        let (handle, editor) = directory.window(cx);
+        pump(&editor, cx, settled);
+        let generation = editor.read_with(cx, |view, _| view.project_generation);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(hex_project::Command::AddTrack {
+                name: "pending before new".into()
+            })))
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
+                view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
+                assert!(view.project_open.busy() && !view.opening_project);
+            })
+        });
+        pump(&editor, cx, settled);
+        visual.run_until_parked();
+        assert!(
+            cx.has_pending_prompt(),
+            "dirty acknowledgement must precede the prompt"
+        );
+        assert_eq!(
+            editor.read_with(cx, |view, _| view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .len()),
+            1
+        );
+        // An independent actor really replaces the source while the modal is pending.
+        editor.read_with(cx, |view, _| {
+            view.service
+                .submit(Request::NewWithAudioMode {
+                    mode: hex_session::DocumentAudioMode::Resident,
+                    reservation: None,
+                })
+                .unwrap()
+        });
+        pump(&editor, cx, |view| {
+            settled(view) && view.project_generation == generation + 1
+        });
+        cx.simulate_prompt_answer(answer);
+        visual.run_until_parked();
+        pump(&editor, cx, settled);
+        assert!(!cx.did_prompt_for_new_path());
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.project_generation, generation + 1);
+            assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
+            assert!(!view.project_open.busy());
+        });
+    }
+}
+
+#[gpui::test]
+fn one_new_aborts_when_an_admitted_edit_is_refused_before_confirmation(cx: &mut TestAppContext) {
+    let directory = Directory::new();
+    let (handle, editor) = directory.window(cx);
+    add_track(&editor, cx);
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::AddTrack {
+                name: String::new()
+            }
+        )))
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.new_project(hex_session::DocumentAudioMode::Resident, window, cx)
+        })
+    });
+    pump(&editor, cx, |view| settled(view) && view.error.is_some());
+    visual.run_until_parked();
+    assert!(
+        !cx.has_pending_prompt(),
+        "failed preparation must abort New instead of offering to discard work"
+    );
+    assert_document_unchanged(&editor, cx, &before);
+}
