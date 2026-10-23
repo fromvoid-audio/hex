@@ -293,19 +293,20 @@ pub(super) fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32
 // Sample inside each fade as well as across the viewport, so a short curved fade
 // on a long clip never collapses to a straight line between its endpoint knots.
 fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
-    // Invert the rational law only to choose drawing coordinates. The canonical
-    // gain_at method still supplies every ordinate. Uniform gain spacing keeps
-    // even extreme bends accurate near their steep endpoint.
-    let at_gain = |length: u64, index: usize, curve: i16| {
-        let gain = index as f64 / 32.0;
-        let c = f64::from(curve);
-        let fraction = gain * (1001.0 + c) / (1001.0 - c + 2.0 * c * gain);
+    // Invert the canonical two-axis law for drawing coordinates only. Uniform
+    // gain spacing resolves steep bends; playback still uses gain_at directly.
+    let at_gain = move |length: u64, index: usize, out: bool| {
+        let fraction = fade
+            .position_at_gain(out, index as f64 / 32.0)
+            .unwrap_or(0.5);
         ((fraction * length.saturating_sub(1) as f64).round() as u64).min(length.saturating_sub(1))
     };
     let out_end = fade.span() - fade.out_end_offset();
     let midpoints = [
-        (fade.in_curve() != 0).then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
-        (fade.out_curve() != 0).then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
+        (fade.in_curve() != 0 || fade.in_position() != 500)
+            .then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
+        (fade.out_curve() != 0 || fade.out_position() != 500)
+            .then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
     ];
     fade.breakpoints()
         .into_iter()
@@ -315,12 +316,13 @@ fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
             (1..32)
                 .flat_map(move |index| {
                     [
-                        (fade.in_curve() != 0 && fade.fade_in() > 1).then_some(
-                            fade.in_start() + at_gain(fade.fade_in(), index, fade.in_curve()),
-                        ),
-                        (fade.out_curve() != 0 && fade.fade_out() > 1).then_some(
-                            out_end - 1 - at_gain(fade.fade_out(), index, fade.out_curve()),
-                        ),
+                        ((fade.in_curve() != 0 || fade.in_position() != 500) && fade.fade_in() > 1)
+                            .then(|| fade.in_start() + at_gain(fade.fade_in(), index, false)),
+                        ((fade.out_curve() != 0 || fade.out_position() != 500)
+                            && fade.fade_out() > 1)
+                            .then(|| {
+                                out_end - fade.fade_out() + at_gain(fade.fade_out(), index, true)
+                            }),
                     ]
                 })
                 .flatten(),
@@ -914,6 +916,23 @@ mod tests {
             .expect("short curve interior survives zoom out");
         assert_eq!(midpoint.1, curved.gain_at(120));
         assert!(midpoint.1 < 0.2);
+        for (horizontal, knot) in [
+            (fade.with_curve_positions(250, 500).unwrap(), 60),
+            (
+                ClipFade::new(1_000_000, 0, 0, 241)
+                    .unwrap()
+                    .with_curve_positions(500, 750)
+                    .unwrap(),
+                999_939,
+            ),
+        ] {
+            let samples = fade_envelope_samples(horizontal, 0, 0, 1_000_000);
+            let anchor = samples
+                .iter()
+                .find(|(x, _)| (*x - knot as f32 / 999_999.0).abs() < f32::EPSILON)
+                .expect("horizontal-only curve anchor survives zoom out");
+            assert_eq!(anchor.1, 0.5);
+        }
     }
 
     #[test]

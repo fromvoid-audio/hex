@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 37;
+pub const CURRENT_SCHEMA_VERSION: u32 = 38;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -144,10 +144,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema37 envelope with required tuning and complete
-/// device asset and MIDI clip-volume inventories, preserving all active project capabilities.
+/// Encode schema38 with required fade positions, tuning and complete device asset
+/// and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV37::from_project(project)?)
+    encode_document(&schema::fade_curve_positions::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -239,7 +239,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     result?;
     Ok(output.bytes)
 }
-/// Open schemas34–37 into the current validated model without file/media I/O.
+/// Open schemas34–38 into the current validated model without file/media I/O.
+/// Schemas34–37 default horizontal fade positions to center, preserving their
+/// original sample-exact rational laws.
 /// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
 /// Schema36 had independent tempo and sections branches, selected by presence of
 /// the section inventory. Historical audio timing, projection/offset and gain
@@ -265,7 +267,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     match header.version {
-        CURRENT_SCHEMA_VERSION => schema::DocumentV11::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::fade_curve_positions::decode(bytes),
+        37 => schema::DocumentV11::decode(bytes),
         34..=36 => schema::tuning::decode_version(bytes, header.version),
         version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
             "project uses a newer schema; open it with a newer hex version; original file unchanged",
