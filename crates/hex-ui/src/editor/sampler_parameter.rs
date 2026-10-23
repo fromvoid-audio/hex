@@ -519,6 +519,7 @@ impl EditorView {
         let entity = control.entity.clone();
         entity.update(cx, |widget, cx| {
             let _ = widget.set_external_value(value, cx);
+            let _ = widget.set_inline_value_width(88.0, cx);
             widget.set_enabled(enabled, cx);
         });
         div()
@@ -541,22 +542,23 @@ impl EditorView {
             .debug_selector(move || format!("sampler-{}-control", parameter.key()))
             .w_full()
             .min_w_0()
-            .h(gpui::px(26.0))
+            .h(gpui::px(28.0))
             .flex_shrink_0()
             .flex()
-            .items_center()
-            .gap(gpui::px(4.0))
-            .child(theme::text(if active {
-                parameter.label()
-            } else {
-                "release*"
-            }))
+            .flex_col()
+            .items_start()
             .child(
                 div()
-                    .w(gpui::px(92.0))
-                    .h(gpui::px(18.0))
-                    .child(entity.clone()),
+                    .h(gpui::px(12.0))
+                    .text_size(gpui::px(10.0))
+                    .line_height(gpui::px(12.0))
+                    .child(theme::text(if active {
+                        parameter.label()
+                    } else {
+                        "release*"
+                    })),
             )
+            .child(div().w_full().h(gpui::px(16.0)).child(entity.clone()))
             .into_any_element()
     }
 }
