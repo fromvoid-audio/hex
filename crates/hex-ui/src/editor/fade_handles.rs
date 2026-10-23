@@ -113,7 +113,12 @@ pub(super) struct FadeDrag {
     snap_grid: super::musical_time::SnapGrid,
 }
 
-fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Option<ClipFade> {
+// Curve motion retains subframe precision; endpoint lengths still round to frames.
+fn edited_fade(fade: ClipFade, handle: Handle, frames: f64, bend: i16) -> Option<ClipFade> {
+    if !frames.is_finite() {
+        return None;
+    }
+    let whole_frames = frames.round() as i128;
     let span = fade.span();
     let start = fade.in_start();
     let end_offset = fade.out_end_offset();
@@ -121,48 +126,102 @@ fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Optio
     let mut fade_out = fade.fade_out();
     let mut in_curve = fade.in_curve();
     let mut out_curve = fade.out_curve();
+    let mut in_position = fade.in_position();
+    let mut out_position = fade.out_position();
     let shift = |value: u64, upper: u64| {
         i128::from(value)
-            .saturating_add(frames)
+            .saturating_add(whole_frames)
             .clamp(0, i128::from(upper)) as u64
     };
     match handle {
         Handle::InTop => fade_in = shift(fade_in, span - start),
         Handle::OutTop => {
             fade_out = i128::from(fade_out)
-                .saturating_sub(frames)
+                .saturating_sub(whole_frames)
                 .clamp(0, i128::from(span - end_offset)) as u64
         }
         Handle::InBottom | Handle::OutBottom => return None,
-        Handle::InCurve => in_curve = in_curve.saturating_add(bend).clamp(-1000, 1000),
-        Handle::OutCurve => out_curve = out_curve.saturating_add(bend).clamp(-1000, 1000),
+        Handle::InCurve | Handle::OutCurve => {
+            let out = handle == Handle::OutCurve;
+            let curve = if out { &mut out_curve } else { &mut in_curve };
+            // The diamond stays between channel centers (central half of body).
+            // Opening a legacy bend never changes it. An explicit horizontal
+            // edit fits hidden extremes to the visible ordinate, so all four
+            // corners remain reachable without moving the diamond vertically.
+            if bend != 0 {
+                let control = (*curve).clamp(-500, 500);
+                let next = control.saturating_add(bend).clamp(-500, 500);
+                // Legacy bends can lie beyond the visual band. Start movement
+                // from the visible edge, with no dead zone or outward-only edit.
+                if next != control || *curve == control {
+                    *curve = next;
+                }
+            }
+            if frames != 0.0 {
+                *curve = (*curve).clamp(-500, 500);
+            }
+            let length = if out { fade.fade_out() } else { fade.fade_in() };
+            let changed = if out {
+                out_curve != fade.out_curve()
+            } else {
+                in_curve != fade.in_curve()
+            };
+            if length > 1 && (frames != 0.0 || changed) {
+                let original = fade.position_at_gain(out, curve_handle_gain(fade, out))?;
+                let target = (original + frames / (length - 1) as f64).clamp(0.001, 0.999);
+                // Explicit edits use the bounded ordinate, whose mapped half
+                // progress is the canonical horizontal position.
+                let position = (target * 1000.0).round().clamp(1.0, 999.0) as u16;
+                if out {
+                    out_position = position;
+                } else {
+                    in_position = position;
+                }
+            }
+        }
     }
     ClipFade::new(span, 0, fade_in, fade_out)
         .ok()?
         .with_shape(start, end_offset, in_curve, out_curve)
+        .ok()?
+        .with_curve_positions(in_position, out_position)
         .ok()
 }
 
-fn knots(fade: ClipFade) -> [(Handle, u64, f32); 6] {
+// Each handle belongs to its own ramp, including legacy bends. Overlapping
+// ramps multiply in playback/the shaded envelope, but must not pull the other
+// ramp's control outside its editing box.
+fn curve_handle_gain(fade: ClipFade, out: bool) -> f64 {
+    fade.curve_midpoint_gain(out).clamp(0.25, 0.75)
+}
+
+fn knots(fade: ClipFade) -> [(Handle, (u64, f64), f32); 6] {
     let end = fade.span() - fade.out_end_offset() - 1;
     let in_top = fade.in_start() + fade.fade_in().saturating_sub(1);
     let out_top = (end + 1).saturating_sub(fade.fade_out()).min(end);
-    let in_mid = fade.in_start() + in_top.saturating_sub(fade.in_start()) / 2;
-    let out_mid = out_top + (end - out_top) / 2;
+    let interior = |start: u64, end: u64, out| {
+        let length = end - start;
+        let offset = length as f64
+            * fade
+                .position_at_gain(out, curve_handle_gain(fade, out))
+                .unwrap_or(0.5);
+        let whole = (offset.floor() as u64).min(length);
+        (start + whole, (offset - whole as f64).clamp(0.0, 1.0))
+    };
     [
-        (Handle::InTop, in_top, 1.0),
-        (Handle::InBottom, fade.in_start(), 0.0),
+        (Handle::InTop, (in_top, 0.0), 1.0),
+        (Handle::InBottom, (fade.in_start(), 0.0), 0.0),
         (
             Handle::InCurve,
-            in_mid,
-            fade.gain_at(in_mid.saturating_sub(fade.offset())),
+            interior(fade.in_start(), in_top, false),
+            curve_handle_gain(fade, false) as f32,
         ),
-        (Handle::OutTop, out_top, 1.0),
-        (Handle::OutBottom, end, 0.0),
+        (Handle::OutTop, (out_top, 0.0), 1.0),
+        (Handle::OutBottom, (end, 0.0), 0.0),
         (
             Handle::OutCurve,
-            out_mid,
-            fade.gain_at(out_mid.saturating_sub(fade.offset())),
+            interior(out_top, end, true),
+            curve_handle_gain(fade, true) as f32,
         ),
     ]
 }
@@ -175,6 +234,22 @@ impl EditorView {
         gpui::canvas(
             |_, _, _| (),
             move |_, _, window, _| {
+                let release_entity = entity.clone();
+                window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
+                    if phase.capture() && event.button == MouseButton::Left {
+                        release_entity.update(cx, |view, cx| {
+                            if view.active_fade_drag.is_some() {
+                                view.update_fade_gesture(
+                                    event.position,
+                                    event.modifiers.platform,
+                                    cx,
+                                );
+                                view.finish_fade_gesture(window, cx);
+                                cx.stop_propagation();
+                            }
+                        });
+                    }
+                });
                 let entity = entity.clone();
                 window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
                     if phase.capture() {
@@ -291,9 +366,11 @@ impl EditorView {
         if !dx.is_finite() || !dy.is_finite() || drag.lane.width <= 0.0 {
             return;
         }
-        let frames = (f64::from(dx) / f64::from(drag.lane.width) * drag.viewport.length as f64)
-            .round() as i128;
-        let bend = (dy * 25.0).round().clamp(-2000.0, 2000.0) as i16;
+        let frame_delta = f64::from(dx) / f64::from(drag.lane.width) * drag.viewport.length as f64;
+        let frames = frame_delta.round() as i128;
+        let bend = (dy * 2002.0 / (drag.lane.height - super::clip_name::CLIP_NAME_HEIGHT).max(8.0))
+            .round()
+            .clamp(-2000.0, 2000.0) as i16;
         let lower_edge = match drag.handle {
             Handle::InBottom => Some(hex_project::TrimEdge::Left),
             Handle::OutBottom => Some(hex_project::TrimEdge::Right),
@@ -347,7 +424,27 @@ impl EditorView {
                 }
             }
         } else {
-            let Some(next) = edited_fade(drag.original, drag.handle, frames, bend) else {
+            let delta = if matches!(drag.handle, Handle::InCurve | Handle::OutCurve) {
+                let Some(end) = drag
+                    .clip
+                    .start()
+                    .checked_add(drag.clip.duration())
+                    .zip(drag.viewport.end())
+                else {
+                    return;
+                };
+                let visible = end
+                    .0
+                    .min(end.1)
+                    .saturating_sub(drag.clip.start().max(drag.viewport.start))
+                    .max(1);
+                let width =
+                    (drag.lane.width * (visible as f32 / drag.viewport.length as f32)).max(3.0);
+                f64::from(dx) * visible.saturating_sub(1).max(1) as f64 / f64::from(width)
+            } else {
+                frame_delta
+            };
+            let Some(next) = edited_fade(drag.original, drag.handle, delta, bend) else {
                 return;
             };
             (next, None, None)
@@ -390,31 +487,41 @@ impl EditorView {
                     fade: drag.preview,
                 },
             };
-            self.enqueue(Request::Edit(command));
+            self.pending_fade = Some(PendingFade {
+                receipt: super::pending_edit::Receipt::new(self.project_generation),
+                command: command.clone(),
+                drag,
+            });
+            if !self.enqueue(Request::Edit(command)) {
+                self.retire_pending_fade();
+            }
         }
         cx.notify();
     }
-    pub(super) fn fade_preview(&self, clip: ClipId) -> Option<ClipFade> {
+    fn displayed_fade_drag(&self) -> Option<&FadeDrag> {
         self.active_fade_drag
             .as_ref()
-            .filter(|drag| {
-                drag.clip.id() == clip
-                    && drag.moved
-                    && drag.preview != drag.original
-                    && self.fade_drag_current(drag)
+            .filter(|d| self.fade_drag_current(d))
+            .or_else(|| {
+                self.pending_fade
+                    .as_ref()
+                    .filter(|p| p.source_current(self))
+                    .map(|p| &p.drag)
             })
+    }
+    pub(super) fn fade_preview(&self, clip: ClipId) -> Option<ClipFade> {
+        self.displayed_fade_drag()
+            .filter(|drag| drag.clip.id() == clip && drag.moved && drag.preview != drag.original)
             .map(|drag| drag.preview)
     }
     pub(super) fn fade_trim_preview(&self, clip: ClipId) -> Option<&Clip> {
-        self.active_fade_drag
-            .as_ref()
-            .filter(|drag| drag.clip.id() == clip && drag.moved && self.fade_drag_current(drag))
+        self.displayed_fade_drag()
+            .filter(|drag| drag.clip.id() == clip && drag.moved)
             .and_then(|drag| drag.preview_clip.as_ref())
     }
     pub(super) fn fade_curve_active(&self, clip: ClipId) -> bool {
-        self.active_fade_drag
-            .as_ref()
-            .is_some_and(|drag| drag.clip.id() == clip && self.fade_drag_current(drag))
+        self.displayed_fade_drag()
+            .is_some_and(|d| d.clip.id() == clip)
     }
 
     fn fade_controls(
@@ -426,10 +533,7 @@ impl EditorView {
         viewport: Viewport,
     ) -> Option<FadeControls> {
         let preview = self.fade_preview(clip.id());
-        let active = self
-            .active_fade_drag
-            .as_ref()
-            .is_some_and(|drag| drag.clip.id() == clip.id());
+        let active = self.fade_curve_active(clip.id());
         if !self.fade_key_held
             && !active
             && self.hovered_fade_clip != Some((self.project_generation, clip.id()))
@@ -456,32 +560,46 @@ impl EditorView {
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
         let mut positions = Vec::with_capacity(6);
-        for (handle, domain_frame, gain) in knots(controls) {
+        for (handle, (domain_frame, subframe), gain) in knots(controls) {
             if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
                 || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
             {
                 continue;
             }
-            let local_frame = if local_controls {
-                Some(domain_frame)
-            } else if let Some(edit) = clip.audio_edit() {
-                edit.projected_fade(state.project.tempo_map())
-                    .and_then(|projection| projection.frame_at_domain_position(domain_frame))
-                    .ok()
-                    .flatten()
-                    .zip(edit.projected_domain(state.project.tempo_map()).ok())
-                    .and_then(|(root, (_, _, start, _))| root.checked_sub(start))
-            } else {
-                domain_frame.checked_sub(fade.offset())
+            let local_frame = |position: u64| -> Option<i128> {
+                if local_controls {
+                    Some(i128::from(position))
+                } else if let Some(edit) = clip.audio_edit() {
+                    edit.projected_fade(state.project.tempo_map())
+                        .and_then(|projection| projection.frame_at_domain_position(position))
+                        .ok()
+                        .flatten()
+                        .zip(edit.projected_domain(state.project.tempo_map()).ok())
+                        .map(|(root, (_, _, start, _))| i128::from(root) - i128::from(start))
+                } else {
+                    Some(i128::from(position) - i128::from(fade.offset()))
+                }
             };
-            let Some(frame) = local_frame.and_then(|frame| clip.start().checked_add(frame)) else {
+            let Some(first) = local_frame(domain_frame) else {
                 continue;
             };
-            if frame < visible.0 || frame >= visible.1 {
+            let subframe_offset = if subframe > 0.0 {
+                let Some(next) = domain_frame.checked_add(1).and_then(local_frame) else {
+                    continue;
+                };
+                (next - first) as f64 * subframe
+            } else {
+                0.0
+            };
+            // Subtract integer origins before conversion, preserving short-clip
+            // precision even near the maximum absolute project frame.
+            let relative = (first - i128::from(visible.0 - clip.start())) as f64 + subframe_offset;
+            if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
+            {
                 continue;
             }
-            let fraction = (frame - visible.0) as f32
-                / (visible.1 - visible.0).saturating_sub(1).max(1) as f32;
+            let fraction =
+                (relative / (visible.1 - visible.0).saturating_sub(1).max(1) as f64) as f32;
             let pixel_width =
                 (lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32)).max(3.0);
             if !pixel_width.is_finite() {
@@ -597,7 +715,7 @@ impl EditorView {
                         active,
                     )])
                     .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
-                        gpui::CursorStyle::ResizeUpDown
+                        gpui::CursorStyle::Crosshair
                     } else {
                         gpui::CursorStyle::ResizeLeftRight
                     })
@@ -646,20 +764,20 @@ mod tests {
             .unwrap()
             .with_shape(10, 10, 0, 0)
             .unwrap();
-        let bent = edited_fade(fade, Handle::InCurve, 0, 700).unwrap();
+        let bent = edited_fade(fade, Handle::InCurve, 0.0, 700).unwrap();
         assert_eq!(
             (bent.in_start(), bent.fade_in(), bent.fade_out()),
             (10, 40, 30)
         );
         assert!(bent.gain_at(20) < fade.gain_at(20));
         assert_eq!(
-            edited_fade(bent, Handle::InTop, i128::MAX - 100, 0)
+            edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0)
                 .unwrap()
                 .fade_in(),
             90
         );
         assert_eq!(
-            edited_fade(bent, Handle::OutTop, i128::MIN, 0)
+            edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0)
                 .unwrap()
                 .fade_out(),
             90
@@ -670,3 +788,123 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "fade_handles_ui_test.rs"]
 mod ui_tests;
+
+// Released input transfers its immutable preview to the ordinary request receipt.
+// Canonical state and this exact terminal retire it in one synchronous receive.
+pub(super) struct PendingFade {
+    receipt: super::pending_edit::Receipt,
+    command: Command,
+    drag: FadeDrag,
+}
+impl PendingFade {
+    fn source_current(&self, view: &EditorView) -> bool {
+        self.drag.generation == view.project_generation
+            && view.state.as_ref().is_some_and(|s| {
+                s.project.clip(self.drag.clip.id()) == Some(self.drag.clip.as_ref())
+            })
+    }
+    fn matches(&self, request: &Request) -> bool {
+        self.receipt.is_queued()
+            && match (&self.command, request) {
+                (
+                    Command::SetClipFadeEnvelope { clip, fade },
+                    Request::Edit(Command::SetClipFadeEnvelope { clip: c, fade: f }),
+                ) => (clip, fade) == (c, f),
+                (
+                    Command::TrimClipFadeEdge { clip, edge, frame },
+                    Request::Edit(Command::TrimClipFadeEdge {
+                        clip: c,
+                        edge: e,
+                        frame: f,
+                    }),
+                ) => (clip, edge, frame) == (c, e, f),
+                _ => false,
+            }
+    }
+}
+impl EditorView {
+    pub(super) fn pending_fade_matches(&self, request: &Request) -> bool {
+        self.pending_fade
+            .as_ref()
+            .is_some_and(|p| p.matches(request))
+    }
+    pub(super) fn fade_submitted(&mut self) {
+        if let Some(p) = &mut self.pending_fade {
+            p.receipt.submitted(self.worker_requests_pending);
+        }
+    }
+    pub(super) fn fade_request_complete(&mut self, event: &hex_session::service::Event) {
+        if let Some(p) = &mut self.pending_fade
+            && p.receipt.observe(
+                self.project_generation,
+                event.project_replaced,
+                event.request_complete,
+            ) != super::pending_edit::Disposition::Waiting
+        {
+            self.retire_pending_fade();
+        }
+    }
+    pub(super) fn retire_pending_fade(&mut self) -> bool {
+        self.pending_fade.take().is_some()
+    }
+    pub(super) fn retire_abandoned_fade(&mut self) -> bool {
+        let abandoned = self.pending_fade.as_ref().is_some_and(|p| {
+            !p.source_current(self)
+                || (p.receipt.is_queued()
+                    && !self.pending_requests.iter().any(|r| p.matches(r))
+                    && !self.device_gesture_barriers.iter().any(|r| p.matches(r)))
+        });
+        abandoned && self.retire_pending_fade()
+    }
+}
+
+#[cfg(test)]
+mod two_axis_tests {
+    use super::*;
+    #[test]
+    fn overlapping_fades_keep_each_control_inside_its_own_box() {
+        let fade = ClipFade::new(101, 0, 101, 101)
+            .unwrap()
+            .with_shape(0, 0, 500, -500)
+            .unwrap()
+            .with_curve_positions(250, 750)
+            .unwrap();
+        for (handle, _, gain) in knots(fade) {
+            if matches!(handle, Handle::InCurve | Handle::OutCurve) {
+                assert!((0.25..=0.75).contains(&gain));
+            }
+        }
+    }
+    #[test]
+    fn rectangular_corners_are_independent_and_legacy_handles_stay_on_curve() {
+        let original = ClipFade::new(10001, 0, 5001, 5000).unwrap();
+        for original in [original, original.with_shape(0, 0, 1000, -1000).unwrap()] {
+            for handle in [Handle::InCurve, Handle::OutCurve] {
+                for dx in [-100000, 100000] {
+                    for dy in [-2000, 2000] {
+                        let edited = edited_fade(original, handle, f64::from(dx), dy).unwrap();
+                        let out = handle == Handle::OutCurve;
+                        let gain = curve_handle_gain(edited, out);
+                        let x = edited.position_at_gain(out, gain).unwrap();
+                        assert!((gain - if dy > 0 { 0.25 } else { 0.75 }).abs() < 0.001);
+                        assert!((x - if dx > 0 { 0.999 } else { 0.001 }).abs() < 0.001);
+                        assert_eq!((edited.fade_in(), edited.fade_out()), (5001, 5000));
+                    }
+                }
+            }
+        }
+        let legacy = original.with_shape(0, 0, 900, -900).unwrap();
+        assert_eq!(edited_fade(legacy, Handle::InCurve, 0.0, 10), Some(legacy));
+        let inward = edited_fade(legacy, Handle::InCurve, 0.0, -10).unwrap();
+        assert!(curve_handle_gain(inward, false) > curve_handle_gain(legacy, false));
+        let moved = edited_fade(legacy, Handle::InCurve, 500.0, 0).unwrap();
+        assert!((curve_handle_gain(moved, false) - curve_handle_gain(legacy, false)).abs() < 0.001);
+        let before = legacy
+            .position_at_gain(false, curve_handle_gain(legacy, false))
+            .unwrap();
+        let after = moved
+            .position_at_gain(false, curve_handle_gain(moved, false))
+            .unwrap();
+        assert!((after - before - 0.1).abs() < 0.002);
+    }
+}
