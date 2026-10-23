@@ -497,6 +497,14 @@ pub(crate) fn apply(
             let target = project
                 .session_midi_clip(clip)
                 .ok_or(Invalid("session midi clip no longer exists"))?;
+            crate::midi::validate_source_boundary(
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                target.source.one_shot_boundary(),
+            )?;
             target.volume.validate_source_length(source_length)?;
             for note in target.source.notes() {
                 crate::midi::validate_note(
@@ -652,6 +660,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     name,
                     volume: clip.volume.clone(),
                     source: Arc::new(MidiSource {
+                        one_shot_boundary: source.one_shot_boundary,
                         source_length: source.source_length,
                         source_start: source.source_start,
                         loop_start: source.loop_start,

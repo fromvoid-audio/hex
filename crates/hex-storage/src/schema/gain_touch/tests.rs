@@ -195,7 +195,7 @@ fn empty_spans_preserve_existing_base_and_high_water_old_writers_refuse_loss() {
     let encoded = crate::encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-        37
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&encoded).unwrap(), project);
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&project).is_err());
