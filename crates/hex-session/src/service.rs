@@ -75,7 +75,7 @@ mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
-const BROWSER_PREVIEW_BINS: usize = 48;
+const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]
@@ -272,7 +272,7 @@ pub fn prepare_audio_preview(
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
     let waveform = Arc::new(
-        hex_media::waveform::summarize(&audio, BROWSER_PREVIEW_BINS)
+        hex_media::waveform::summarize_peaks(&audio, BROWSER_PREVIEW_BINS)
             .map_err(|error| error.to_string().to_lowercase())?,
     );
     Ok(AudioPreview {
@@ -7019,6 +7019,32 @@ mod service_tests {
         assert_eq!(preview.waveform.source_frames, 48);
         assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
         assert!(!preview.waveform.bins.is_empty());
+    }
+
+    #[test]
+    fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() {
+        let directory = TestDir::new();
+        let path = directory.0.join("detail.wav");
+        let mut frames = vec![0_i16; 8195];
+        frames[4097] = 24_000;
+        frames[8194] = -16_000;
+        fs::write(&path, wav_mono(&frames)).unwrap();
+        let preview = prepare_audio_preview(&path, 48_000).unwrap();
+        assert_eq!(preview.waveform.bins.len(), 4096);
+        assert_eq!(preview.waveform.source_frames, 8195);
+        let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
+        assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
+        let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();
+        assert!(
+            middle
+                .iter()
+                .all(|peak| peak.min == 0.0 && peak.max == 24_000.0 / 32768.0)
+        );
+        let last = preview.waveform.peaks_for_frames(8194, 8195).unwrap();
+        assert!(
+            last.iter()
+                .all(|peak| peak.min == -16_000.0 / 32768.0 && peak.max == 0.0)
+        );
     }
 
     #[test]
