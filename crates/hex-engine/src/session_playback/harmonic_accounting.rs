@@ -30,8 +30,11 @@ fn inventory_shape(
 ) -> Result<Arc<PreparedRevision>, crate::Invalid> {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "layout".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap();
     let mut snapshot = editor.project().snapshot();
@@ -71,6 +74,7 @@ fn inventory_shape(
         }
         for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if eq && effect + 1 == effect_count {
                     equalizer.clone()
@@ -85,6 +89,8 @@ fn inventory_shape(
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                    volume: hex_project::MidiClipVolume::default(),
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: next,
@@ -115,6 +121,7 @@ fn inventory_shape(
         let mut devices = Vec::new();
         for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
             devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: utility.clone(),
                 bypassed: false,

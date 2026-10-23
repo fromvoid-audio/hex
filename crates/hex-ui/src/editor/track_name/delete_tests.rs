@@ -34,10 +34,12 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
 fn header(visual: &mut VisualTestContext, track: TrackId, modifiers: Modifiers) {
     let b = visual
         .debug_bounds(Box::leak(
-            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+            format!("track-name-{}", track.value()).into_boxed_str(),
         ))
         .unwrap();
-    let p = gpui::point(b.right() - gpui::px(12.0), b.top() + gpui::px(1.0));
+    // The compact mixer now occupies the old top-right header coordinate.
+    // Select through the actual track-name region rather than a child control.
+    let p = b.center();
     visual.simulate_mouse_down(p, MouseButton::Left, modifiers);
     visual.simulate_mouse_up(p, MouseButton::Left, modifiers);
     visual.run_until_parked();
@@ -284,7 +286,9 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
             visual.update(|window, cx| {
                 editor.read_with(cx, |view, _| {
                     assert!(view.track_header_focused(window));
-                    assert!(view.track_name.focuses[&focused].is_focused(window));
+                    assert!(
+                        view.track_name.focuses[&super::Target::Track(focused)].is_focused(window)
+                    );
                     assert_eq!(view.selected_track, Some(focused));
                 })
             });
@@ -298,7 +302,7 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
             if retained_focus {
                 visual.update(|window, cx| {
                     editor.read_with(cx, |view, _| {
-                        view.track_name.focuses[&focused].focus(window)
+                        view.track_name.focuses[&super::Target::Track(focused)].focus(window)
                     })
                 });
             }
@@ -307,7 +311,7 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
                 editor.read_with(cx, |view, _| {
                     eprintln!(
                         "toolbar retained_focus={retained_focus} toggled_out={toggled_out} immediate_focus={} pending={} edit={:?}",
-                        view.track_name.focuses[&focused].is_focused(window),
+                        view.track_name.focuses[&super::Target::Track(focused)].is_focused(window),
                         view.edit_pending(),
                         view.last_enqueued_edit
                     );

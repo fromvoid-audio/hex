@@ -86,7 +86,7 @@ fn apply_shapes(project: Project, shapes: Vec<FadeShape>) -> Result<Project, Sto
 impl<'a> DocumentV29<'a> {
     pub(super) fn for_current_envelope(project: &'a Project) -> Result<Self, StorageError> {
         let mut document = Self::base(project)?;
-        document.base.base.version = 31;
+        document.base.base.version = 37;
         Ok(document)
     }
     fn base(project: &'a Project) -> Result<Self, StorageError> {
@@ -110,6 +110,12 @@ impl<'a> DocumentV29<'a> {
         Ok(Self { base, fade_shapes })
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+        Self::decode_historical(bytes, 29)
+    }
+    pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+        if !(27..=29).contains(&version) {
+            return Err(StorageError::Invalid("invalid historical fade version"));
+        }
         // Validate the original token stream before Value adaptation can discard
         // duplicate keys, exactly as the underlying strict event codec does.
         let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
@@ -117,7 +123,7 @@ impl<'a> DocumentV29<'a> {
         let object = value
             .as_object_mut()
             .ok_or(StorageError::Invalid("invalid fade envelope"))?;
-        if object.get("version").and_then(|v| v.as_u64()) != Some(29) {
+        if object.get("version").and_then(|v| v.as_u64()) != Some(u64::from(version)) {
             return Err(StorageError::Invalid("invalid fade envelope version"));
         }
         let shapes: BoundedShapes = serde_json::from_value(
@@ -125,8 +131,13 @@ impl<'a> DocumentV29<'a> {
                 .remove("fade_shapes")
                 .ok_or(StorageError::Invalid("fade shapes are missing"))?,
         )?;
-        object.insert("version".into(), 28.into());
-        let base = super::audio_events::decode(&serde_json::to_vec(&value)?)?;
+        object.insert("version".into(), (version - 1).into());
+        let base = match version {
+            27 => super::clip_names::DocumentV26::decode(&serde_json::to_vec(&value)?)?,
+            28 => super::appearance::DocumentV27::decode(&serde_json::to_vec(&value)?)?,
+            29 => super::audio_events::decode(&serde_json::to_vec(&value)?)?,
+            _ => return Err(StorageError::Invalid("invalid historical fade version")),
+        };
         apply_shapes(base, shapes.0)
     }
 }

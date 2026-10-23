@@ -42,7 +42,11 @@ fn rejected_preparation_preserves_ids_redo_and_history() {
     else {
         panic!("track expected")
     };
-    assert_eq!(next.value(), second.value() + 2);
+    assert_eq!(next.value(), before.snapshot().next_id);
+    assert!(
+        next > second,
+        "undone/rejected creation must never reuse an identity"
+    );
     assert!(editor.undo());
     assert_eq!(editor.project().tracks(), before.tracks());
     assert!(editor.undo());

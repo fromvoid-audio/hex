@@ -336,6 +336,14 @@ impl Callback {
     }
 }
 
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<Preview>(1)?
+        .checked_add(ChannelStorage::ring_bytes::<Preview>(2)?)?
+        .checked_add(4 * std::mem::size_of::<AtomicU64>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

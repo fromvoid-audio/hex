@@ -25,6 +25,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
     )?;
     let mut snapshot = Project::new(RATE)?.snapshot();
     snapshot.assets = vec![AssetSnapshot {
+        original_source: None,
         id: 1,
         path: "memory/utility-profile.wav".into(),
         source_sample_rate: RATE,
@@ -47,6 +48,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                 soloed: false,
                 devices: (0..count)
                     .map(|device| DeviceSnapshot {
+                        comparison: None,
                         id: 300 + (track * count + device) as u64,
                         bypassed: false,
                         state: state.clone(),

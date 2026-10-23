@@ -1,4 +1,14 @@
-//! Validated stereo DSP primitives and the registered native processor seam.
+//! # Purpose
+//! Own validated native processor/instrument registries, borrowed resource contracts and bounded
+//! runtime-history transactions.
+//!
+//! # Dependencies
+//! Uses hex-lattice-contract, hex-dsp and hex-tuning; providers supply original DSP through
+//! explicit preparation capabilities.
+//!
+//! # Does not own
+//! Does not own canonical edits, device I/O, host source leases or foreign-code containment. A
+//! resource view or declaration never grants host publication or lifetime authority.
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 mod meter;
@@ -74,6 +84,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 }
 
 mod instrument;
+mod instrument_gain;
 mod instrument_pair;
 mod instrument_runtime;
 pub use instrument::{
@@ -81,6 +92,9 @@ pub use instrument::{
     NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
     PreparedNativeInstrument, PreparedSharedAnalyticContext, PreparedSharedAnalyticNote,
     PreparedStorageDeclaration, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+};
+pub use instrument_gain::{
+    INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentOccurrenceGain,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
@@ -278,6 +292,7 @@ pub enum NodeSignalPhase {
 /// distinct during runtime history handoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorChainOwner {
+    Main,
     Track(u64),
     Return(u64),
 }
@@ -286,6 +301,7 @@ impl ProcessorChainOwner {
     fn is_valid(self) -> bool {
         match self {
             Self::Track(id) | Self::Return(id) => id != 0,
+            Self::Main => true,
         }
     }
 }

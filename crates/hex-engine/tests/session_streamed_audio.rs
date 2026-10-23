@@ -22,6 +22,8 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -31,6 +33,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         next_id: 10,
         assets: vec![
             AssetSnapshot {
+                original_source: None,
                 id: STREAM_ASSET,
                 path: "session-source.wav".into(),
                 source_sample_rate: RATE,
@@ -39,6 +42,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             },
             AssetSnapshot {
+                original_source: None,
                 id: BED_ASSET,
                 path: "resident-bed.wav".into(),
                 source_sample_rate: RATE,
@@ -47,6 +51,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             },
             AssetSnapshot {
+                original_source: None,
                 id: 9,
                 path: "unused.wav".into(),
                 source_sample_rate: RATE,
@@ -136,8 +141,11 @@ fn project(source_start: u64, source_end: u64) -> Project {
 fn project_with_arrangement_midi(source_start: u64, source_end: u64) -> Project {
     let mut editor = Editor::new(project(source_start, source_end), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

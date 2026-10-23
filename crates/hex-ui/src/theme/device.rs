@@ -1,6 +1,6 @@
 //! Product-owned device roles. Widgets receive resolved colors, never identities.
 use super::{PaletteRole, color, readable_text};
-use hex_widgets::{ControlStyle, DeviceActionStyle, DeviceFrameStyle};
+use hex_widgets::{ActionStyle, ControlStyle, DeviceFrameStyle};
 
 /// Visual purpose, independent of device type, layout and parameter identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +31,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
         font_size: 9.0,
+        text_case: hex_widgets::TextCase::Lowercase,
     };
     match role {
         DeviceStyleRole::Control => {}
@@ -137,10 +138,7 @@ pub(crate) enum DeviceActionRole {
     Destructive,
 }
 
-pub(crate) fn device_header_action_style(
-    selected: bool,
-    role: DeviceActionRole,
-) -> DeviceActionStyle {
+pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole) -> ActionStyle {
     let layout = device_style(DeviceStyleRole::Layout);
     let background = if selected {
         layout.accent
@@ -153,26 +151,26 @@ pub(crate) fn device_header_action_style(
         DeviceActionRole::Destructive => PaletteRole::Primary,
     });
     let hover_background = color(PaletteRole::Hover);
-    DeviceActionStyle {
+    ActionStyle {
         background,
         text: readable_text(background, preferred),
         hover_background,
-        hover_text: readable_text(hover_background, preferred),
+        hover_text: Some(readable_text(hover_background, preferred)),
     }
 }
 
-pub(crate) fn device_segment_style(selected: bool) -> DeviceActionStyle {
+pub(crate) fn device_segment_style(selected: bool) -> ActionStyle {
     let background = color(if selected {
         PaletteRole::Secondary
     } else {
         PaletteRole::Raised
     });
     let hover_background = color(PaletteRole::Hover);
-    DeviceActionStyle {
+    ActionStyle {
         background,
         text: readable_text(background, color(PaletteRole::Text)),
         hover_background,
-        hover_text: readable_text(hover_background, color(PaletteRole::Text)),
+        hover_text: Some(readable_text(hover_background, color(PaletteRole::Text))),
     }
 }
 
@@ -213,6 +211,14 @@ mod action_tests {
             },
         ] {
             super::super::apply_preferences(palette);
+            let workspace = super::super::action_style();
+            assert!(super::super::contrast_ratio(workspace.background, workspace.text) >= 4.5);
+            assert!(
+                super::super::contrast_ratio(
+                    workspace.hover_background,
+                    workspace.hover_text.unwrap_or(workspace.text)
+                ) >= 4.5
+            );
             for selected in [false, true] {
                 for role in [
                     DeviceActionRole::Normal,
@@ -222,15 +228,19 @@ mod action_tests {
                     let style = device_header_action_style(selected, role);
                     assert!(super::super::contrast_ratio(style.background, style.text) >= 4.5);
                     assert!(
-                        super::super::contrast_ratio(style.hover_background, style.hover_text)
-                            >= 4.5
+                        super::super::contrast_ratio(
+                            style.hover_background,
+                            style.hover_text.unwrap_or(style.text)
+                        ) >= 4.5
                     );
                 }
                 let segment = device_segment_style(selected);
                 assert!(super::super::contrast_ratio(segment.background, segment.text) >= 4.5);
                 assert!(
-                    super::super::contrast_ratio(segment.hover_background, segment.hover_text)
-                        >= 4.5
+                    super::super::contrast_ratio(
+                        segment.hover_background,
+                        segment.hover_text.unwrap_or(segment.text)
+                    ) >= 4.5
                 );
             }
         }

@@ -7,7 +7,15 @@ use hex_session::Session;
 fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
     let mut session = Session::new(48_000, 64, 0).unwrap();
     let (Created::Track(track), graph) = session
-        .command_prepared_revision(Command::AddMidiTrack { name: "lfo".into() }, None)
+        .command_prepared_revision(
+            Command::InsertTrackWithDevice {
+                name: "lfo".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            },
+            None,
+        )
         .unwrap()
     else {
         panic!("track")
@@ -104,8 +112,11 @@ fn fixed_tuning_history_and_invalid_effective_frequency_are_atomic() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), _) = session
         .command_prepared_revision(
-            Command::AddMidiTrack {
+            Command::InsertTrackWithDevice {
                 name: "fixed operator".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             },
             None,
         )
@@ -235,8 +246,11 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), _) = session
         .command_prepared_revision(
-            Command::AddMidiTrack {
+            Command::InsertTrackWithDevice {
                 name: "operator".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             },
             None,
         )
@@ -334,8 +348,11 @@ fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_hist
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), mut graph) = session
         .command_prepared_revision(
-            Command::AddMidiTrack {
+            Command::InsertTrackWithDevice {
                 name: "operator capacity".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             },
             None,
         )
@@ -396,14 +413,14 @@ fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_hist
         panic!("expected clip")
     };
     graph = next;
-    for _ in 0..16 {
+    for index in 0..16 {
         (_, graph) = session
             .command_prepared_revision(
                 Command::AddMidiNote {
                     clip,
                     start: hex_project::BeatTime::ZERO,
                     duration: hex_project::BeatTime::from_quarters(2).expect("note duration"),
-                    pitch: 60,
+                    pitch: 60 + index,
                     channel: 0,
                     velocity: 100,
                 },
@@ -420,7 +437,7 @@ fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_hist
                     clip,
                     start: hex_project::BeatTime::ZERO,
                     duration: hex_project::BeatTime::from_quarters(2).expect("note duration"),
-                    pitch: 60,
+                    pitch: 76,
                     channel: 0,
                     velocity: 100,
                 },

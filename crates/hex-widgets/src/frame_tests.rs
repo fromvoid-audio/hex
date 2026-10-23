@@ -22,6 +22,7 @@ const STYLE: ControlStyle = ControlStyle {
     dial_rail: 0,
     hover: 0x555555,
     font_size: 9.0,
+    text_case: crate::TextCase::Preserve,
 };
 
 type Masks = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
@@ -437,11 +438,11 @@ impl Render for CompactSectionFixture {
             .child(
                 device_action(
                     "×".into(),
-                    DeviceActionStyle {
+                    ActionStyle {
                         background: 0x123456,
                         text: 0xffffff,
                         hover_background: 0xabcdef,
-                        hover_text: 0x000000,
+                        hover_text: Some(0x000000),
                     },
                 )
                 .id("shared-action")
@@ -529,5 +530,93 @@ fn vertical_and_dense_sections_preserve_control_widths_heights_and_action_hover(
     assert_eq!(
         visual.rendered_background("shared-action"),
         Some(gpui::Background::from(rgb(0xabcdef)))
+    );
+}
+
+struct SharedActionFixture {
+    clicks: Rc<Cell<usize>>,
+}
+impl Render for SharedActionFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let style = ActionStyle {
+            background: 0x123456,
+            text: 0xffffff,
+            hover_background: 0xabcdef,
+            hover_text: Some(0),
+        };
+        let clicks = self.clicks.clone();
+        div()
+            .flex()
+            .gap(px(4.0))
+            .child(
+                device_action("×".into(), style)
+                    .id("device-action")
+                    .debug_selector(|| "device-action".into()),
+            )
+            .child(
+                action("play".into(), style)
+                    .id("workspace-action")
+                    .debug_selector(|| "workspace-action".into())
+                    .w(px(25.0))
+                    .h(px(22.0))
+                    .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+            )
+            .child(
+                action("solo".into(), style.with_state_colors(0x123456, 0xffffff))
+                    .id("state-action")
+                    .debug_selector(|| "state-action".into())
+                    .size(px(18.0)),
+            )
+    }
+}
+
+#[gpui::test]
+fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let handle = cx.add_window(|_, _| SharedActionFixture {
+        clicks: clicks.clone(),
+    });
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    // The simulated pointer starts at the origin, inside the first control.
+    visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for (name, width, height) in [
+        (
+            "device-action",
+            DEVICE_HEADER_ACTION_SIZE,
+            DEVICE_HEADER_ACTION_SIZE,
+        ),
+        ("workspace-action", 25.0, 22.0),
+        ("state-action", 18.0, 18.0),
+    ] {
+        let bounds = visual.debug_bounds(name).unwrap();
+        assert_eq!(bounds.size, size(px(width), px(height)));
+        assert_eq!(
+            visual.rendered_surface_geometry(name).unwrap().0.top_left,
+            px(CONTROL_CORNER_RADIUS).scale(scale)
+        );
+        assert_eq!(
+            visual.rendered_background(name),
+            Some(gpui::Background::from(rgb(0x123456)))
+        );
+        visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_background(name),
+            Some(gpui::Background::from(rgb(if name == "state-action" {
+                0x123456
+            } else {
+                0xabcdef
+            })))
+        );
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        clicks.get(),
+        1,
+        "only the workspace owner installed a click handler"
     );
 }

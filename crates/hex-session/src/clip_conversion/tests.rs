@@ -25,8 +25,11 @@ fn beat(n: u64) -> BeatTime {
 fn fixture() -> (Session, hex_project::TrackId, ClipId) {
     let mut session = Session::new(48_000, 32, 1_000_000).unwrap();
     let Created::Track(track) = session
-        .command(Command::AddTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "bounce".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -192,36 +195,22 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
     assert_eq!(restored, original.snapshot());
     session.redo_prepared_revision(None).unwrap().unwrap();
     assert!(session.project().clip(clip).is_some());
-    // Reverse conversion deliberately produces empty editable MIDI, with no transcription.
-    session
+    let bounced_project = session.project().clone();
+    let media_path = session.project().assets().next().unwrap().path().to_owned();
+    let bytes = fs::read(&media_path).unwrap();
+    let error = session
         .command(Command::ConvertAudioClipToMidi(clip))
-        .unwrap();
-    let midi = session.project().midi_clip(clip).unwrap();
-    assert_eq!(midi.name(), "Rendered Chorus");
-    assert!(midi.notes().is_empty());
-    assert_eq!(
-        session
-            .project()
-            .tempo_map()
-            .beat_to_frame(midi.start())
-            .unwrap(),
-        start
-    );
-    assert_eq!(
-        session.project().midi_bounce_range(clip).unwrap(),
-        (start, frames)
-    );
-    session
-        .command(Command::AddMidiNote {
-            clip,
-            start: BeatTime::ZERO,
-            duration: beat(1),
-            pitch: 67,
-            channel: 1,
-            velocity: 95,
-        })
-        .unwrap();
-    assert_eq!(session.project().midi_clip(clip).unwrap().notes().len(), 1);
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        SessionError::Project(hex_project::Invalid(hex_project::AUDIO_TO_MIDI_UNSUPPORTED))
+    ));
+    assert_eq!(session.project(), &bounced_project);
+    assert_eq!(fs::read(&media_path).unwrap(), bytes);
+    assert!(session.undo());
+    assert!(session.project().midi_clip(clip).is_some());
+    assert!(session.redo());
+    assert_eq!(session.project(), &bounced_project);
 }
 
 #[test]
@@ -236,6 +225,19 @@ fn refused_bounce_leaves_project_and_redo_and_files_untouched() {
     assert!(session.bounce_midi_clip(clip, &blocked, None).is_err());
     assert_eq!(session.project(), &original);
     assert!(session.can_redo());
+    assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
+    // A successful create-new render followed by final admission refusal cleans only
+    // that uncommitted generated file, retaining the original source and history.
+    assert!(
+        session
+            .bounce_midi_clip_with_admission(clip, &folder.0, None, |_, _| Err(
+                SessionError::Invalid("injected final bounce refusal")
+            ),)
+            .is_err()
+    );
+    assert_eq!(session.project(), &original);
+    assert!(session.can_redo());
+    assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 1);
     assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
     session.command(Command::RemoveMidiClip(clip)).unwrap();
     session.undo();
@@ -310,15 +312,15 @@ fn session_conversion_retains_cell_name_identity_and_source_window() {
             .any(|sample| sample.abs() > 0.001)
     );
     assert!(session.project().midi_clip(arrangement).is_some());
-    session
-        .command(Command::ConvertAudioClipToMidi(clip))
-        .unwrap();
-    let midi = session.project().session_midi_clip(clip).unwrap();
-    assert_eq!(midi.name(), "phrase");
-    assert!(midi.source().notes().is_empty());
-    session.undo();
-    assert!(session.project().session_audio_clip(clip).is_some());
-    session.undo();
+    let bounced_project = session.project().clone();
+    assert!(matches!(
+        session.command(Command::ConvertAudioClipToMidi(clip)),
+        Err(SessionError::Project(hex_project::Invalid(
+            hex_project::AUDIO_TO_MIDI_UNSUPPORTED
+        )))
+    ));
+    assert_eq!(session.project(), &bounced_project);
+    assert!(session.undo());
     let mut restored = session.project().snapshot();
     restored.next_id = original.snapshot().next_id;
     assert_eq!(restored, original.snapshot());
@@ -370,9 +372,20 @@ fn looped_and_mutable_bounces_chase_history_and_isolate_other_clips() {
         let before = session.compile_prepared_revision(None).unwrap();
         let (start, frames) = session.project().midi_bounce_range(clip).unwrap();
         let expected = pcm(before, (start + frames) as usize);
+        let Created::Track(other_track) = session
+            .command(Command::InsertTrackWithDevice {
+                name: "independent voice".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("other track")
+        };
         let Created::Clip(other) = session
             .command(Command::PlaceMidiClip {
-                track,
+                track: other_track,
                 start: beat(1),
                 length: beat(3),
             })
