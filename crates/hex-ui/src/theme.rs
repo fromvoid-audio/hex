@@ -20,6 +20,9 @@ pub(crate) use device::{
 use std::borrow::Cow;
 use std::cell::Cell;
 
+/// Shared translucency for arranger and clip-editor time ranges.
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
+
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteRole {
