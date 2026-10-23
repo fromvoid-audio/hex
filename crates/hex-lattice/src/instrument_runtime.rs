@@ -150,6 +150,11 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Immutable opt-in for exact read-only active occurrence IDs. Both actual
+    /// twins must agree before the pair is admitted; the default is unsupported.
+    fn supports_active_occurrence_ids(&self) -> bool {
+        false
+    }
     /// Immutable opt-in for borrowed per-occurrence output gain. The pair checks
     /// this against both actual twins before admission; default providers refuse
     /// nonempty gain batches while retaining their ordinary unity path.
@@ -247,6 +252,23 @@ pub struct AnalyticInstrumentHistory<'a> {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    /// Must agree with the prepared factory and remain invariant for this runtime.
+    fn supports_active_occurrence_ids(&self) -> bool {
+        false
+    }
+    /// Report exact live occurrence identities, including released voices that
+    /// have not retired. No host deadline or whole-runtime quiescence estimate
+    /// substitutes for this provider-owned observation. Write a strictly ascending,
+    /// nonzero, unique prefix and return its length. A short buffer must refuse
+    /// without truncation. The pair bounds output by its admitted occurrence cap.
+    /// On any error all output is unspecified and must be ignored. This read-only
+    /// operation must allocate/free nothing and retain no caller storage/resources.
+    fn active_occurrence_ids(
+        &self,
+        _output: &mut [u64],
+    ) -> Result<usize, NativeInstrumentRuntimeError> {
+        Err(NativeInstrumentRuntimeError::UnsupportedActiveOccurrenceIds)
+    }
     /// Must agree with the prepared factory and remain invariant for this runtime.
     fn supports_occurrence_gain(&self) -> bool {
         false
@@ -367,6 +389,9 @@ pub trait MutableInstrumentRuntime: Any + Send {
 /// Errors found before mutable runtime state or caller PCM is changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInstrumentRuntimeError {
+    UnsupportedActiveOccurrenceIds,
+    ActiveOccurrenceCapacityExceeded,
+    InvalidActiveOccurrenceIds,
     InvalidOccurrenceGain,
     UnsupportedOccurrenceGain,
     RuntimeBudgetExceeded,
@@ -382,6 +407,15 @@ impl NativeInstrumentRuntimeError {
     /// Allocation-free cause for callback diagnostics.
     pub fn diagnostic_message(self) -> &'static str {
         match self {
+            Self::UnsupportedActiveOccurrenceIds => {
+                "native instrument active occurrence ids are unsupported"
+            }
+            Self::ActiveOccurrenceCapacityExceeded => {
+                "native instrument active occurrence output capacity is exceeded"
+            }
+            Self::InvalidActiveOccurrenceIds => {
+                "native instrument active occurrence ids are invalid"
+            }
             Self::InvalidOccurrenceGain => "native instrument occurrence gain is invalid",
             Self::UnsupportedOccurrenceGain => "native instrument occurrence gain is unsupported",
             Self::RuntimeBudgetExceeded => "native instrument runtime exceeds caller limits",
@@ -408,6 +442,7 @@ impl std::error::Error for NativeInstrumentRuntimeError {}
 /// belong on the control side; processing only borrows caller-owned event/PCM
 /// slices and performs no allocation or final drop.
 pub struct NativeInstrumentRuntimePair {
+    active_occurrence_ids: bool,
     occurrence_gain: bool,
     runtime_version: u32,
     declared_pair_bytes: usize,
@@ -432,6 +467,7 @@ impl NativeInstrumentRuntimePair {
         let max_active_occurrences = prepared.max_active_occurrences();
         let max_release_tail_frames = prepared.max_release_tail_frames();
         let occurrence_gain = prepared.supports_occurrence_gain();
+        let active_occurrence_ids = prepared.supports_active_occurrence_ids();
         let declared_pair_bytes = declared_twin_bytes
             .checked_mul(2)
             .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
@@ -454,6 +490,8 @@ impl NativeInstrumentRuntimePair {
         let scratch = prepared.create_runtime();
         if !primary.can_copy_history_from(scratch.as_ref())
             || !scratch.can_copy_history_from(primary.as_ref())
+            || primary.supports_active_occurrence_ids() != active_occurrence_ids
+            || scratch.supports_active_occurrence_ids() != active_occurrence_ids
             || primary.supports_occurrence_gain() != occurrence_gain
             || scratch.supports_occurrence_gain() != occurrence_gain
         {
@@ -466,6 +504,7 @@ impl NativeInstrumentRuntimePair {
         }
 
         Ok(Self {
+            active_occurrence_ids,
             occurrence_gain,
             runtime_version,
             declared_pair_bytes,
@@ -480,6 +519,40 @@ impl NativeInstrumentRuntimePair {
 
     pub const fn runtime_version(&self) -> u32 {
         self.runtime_version
+    }
+
+    pub const fn supports_active_occurrence_ids(&self) -> bool {
+        self.active_occurrence_ids
+    }
+
+    /// Observe scratch while a speculative block is open, otherwise committed
+    /// primary (also after rollback). This never opens/closes a block or changes
+    /// history/PCM. The provider receives at most `max_active_occurrences` slots.
+    /// Success returns a validated strictly ascending nonzero unique prefix;
+    /// callers must ignore every output entry on error, including partial writes.
+    /// Empty live state succeeds with zero entries even in an empty caller buffer.
+    pub fn active_occurrence_ids(
+        &self,
+        output: &mut [u64],
+    ) -> Result<usize, NativeInstrumentRuntimeError> {
+        if !self.active_occurrence_ids {
+            return Err(NativeInstrumentRuntimeError::UnsupportedActiveOccurrenceIds);
+        }
+        let capacity = output.len().min(self.max_active_occurrences);
+        let runtime = if self.block_started {
+            &self.scratch
+        } else {
+            &self.primary
+        };
+        let count = runtime.active_occurrence_ids(&mut output[..capacity])?;
+        if count > capacity {
+            return Err(NativeInstrumentRuntimeError::InvalidActiveOccurrenceIds);
+        }
+        let ids = &output[..count];
+        if ids.contains(&0) || ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(NativeInstrumentRuntimeError::InvalidActiveOccurrenceIds);
+        }
+        Ok(count)
     }
 
     pub const fn supports_occurrence_gain(&self) -> bool {
@@ -517,7 +590,7 @@ impl NativeInstrumentRuntimePair {
     }
 
     /// Whether committed history is available for a control-side checkpoint.
-    /// An open speculative block is never observable or checkpointable.
+    /// An open speculative block is never eligible for a committed checkpoint.
     pub const fn committed_state_available(&self) -> bool {
         !self.block_started
     }
@@ -813,6 +886,7 @@ pub(super) fn validate_event_batch(
 
 #[cfg(test)]
 mod tests {
+    mod active_occurrences;
     use super::*;
     use crate::{ANALYTIC_NOTE_PAYLOAD_WORDS, PreparedAnalyticNote, PreparedNativeInstrument};
     use hex_lattice_contract::DeviceContractError;
@@ -840,6 +914,7 @@ mod tests {
     }
 
     struct FeedbackPrepared {
+        observation: Option<active_occurrences::Observation>,
         compatibility_key: u8,
         release_frames: u8,
         max_tail_frames: u64,
@@ -851,6 +926,7 @@ mod tests {
     }
 
     struct FeedbackRuntime {
+        observation: Option<active_occurrences::Observation>,
         compatibility_key: u8,
         release_frames: u8,
         max_tail_frames: u64,
@@ -924,6 +1000,9 @@ mod tests {
     }
 
     impl PreparedMutableInstrumentRuntime for FeedbackPrepared {
+        fn supports_active_occurrence_ids(&self) -> bool {
+            self.observation.is_some()
+        }
         fn runtime_version(&self) -> u32 {
             1
         }
@@ -947,6 +1026,7 @@ mod tests {
         fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
             let ordinal = self.creations.fetch_add(1, Ordering::Relaxed);
             Box::new(FeedbackRuntime {
+                observation: self.observation,
                 compatibility_key: if self.alternate_twin_key {
                     self.compatibility_key.wrapping_add(ordinal as u8)
                 } else {
@@ -967,6 +1047,15 @@ mod tests {
     }
 
     impl MutableInstrumentRuntime for FeedbackRuntime {
+        fn supports_active_occurrence_ids(&self) -> bool {
+            self.observation.is_some()
+        }
+        fn active_occurrence_ids(
+            &self,
+            output: &mut [u64],
+        ) -> Result<usize, NativeInstrumentRuntimeError> {
+            active_occurrences::observe(self, output)
+        }
         fn preflight_events(
             &self,
             events: &[NativeInstrumentEvent],
@@ -1119,6 +1208,7 @@ mod tests {
 
     fn prepared(key: u8, release_frames: u8, creations: Arc<AtomicUsize>) -> FeedbackPrepared {
         FeedbackPrepared {
+            observation: None,
             compatibility_key: key,
             release_frames,
             max_tail_frames: 4,
@@ -1483,6 +1573,7 @@ mod tests {
             ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError>
             {
                 Ok(Some(Box::new(FeedbackPrepared {
+                    observation: self.0.observation,
                     compatibility_key: self.0.compatibility_key,
                     release_frames: self.0.release_frames,
                     max_tail_frames: self.0.max_tail_frames,
