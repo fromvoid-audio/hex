@@ -225,7 +225,10 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
     assert_eq!(p, previous);
     assert!(p.tracks()[0].gain_lane().spans().is_empty());
     assert_eq!(p.tracks()[0].gain_lane().recording_epoch(), 0);
-    assert!(decode(&hex_storage::encode_schema22(&previous).unwrap()).is_err());
+    assert_eq!(
+        decode(&hex_storage::encode_schema22(&previous).unwrap()).unwrap(),
+        previous
+    );
 }
 
 #[test]
