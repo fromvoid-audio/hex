@@ -453,6 +453,19 @@ impl EditorView {
                     }
                 }),
             );
+        let track_selected = self.track_selection.contains(track_id);
+        if track_selected {
+            clip_area = clip_area.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .debug_selector(move || format!("selected-track-lane-{}", track_id.value()))
+                    .bg(
+                        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .alpha(theme::TRACK_SELECTION_OPACITY),
+                    ),
+            );
+        }
         let lane_entity = cx.entity();
         clip_area = clip_area.children([canvas(
             move |bounds, _, cx| {
@@ -892,6 +905,38 @@ impl EditorView {
                         .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                 );
             }
+        }
+        if track_selected {
+            // Keep the outer clip selection stroke intact. These lane accents
+            // sit one logical pixel inside it, beneath cursor/time overlays.
+            let edge = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .alpha(theme::TRACK_SELECTION_EDGE_OPACITY);
+            let stroke = 1.0 / scale_factor.max(1.0);
+            clip_area = clip_area
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-top-{}", track_id.value())
+                        })
+                        .bg(edge),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-bottom-{}", track_id.value())
+                        })
+                        .bg(edge),
+                );
         }
         if self.selected_track == Some(track_id) && self.time_selection.is_some() {
             clip_area = clip_area.child(

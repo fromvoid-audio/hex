@@ -833,6 +833,14 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let target = point(down.x - px(42.0), down.y);
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-lane-{}", source.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "resizing a clip must not promote its track into explicit selection paint"
+    );
     let snapped_duration = editor.read_with(cx, |view, _| {
         let drag = view.active_trim_drag.as_ref().expect("active trim drag");
         assert_eq!(drag.source_track, source);
