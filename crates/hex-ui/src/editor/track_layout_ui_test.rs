@@ -618,7 +618,11 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_fixed_return_main_rows(
     });
     assert_heights(&mut visual, &tracks, &[23.0, 23.0]);
     assert_eq!(
-        bounds(&mut visual, "return-track-header", return_track)
+        visual
+            .debug_bounds(Box::leak(
+                format!("return-track-header-{}", return_track.value()).into_boxed_str(),
+            ))
+            .expect("return header")
             .size
             .height,
         px(44.0)
