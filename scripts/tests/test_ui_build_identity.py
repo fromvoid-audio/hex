@@ -44,6 +44,8 @@ class UiBuildIdentityTests(unittest.TestCase):
             # Lockfile resolution does not compile or use a Cargo target.
             env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
             env.pop("HEX_GUARDED_BUILD_SOURCE", None)
+            env.pop("HEX_RELEASE_CHANGELOG", None)
+            env.pop("HEX_RELEASE_LABEL", None)
             subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=root, env=env, check=True, capture_output=True)
             command("git", "add", ".")
             command("git", "commit", "-qm", "fixture")
@@ -137,6 +139,24 @@ class UiBuildIdentityTests(unittest.TestCase):
             command("git", "commit", "-qm", "notes changed with retained mtime")
             self.assertTrue(build(optimized=True)[1].endswith('|{"batches": []}'))
             self.assertEqual(cleanup, "not_needed")
+            # A frozen external release projection is an actual compiler input,
+            # including same-path byte mutation with a restored timestamp.
+            frozen = root / "artifacts/release-notes.json"
+            frozen.parent.mkdir(exist_ok=True)
+            frozen.write_text('{"format":1,"batches":[]}')
+            env["HEX_RELEASE_CHANGELOG"] = str(frozen)
+            env["HEX_RELEASE_LABEL"] = "0.1.0-beta.1"
+            fresh, output = build(optimized=True)
+            self.assertFalse(fresh)
+            self.assertTrue(output.startswith("0.1.0-beta.1 · "))
+            self.assertTrue(output.endswith('|{"format":1,"batches":[]}'))
+            stamp = frozen.stat()
+            frozen.write_text('{"format":1, "batches":[]}')
+            os.utime(frozen, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertFalse(build(optimized=True)[0])
+            self.assertTrue(build(optimized=True)[1].endswith('|{"format":1, "batches":[]}'))
+            env.pop("HEX_RELEASE_CHANGELOG")
+            env.pop("HEX_RELEASE_LABEL")
             print("ACTUAL_UNOWNED_INPUTS dev_same_head_dirty_current=True optimized_clean_commits_current=True dirty_optimized_refused_owner_artifacts_unchanged=True cleanup_not_needed=True")
             # Raw Cargo still refreshes truthfully, including untracked dirt.
             (root / "another-input").write_text("dirty")

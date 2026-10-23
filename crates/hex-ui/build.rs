@@ -10,11 +10,19 @@ fn git(arguments: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    let dataset = std::path::Path::new("../../changelog/generated.json");
+    println!("cargo:rerun-if-env-changed=HEX_RELEASE_CHANGELOG");
+    println!("cargo:rerun-if-env-changed=HEX_RELEASE_LABEL");
+    let release_dataset = std::env::var_os("HEX_RELEASE_CHANGELOG");
+    let dataset = release_dataset
+        .as_deref()
+        .map(std::path::Path::new)
+        .unwrap_or_else(|| std::path::Path::new("../../changelog/generated.json"));
     let bytes = match std::fs::read(dataset) {
         Ok(bytes) if bytes.len() <= 1024 * 1024 => bytes,
         Ok(_) => panic!("changelog exceeds the validated dataset limit"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) if release_dataset.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+            Vec::new()
+        }
         Err(error) => panic!("cannot embed changelog: {error}"),
     };
     let output =
@@ -43,7 +51,9 @@ fn main() {
             let suffix = if parts[2] == "dirty" { " dirty" } else { "" };
             println!(
                 "cargo:rustc-env=HEX_BUILD_IDENTITY={}{suffix}",
-                &parts[0][..8]
+                std::env::var("HEX_RELEASE_LABEL")
+                    .map(|label| format!("{label} · {}", &parts[0][..8]))
+                    .unwrap_or_else(|_| parts[0][..8].to_owned())
             );
             return;
         }
