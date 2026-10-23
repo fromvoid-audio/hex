@@ -23,6 +23,7 @@ pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
+mod clip_selection_edit;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
@@ -31,6 +32,7 @@ pub use audio_edit::{
     WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
     preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
+pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};

@@ -15,6 +15,11 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Apply one clip-wide value to a frozen Arrangement selection atomically.
+    EditClips {
+        clips: Vec<ClipId>,
+        edit: crate::ClipEdit,
+    },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
@@ -1976,6 +1981,9 @@ impl Project {
                     .retain(|r| r.source() != id && r.destination() != id);
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
+            }
+            Command::EditClips { clips, edit } => {
+                crate::clip_selection_edit::apply(self, clips, edit)
             }
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {

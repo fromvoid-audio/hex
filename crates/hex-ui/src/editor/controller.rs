@@ -2687,6 +2687,23 @@ impl EditorView {
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Source indices/coordinates deliberately belong to the displayed source.
+    /// Whole-clip property controls must use ordinary enqueue instead.
+    pub(super) fn enqueue_focused_source_edit(&mut self, command: hex_project::Command) -> bool {
+        self.enqueue_with_clip_scope(Request::Edit(command), true)
+    }
+
+    fn enqueue_with_clip_scope(&mut self, request: Request, focused_source: bool) -> bool {
+        let request = match self.resolve_clip_action_scope(request, focused_source) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.0.into());
+                return false;
+            }
+        };
         let selection = self.created_note_selection_intent(&request);
         let pending_before = self.worker_requests_pending;
         let accepted = self.enqueue_request(request, false);
