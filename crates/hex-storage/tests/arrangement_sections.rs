@@ -218,3 +218,82 @@ fn global_tempo_absorbed_sections_roundtrip_and_reject_competing_processing_cloc
         );
     }
 }
+
+#[test]
+fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge() {
+    for operation in ["resize", "duplicate", "delete", "merge"] {
+        let mut editor = Editor::new(fixture(), 16).unwrap();
+        let sections = editor.project().arrangement_sections().to_vec();
+        assert_eq!(sections.len(), 2);
+        let ids: Vec<_> = sections.iter().map(|section| section.id()).collect();
+        let before = editor.project().snapshot();
+        assert!(
+            editor.project().tracks()[0].clips()[0]
+                .audio_edit()
+                .unwrap()
+                .processing_projection
+                .is_some()
+        );
+        assert!(!editor.project().tracks()[0].gain_lane().spans().is_empty());
+
+        match operation {
+            "resize" => {
+                let marker = editor.project().arrangement_section(ids[0]).unwrap();
+                let new_length = BeatTime::from_raw(
+                    marker.end().raw() - marker.start().raw() + BeatTime::ONE.raw(),
+                );
+                editor
+                    .execute(Command::ResizeArrangementSection {
+                        section: ids[0],
+                        edge: hex_project::TrimEdge::Left,
+                        length: new_length,
+                    })
+                    .unwrap();
+                let resized = editor.project().arrangement_section(ids[0]).unwrap();
+                assert_eq!(resized.start(), sections[0].start());
+                assert_eq!(
+                    resized.end().raw() - resized.start().raw(),
+                    new_length.raw()
+                );
+            }
+            "duplicate" => {
+                let Created::ArrangementSection(copy) = editor
+                    .execute(Command::DuplicateArrangementSection(ids[0]))
+                    .unwrap()
+                else {
+                    panic!("duplicate section result")
+                };
+                let source = editor.project().arrangement_section(ids[0]).unwrap();
+                let duplicate = editor.project().arrangement_section(copy).unwrap();
+                assert_eq!(duplicate.start(), source.end());
+                assert_eq!(duplicate.name(), source.name());
+                assert_eq!(duplicate.color(), source.color());
+            }
+            "delete" => {
+                editor
+                    .execute(Command::DeleteArrangementSection(ids[0]))
+                    .unwrap();
+                assert!(editor.project().arrangement_section(ids[0]).is_none());
+            }
+            "merge" => {
+                editor
+                    .execute(Command::MergeArrangementSections(ids.clone()))
+                    .unwrap();
+                assert_eq!(editor.project().arrangement_sections().len(), 1);
+                assert_eq!(editor.project().arrangement_sections()[0].id(), ids[0]);
+            }
+            _ => unreachable!(),
+        }
+
+        let after = editor.project().snapshot();
+        let bytes = hex_storage::encode(editor.project()).unwrap();
+        assert_eq!(hex_storage::decode(&bytes).unwrap().snapshot(), after);
+        assert!(editor.undo());
+        assert!(!editor.can_undo());
+        let mut undone = editor.project().snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before, "{operation} undo");
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after, "{operation} redo");
+    }
+}
