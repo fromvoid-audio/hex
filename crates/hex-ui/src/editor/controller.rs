@@ -966,13 +966,15 @@ impl EditorView {
                         event.error.is_none() && !event.state.unsaved,
                         event.state.revision,
                     ));
-                    let saved_project_path = (event.save_complete && event.error.is_none())
-                        .then(|| event.state.document_path.clone())
-                        .flatten();
+                    let saved_project_path =
+                        (event.save_complete && event.error.is_none() && !event.state.unsaved)
+                            .then(|| event.state.document_path.clone())
+                            .flatten();
                     if let Some(path) = self.receive(event) {
                         self.record_opened_project(path.clone(), cx);
                         self.record_project_directory(path, cx);
                     } else if let Some(path) = saved_project_path {
+                        self.record_opened_project(path.clone(), cx);
                         self.record_project_directory(path, cx);
                     }
                     if let Some((success, revision)) = open_save {

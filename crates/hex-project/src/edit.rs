@@ -71,6 +71,13 @@ pub enum Command {
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
+    /// Split marker metadata at a strict interior beat, preserving all music.
+    /// The left marker retains its ID; the right gets a fresh ID and the same
+    /// name/color. One validated command owns both adjoining positive ranges.
+    SplitArrangementSection {
+        section: crate::SectionId,
+        at: crate::BeatTime,
+    },
     /// Merge the earliest-to-latest selected marker span, including intervening
     /// markers/gaps, retaining earliest identity/name/color and all music.
     MergeArrangementSections(Vec<crate::SectionId>),
@@ -1508,6 +1515,7 @@ impl Project {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
             }

@@ -168,7 +168,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             std::fs::remove_dir_all(directory).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["version"], 38);
+            assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
             for mutation in 0..9 {
                 let mut bad = value.clone();
                 match mutation {
