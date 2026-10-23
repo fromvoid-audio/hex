@@ -31,6 +31,8 @@ mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod delete_ui_tests;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
