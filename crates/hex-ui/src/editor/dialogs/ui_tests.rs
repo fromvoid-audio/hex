@@ -85,6 +85,7 @@ fn pump(
             view.tick(cx);
             cx.notify();
         });
+        cx.run_until_parked();
         if editor.read_with(cx, |view, _| done(view)) {
             break;
         }
@@ -98,6 +99,7 @@ fn pump(
 }
 fn settled(view: &EditorView) -> bool {
     view.state.is_some()
+        && !view.audio_import_settings.is_loading()
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
         && !view.opening_project

@@ -210,8 +210,26 @@ pub(super) fn preview_resize(
     edge: TrimEdge,
     length: BeatTime,
 ) -> Result<SectionSplicePreview, Invalid> {
-    let index = section_index(project, section)?;
-    let marker = &project.arrangement_sections[index];
+    preview_resize_parts(
+        &project.arrangement_sections,
+        &project.tempo_map,
+        section,
+        edge,
+        length,
+    )
+}
+
+pub(super) fn preview_resize_parts(
+    source: &[ArrangementSection],
+    tempo: &TempoMap,
+    section: SectionId,
+    edge: TrimEdge,
+    length: BeatTime,
+) -> Result<SectionSplicePreview, Invalid> {
+    let marker = source
+        .iter()
+        .find(|s| s.id == section)
+        .ok_or(Invalid("arrangement section no longer exists"))?;
     if length == BeatTime::ZERO {
         return Err(Invalid("arrangement section length must be positive"));
     }
@@ -226,17 +244,18 @@ pub(super) fn preview_resize(
     if length.raw() == old_len {
         let mut sections = Vec::new();
         sections
-            .try_reserve_exact(project.arrangement_sections.len())
+            .try_reserve_exact(source.len())
             .map_err(|_| Invalid("could not reserve section marker preview"))?;
-        sections.extend(project.arrangement_sections.iter().cloned());
+        sections.extend(source.iter().cloned());
         return Ok(SectionSplicePreview {
             sections,
-            tempo_map: project.tempo_map.clone(),
+            tempo_map: tempo.clone(),
         });
     }
     let transform = resize_transform(marker, edge, length.raw(), old_len, end)?;
     layout_preview(
-        project,
+        source,
+        tempo,
         transform,
         TransformPurpose::Resize(section, marker.start, end),
     )
@@ -248,7 +267,8 @@ pub(super) fn preview_delete(
 ) -> Result<SectionSplicePreview, Invalid> {
     let marker = &project.arrangement_sections[section_index(project, section)?];
     layout_preview(
-        project,
+        &project.arrangement_sections,
+        &project.tempo_map,
         Transform::Delete {
             start: marker.start,
             end: marker.end,
@@ -276,7 +296,8 @@ pub(super) fn preview_duplicate(
             .ok_or(Invalid("duplicated section end overflow"))?,
     );
     layout_preview(
-        project,
+        &project.arrangement_sections,
+        &project.tempo_map,
         Transform::Duplicate {
             start: marker.start,
             end: marker.end,
@@ -286,20 +307,20 @@ pub(super) fn preview_duplicate(
 }
 
 fn layout_preview(
-    project: &Project,
+    source: &[ArrangementSection],
+    tempo: &TempoMap,
     transform: Transform,
     purpose: TransformPurpose,
 ) -> Result<SectionSplicePreview, Invalid> {
     let mut sections = Vec::new();
-    let capacity = project
-        .arrangement_sections
+    let capacity = source
         .len()
         .checked_add(1)
         .ok_or(Invalid("section marker preview count overflow"))?;
     sections
         .try_reserve_exact(capacity)
         .map_err(|_| Invalid("could not reserve section marker preview"))?;
-    for marker in &project.arrangement_sections {
+    for marker in source {
         match &purpose {
             TransformPurpose::Delete(id) if marker.id == *id => continue,
             TransformPurpose::Resize(id, start, end) if marker.id == *id => {
@@ -332,7 +353,7 @@ fn layout_preview(
         sections.push(marker);
     }
     sections.sort_by_key(|marker| marker.start);
-    let tempo_map = transformed_tempo(&project.tempo_map, transform)?;
+    let tempo_map = transformed_tempo(tempo, transform)?;
     super::validate(&sections, &tempo_map)?;
     Ok(SectionSplicePreview {
         sections,
@@ -408,7 +429,12 @@ fn apply_transform(
     };
     let old_tempo = std::sync::Arc::new(project.tempo_map.clone());
     let start_frame = old_tempo.beat_to_frame(transform.start())?;
-    let layout = layout_preview(project, transform, purpose.clone())?;
+    let layout = layout_preview(
+        &project.arrangement_sections,
+        &project.tempo_map,
+        transform,
+        purpose.clone(),
+    )?;
     let new_tempo = layout.tempo_map;
     let end_frame = if matches!(transform, Transform::Insert { .. }) {
         start_frame
@@ -1143,4 +1169,112 @@ fn transform_gain_lane(
     }
     spans.sort_by_key(|span| span.start);
     GainLane::new(points, spans, lane.recording_epoch())
+}
+
+struct IsolatedResize {
+    section: SectionId,
+    start: BeatTime,
+    end: BeatTime,
+    temporary_start: BeatTime,
+    temporary_end: BeatTime,
+    delete: Transform,
+    insert: Transform,
+}
+fn isolated_plan(
+    project: &Project,
+    section: SectionId,
+    edge: TrimEdge,
+    boundary: BeatTime,
+) -> Result<Option<IsolatedResize>, Invalid> {
+    let index = section_index(project, section)?;
+    let old = &project.arrangement_sections[index];
+    let (start, end, original) = match edge {
+        TrimEdge::Left => (boundary, old.end, old.start),
+        TrimEdge::Right => (old.start, boundary, old.end),
+    };
+    if start >= end {
+        return Err(Invalid("section edge must leave a positive range"));
+    }
+    if project
+        .arrangement_sections
+        .iter()
+        .any(|s| s.id != section && start < s.end && s.start < end)
+    {
+        return Err(Invalid(
+            "section edge cannot overlap another section; drag the shared seam to resize both",
+        ));
+    }
+    if original == boundary {
+        return Ok(None);
+    }
+    let lo = original.min(boundary);
+    let hi = original.max(boundary);
+    let delete = Transform::Delete { start: lo, end: hi };
+    Ok(Some(IsolatedResize {
+        section,
+        start,
+        end,
+        temporary_start: delete.map_position(old.start)?,
+        temporary_end: delete.map_position(old.end)?,
+        delete,
+        insert: Transform::Insert {
+            at: lo,
+            end: hi,
+            length: hi.raw() - lo.raw(),
+        },
+    }))
+}
+
+/// One candidate transaction: clear crossed edge time, then restore its duration.
+/// Only the selected marker changes; all other markers return to their original
+/// positions. Existing splice laws retain media processing, MIDI and automation.
+pub(super) fn resize_isolated(
+    project: &mut Project,
+    section: SectionId,
+    edge: TrimEdge,
+    boundary: BeatTime,
+) -> Result<Created, Invalid> {
+    let Some(plan) = isolated_plan(project, section, edge, boundary)? else {
+        return Ok(Created::None);
+    };
+    apply_transform(
+        project,
+        plan.delete,
+        TransformPurpose::Resize(plan.section, plan.temporary_start, plan.temporary_end),
+    )?;
+    apply_transform(
+        project,
+        plan.insert,
+        TransformPurpose::Resize(plan.section, plan.start, plan.end),
+    )?;
+    Ok(Created::None)
+}
+
+pub(super) fn preview_isolated(
+    project: &Project,
+    section: SectionId,
+    edge: TrimEdge,
+    boundary: BeatTime,
+) -> Result<SectionSplicePreview, Invalid> {
+    let Some(plan) = isolated_plan(project, section, edge, boundary)? else {
+        let old = &project.arrangement_sections[section_index(project, section)?];
+        return preview_resize(
+            project,
+            section,
+            edge,
+            BeatTime::from_raw(old.end.raw() - old.start.raw()),
+        );
+    };
+    let first = layout_preview(
+        &project.arrangement_sections,
+        &project.tempo_map,
+        plan.delete,
+        TransformPurpose::Resize(plan.section, plan.temporary_start, plan.temporary_end),
+    )?;
+    layout_preview(
+        &first.sections,
+        &first.tempo_map,
+        plan.insert,
+        TransformPurpose::Resize(plan.section, plan.start, plan.end),
+    )
 }
