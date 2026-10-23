@@ -113,7 +113,7 @@ pub(crate) fn open_prepared(
         .default_output_device()
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
-    let config = supported.config();
+    let mut config = supported.config();
     validate_expected_rate(expected_sample_rate, config.sample_rate)?;
     if config.channels == 0 {
         return Err("output device has no channels".into());
@@ -125,6 +125,19 @@ pub(crate) fn open_prepared(
     ) {
         return Err(format!("unsupported output format: {sample_format:?}"));
     }
+
+    // Native worker outputs reserve a fixed bridge-compatible profile before
+    // backend exposure. CPAL's CoreAudio implementation requests a device-wide
+    // buffer property; this happens only during ordinary lifecycle setup, never
+    // during insertion or Play. A request is not a delivery guarantee: actual
+    // callback extents are checked separately before any foreign processing.
+    let physical_callback_request = if worker {
+        let frames = bridge_callback_request(*supported.buffer_size())?;
+        config.buffer_size = cpal::BufferSize::Fixed(u32::from(frames));
+        Some(frames)
+    } else {
+        None
+    };
 
     let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
         if (8_000..=192_000).contains(&config.sample_rate) {
@@ -158,7 +171,7 @@ pub(crate) fn open_prepared(
         Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
         None => prepared::channel(config.sample_rate),
     };
-    let (control, callback) = match channel_result {
+    let (mut control, mut callback) = match channel_result {
         Ok(channel) => channel,
         Err(error) => {
             // Even pre-channel failure transfers the actual worker/lease to
@@ -170,6 +183,15 @@ pub(crate) fn open_prepared(
             return Err(error.to_string());
         }
     };
+    if let Some(frames) = physical_callback_request {
+        if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
+            drop(lifecycle::StreamOwner::failed_preparation_custody(
+                lease,
+                spectrum_reaper,
+            ));
+            return Err(error.to_string());
+        }
+    }
     let root = control.native_candidate_root();
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
         if worker {
@@ -230,6 +252,22 @@ pub(crate) fn open_prepared(
         spectrum,
         spectrum_error,
     })
+}
+
+/// Select within the device's reported finite range and the existing bridge
+/// cap. Unknown/invalid ranges refuse rather than infer a bound from scratch
+/// chunks. A backend can still refuse the fixed request during stream creation.
+fn bridge_callback_request(supported: cpal::SupportedBufferSize) -> Result<u16, String> {
+    let cpal::SupportedBufferSize::Range { min, max } = supported else {
+        return Err(
+            "output device does not report a bounded buffer range for plugin processing".into(),
+        );
+    };
+    let frames = max.min(crate::plugin_transport::MAX_FRAMES as u32);
+    if min == 0 || min > max || min > frames {
+        return Err("output device cannot provide a supported plugin callback size".into());
+    }
+    u16::try_from(frames).map_err(|_| "plugin callback size exceeds its supported range".into())
 }
 
 fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), String> {
@@ -403,6 +441,9 @@ where
 mod plugin_transport_tests;
 
 #[cfg(test)]
+mod physical_callback_tests;
+
+#[cfg(test)]
 mod handoff_profile;
 
 // Preserve the existing rounding (including subnormals) when the sum fits.
@@ -476,7 +517,13 @@ pub(crate) fn headless_worker_output(
     rate: u32,
 ) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
     let lease = lifecycle::Lease::acquire()?;
-    let (control, callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    let (mut control, mut callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    control
+        .configure_physical_callback_request(
+            &mut callback,
+            crate::plugin_transport::MAX_FRAMES as u16,
+        )
+        .map_err(|error| error.to_string())?;
     let root = control.native_candidate_root();
     let (data, errors, terminals, client, mut publication) =
         crate::native_callback_owner::reserve_native_worker(control, callback, None);

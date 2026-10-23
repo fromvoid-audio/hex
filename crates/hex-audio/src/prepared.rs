@@ -915,6 +915,7 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
+    requested_physical_callback_frames: Option<u16>,
     output_transport_reaper: Option<crate::plugin_transport::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
@@ -954,6 +955,7 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
+    requested_physical_callback_frames: Option<u16>,
     output_transport: Option<Box<crate::plugin_transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
@@ -1040,6 +1042,7 @@ pub fn channel_with_spectrum(
             gain_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                requested_physical_callback_frames: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
@@ -1059,6 +1062,7 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            requested_physical_callback_frames: None,
             output_transport: None,
             output_transport_cancelled: false,
             transport_setup_open: true,
@@ -1223,6 +1227,40 @@ impl PublicationControl {
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
+    }
+    /// The fixed device buffer requested by this output's actual constructor.
+    /// This is not proof of delivered callback shape or a physical deadline;
+    /// every foreign callback must still validate its real complete extent.
+    pub fn requested_physical_callback_frames_on_control(&self) -> Option<u16> {
+        self.requested_physical_callback_frames
+    }
+    /// Bind only while both exact constructor endpoints remain unexposed.
+    /// Device construction requests this fixed size before backend creation;
+    /// headless constructor fixtures may use the same finite delivery profile.
+    pub(crate) fn configure_physical_callback_request(
+        &mut self,
+        callback: &mut Callback,
+        frames: u16,
+    ) -> Result<(), Invalid> {
+        if frames == 0
+            || usize::from(frames) > crate::plugin_transport::MAX_FRAMES
+            || self.requested_physical_callback_frames.is_some()
+            || callback.requested_physical_callback_frames.is_some()
+            || self.revision != 0
+            || self.native_custody
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || !callback.transport_setup_open
+            || !callback.belongs_to_candidate_root(&self.candidate_root)
+            || !callback.matches_native_status(&self.status)
+        {
+            return Err(Invalid(
+                "physical callback request requires its vacant constructor",
+            ));
+        }
+        self.requested_physical_callback_frames = Some(frames);
+        callback.requested_physical_callback_frames = Some(frames);
+        Ok(())
     }
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
