@@ -36,6 +36,11 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
     let initial = next(&service);
     let mut old: serde_json::Value =
         serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
+    // This empty schema36 fixture predates horizontal fade coordinates.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("fade_curve_positions"),
+        Some(serde_json::json!([]))
+    );
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();
