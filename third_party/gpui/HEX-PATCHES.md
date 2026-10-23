@@ -244,7 +244,7 @@ against verified originals to compare every patched/added byte.
 
 23 October stateless action semantics: the existing bounded accessibility value
 contract adds Button, permitting only Focus/Press. AppKit exposes AXButton with no
-editable value, value description or setter. Owner lifetime, revision, snapshot
+editable value or value description; value-setting actions refuse. Owner lifetime, revision, snapshot
 budgets, revocation and mailbox validation remain unchanged; no new FFI or native
 application pointer path. The browser clear action is the first consumer. A real
 AppKit semantic-object regression checks role/no-value and action restrictions;
