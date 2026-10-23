@@ -65,6 +65,7 @@ fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap(
         let instance = original_instance();
         let cancel = instance.cancellation_on_control();
         let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
+        let storage = worker.transport_storage_on_control(&callback).unwrap();
         if cancelled == 0 {
             for block in 0..4 {
                 callback
@@ -119,6 +120,10 @@ fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap(
         // This still-live callback carrier has not returned merely because
         // native retirement completed. Its matching worker retains the queues.
         assert!(worker.owns_callback(&callback));
+        assert_eq!(
+            worker.transport_storage_on_control(&callback),
+            Some(storage)
+        );
         drop(callback);
         drop(worker);
     }
@@ -139,6 +144,7 @@ fn actual_native_worker_returns_same_instance_for_fresh_epoch() {
         let (_, unrelated, _) = channel(binding, 8).unwrap();
         assert!(owner.owns_callback(&callback));
         assert!(!owner.owns_callback(&unrelated));
+        assert_eq!(owner.transport_storage_on_control(&unrelated), None);
         for n in 0..4_u64 {
             let mut output = [[9.0; 2]; 8];
             callback

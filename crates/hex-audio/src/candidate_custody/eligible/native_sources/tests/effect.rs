@@ -47,6 +47,10 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 };
                 assert_eq!(effect.binding(), binding);
                 assert_eq!(effect.identity(), identity());
+                let transport = effect.transport_storage_on_control().unwrap();
+                assert_eq!(transport.shared_groups, 3);
+                assert_eq!(transport.shared_handle_bound, 7);
+                assert!(transport.data_bytes > 0);
                 // The existing factory borrows this exact actual owner; copied
                 // latency/state facts alone cannot construct the definition.
                 let _definition = crate::plugin_effects::NativeEffectDefinition::new(

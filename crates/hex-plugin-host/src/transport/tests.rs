@@ -8,6 +8,59 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_retirement() {
+    let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+    let (other_control, other_callback, _) = channel(BINDING, 8).unwrap();
+    assert_eq!(
+        callback.constructor_storage_on_control(&other_control),
+        None
+    );
+    assert_eq!(
+        other_callback.constructor_storage_on_control(&control),
+        None
+    );
+    let storage = callback.constructor_storage_on_control(&control).unwrap();
+    // Both queue allocations retain all slots, even when no blocks are queued.
+    assert_eq!(
+        storage.data_bytes,
+        2 * (QUEUE_CAPACITY * std::mem::size_of::<Block>()
+            + std::mem::size_of::<RingBuffer<Block>>())
+            + std::mem::size_of::<AtomicBool>()
+    );
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (3, 7));
+    for _ in 0..4 {
+        callback
+            .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+        echo(&mut worker);
+        assert_eq!(
+            callback.constructor_storage_on_control(&control),
+            Some(storage)
+        );
+    }
+    control.revoke();
+    drop(worker);
+    assert_eq!(
+        callback.constructor_storage_on_control(&control),
+        Some(storage)
+    );
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn visiting_retained_channel_storage_neither_allocates_nor_reclaims() {
+    let (control, callback, worker) = channel(BINDING, 8).unwrap();
+    let expected = callback.constructor_storage_on_control(&control);
+    let measured = allocation_counter::measure(|| {
+        assert_eq!(callback.constructor_storage_on_control(&control), expected);
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    drop((control, callback, worker));
+}
+
+#[test]
 fn minimum_and_maximum_quantum_keep_the_declared_two_quantum_delay() {
     for q in [1_u16, MAX_FRAMES as u16] {
         let (_control, mut callback, mut worker) = channel(BINDING, q).unwrap();

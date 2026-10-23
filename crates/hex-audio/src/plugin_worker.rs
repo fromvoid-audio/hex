@@ -237,6 +237,12 @@ impl NativeWorker {
     pub fn owns_callback(&self, callback: &Callback) -> bool {
         callback.matches_control(&self.reaper.control)
     }
+    /// Actual copied-channel payload only, retained through worker/native
+    /// retirement until callback/control destruction. Native instance, worker
+    /// terminal and thread resources require their own constructor accounting.
+    pub fn transport_storage_on_control(&self, callback: &Callback) -> Option<ConstructorStorage> {
+        callback.constructor_storage_on_control(&self.reaper.control)
+    }
     pub fn revoke_on_control(&self) {
         self.reaper.revoke();
     }

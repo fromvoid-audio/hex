@@ -22,7 +22,9 @@ use std::sync::{
         Ordering::{Acquire, Release},
     },
 };
+mod storage;
 pub mod wire;
+pub use storage::ConstructorStorage;
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
