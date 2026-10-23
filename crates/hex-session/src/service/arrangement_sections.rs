@@ -15,6 +15,8 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::ReorderSectionBefore { .. }
             | Command::ReorderSectionAfter { .. }
             | Command::ResizeArrangementSection { .. }
+            | Command::ResizeArrangementSectionEdge { .. }
+            | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
             | Command::MergeArrangementSections(_)
