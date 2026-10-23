@@ -411,6 +411,8 @@ call `get_ticket` and pass its current revision as `expected_revision`; on
 conflict, re-read and reconsider. Update fields selectively, preserving
 descriptions, tags and source context. Mark `done` only when acceptance criteria
 are met; source-complete work with pending native/user validation remains open.
+Preserve explicit user status changes after feedback; an earlier merge does not
+authorize resetting a later `todo` or `done` decision.
 Record unrelated discoveries during an active PR as follow-up tickets instead
 of expanding that PR.
 
