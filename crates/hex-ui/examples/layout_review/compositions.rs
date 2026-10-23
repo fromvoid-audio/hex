@@ -18,9 +18,9 @@ impl Gallery {
             theme::device_header_action_style(
                 self.selected,
                 if self.bypassed {
-                    theme::DeviceActionRole::Muted
+                    theme::DeviceActionRole::Bypassed
                 } else {
-                    theme::DeviceActionRole::Normal
+                    theme::DeviceActionRole::Enabled
                 },
             ),
         )

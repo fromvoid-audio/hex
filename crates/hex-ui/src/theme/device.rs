@@ -136,21 +136,30 @@ pub(crate) enum DeviceActionRole {
     Normal,
     Muted,
     Destructive,
+    Enabled,
+    Bypassed,
 }
 
 pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole) -> ActionStyle {
+    // Power is a canonical device state, independent of the selected header.
+    // Keep the accent on hover too, so focus/hover cannot suggest a bypass edit.
     let layout = device_style(DeviceStyleRole::Layout);
-    let background = if selected {
-        layout.accent
-    } else {
-        layout.surface
+    let background = match role {
+        DeviceActionRole::Enabled => color(PaletteRole::Primary),
+        DeviceActionRole::Bypassed => color(PaletteRole::Border),
+        _ if selected => layout.accent,
+        _ => layout.surface,
     };
     let preferred = color(match role {
-        DeviceActionRole::Normal => PaletteRole::Text,
-        DeviceActionRole::Muted => PaletteRole::Muted,
+        DeviceActionRole::Normal | DeviceActionRole::Enabled => PaletteRole::Text,
+        DeviceActionRole::Muted | DeviceActionRole::Bypassed => PaletteRole::Muted,
         DeviceActionRole::Destructive => PaletteRole::Primary,
     });
-    let hover_background = color(PaletteRole::Hover);
+    let hover_background = if matches!(role, DeviceActionRole::Enabled) {
+        super::mix(background, color(PaletteRole::Text), 0.12)
+    } else {
+        color(PaletteRole::Hover)
+    };
     ActionStyle {
         background,
         text: readable_text(background, preferred),
@@ -224,6 +233,8 @@ mod action_tests {
                     DeviceActionRole::Normal,
                     DeviceActionRole::Muted,
                     DeviceActionRole::Destructive,
+                    DeviceActionRole::Enabled,
+                    DeviceActionRole::Bypassed,
                 ] {
                     let style = device_header_action_style(selected, role);
                     assert!(super::super::contrast_ratio(style.background, style.text) >= 4.5);
