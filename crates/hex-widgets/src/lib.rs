@@ -1,4 +1,13 @@
-//! Small reusable GPUI controls for compact native audio-device interfaces.
+//! # Purpose
+//! Own reusable native GPUI controls, local gesture state and typed edit events.
+//!
+//! # Dependencies
+//! Uses pinned GPUI and the standard library; the caller supplies display text, style, typography
+//! and canonical bindings.
+//!
+//! # Does not own
+//! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
+//! previews do not become authored state until the owner accepts a validated event.
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
 mod color_picker;

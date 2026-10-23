@@ -8,7 +8,7 @@ impl Drop for BrowserRoot {
 }
 // Match the existing exclusive output lease for these private headless fixtures.
 // No global environment/settings mutation, backend redesign or lease bypass.
-pub(super) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL
         .lock()
