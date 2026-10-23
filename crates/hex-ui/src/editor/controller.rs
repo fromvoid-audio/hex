@@ -990,6 +990,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_midi_drag();
+                    visible_change |= self.retire_pending_fade();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     break;
@@ -1011,6 +1012,7 @@ impl EditorView {
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
+                let fade_request = self.pending_fade_matches(&request);
                 let eq_creation_request = self.pending_eq_creation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
@@ -1037,6 +1039,9 @@ impl EditorView {
                         }
                         if midi_drag_request {
                             self.midi_drag_submitted();
+                        }
+                        if fade_request {
+                            self.fade_submitted();
                         }
                         if let Some(device) = eq_creation_request {
                             self.eq_creation_submitted(device);
@@ -1068,6 +1073,9 @@ impl EditorView {
                         }
                         if midi_drag_request {
                             self.retire_pending_midi_drag();
+                        }
+                        if fade_request {
+                            self.retire_pending_fade();
                         }
                         if let Some(device) = eq_creation_request {
                             self.retire_pending_eq_creation(device);
@@ -1123,6 +1131,9 @@ impl EditorView {
                         if midi_drag_request {
                             self.retire_pending_midi_drag();
                         }
+                        if fade_request {
+                            self.retire_pending_fade();
+                        }
                         if let Some(device) = eq_creation_request {
                             self.retire_pending_eq_creation(device);
                         }
@@ -1141,6 +1152,7 @@ impl EditorView {
         visible_change |= self.retire_abandoned_group_copy();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
+        visible_change |= self.retire_abandoned_fade();
         visible_change |= self.retire_abandoned_eq_creation();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
@@ -1870,6 +1882,7 @@ impl EditorView {
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.midi_drag_request_complete(&event);
+        self.fade_request_complete(&event);
         self.eq_creation_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
@@ -3017,6 +3030,7 @@ impl EditorView {
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
+        let fade_request = self.pending_fade_matches(&request);
         let eq_creation_request = self.pending_eq_creation_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
@@ -3038,6 +3052,9 @@ impl EditorView {
                 }
                 if midi_drag_request {
                     self.midi_drag_submitted();
+                }
+                if fade_request {
+                    self.fade_submitted();
                 }
                 if let Some(device) = eq_creation_request {
                     self.eq_creation_submitted(device);
