@@ -1934,7 +1934,17 @@ mod tests {
             assert_eq!(sections[0].name(), "Chorus");
             assert_eq!(sections[1].name(), "Intro");
             assert_eq!(sections[1].end(), BeatTime::from_quarters(12).unwrap());
+            assert_eq!(
+                v.state.as_ref().unwrap().project.meter_map(),
+                &hex_project::MeterMap::common_time(),
+                "dragging equal-meter sections must not create meter boundaries"
+            );
         });
+        assert_eq!(
+            visual.rendered_background("arrangement-grid-line-192000"),
+            Some(gpui::Background::from(rgb(theme::color(theme::PaletteRole::Grid))).opacity(0.9)),
+            "the moved section seam remains an ordinary grid line, not a red meter marker"
+        );
     }
     #[gpui::test]
     fn multiselection_hover_and_g_merge_keep_music_and_focus_guards(cx: &mut TestAppContext) {
