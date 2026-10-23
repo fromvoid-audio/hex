@@ -598,7 +598,21 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
         ]
     );
     let mut other_release = [[0.0; 2]; 5];
-    process(&mut runtime, &[off(0, 2)], &mut other_release, &resources);
+    runtime.begin_block();
+    runtime
+        .process_block(&[off(0, 2)], &mut other_release[..1], &resources)
+        .unwrap();
+    let mut active = [0; 4];
+    assert_eq!(runtime.active_occurrence_ids(&mut active), Ok(1));
+    assert_eq!(
+        active[0], 2,
+        "released voice remains live until its tail retires"
+    );
+    runtime
+        .process_block(&[], &mut other_release[1..], &resources)
+        .unwrap();
+    assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
+    runtime.commit_block();
     assert_eq!(
         other_release,
         [[1.0; 2], [0.75; 2], [0.5; 2], [0.25; 2], [0.0; 2]]
@@ -644,4 +658,122 @@ fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voic
         .unwrap();
     runtime.commit_block();
     assert_eq!(output, [[0.5; 2]; 7]);
+}
+
+#[test]
+fn exact_active_occurrences_drop_one_short_voice_while_another_survives_conservative_tail() {
+    let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::Slice {
+            starts: &[0, 2],
+            base_note: 60,
+            gate: GateMode::Trigger,
+        },
+        4,
+    );
+    assert!(prepared.supports_active_occurrence_ids());
+    assert!(
+        prepared.max_release_tail_frames() > 2,
+        "a host factory tail is not an exact per-voice lifetime"
+    );
+    let mut runtime = pair(&prepared);
+    let mut ids = [u64::MAX; 6];
+    assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
+    let notes = [on(0, 90, 60), on(0, 7, 61)];
+    runtime.begin_block();
+    let mut first = [[0.0; 2]; 1];
+    runtime
+        .process_block(&notes, &mut first, &resources)
+        .unwrap();
+    assert_eq!(first, [[6.0; 2]]);
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(2));
+    assert_eq!(ids, [7, 90, u64::MAX, u64::MAX, u64::MAX, u64::MAX]);
+    let before = ids;
+    assert_eq!(
+        runtime.active_occurrence_ids(&mut ids[..1]),
+        Err(Error::ActiveOccurrenceCapacityExceeded)
+    );
+    assert_eq!(
+        ids, before,
+        "sampler refuses short output before any partial write"
+    );
+    let mut second = [[0.0; 2]; 1];
+    runtime.process_block(&[], &mut second, &resources).unwrap();
+    assert_eq!(second, [[10.0; 2]]);
+    assert_eq!(runtime.active_occurrence_ids(&mut ids[..1]), Ok(1));
+    assert_eq!(
+        ids[0], 7,
+        "short slice retired at2 while long slice remains; no whole-runtime quiescence shortcut"
+    );
+    assert!(!runtime.speculative_is_quiescent());
+    runtime.rollback_block();
+    assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
+    let mut replay = [[0.0; 2]; 2];
+    process(&mut runtime, &notes, &mut replay, &resources);
+    assert_eq!(
+        replay,
+        [[6.0; 2], [10.0; 2]],
+        "query and rollback preserve literal PCM"
+    );
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], 7);
+    assert!(!runtime.committed_is_quiescent());
+    let mut inherited = pair(&prepared);
+    inherited.inherit_from(&runtime).unwrap();
+    assert_eq!(inherited.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], 7);
+    let gain = |id| NativeInstrumentOccurrenceGain::new(id, 0.5, 0.5, 4, 0).unwrap();
+    runtime.begin_block();
+    let mut refused = [[9.0; 2]; 4];
+    assert_eq!(
+        runtime.process_block_with_clock_and_occurrence_gains(
+            &[],
+            &mut refused,
+            None,
+            &[gain(7), gain(90)],
+            &resources
+        ),
+        Err(Error::InvalidOccurrenceGain)
+    );
+    assert_eq!(
+        refused, [[9.0; 2]; 4],
+        "conservative retained ID90 must still be refused"
+    );
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    let mut actual = [[0.0; 2]; 4];
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &[],
+            &mut actual,
+            None,
+            &[gain(7)],
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    inherited.begin_block();
+    let mut copied = [[0.0; 2]; 4];
+    inherited
+        .process_block_with_clock_and_occurrence_gains(
+            &[],
+            &mut copied,
+            None,
+            &[gain(7)],
+            &resources,
+        )
+        .unwrap();
+    inherited.commit_block();
+    assert_eq!(
+        actual,
+        [[4.5; 2], [5.5; 2], [6.5; 2], [7.5; 2]],
+        "only exact surviving ID requires a gain; velocity/source law remains literal"
+    );
+    assert_eq!(copied, actual);
+    assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
+    assert!(runtime.committed_is_quiescent());
+    runtime.reset();
+    assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
 }
