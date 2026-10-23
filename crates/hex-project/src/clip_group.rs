@@ -27,6 +27,87 @@ impl ClipGroupPreview {
         }
     }
 }
+
+/// One prepared incoming placement uses the same complete final-row plan as a
+/// group. Fresh material receives its identity only after final-count admission;
+/// a move/resize excludes its old identity without exposing an intermediate edit.
+pub(crate) fn place_one(
+    project: &mut Project,
+    track: TrackId,
+    content: ClipGroupContent,
+    fresh: bool,
+) -> Result<Created, Invalid> {
+    let member = ClipGroupPreview { track, content };
+    let selected = if fresh {
+        BTreeSet::new()
+    } else {
+        BTreeSet::from([member.id()])
+    };
+    let mut incoming = Vec::new();
+    incoming
+        .try_reserve_exact(1)
+        .map_err(|_| Invalid("could not reserve incoming placement"))?;
+    incoming.push(member);
+    match (fresh, batch::apply(project, incoming, &selected, fresh)?) {
+        (true, Created::Clips { first, last }) if first == last => Ok(Created::Clip(first)),
+        (false, Created::None) => Ok(Created::None),
+        _ => Err(Invalid(
+            "single placement returned an invalid identity range",
+        )),
+    }
+}
+
+/// Admit a complete clipboard/rectangle replacement against final row counts.
+/// Cuts include empty rectangle cells; ordinary clip paste supplies no cuts.
+pub(crate) fn place_batch(
+    project: &mut Project,
+    incoming: Vec<ClipGroupPreview>,
+    cuts: &[(TrackId, u64, u64)],
+) -> Result<Created, Invalid> {
+    batch::apply_with_cuts(project, incoming, &BTreeSet::new(), true, cuts)
+}
+
+/// Scalar/source edits retain collection order and never run overwrite work.
+/// A prepared extent change uses the same final-row admission as a move.
+pub(crate) fn replace_audio(project: &mut Project, incoming: Clip) -> Result<Created, Invalid> {
+    let id = incoming.id();
+    let old = project
+        .clip(incoming.id())
+        .ok_or(Invalid("audio clip no longer exists"))?;
+    if (old.start(), old.duration()) == (incoming.start(), incoming.duration()) {
+        *project.clip_mut(id)? = incoming;
+        return Ok(Created::None);
+    }
+    let track = project
+        .tracks()
+        .iter()
+        .find(|t| t.clips().iter().any(|c| c.id() == incoming.id()))
+        .map(|t| t.id())
+        .ok_or(Invalid("audio clip track missing"))?;
+    place_one(project, track, ClipGroupContent::Audio(incoming), false)
+}
+
+pub(crate) fn replace_midi(project: &mut Project, incoming: MidiClip) -> Result<Created, Invalid> {
+    let track = project
+        .tracks()
+        .iter()
+        .find(|t| t.midi_clips().iter().any(|c| c.id() == incoming.id()))
+        .map(|t| t.id())
+        .ok_or(Invalid("midi clip track missing"))?;
+    let old = project
+        .midi_clip(incoming.id())
+        .ok_or(Invalid("midi clip no longer exists"))?;
+    if (old.start(), old.length()) == (incoming.start(), incoming.length()) {
+        let target = project
+            .midi_clips_mut(incoming.id())?
+            .iter_mut()
+            .find(|c| c.id() == incoming.id())
+            .ok_or(Invalid("midi clip no longer exists"))?;
+        *target = incoming;
+        return Ok(Created::None);
+    }
+    place_one(project, track, ClipGroupContent::Midi(incoming), false)
+}
 impl Project {
     /// Validate the complete group before returning any preview. All ordinary
     /// tracks are hybrid; vertical movement preserves their relative indices.

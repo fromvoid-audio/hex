@@ -403,6 +403,7 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         snapshot.session = hex_project::SessionSnapshot::default();
         // One-frame source creates actual history, then only residuals remain.
         snapshot.assets = vec![hex_project::AssetSnapshot {
+            original_source: None,
             id: 30,
             path: "tail.wav".into(),
             source_sample_rate: 48_000,
@@ -434,6 +435,7 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         let source_project = Project::from_snapshot(snapshot).unwrap();
         let source_project = super::tests::with_utility_filter_state(&source_project, true, false);
         let audio = crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap();
+        let original_pcm = Arc::downgrade(&audio.frames);
         let media = BTreeMap::from([(source_project.assets().next().unwrap().id(), audio)]);
         let table = Arc::new(hex_devices::SineTable::new());
         let prepare = |project: &Project| {
@@ -541,6 +543,20 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
             }
             candidate = next;
             assert!(candidate.tail_track_ids.contains(&Some(track_id)));
+        }
+        // Capture plans are separate control owners of their revision, not transferred tails.
+        // The exhausted capture is no longer borrowed after its stale-plan assertions above.
+        drop(donor_plan);
+        // Neither transferred effect tails nor their copied scalar release entries retain old
+        // ordinary Audio leaves. Destroy the actual donor on control before rendering its tails.
+        drop(media);
+        assert!(original_pcm.upgrade().is_some());
+        drop(old);
+        if !replacement {
+            assert!(
+                original_pcm.upgrade().is_none(),
+                "retiring the donor frees old clip PCM while its effect tail continues"
+            );
         }
         let plan = candidate
             .output_capture_plan(

@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
@@ -27,6 +28,7 @@ pub struct Snapshot {
     pub session: SessionSnapshot,
     pub loop_region: Option<LoopRegion>,
     pub master_gain: f32,
+    pub main_devices: Vec<DeviceSnapshot>,
     pub tempo_points: Vec<TempoPoint>,
     pub meter_points: Vec<MeterPoint>,
 }
@@ -65,6 +67,7 @@ pub struct SessionAudioClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
+    pub volume: crate::MidiClipVolume,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
@@ -72,6 +75,8 @@ pub struct SessionMidiClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSourceSnapshot {
+    /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
+    pub one_shot_boundary: crate::MidiOneShotBoundary,
     pub source_length_raw: u64,
     pub source_start_raw: u64,
     pub loop_start_raw: u64,
@@ -82,6 +87,7 @@ pub struct MidiSourceSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssetSnapshot {
+    pub original_source: Option<crate::OriginalSourceFacts>,
     pub id: u64,
     pub path: PathBuf,
     pub source_sample_rate: u32,
@@ -168,6 +174,9 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
+    pub one_shot_boundary: crate::MidiOneShotBoundary,
+    pub volume: crate::MidiClipVolume,
     pub name: String,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -212,6 +221,11 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            arrangement_sections: self
+                .arrangement_sections
+                .iter()
+                .map(crate::ArrangementSectionSnapshot::from)
+                .collect(),
             tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
@@ -249,6 +263,7 @@ impl Project {
                 .assets
                 .values()
                 .map(|asset| AssetSnapshot {
+                    original_source: asset.original_source,
                     id: asset.id.0,
                     path: asset.path.clone(),
                     source_sample_rate: asset.source_sample_rate,
@@ -314,6 +329,8 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                one_shot_boundary: clip.source.one_shot_boundary,
+                                volume: clip.volume.clone(),
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
@@ -391,10 +408,12 @@ impl Project {
                             crate::SessionCellContent::Stop => SessionCellContentSnapshot::Stop,
                             crate::SessionCellContent::Midi(clip) => {
                                 SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                    volume: clip.volume.clone(),
                                     flavor: clip.flavor,
                                     id: clip.id.value(),
                                     name: clip.name.clone(),
                                     source: MidiSourceSnapshot {
+                                        one_shot_boundary: clip.source.one_shot_boundary,
                                         source_length_raw: clip.source.source_length.raw(),
                                         source_start_raw: clip.source.source_start.raw(),
                                         loop_start_raw: clip.source.loop_start.raw(),
@@ -432,6 +451,16 @@ impl Project {
                     .collect(),
             },
             loop_region: self.loop_region,
+            main_devices: self
+                .main_devices
+                .iter()
+                .map(|device| DeviceSnapshot {
+                    comparison: device.comparison.clone(),
+                    id: device.id.value(),
+                    bypassed: device.bypassed,
+                    state: device.state.clone(),
+                })
+                .collect(),
             master_gain: self.master_gain,
             tempo_points: self.tempo_map.points().to_vec(),
             meter_points: self.meter_map.points().to_vec(),
@@ -478,6 +507,16 @@ impl Project {
 
         let mut ids = BTreeSet::new();
         let mut max_id = 0_u64;
+        if snapshot.arrangement_sections.len() > crate::MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("arrangement section limit reached"));
+        }
+        for section in snapshot.arrangement_sections {
+            insert_id(section.id, &mut ids, &mut max_id)?;
+            project
+                .arrangement_sections
+                .push(crate::arrangement_sections::from_snapshot(section)?);
+        }
+        crate::arrangement_sections::validate(&project.arrangement_sections, project.tempo_map())?;
         let mut assets = BTreeMap::new();
         for asset in snapshot.assets {
             insert_id(asset.id, &mut ids, &mut max_id)?;
@@ -495,6 +534,7 @@ impl Project {
             assets.insert(
                 id,
                 Asset {
+                    original_source: asset.original_source,
                     id,
                     path: asset.path,
                     source_sample_rate: asset.source_sample_rate,
@@ -506,7 +546,20 @@ impl Project {
         }
 
         let mut total_clips = 0_usize;
-        let mut total_devices = 0_usize;
+        if snapshot.main_devices.len() > MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("main device limit reached"));
+        }
+        let mut main_devices = Vec::with_capacity(snapshot.main_devices.len());
+        for device in snapshot.main_devices {
+            insert_id(device.id, &mut ids, &mut max_id)?;
+            main_devices.push(Device {
+                comparison: device.comparison,
+                id: DeviceId(device.id),
+                state: device.state,
+                bypassed: device.bypassed,
+            });
+        }
+        let mut total_devices = main_devices.len();
         let mut total_notes = 0_usize;
         let mut return_ids = BTreeSet::new();
         let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
@@ -661,12 +714,13 @@ impl Project {
                 let loop_start = crate::BeatTime::from_raw(clip.loop_start_raw);
                 let loop_end = crate::BeatTime::from_raw(clip.loop_end_raw);
                 crate::midi::validate_clip(start, length)?;
-                crate::midi::validate_source(
+                crate::midi::validate_source_boundary(
                     source_length,
                     source_start,
                     loop_start,
                     loop_end,
                     clip.looping,
+                    clip.one_shot_boundary,
                 )?;
                 total_notes = total_notes
                     .checked_add(clip.notes.len())
@@ -696,13 +750,17 @@ impl Project {
                         velocity: note.velocity,
                     });
                 }
+                crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                clip.volume.validate_source_length(source_length)?;
                 compiled_midi.push(MidiClip {
+                    volume: clip.volume.clone(),
                     name: clip.name.clone(),
                     flavor: clip.flavor,
                     id: ClipId(clip.id),
                     start,
                     length,
                     source: std::sync::Arc::new(crate::MidiSource {
+                        one_shot_boundary: clip.one_shot_boundary,
                         source_length,
                         source_start,
                         loop_start,
@@ -800,12 +858,13 @@ impl Project {
                     let source_start = crate::BeatTime::from_raw(clip.source.source_start_raw);
                     let loop_start = crate::BeatTime::from_raw(clip.source.loop_start_raw);
                     let loop_end = crate::BeatTime::from_raw(clip.source.loop_end_raw);
-                    crate::midi::validate_source(
+                    crate::midi::validate_source_boundary(
                         source_length,
                         source_start,
                         loop_start,
                         loop_end,
                         clip.source.looping,
+                        clip.source.one_shot_boundary,
                     )?;
                     total_notes = total_notes
                         .checked_add(clip.source.notes.len())
@@ -835,11 +894,15 @@ impl Project {
                             velocity: note.velocity,
                         });
                     }
+                    crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                    clip.volume.validate_source_length(source_length)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
+                        volume: clip.volume,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
+                            one_shot_boundary: clip.source.one_shot_boundary,
                             source_length,
                             source_start,
                             loop_start,
@@ -894,6 +957,7 @@ impl Project {
         project.assets = assets;
         project.tracks = tracks;
         project.returns = returns;
+        project.main_devices = main_devices;
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
@@ -909,6 +973,11 @@ impl Project {
                 if let Some(comparison) = device.comparison() {
                     comparison.validate(device.state())?;
                 }
+            }
+        }
+        for device in project.main_devices() {
+            if let Some(comparison) = device.comparison() {
+                comparison.validate(device.state())?;
             }
         }
         project.validate_device_asset_references()?;
@@ -931,6 +1000,8 @@ impl Project {
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
         }
+        project.validate_arrangement_occupancy()?;
+        project.validate_midi_volumes()?;
         Ok(project)
     }
 }

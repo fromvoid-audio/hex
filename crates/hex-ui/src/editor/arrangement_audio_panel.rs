@@ -58,7 +58,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     }
     let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
-        view.selected_clip_data()?;
+        view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
     let asset = state.project.asset(clip.asset())?;
     let source_end = source_start.checked_add(source_length)?;
@@ -489,15 +489,10 @@ fn control_button(
             .to_lowercase()
             .into(),
     );
-    div()
+    hex_widgets::action(theme::text(glyph), theme::action_style())
         .id(id)
         .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
         .debug_selector(move || {
             let field = match field {
                 Field::Position => "position",
@@ -516,7 +511,6 @@ fn control_button(
             })
             .into()
         })
-        .child(theme::text(glyph))
         .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
             if pending || !clip_window_is_current(view, window) || view.edit_pending() {
                 return;
@@ -527,7 +521,14 @@ fn control_button(
             } else {
                 frame_step(window.sample_rate, fine)
             };
-            if let Some(command) = command_for(window, field, direction, step) {
+            let command = selection_command_for(
+                window,
+                field,
+                direction,
+                step,
+                view.selected_clip_ids().len() > 1,
+            );
+            if let Some(command) = command {
                 view.enqueue(hex_session::service::Request::Edit(command));
             }
             cx.notify();
@@ -539,6 +540,26 @@ fn frame_step(sample_rate: u32, fine: bool) -> u64 {
         1
     } else {
         u64::from((sample_rate / 1_000).max(1))
+    }
+}
+
+fn selection_command_for(
+    window: ClipWindow,
+    field: Field,
+    direction: i8,
+    step: u64,
+    multiple: bool,
+) -> Option<Command> {
+    if field == Field::Gain && multiple {
+        let millidb = i32::try_from(step)
+            .ok()?
+            .checked_mul(i32::from(direction))?;
+        Some(Command::EditClips {
+            clips: vec![window.clip],
+            edit: hex_project::ClipEdit::GainBy { millidb },
+        })
+    } else {
+        command_for(window, field, direction, step)
     }
 }
 
@@ -666,8 +687,9 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
 fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     if view.mode != super::EditorMode::Arrangement
         || view.project_generation != captured.generation
-        || view.selected_track != Some(captured.track)
-        || view.selected_clip != Some(captured.clip)
+        || view
+            .detail_audio_clip_data()
+            .is_none_or(|(track, clip, ..)| track != captured.track || clip != captured.clip)
     {
         return false;
     }
@@ -957,6 +979,7 @@ mod tests {
                 comparison_audio: old.comparison_audio.clone(),
                 project: Arc::new(hex_project::Project::from_snapshot(snapshot).unwrap()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),
@@ -1039,6 +1062,13 @@ mod tests {
             command_for(captured, Field::Gain, -1, 100),
             Some(Command::SetAudioClipGain { millidb: -100, .. })
         ));
+        for (direction, step, delta) in [(-1, 100, -100), (1, 1_000, 1_000)] {
+            assert!(
+                matches!(selection_command_for(captured, Field::Gain, direction, step, true),
+                Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb } })
+                if clips == vec![captured.clip] && millidb == delta)
+            );
+        }
         captured.gain = hex_project::ClipGain::new(24_000).unwrap();
         assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
         captured.gain = hex_project::ClipGain::new(-60_000).unwrap();

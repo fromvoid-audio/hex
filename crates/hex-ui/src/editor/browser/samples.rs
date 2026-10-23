@@ -52,6 +52,10 @@ pub(super) struct SampleBrowser {
 }
 
 impl SampleBrowser {
+    pub(super) fn history_loading(&self) -> bool {
+        self.in_flight || self.pending
+    }
+
     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
         self.visible_with_listing(query, None, None)
     }

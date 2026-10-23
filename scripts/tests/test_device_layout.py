@@ -77,6 +77,7 @@ class DeviceLayoutGuardTests(unittest.TestCase):
 
             helper = "pub(super) fn control_style() -> ControlStyle {"
             for injection in [
+                "let fork = hex_widgets::ActionStyle { background: 0x123456, text: 0xffffff, hover_background: 0xabcdef, hover_text: Some(0) };",
                 "let fork = ControlStyle { surface: 0x123456, ..theme::device_style(theme::DeviceStyleRole::Control) };",
                 "let mut fork = theme::device_style(theme::DeviceStyleRole::Control); fork.surface = theme::color(theme::PaletteRole::Primary);",
             ]:
