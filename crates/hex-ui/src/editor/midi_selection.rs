@@ -79,8 +79,36 @@ impl Marquee {
         scene: &midi_scene::MidiScene,
         last: [f32; 2],
     ) -> Result<bool, &'static str> {
+        if scene.key() != context.scene {
+            return Err("midi marquee changed · selection canceled");
+        }
+        self.update_with_hits(context, selection, last, |first, last| {
+            marquee_hits(
+                scene.notes(),
+                first,
+                last,
+                context.bounds.width,
+                context.bounds.height,
+                context.scene.pitch_rows,
+            )
+        })
+    }
+
+    pub(super) fn context(&self) -> MarqueeContext {
+        self.context
+    }
+
+    /// Surfaces supply their own bounded hit geometry; selection, additive preview,
+    /// epoch validation and release stay with this single selection owner.
+    /// The supplier returns sorted, unique canonical note IDs.
+    pub(super) fn update_with_hits(
+        &mut self,
+        context: MarqueeContext,
+        selection: &MidiSelection,
+        last: [f32; 2],
+        hits: impl FnOnce([f32; 2], [f32; 2]) -> Result<Vec<NoteId>, &'static str>,
+    ) -> Result<bool, &'static str> {
         if !self.is_current(context)
-            || scene.key() != context.scene
             || selection.epoch() != context.selection_epoch
             || !last.into_iter().all(f32::is_finite)
         {
@@ -89,14 +117,7 @@ impl Marquee {
         let changed = self.last != last;
         self.last = last;
         let hits = if self.has_range() {
-            marquee_hits(
-                scene.notes(),
-                self.first,
-                last,
-                context.bounds.width,
-                context.bounds.height,
-                context.scene.pitch_rows,
-            )?
+            hits(self.first, last)?
         } else {
             Vec::new()
         };

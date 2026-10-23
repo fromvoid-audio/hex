@@ -170,7 +170,9 @@ impl EditorView {
             None
         };
         let group_selected = self.midi_selection.len() > 1;
-        let selected_ids = self.midi_selection.shared_ids();
+        let selected_ids = self
+            .velocity_marquee_highlight()
+            .unwrap_or_else(|| self.midi_selection.shared_ids());
         let draw_primary = self.midi_selection.primary();
         let selection_epoch = self.midi_selection.epoch();
         let preview = self
@@ -275,6 +277,7 @@ impl EditorView {
             && draw_stroke.is_none()
             && draw_creation.is_none()
             && draw_marquee.is_none()
+            && !self.velocity_marquee_active()
             && self.midi_time_selection.gesture.is_none()
             && self.piano_pitch_zoom.is_none()
             && !self.midi_pan.enabled

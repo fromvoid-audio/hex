@@ -413,9 +413,7 @@ impl EditorView {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
-                            if view.midi_time_selection.gesture.is_some()
-                                && !view.midi_grid_time_selection_active()
-                            {
+                            if view.midi_ruler_time_selection_active() {
                                 if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_midi_time_selection(
                                         b,
@@ -457,9 +455,7 @@ impl EditorView {
                             return;
                         }
                         up_entity.update(cx, |view, cx| {
-                            if view.midi_time_selection.gesture.is_some()
-                                && !view.midi_grid_time_selection_active()
-                            {
+                            if view.midi_ruler_time_selection_active() {
                                 view.finish_midi_time_selection(
                                     b,
                                     f32::from(event.position.x),
