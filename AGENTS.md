@@ -6,33 +6,34 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
-## Active alpha compatibility policy
+## Saved-project compatibility policy
 
-Hex is active alpha software. Feature completeness takes priority. Backward
-compatibility and migration support, including database/schema migrations, are
-explicitly out of scope until the user commits to release readiness and selects
-the release compatibility policy. Breaking API, source, model, schema, project-format
-and data changes are allowed during this phase. Fresh or recreated alpha databases
-are allowed when needed; legacy database conversion is not a prerequisite for
-feature work.
+Hex is active alpha software. Saved projects must remain openable through explicit,
+versioned migrations from supported older schemas to the current schema. Future
+schema-changing work must include migration from the prior supported format and
+focused historical-fixture, complete-state and save/reopen tests in the same change.
+Assign a fresh schema identifier when the saved contract changes; never reuse an
+identifier for incompatible branch layouts.
+Record the supported versions and any evidence-based limitations beside the owning
+storage codec. Never invent historical layouts or silently discard unknown data.
+Reject newer, unsupported and malformed formats explicitly, preserving the original
+and explaining a concrete recovery path. Historical evidence remains factual.
 
-Do not spend effort adding or maintaining historical-alpha migrations, project
-conversions, old readers, compatibility re-exports or old-client support. During
-future scoped feature/API/schema work, do not retain compatibility-only code solely
-to honor obsolete alpha formats or database layouts. This includes incompatible
-unpublished branch formats. This policy supersedes contradictory normative legacy
-schema, backward-compatibility and migration requirements in this file, repository
-documents and existing task descriptions. Historical evidence remains factual.
-Do not infer a compatibility freeze from an alpha version or schema number.
+Opening and migration are control-side, in-memory operations: preserve original
+project bytes and media until a deliberate save. Before overwriting a project with
+a newer saved format that older Hex readers cannot open, warn about that loss of
+compatibility, recommend Save As under a new/versioned name, and provide Save As,
+cancel and explicit overwrite choices. Compare actual saved-format compatibility,
+not application version bumps. Use existing atomic publication and recovery custody;
+failed/cancelled migration or saving must not corrupt a good project.
 
-Active features must coexist in one coherent current format. Preserve strict
-current-format validation, complete save/reopen round trips, explicit errors for
-unsupported formats, transaction/recovery correctness, runtime and real-time safety,
-and Undo/Redo integrity. Never silently delete or rewrite user projects, original
-media or other user files to accommodate a breaking change. Intentional alpha
-database recreation must be explicit; this policy does not itself initiate any
-reset, deletion or conversion. It does not request a blanket migration-code cleanup
-or unrelated source changes. PR, validation and delivery requirements remain in force.
+This policy covers saved-project/schema compatibility, not a source/API freeze,
+compatibility re-exports, obsolete clients or unrelated internal databases. Breaking
+source APIs and models remain allowed when saved projects migrate faithfully.
+Preserve strict current-format validation, complete round trips, transaction/recovery
+correctness, runtime/realtime safety and Undo/Redo integrity. Never silently delete
+or rewrite user projects, original media or other user files. No reset, deletion,
+bulk conversion or unrelated migration cleanup is authorized by this policy.
 
 Frame design prototypes under `design/frame/` may use JSON, JavaScript and HTML
 for design tooling only. They must not become the shipped application runtime.
@@ -449,8 +450,9 @@ format. For persistence changes:
 
 
 - Identify the current schema explicitly; new model fields require current-format
-  save/load and history review in the same change. Historical alpha migrations
-  are not required under the active alpha policy above.
+  save/load and history review in the same change. Include versioned migration from
+  the prior supported saved format and focused historical-fixture tests under the
+  compatibility policy above.
 - Round-trip complete project state, media references, automation, routing, device
   state, timing, and editor state that is promised to persist.
 - Use atomic/recoverable writes; do not overwrite a good project with a partial save.
@@ -514,8 +516,9 @@ both clip collections; Session owns one audio/MIDI/Stop cell per track/scene.
 Preserve frame-anchored audio and beat-anchored MIDI, current overlap policies,
 combined ID/count/admission limits, source-specific editing and safe release tails.
 Identify current persistence changes explicitly and preserve current-format IDs,
-source data, mixer state and history integrity. Earlier alpha format migration is
-not required. Read the canonical project model and its tests before extending this model.
+source data, mixer state and history integrity. Supported older saved formats require
+explicit versioned migration. Read the canonical project model and its tests before
+extending this model.
 
 ## Shared Lattice device interface
 

@@ -20,8 +20,28 @@ pub(crate) use device::{
 use std::borrow::Cow;
 use std::cell::Cell;
 
+/// Common widget palette for device panels, workspace fields and preferences.
+pub(crate) fn control_style() -> hex_widgets::ControlStyle {
+    device_style(DeviceStyleRole::Control)
+}
+
+/// Common workspace action colors, resolved from the native widget palette.
+pub(crate) fn action_style() -> hex_widgets::ActionStyle {
+    let style = control_style();
+    hex_widgets::ActionStyle {
+        background: style.raised,
+        text: readable_text(style.raised, style.text),
+        hover_background: style.hover,
+        hover_text: None,
+    }
+}
+
 /// Shared translucency for arranger and clip-editor time ranges.
 pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
+
+/// Explicit track membership stays quieter than time/clip selection overlays.
+pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
+pub(crate) const TRACK_SELECTION_EDGE_OPACITY: f32 = 0.55;
 
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,6 +293,36 @@ pub fn clip_fill(
         hex_project::ClipFlavor::Accent => colors.accent,
     };
     if selected { lighten(base, 22) } else { base }
+}
+
+/// Restrained Main section surfaces; selection changes the whole fill and is also
+/// marked with a check in the lane. Hover remains distinct in both states.
+pub(crate) fn section_colors(
+    identity: hex_project::ElementColor,
+    selected: bool,
+    hovered: bool,
+) -> (u32, u32, u32) {
+    let surface = color(PaletteRole::Surface);
+    let hue = element_colors(identity).muted;
+    let fill = mix(
+        surface,
+        hue,
+        match (selected, hovered) {
+            (false, false) => 0.30,
+            (false, true) => 0.44,
+            (true, false) => 0.70,
+            (true, true) => 0.82,
+        },
+    );
+    let text = contrast_text(fill, color(PaletteRole::Text));
+    let border = if selected {
+        text
+    } else if hovered {
+        mix(hue, text, 0.4)
+    } else {
+        mix(surface, hue, 0.5)
+    };
+    (fill, text, border)
 }
 
 #[cfg(test)]

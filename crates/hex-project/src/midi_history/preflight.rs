@@ -197,7 +197,14 @@ fn validate_source_edit(
     loop_end: BeatTime,
     looping: bool,
 ) -> Result<(), Invalid> {
-    crate::midi::validate_source(length, start, loop_start, loop_end, looping)?;
+    crate::midi::validate_source_boundary(
+        length,
+        start,
+        loop_start,
+        loop_end,
+        looping,
+        s.one_shot_boundary(),
+    )?;
     for n in &s.notes {
         crate::midi::validate_note(n.start, n.duration, length, n.pitch, n.channel, n.velocity)?;
     }

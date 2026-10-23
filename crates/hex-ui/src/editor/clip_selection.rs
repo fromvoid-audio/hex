@@ -103,9 +103,14 @@ fn ordered_clips(project: &Project, track: TrackId) -> Vec<ClipId> {
 }
 impl EditorView {
     /// Select only actual committed copy births, never the integer ID range.
-    pub(super) fn select_copied_group(&mut self, first: ClipId, last: ClipId, count: usize) {
+    pub(super) fn select_copied_group(
+        &mut self,
+        first: ClipId,
+        last: ClipId,
+        count: usize,
+    ) -> bool {
         let Some(state) = &self.state else {
-            return;
+            return false;
         };
         let mut members = BTreeSet::new();
         let mut primary = None;
@@ -124,10 +129,10 @@ impl EditorView {
             }
         }
         if members.len() != count || !members.contains(&last) {
-            return;
+            return false;
         }
         let Some((track, clip)) = primary else {
-            return;
+            return false;
         };
         self.clip_selection.apply_members(members);
         self.clip_selection.anchor = Some((track, clip));
@@ -140,6 +145,7 @@ impl EditorView {
         self.midi_group_gesture = None;
         self.piano_beat_start = hex_project::BeatTime::ZERO;
         self.midi_hit_cycle = None;
+        true
     }
     pub(super) fn reconcile_clip_selection(&mut self) {
         // A lane/header focus change clears the visible clip selection. A later

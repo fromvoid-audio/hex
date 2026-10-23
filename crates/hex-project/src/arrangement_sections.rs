@@ -1,13 +1,19 @@
 //! Song-form markers and one atomic beat-domain cut/insert permutation.
 //! Sections are disjoint half-open ranges. Gaps are real song time and travel
-//! with intervening content; marker resize/move never changes musical material.
-//! Reordering cuts `[start,end)` and inserts it before the target's original
-//! start. Later destinations subtract the removed length. The entire intervening
+//! with intervening content; explicit marker-only range edits never change music.
+//! Fixed-span inner/shared edge edits and song-wide ripple resize/delete/duplicate
+//! use the sibling splice planner. Inner edges keep other markers fixed; shared
+//! edges keep the pair's outer span fixed. Crossed time becomes empty. Marker
+//! merging preserves the earliest identity/name/color and all musical material.
+//! Marker splitting retains the left identity and gives the adjoining right
+//! marker a fresh ID with matching name/color, without editing any musical data.
+//! Reordering cuts `[start,end)` and inserts it before/after the target's original
+//! range. Later destinations subtract the removed length. The entire intervening
 //! interval (including gaps) shifts by that length. All tracks, gain base/touch
 //! lanes, tempo and meter follow one permutation; the loop keeps its musical
 //! beat interval. Authored tempo/meter points remain present even when their
-//! values match neighbors. Synthetic meter anchors start a bar fragment at each
-//! splice seam; equal signatures still carry meaningful bar-origin semantics.
+//! values match neighbors. Synthetic meter anchors are added only where the
+//! effective signature changes; equal-meter section seams do not restart bars.
 //! The session/transport owner excludes active playback/recording
 //! and pending commits before canonical preparation.
 //! Audio sample intervals use the exact integer-frame cut/insert permutation.
@@ -193,6 +199,29 @@ impl Project {
         } else {
             target.start
         };
+        self.preview_section_reorder_at(source, insertion)
+    }
+    /// Return canonical geometry for moving one section after another section.
+    /// Insertion is at the target's original end, so it supports appending after
+    /// the final marker and retains all intervening gaps under the cut/insert law.
+    pub fn preview_section_reorder_after(
+        &self,
+        section: SectionId,
+        after: SectionId,
+    ) -> Result<SectionReorderPreview, Invalid> {
+        let source = self
+            .arrangement_section(section)
+            .ok_or(Invalid("arrangement section no longer exists"))?;
+        let target = self
+            .arrangement_section(after)
+            .ok_or(Invalid("arrangement destination no longer exists"))?;
+        self.preview_section_reorder_at(source, target.end)
+    }
+    fn preview_section_reorder_at(
+        &self,
+        source: &ArrangementSection,
+        insertion: BeatTime,
+    ) -> Result<SectionReorderPreview, Invalid> {
         let destination = if insertion >= source.end {
             BeatTime::from_raw(insertion.raw() - (source.end.raw() - source.start.raw()))
         } else {
@@ -252,6 +281,36 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             Ok(Created::ArrangementSection(id))
         }
         Command::ReorderSectionBefore { section, before } => reorder(project, section, before),
+        Command::ReorderSectionAfter { section, after } => reorder_after(project, section, after),
+        Command::ResizeArrangementSection {
+            section,
+            edge,
+            length,
+        } => splice::resize(project, section, edge, length),
+        Command::ResizeArrangementSectionBoundary {
+            left,
+            right,
+            boundary,
+            marker_only,
+        } => shared_boundary::apply(project, left, right, boundary, marker_only),
+        Command::ResizeArrangementSectionEdge {
+            section,
+            edge,
+            boundary,
+        } => splice::resize_isolated(project, section, edge, boundary),
+        Command::DeleteArrangementSection(section) => splice::delete(project, section),
+        Command::DuplicateArrangementSection(section) => splice::duplicate(project, section),
+        Command::SplitArrangementSection { section, at } => {
+            let (right, mut sections) = project.preview_section_split(section, at)?;
+            let id = SectionId(project.allocate_id()?);
+            sections[right].id = id;
+            project.arrangement_sections = sections;
+            Ok(Created::ArrangementSection(id))
+        }
+        Command::MergeArrangementSections(selected) => {
+            project.arrangement_sections = project.preview_section_merge(&selected)?.sections;
+            Ok(Created::None)
+        }
         Command::RemoveArrangementSection(id) => {
             let index = project
                 .arrangement_sections
@@ -291,5 +350,120 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
     }
 }
+mod meter;
 mod reorder;
-use reorder::reorder;
+use reorder::{reorder, reorder_after};
+
+mod shared_boundary;
+mod splice;
+pub use splice::SectionSplicePreview;
+impl Project {
+    /// Lightweight section/tempo display projection. It does not compile audio,
+    /// transfer source custody, or promise that later preparation will succeed.
+    pub fn preview_arrangement_section_edit(
+        &self,
+        command: &Command,
+    ) -> Result<SectionSplicePreview, Invalid> {
+        match command {
+            Command::ResizeArrangementSection {
+                section,
+                edge,
+                length,
+            } => splice::preview_resize(self, *section, *edge, *length),
+            Command::ResizeArrangementSectionBoundary {
+                left,
+                right,
+                boundary,
+                marker_only,
+            } => shared_boundary::preview(self, *left, *right, *boundary, *marker_only),
+            Command::ResizeArrangementSectionEdge {
+                section,
+                edge,
+                boundary,
+            } => splice::preview_isolated(self, *section, *edge, *boundary),
+            Command::DeleteArrangementSection(section) => splice::preview_delete(self, *section),
+            Command::DuplicateArrangementSection(section) => {
+                splice::preview_duplicate(self, *section)
+            }
+            Command::SplitArrangementSection { section, at } => {
+                let (_, sections) = self.preview_section_split(*section, *at)?;
+                Ok(SectionSplicePreview {
+                    sections,
+                    tempo_map: self.tempo_map.clone(),
+                })
+            }
+            Command::MergeArrangementSections(selected) => self.preview_section_merge(selected),
+            _ => Err(Invalid("command has no section splice preview")),
+        }
+    }
+    // Preview uses the same zero-ID convention as copied marker previews. The
+    // fresh identity is allocated only by the canonical candidate, never input.
+    fn preview_section_split(
+        &self,
+        section: SectionId,
+        at: BeatTime,
+    ) -> Result<(usize, Vec<ArrangementSection>), Invalid> {
+        if self.arrangement_sections.len() >= MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("arrangement section limit reached"));
+        }
+        let index = self
+            .arrangement_sections
+            .iter()
+            .position(|s| s.id == section)
+            .ok_or(Invalid("arrangement section no longer exists"))?;
+        let source = &self.arrangement_sections[index];
+        if at <= source.start || at >= source.end {
+            return Err(Invalid(
+                "edit cursor must be strictly inside a section to split",
+            ));
+        }
+        self.tempo_map.beat_to_frame(at)?;
+        let mut sections = Vec::new();
+        sections
+            .try_reserve_exact(self.arrangement_sections.len() + 1)
+            .map_err(|_| Invalid("could not reserve section split"))?;
+        sections.extend(self.arrangement_sections.iter().cloned());
+        let mut right = source.clone();
+        right.id = SectionId(0);
+        right.start = at;
+        sections[index].end = at;
+        sections.insert(index + 1, right);
+        validate(&sections, &self.tempo_map)?;
+        Ok((index + 1, sections))
+    }
+    fn preview_section_merge(
+        &self,
+        selected: &[SectionId],
+    ) -> Result<SectionSplicePreview, Invalid> {
+        if selected.is_empty() || selected.len() > MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("select at least two sections to merge"));
+        }
+        let mut indices = Vec::new();
+        indices
+            .try_reserve_exact(selected.len())
+            .map_err(|_| Invalid("could not reserve section merge selection"))?;
+        for id in selected {
+            indices.push(
+                self.arrangement_sections
+                    .iter()
+                    .position(|s| s.id == *id)
+                    .ok_or(Invalid("selected section no longer exists"))?,
+            );
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        if indices.len() < 2 {
+            return Err(Invalid("select at least two distinct sections to merge"));
+        }
+        let first = indices[0];
+        let last = indices[indices.len() - 1];
+        let mut sections = self.arrangement_sections.clone();
+        sections[first].end = sections[last].end;
+        sections.drain(first + 1..=last);
+        validate(&sections, &self.tempo_map)?;
+        Ok(SectionSplicePreview {
+            sections,
+            tempo_map: self.tempo_map.clone(),
+        })
+    }
+}
