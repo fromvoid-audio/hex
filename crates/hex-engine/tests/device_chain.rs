@@ -481,7 +481,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     let mut old = NativeRuntimeChain::new(vec![instance(9, default.clone(), 48_000)]).unwrap();
     old.begin_block();
     let mut prefix = [[0.0, 3.0]];
-    old.process_block(&mut prefix);
+    old.process_block(&mut prefix).unwrap();
     old.commit_block();
     assert_eq!(prefix, [[9.0, 0.0]]);
 
@@ -493,7 +493,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     compatible.inherit_from(&old);
     compatible.begin_block();
     let mut continued = [[0.0, 2.0]];
-    compatible.process_block(&mut continued);
+    compatible.process_block(&mut continued).unwrap();
     compatible.commit_block();
     assert_eq!(continued, [[3.5, 1.5]]);
 
@@ -505,7 +505,7 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     rate_changed.inherit_from(&old);
     rate_changed.begin_block();
     let mut fresh = [[0.0, 2.0]];
-    rate_changed.process_block(&mut fresh);
+    rate_changed.process_block(&mut fresh).unwrap();
     rate_changed.commit_block();
     assert_eq!(fresh, [[2.0, 0.0]]);
 
@@ -522,14 +522,14 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     let mut whole = make_pair();
     whole.begin_block();
     let mut whole_frames = input;
-    whole.process_block(&mut whole_frames);
+    whole.process_block(&mut whole_frames).unwrap();
     whole.commit_block();
 
     let mut partitioned = make_pair();
     partitioned.begin_block();
     let mut split_frames = input;
-    partitioned.process_block(&mut split_frames[..1]);
-    partitioned.process_block(&mut split_frames[1..]);
+    partitioned.process_block(&mut split_frames[..1]).unwrap();
+    partitioned.process_block(&mut split_frames[1..]).unwrap();
     partitioned.commit_block();
     assert_eq!(whole_frames, split_frames);
     assert_eq!(whole_frames, [[0.03125, 0.5], [0.125, 0.625]]);

@@ -1071,7 +1071,7 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
             let mut chain =
                 hex_lattice::NativeRuntimeChain::new_prepared(bus.device_chain.to_vec()).unwrap();
             chain.begin_block();
-            chain.process_block(&mut [[0.6, -0.3]; 3]);
+            chain.process_block(&mut [[0.6, -0.3]; 3]).unwrap();
             chain.commit_block();
             value.return_effect_tails.slots_mut()[0] = Some(
                 super::return_effect_tails::ReturnEffectTail::new(chain, bus),

@@ -90,3 +90,32 @@ fn exposed_or_closing_outputs_cannot_gain_a_new_physical_profile() {
         );
     }
 }
+
+#[test]
+fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavailable() {
+    for supported in [
+        cpal::SupportedBufferSize::Unknown,
+        cpal::SupportedBufferSize::Range {
+            min: 512,
+            max: 1024,
+        },
+    ] {
+        for kind in [
+            PreparedOutputKind::Legacy,
+            PreparedOutputKind::Worker(WorkerOutputProfile::DeviceDefault),
+        ] {
+            assert_eq!(kind.physical_callback_request(supported).unwrap(), None);
+        }
+        assert!(
+            PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
+                .physical_callback_request(supported)
+                .is_err()
+        );
+    }
+    assert_eq!(
+        PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
+            .physical_callback_request(cpal::SupportedBufferSize::Range { min: 64, max: 1024 })
+            .unwrap(),
+        Some(256)
+    );
+}

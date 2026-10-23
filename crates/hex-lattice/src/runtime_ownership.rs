@@ -11,6 +11,7 @@ pub(super) enum RuntimeOwnership {
         scratch: Box<dyn NativeProcessorRuntime>,
     },
     Owned(Box<dyn OwnedProcessorRuntime>),
+    Foreign(crate::PreparedForeignProcessor),
 }
 impl RuntimeOwnership {
     pub(super) fn prepare(
@@ -18,6 +19,7 @@ impl RuntimeOwnership {
     ) -> Result<Self, DeviceContractError> {
         match factory {
             None => Ok(Self::Memoryless),
+            Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(*v)),
             Some(PreparedProcessorFactory::Legacy(factory)) => Ok(Self::Legacy {
                 primary: factory.create_runtime(),
                 scratch: factory.create_runtime(),
@@ -62,6 +64,7 @@ impl RuntimeOwnership {
             Self::Memoryless => true,
             Self::Legacy { primary, .. } => primary.is_quiescent(),
             Self::Owned(v) => v.committed_is_quiescent(),
+            Self::Foreign(_) => false,
         }
     }
     pub(super) fn speculative_is_quiescent(&self) -> bool {
@@ -69,11 +72,15 @@ impl RuntimeOwnership {
             Self::Memoryless => true,
             Self::Legacy { scratch, .. } => scratch.is_quiescent(),
             Self::Owned(v) => v.speculative_is_quiescent(),
+            Self::Foreign(_) => false,
         }
     }
     pub(super) fn can_inherit_from(&self, old: &Self) -> bool {
         match (self, old) {
             (Self::Memoryless, Self::Memoryless) => true,
+            // Only scalar graph views are inherited here. Actual source/DSP
+            // custody remains with the host's separately admitted endpoints.
+            (Self::Foreign(new), Self::Foreign(old)) => new == old,
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_copy_history_from(old.as_ref())
                     && scratch.can_copy_history_from(old.as_ref())
@@ -118,14 +125,14 @@ impl RuntimeOwnership {
                 }
             }
             Self::Owned(v) => v.begin_block(),
-            Self::Memoryless => {}
+            Self::Memoryless | Self::Foreign(_) => {}
         }
     }
     pub(super) fn commit(&mut self) {
         match self {
             Self::Legacy { primary, scratch } => std::mem::swap(primary, scratch),
             Self::Owned(v) => v.commit_block(),
-            Self::Memoryless => {}
+            Self::Memoryless | Self::Foreign(_) => {}
         }
     }
     pub(super) fn rollback(&mut self) {
@@ -141,7 +148,7 @@ impl RuntimeOwnership {
                 scratch.reset();
             }
             Self::Owned(v) => v.reset(),
-            Self::Memoryless => {}
+            Self::Memoryless | Self::Foreign(_) => {}
         }
     }
 
@@ -149,7 +156,7 @@ impl RuntimeOwnership {
         &mut self,
         frames: &mut [crate::StereoFrame],
         clock: Option<&dyn crate::NativeInstrumentClock>,
-    ) {
+    ) -> Result<(), DeviceContractError> {
         match self {
             Self::Legacy { scratch, .. } => {
                 scratch.process_block_with_clock(frames, clock, &crate::EMPTY_DEVICE_RESOURCES)
@@ -158,13 +165,15 @@ impl RuntimeOwnership {
                 v.process_block_with_clock(frames, clock, &crate::EMPTY_DEVICE_RESOURCES)
             }
             Self::Memoryless => {}
+            Self::Foreign(_) => return Err(DeviceContractError::ForeignProcessingUnavailable),
         }
+        Ok(())
     }
     pub(super) fn process_bypassed_with_clock(
         &mut self,
         frames: &mut [crate::StereoFrame],
         clock: Option<&dyn crate::NativeInstrumentClock>,
-    ) {
+    ) -> Result<(), DeviceContractError> {
         match self {
             Self::Legacy { scratch, .. } => scratch.process_bypassed_block_with_clock(
                 frames,
@@ -175,7 +184,9 @@ impl RuntimeOwnership {
                 v.process_bypassed_block_with_clock(frames, clock, &crate::EMPTY_DEVICE_RESOURCES)
             }
             Self::Memoryless => {}
+            Self::Foreign(_) => return Err(DeviceContractError::ForeignProcessingUnavailable),
         }
+        Ok(())
     }
     pub(super) fn select_audition(
         &mut self,
@@ -206,7 +217,7 @@ impl RuntimeOwnership {
                 a.select(selection);
                 true
             }
-            Self::Memoryless => false,
+            Self::Memoryless | Self::Foreign(_) => false,
         }
     }
     pub(super) fn cancel_audition(&mut self) -> bool {
@@ -228,7 +239,7 @@ impl RuntimeOwnership {
                 a.cancel_immediately();
                 true
             }
-            Self::Memoryless => false,
+            Self::Memoryless | Self::Foreign(_) => false,
         }
     }
     pub(super) fn cancel_all_auditions(&mut self) {
@@ -246,7 +257,7 @@ impl RuntimeOwnership {
                     a.cancel_immediately();
                 }
             }
-            Self::Memoryless => {}
+            Self::Memoryless | Self::Foreign(_) => {}
         }
     }
     pub(super) fn requested_audition(&self) -> Option<ProcessorAuditionSelection> {
@@ -256,7 +267,7 @@ impl RuntimeOwnership {
                 (scratch.transient_audition_requested_selection() == Some(a)).then_some(a)
             }
             Self::Owned(v) => v.transient_audition_requested_selection(),
-            Self::Memoryless => None,
+            Self::Memoryless | Self::Foreign(_) => None,
         }
     }
     pub(super) fn audition_is_active(&mut self, selection: ProcessorAuditionSelection) -> bool {
@@ -267,7 +278,7 @@ impl RuntimeOwnership {
             Self::Owned(v) => v.transient_audition().is_some_and(|a| {
                 a.requested_selection() == Some(selection) && a.can_select(selection)
             }),
-            Self::Memoryless => false,
+            Self::Memoryless | Self::Foreign(_) => false,
         }
     }
 }

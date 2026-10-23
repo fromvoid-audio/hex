@@ -155,7 +155,9 @@ impl ReturnEffectTailBank {
             }
             let frames = &mut scratch[..output.len()];
             frames.fill([0.0; 2]);
-            tail.chain.process_block(frames);
+            tail.chain
+                .process_block(frames)
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             tail.output_scratch = !tail
                 .chain
                 .speculative_range_is_quiescent(0..tail.chain.len());

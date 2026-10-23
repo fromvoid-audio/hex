@@ -40,9 +40,37 @@ impl PreparedOutput {
         expected_sample_rate: Option<u32>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, false)?.into_legacy()
+        open_prepared(expected_sample_rate, lease, PreparedOutputKind::Legacy)?.into_legacy()
     }
 }
+/// Explicit output construction policy. Ordinary outputs preserve the device
+/// default; only a plugin-capable open requests the bridge's finite buffer
+/// profile. This is an off-callback request, never proof of actual delivery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerOutputProfile {
+    #[default]
+    DeviceDefault,
+    PluginBridge,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedOutputKind {
+    Legacy,
+    Worker(WorkerOutputProfile),
+}
+impl PreparedOutputKind {
+    fn physical_callback_request(
+        self,
+        supported: cpal::SupportedBufferSize,
+    ) -> Result<Option<u16>, String> {
+        match self {
+            Self::Worker(WorkerOutputProfile::PluginBridge) => {
+                bridge_callback_request(supported).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 /// Worker-owned native output. Only take_client() may deliver its UI endpoint;
 /// configure the virgin publication Root before that one-way boundary.
 pub struct WorkerPreparedOutput {
@@ -56,13 +84,17 @@ pub struct WorkerPreparedOutput {
 impl WorkerPreparedOutput {
     /// Blocking device setup, intended only for the existing lifecycle worker.
     pub fn open() -> Result<Self, String> {
-        Self::open_with_lease(None, lifecycle::Lease::acquire()?)
+        Self::open_with_profile(WorkerOutputProfile::DeviceDefault)
     }
-    pub(crate) fn open_with_lease(
-        expected_sample_rate: Option<u32>,
-        lease: lifecycle::Lease,
-    ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, true)?.into_worker()
+    /// Select before opening/exposing the actual backend. Never call this as a
+    /// hidden device reconfiguration during insertion or Play.
+    pub fn open_with_profile(profile: WorkerOutputProfile) -> Result<Self, String> {
+        open_prepared(
+            None,
+            lifecycle::Lease::acquire()?,
+            PreparedOutputKind::Worker(profile),
+        )?
+        .into_worker()
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
@@ -107,8 +139,9 @@ impl Opened {
 pub(crate) fn open_prepared(
     expected_sample_rate: Option<u32>,
     lease: lifecycle::Lease,
-    worker: bool,
+    kind: PreparedOutputKind,
 ) -> Result<Opened, String> {
+    let worker = matches!(kind, PreparedOutputKind::Worker(_));
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no default audio output device")?;
@@ -126,18 +159,13 @@ pub(crate) fn open_prepared(
         return Err(format!("unsupported output format: {sample_format:?}"));
     }
 
-    // Native worker outputs reserve a fixed bridge-compatible profile before
-    // backend exposure. CPAL's CoreAudio implementation requests a device-wide
-    // buffer property; this happens only during ordinary lifecycle setup, never
-    // during insertion or Play. A request is not a delivery guarantee: actual
-    // callback extents are checked separately before any foreign processing.
-    let physical_callback_request = if worker {
-        let frames = bridge_callback_request(*supported.buffer_size())?;
+    // CPAL's CoreAudio fixed request changes a device-wide property. Make it
+    // explicit on the existing lifecycle open lane; ordinary native outputs
+    // retain Default, including devices reporting Unknown buffer ranges.
+    let physical_callback_request = kind.physical_callback_request(*supported.buffer_size())?;
+    if let Some(frames) = physical_callback_request {
         config.buffer_size = cpal::BufferSize::Fixed(u32::from(frames));
-        Some(frames)
-    } else {
-        None
-    };
+    }
 
     let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
         if (8_000..=192_000).contains(&config.sample_rate) {

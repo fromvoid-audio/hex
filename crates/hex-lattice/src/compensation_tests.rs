@@ -97,7 +97,7 @@ fn paired_taps_bracket_whole_entry_and_preserve_bypass_pcm() {
             };
             let input = [[0.5, -0.25], [0.0, 0.0], [-0.5, 0.25]];
             let mut expected = input;
-            make_chain().process_block(&mut expected);
+            make_chain().process_block(&mut expected).unwrap();
             let mut actual = input;
             let mut observations = Vec::new();
             make_chain()
@@ -365,7 +365,7 @@ fn per_node_clock_reaches_processors_and_observers_without_changing_legacy_calls
     assert_eq!(observed, frames);
     chain.process_range(0..1, &mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
-    chain.process_block(&mut frames);
+    chain.process_block(&mut frames).unwrap();
     assert_eq!(frames, [[7.0, 9.0]; 4]);
     assert_eq!(
         chain.process_range_with_clock(0..2, &mut frames, Some(&Clock)),

@@ -43,22 +43,22 @@ fn owned_effect_active_abort_bypass_inherit_and_reset_allocate_and_free_nothing(
         for _ in 0..16 {
             frames.fill([0.25, -0.5]);
             active.begin_block();
-            active.process_block(&mut frames);
+            active.process_block(&mut frames).unwrap();
             active.commit_block();
         }
         active.begin_block();
-        active.process_block(&mut frames);
-        active.process_block(&mut frames);
+        active.process_block(&mut frames).unwrap();
+        active.process_block(&mut frames).unwrap();
         active.rollback_block();
         bypass.begin_block();
-        bypass.process_block(&mut dry);
+        bypass.process_block(&mut dry).unwrap();
         bypass.rollback_block();
         inherited = candidate.can_inherit_from(&active);
         if inherited {
             candidate.inherit_from(&active);
         }
         candidate.begin_block();
-        candidate.process_block(&mut frames);
+        candidate.process_block(&mut frames).unwrap();
         candidate.commit_block();
         active.reset();
         candidate.reset();

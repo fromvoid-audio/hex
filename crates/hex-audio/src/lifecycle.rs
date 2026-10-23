@@ -6,7 +6,9 @@
 //! finish already accepted cleanup. Persistent custody precedes every destructive take. Missing
 //! releases, panic or incomplete cleanup keep the lane occupied rather than allowing another
 //! output to escape the barrier.
-use crate::device::{Opened, PreparedOutput, WorkerPreparedOutput};
+use crate::device::{
+    Opened, PreparedOutput, PreparedOutputKind, WorkerOutputProfile, WorkerPreparedOutput,
+};
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
@@ -266,11 +268,25 @@ impl WorkerRecoveryOpen {
 pub fn request_worker_open(
     expected_sample_rate: Option<u32>,
 ) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
+    request_worker_open_with_profile(expected_sample_rate, WorkerOutputProfile::DeviceDefault)
+}
+/// Explicit profile on the same exclusive lifecycle lane. A finite plugin
+/// profile must be selected before callback exposure; it grants no graph or
+/// foreign-resource admission and does not measure delivered callback extent.
+pub fn request_worker_open_with_profile(
+    expected_sample_rate: Option<u32>,
+    profile: WorkerOutputProfile,
+) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
     if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
         return Err(RecoveryOpenError::InvalidRate);
     }
     let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, true)?;
+    let waiter = enqueue_open_kind(
+        sender,
+        state(),
+        expected_sample_rate,
+        PreparedOutputKind::Worker(profile),
+    )?;
     Ok(WorkerRecoveryOpen { waiter })
 }
 
@@ -292,7 +308,12 @@ pub fn request_initial_open() -> Result<RecoveryOpen, RecoveryOpenError> {
 
 fn request_open(expected_sample_rate: Option<u32>) -> Result<RecoveryOpen, RecoveryOpenError> {
     let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, false)?;
+    let waiter = enqueue_open_kind(
+        sender,
+        state(),
+        expected_sample_rate,
+        PreparedOutputKind::Legacy,
+    )?;
     Ok(RecoveryOpen { waiter })
 }
 
@@ -370,14 +391,19 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
     state: &Arc<OpenState>,
     expected_sample_rate: Option<u32>,
 ) -> Result<OpenWaiter<T>, RecoveryOpenError> {
-    enqueue_open_kind(sender, state, expected_sample_rate, false)
+    enqueue_open_kind(
+        sender,
+        state,
+        expected_sample_rate,
+        PreparedOutputKind::Legacy,
+    )
 }
 
 fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
     sender: &SyncSender<LifecycleMessage<T, R>>,
     state: &Arc<OpenState>,
     expected_sample_rate: Option<u32>,
-    worker_endpoints: bool,
+    kind: PreparedOutputKind,
 ) -> Result<OpenWaiter<T>, RecoveryOpenError> {
     if state.in_service.load(Acquire) {
         return Err(RecoveryOpenError::Busy);
@@ -403,7 +429,7 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
     let request = OpenRequest {
         id,
         expected_sample_rate,
-        worker_endpoints,
+        kind,
         completion,
         canceled: Arc::clone(&canceled),
         consumed: Arc::clone(&consumed),
@@ -442,7 +468,7 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
 struct OpenRequest<T> {
     id: u64,
     expected_sample_rate: Option<u32>,
-    worker_endpoints: bool,
+    kind: PreparedOutputKind,
     completion: SyncSender<Result<T, String>>,
     canceled: Arc<AtomicBool>,
     consumed: Arc<AtomicBool>,
@@ -473,7 +499,7 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
 fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
-    mut try_open: impl FnMut(Option<u32>, bool) -> Option<Result<T, String>>,
+    mut try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, String>>,
     mut retire: impl FnMut(R),
 ) {
     enum Phase {
@@ -510,10 +536,9 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
                     }
                 }
                 Phase::Queued => {
-                    if let Some(result) = try_open(
-                        current.request.expected_sample_rate,
-                        current.request.worker_endpoints,
-                    ) {
+                    if let Some(result) =
+                        try_open(current.request.expected_sample_rate, current.request.kind)
+                    {
                         if current.request.canceled.load(Acquire) {
                             drop(result);
                             current.phase = Phase::Delivered;
@@ -603,13 +628,9 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
                     run_lifecycle_selected(
                         receiver,
                         || OCCUPIED.load(Acquire),
-                        |expected_rate, worker_endpoints| {
+                        |expected_rate, kind| {
                             let lease = Lease::try_acquire()?;
-                            Some(crate::device::open_prepared(
-                                expected_rate,
-                                lease,
-                                worker_endpoints,
-                            ))
+                            Some(crate::device::open_prepared(expected_rate, lease, kind))
                         },
                         retire_prepared_output,
                     );
@@ -766,45 +787,53 @@ mod candidate_retirement_tests {
     }
     #[test]
     fn worker_open_uses_same_lane_and_preserves_negotiated_completion_and_abandonment() {
-        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<u32, ()>>(3);
-        let state = Arc::new(OpenState::new());
-        let mut waiter = enqueue_open_kind(&sender, &state, None, true).unwrap();
-        assert!(matches!(
-            enqueue_open(&sender, &state, None),
-            Err(RecoveryOpenError::Busy)
-        ));
-        let worker = std::thread::spawn(move || {
-            run_lifecycle_selected(
-                receiver,
-                || false,
-                |rate, worker| {
-                    assert!(worker);
-                    assert_eq!(rate, None);
-                    Some(Ok(44100))
-                },
-                |_| {},
-            )
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            if let Some(result) = waiter.try_take().unwrap() {
-                assert_eq!(result.unwrap(), 44100);
-                break;
+        for profile in [
+            WorkerOutputProfile::DeviceDefault,
+            WorkerOutputProfile::PluginBridge,
+        ] {
+            let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<u32, ()>>(3);
+            let state = Arc::new(OpenState::new());
+            let mut waiter =
+                enqueue_open_kind(&sender, &state, None, PreparedOutputKind::Worker(profile))
+                    .unwrap();
+            assert!(matches!(
+                enqueue_open(&sender, &state, None),
+                Err(RecoveryOpenError::Busy)
+            ));
+            let worker = std::thread::spawn(move || {
+                run_lifecycle_selected(
+                    receiver,
+                    || false,
+                    |rate, worker| {
+                        assert_eq!(worker, PreparedOutputKind::Worker(profile));
+                        assert_eq!(rate, None);
+                        Some(Ok(44100))
+                    },
+                    |_| {},
+                )
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(result) = waiter.try_take().unwrap() {
+                    assert_eq!(result.unwrap(), 44100);
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
             }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
+            drop(waiter);
+            // The real service sender is static. Wait for its acknowledgement tick
+            // before terminating this isolated test lane.
+            while state.reserved.load(Acquire) != 0 {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            drop(sender);
+            worker.join().unwrap();
+            assert_eq!(state.reserved.load(Acquire), 0);
         }
-        drop(waiter);
-        // The real service sender is static. Wait for its acknowledgement tick
-        // before terminating this isolated test lane.
-        while state.reserved.load(Acquire) != 0 {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        }
-        drop(sender);
-        worker.join().unwrap();
-        assert_eq!(state.reserved.load(Acquire), 0);
     }
+
     #[test]
     fn bounded_open_cleanup_retire_order_adopts_old_job_before_next_open() {
         let _serial = crate::prepared::candidate_tests::serial();

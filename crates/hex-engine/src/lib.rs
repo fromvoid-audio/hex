@@ -379,6 +379,10 @@ fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -
         Error::RuntimeAllocation => "native device runtime allocation failed",
         Error::UnsupportedProcessingClass => "native device processing class is not admitted",
         Error::AssetResourcesUnavailable => "native device asset resources are unavailable",
+        Error::ForeignProcessingUnavailable => {
+            "foreign processing resources are unavailable for this graph"
+        }
+        Error::ForeignProcessingFailed => "foreign processor exchange failed",
     })
 }
 

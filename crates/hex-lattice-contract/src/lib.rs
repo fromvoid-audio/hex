@@ -498,6 +498,8 @@ pub enum DeviceContractError {
     RuntimeAllocation,
     UnsupportedProcessingClass,
     AssetResourcesUnavailable,
+    ForeignProcessingUnavailable,
+    ForeignProcessingFailed,
 }
 impl fmt::Display for DeviceContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -520,6 +522,9 @@ impl fmt::Display for DeviceContractError {
                 Self::RuntimeAllocation => "native processor runtime allocation failed",
                 Self::UnsupportedProcessingClass =>
                     "native device processing class is not admitted",
+                Self::ForeignProcessingUnavailable =>
+                    "foreign processing resources are unavailable for this graph",
+                Self::ForeignProcessingFailed => "foreign processor exchange failed",
                 Self::AssetResourcesUnavailable => "native device asset resources are not prepared",
             }
         )

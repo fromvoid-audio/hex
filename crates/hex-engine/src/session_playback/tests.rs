@@ -4991,13 +4991,15 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
         .as_mut()
         .expect("actual release suffix chain");
     actual_chain.begin_block();
-    actual_chain.process_block(&mut actual_tail_pcm);
+    actual_chain.process_block(&mut actual_tail_pcm).unwrap();
     actual_chain.commit_block();
     let reference_chain = reference_candidate.tail_groups[reference_slot]
         .as_mut()
         .expect("reference release suffix chain");
     reference_chain.begin_block();
-    reference_chain.process_block(&mut reference_tail_pcm);
+    reference_chain
+        .process_block(&mut reference_tail_pcm)
+        .unwrap();
     reference_chain.commit_block();
     assert_eq!(
         actual_tail_pcm, reference_tail_pcm,

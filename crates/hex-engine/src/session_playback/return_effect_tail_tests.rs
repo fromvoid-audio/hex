@@ -242,7 +242,7 @@ fn active_tail_chain(
     let mut chain =
         NativeRuntimeChain::new(tail_instances(return_id, count, frames, bytes)).unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.process_block(&mut [[0.1, -0.1]]).unwrap();
     chain.commit_block();
     chain
 }
@@ -380,7 +380,7 @@ fn playback(project: &Project) -> SessionPlayback {
 fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> NativeRuntimeChain {
     let mut chain = NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.process_block(&mut [[0.1, -0.1]]).unwrap();
     chain.commit_block();
     chain
 }
