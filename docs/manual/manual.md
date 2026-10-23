@@ -150,6 +150,10 @@ available controls depends on the device. use the visible parameter labels and
 readouts, and check the audio after changing a sound. a device that looks familiar
 does not imply complete compatibility with another application's device.
 
+click a device header to focus its card, then press **0** to toggle its bypass.
+this uses the same state as the header bypass control and supports undo/redo.
+while a parameter field or browser search has focus, **0** remains text input.
+
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual
 does not promise a complete third-party plugin-hosting workflow.
