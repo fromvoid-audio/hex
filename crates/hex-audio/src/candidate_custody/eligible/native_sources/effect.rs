@@ -74,6 +74,7 @@ impl Custody {
 
 impl CandidateRoot {
     pub(crate) fn start_native_effect(&self, binding: Binding) -> Result<(), &'static str> {
+        self.require_native_source_control_open()?;
         let result = self.0.eligible.start_native_effect(binding);
         crate::lifecycle::request_candidate_cleanup(self);
         result

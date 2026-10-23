@@ -99,7 +99,6 @@ fn actual_root_effect_constructor_refusal_retains_the_source_until_observed_disp
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();

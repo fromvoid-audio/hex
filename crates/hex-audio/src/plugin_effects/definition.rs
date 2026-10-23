@@ -20,27 +20,36 @@ impl<'a> NativeEffectDefinition<'a> {
         if effects.len() > hex_lattice::MAX_STATEFUL_PROCESSORS {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
         }
-        for (index, effect) in effects.iter().enumerate() {
+        Self::from_effects(effects.iter())
+    }
+    /// Borrow actual owners selected from existing Root cells. Equal copied
+    /// configurations cannot construct this view or substitute another source.
+    pub(crate) fn from_effects(
+        effects: impl IntoIterator<Item = &'a NativeEffect>,
+    ) -> Result<Self, DeviceContractError> {
+        let mut selected: Vec<&'a Configuration> = Vec::new();
+        for effect in effects {
+            if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
+                return Err(DeviceContractError::RuntimeBudgetExceeded);
+            }
             if !effect.callback.matches_worker(&effect.worker)
-                || effects[..index]
+                || selected
                     .iter()
-                    .any(|old| old.identity().device_id() == effect.identity().device_id())
-                || effects.first().is_some_and(|first| {
-                    first.binding().root != effect.binding().root
-                        || first.callback.configuration.sample_rate
-                            != effect.callback.configuration.sample_rate
-                        || first.prepared().quantum_frames() != effect.prepared().quantum_frames()
+                    .any(|old| old.identity.device_id() == effect.identity().device_id())
+                || selected.first().is_some_and(|first| {
+                    first.binding.root != effect.binding().root
+                        || first.sample_rate != effect.callback.configuration.sample_rate
+                        || first.prepared.quantum_frames() != effect.prepared().quantum_frames()
                 })
             {
                 return Err(DeviceContractError::InvalidId);
             }
+            selected
+                .try_reserve(1)
+                .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+            selected.push(&effect.callback.configuration);
         }
-        Ok(Self {
-            effects: effects
-                .iter()
-                .map(|effect| &effect.callback.configuration)
-                .collect(),
-        })
+        Ok(Self { effects: selected })
     }
 }
 impl NativeDeviceMetadata for NativeEffectDefinition<'_> {

@@ -26,8 +26,9 @@ impl PublicationControl {
     }
     /// Run source preparation on the existing control worker, never UI/audio.
     /// Success parks the actual owner in Root even after refusal/close. The
-    /// initial binding is derived by Root before spawn, never queue retagging.
-    #[allow(clippy::too_many_arguments)]
+    /// initial binding and cancellation pair are created by Root before spawn.
+    /// Callers cancel by exact binding; no descriptor-owning token escapes.
+    #[allow(clippy::too_many_arguments)] // Complete typed native request; no separate caller cancellation owner.
     pub fn begin_native_source_preparation(
         &mut self,
         identity: ProcessorInstanceIdentity,
@@ -36,7 +37,6 @@ impl PublicationControl {
         source: native::Source,
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
-        cancellation: native::PreparationCancellation,
         trust: native::TrustUserCode,
     ) -> Result<Binding, &'static str> {
         if !self.native_custody
@@ -53,7 +53,6 @@ impl PublicationControl {
             source,
             preparation,
             restore,
-            cancellation,
             trust,
         )
     }
@@ -80,6 +79,20 @@ impl PublicationControl {
             return Err("native preparation output is closing");
         }
         self.candidate_root.start_native_effect(binding)
+    }
+    /// Run pure graph compilation with definitions borrowed from these exact
+    /// Root-owned effect pairs. This does not transfer endpoints or authorize
+    /// publication. The visitor runs on the existing control worker.
+    pub fn with_native_effect_definition<R>(
+        &self,
+        bindings: &[Binding],
+        prepare: impl FnOnce(&crate::plugin_effects::NativeEffectDefinition<'_>) -> Result<R, String>,
+    ) -> Result<R, String> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native effect output is closing".into());
+        }
+        self.candidate_root
+            .with_native_effect_definition(bindings, prepare)
     }
     /// Copy the original restored envelope, or actual initial capture for a
     /// fresh source. Read-only state is never Root/graph admission authority.

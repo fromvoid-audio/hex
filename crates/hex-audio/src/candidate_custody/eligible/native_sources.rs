@@ -13,6 +13,7 @@ use hex_plugin_host::native::{
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
 mod completion;
+mod definition;
 mod effect;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
@@ -178,7 +179,7 @@ impl Custody {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)] // Complete typed native request, with Root-derived initial binding.
+    #[allow(clippy::too_many_arguments)] // Complete typed native request, with Root-derived binding and cancellation.
     pub(in crate::candidate_custody) fn begin_native_source(
         &self,
         identity: ProcessorInstanceIdentity,
@@ -187,7 +188,6 @@ impl Custody {
         source: native::Source,
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
-        cancellation: native::PreparationCancellation,
         trust: native::TrustUserCode,
     ) -> Result<Binding, &'static str> {
         self.begin_native_source_between(
@@ -197,8 +197,8 @@ impl Custody {
             source,
             preparation,
             restore,
-            cancellation,
             trust,
+            native::PreparationCancellation::new_on_control,
             || {},
         )
     }
@@ -212,8 +212,11 @@ impl Custody {
         source: native::Source,
         mut preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
-        cancellation: native::PreparationCancellation,
         trust: native::TrustUserCode,
+        make_cancellation: impl FnOnce() -> Result<
+            native::PreparationCancellation,
+            hex_plugin_host::Error,
+        >,
         after_reservation: impl FnOnce(),
     ) -> Result<Binding, &'static str> {
         let Ok(mut work) = self.work.try_lock() else {
@@ -252,7 +255,8 @@ impl Custody {
             let slot = &mut bank.sources.slots[index];
             slot.binding = Some(binding);
             slot.identity = Some(identity);
-            slot.cancellation = Some(cancellation.token_on_control());
+            // Root creates and retains its own pair after reserving this cell.
+            slot.cancellation = None;
             slot.starting = true;
             slot.retiring = false;
             slot.phase = Phase::Reserved;
@@ -262,6 +266,35 @@ impl Custody {
         // This is an initial request, never an existing endpoint/epoch retag.
         preparation.binding = binding;
         work.sources.cells[index].pending = true;
+        let cancellation = match make_cancellation() {
+            Ok(cancellation) => cancellation,
+            Err(error) => {
+                // This exact production factory failed before the native
+                // constructor was invoked. No instance was ever started.
+                let cell = &mut work.sources.cells[index];
+                cell.error = Some(error.to_string());
+                drop(source);
+                drop(restore);
+                cell.disposal = Some(PreparationDisposal::NoInstance);
+                cell.pending = false;
+                let mut bank = lock(&self.bank);
+                let slot = &mut bank.sources.slots[index];
+                slot.starting = false;
+                slot.retiring = true;
+                slot.phase = Phase::Complete;
+                return Ok(binding);
+            }
+        };
+        let cancel = {
+            let mut bank = lock(&self.bank);
+            let closing = bank.closing;
+            let slot = &mut bank.sources.slots[index];
+            slot.cancellation = Some(cancellation.token_on_control());
+            closing || slot.retiring
+        };
+        if cancel {
+            cancellation.token_on_control().cancel_on_control();
+        }
         after_reservation();
         // Dedicated existing execution custody spans bounded control I/O. No
         // ordinary bank lock spans construction, native calls or destruction.
@@ -536,13 +569,21 @@ fn native_pool_preflight(bank: &NativeBank, quote: usize) -> Result<(), &'static
 }
 
 impl CandidateRoot {
+    fn require_native_source_control_open(&self) -> Result<(), &'static str> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring {
+            return Err("native source control is closing");
+        }
+        Ok(())
+    }
     pub(crate) fn configure_native_source_preparation(
         &self,
         capacity: usize,
     ) -> Result<(), &'static str> {
+        self.require_native_source_control_open()?;
         self.0.eligible.configure_native_sources(capacity)
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Same complete source request as the public control boundary.
     pub(crate) fn begin_native_source_preparation(
         &self,
         identity: ProcessorInstanceIdentity,
@@ -551,9 +592,9 @@ impl CandidateRoot {
         source: native::Source,
         preparation: native::Preparation,
         restore: Option<NativeDeviceState>,
-        cancellation: native::PreparationCancellation,
         trust: native::TrustUserCode,
     ) -> Result<Binding, &'static str> {
+        self.require_native_source_control_open()?;
         let result = self.0.eligible.begin_native_source(
             identity,
             graph,
@@ -561,7 +602,6 @@ impl CandidateRoot {
             source,
             preparation,
             restore,
-            cancellation,
             trust,
         );
         // A failed or late-closing construction already belongs to Root. Its

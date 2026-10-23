@@ -143,6 +143,12 @@ pub struct Cancellation {
     cancelled: Arc<AtomicBool>,
 }
 impl Cancellation {
+    /// Test-only lifetime observation; never resource provenance or admission.
+    /// A weak observer cannot keep the descriptor payload alive.
+    #[cfg(feature = "test-support")]
+    pub fn descriptor_lifetime_probe_on_control(&self) -> std::sync::Weak<UnixStream> {
+        Arc::downgrade(&self.stream)
+    }
     /// Control-only, one-shot and independent of the PCM queue. The guardian's
     /// blocking read wakes on descriptor shutdown, even during foreign entry.
     pub fn cancel_on_control(&self) {

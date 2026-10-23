@@ -114,6 +114,7 @@ impl CandidateRoot {
         binding: Binding,
         presentation: Option<PresentationLatency>,
     ) -> Result<(), &'static str> {
+        self.require_native_source_control_open()?;
         let result = self
             .0
             .eligible

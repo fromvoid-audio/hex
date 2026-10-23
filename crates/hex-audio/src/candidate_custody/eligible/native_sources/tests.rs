@@ -11,6 +11,7 @@ fn root() -> Custody {
     super::super::tests::configured(8 * 1024 * 1024)
 }
 mod completion;
+mod definition;
 mod effect;
 
 fn input() -> (InstanceBuild, native::Source, native::Preparation) {
@@ -73,7 +74,6 @@ fn start(root: &Custody) -> Binding {
         source,
         preparation,
         None,
-        native::PreparationCancellation::new_on_control().unwrap(),
         native::TrustUserCode::Acknowledged,
     )
     .unwrap()
@@ -139,15 +139,16 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
     }
     let (build, source, preparation) = input();
     assert!(
-        root.begin_native_source(
+        root.begin_native_source_between(
             identity(),
             12,
             &build,
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
-            native::TrustUserCode::Acknowledged
+            native::TrustUserCode::Acknowledged,
+            || panic!("unreserved cancellation pair must not be constructed"),
+            || {},
         )
         .is_err()
     );
@@ -180,44 +181,53 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_close_during_reserved_construction_keeps_custody_without_starting_an_instance() {
-    let root = root();
-    root.configure_native_sources(1).unwrap();
-    let (build, source, preparation) = input();
-    let binding = root
-        .begin_native_source_between(
-            identity(),
-            12,
-            &build,
-            source,
-            preparation,
-            None,
-            native::PreparationCancellation::new_on_control().unwrap(),
-            native::TrustUserCode::Acknowledged,
-            || {
-                let binding = lock(&root.bank).sources.slots[0].binding.unwrap();
-                assert_eq!(
-                    root.native_source_progress(binding),
-                    Some(NativeSourcePreparationProgress::Preparing)
-                );
-                assert!(
-                    root.work.try_lock().is_err(),
-                    "Root already retains construction execution"
-                );
-                root.close();
-            },
-        )
-        .unwrap();
-    dispose(&root, binding);
-    let returned = root.recover_native_source(binding).unwrap();
-    assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
-    assert!(
-        returned
-            .error
-            .as_ref()
-            .is_some_and(|e| e.contains("cancelled"))
-    );
-    assert!(returned.cleanup_error.is_none());
-    assert!(root.complete());
+    for close_before_pair in [false, true] {
+        let root = root();
+        root.configure_native_sources(1).unwrap();
+        let (build, source, preparation) = input();
+        let binding = root
+            .begin_native_source_between(
+                identity(),
+                12,
+                &build,
+                source,
+                preparation,
+                None,
+                native::TrustUserCode::Acknowledged,
+                || {
+                    if close_before_pair {
+                        root.close();
+                    }
+                    native::PreparationCancellation::new_on_control()
+                },
+                || {
+                    let binding = lock(&root.bank).sources.slots[0].binding.unwrap();
+                    if !close_before_pair {
+                        assert_eq!(
+                            root.native_source_progress(binding),
+                            Some(NativeSourcePreparationProgress::Preparing)
+                        );
+                    }
+                    assert!(
+                        root.work.try_lock().is_err(),
+                        "Root retains construction execution"
+                    );
+                    root.close();
+                },
+            )
+            .unwrap();
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
+        assert!(
+            returned
+                .error
+                .as_ref()
+                .is_some_and(|e| e.contains("cancelled"))
+        );
+        assert!(returned.cleanup_error.is_none());
+        assert!(root.complete());
+    }
 }
 
 #[test]
@@ -235,7 +245,6 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();
@@ -282,7 +291,6 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();
@@ -321,7 +329,6 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();
@@ -348,7 +355,6 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();
@@ -379,7 +385,6 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
             source,
             preparation,
             None,
-            native::PreparationCancellation::new_on_control().unwrap(),
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();
@@ -396,5 +401,99 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
         retained
             .recover_native_source_preparation(abandoned)
             .is_none()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn root_cancellation_descriptor_does_not_outlive_exact_disposal() {
+    let root = root();
+    root.configure_native_sources(1).unwrap();
+    let (build, source, preparation) = input();
+    let binding = root
+        .begin_native_source(
+            identity(),
+            12,
+            &build,
+            source,
+            preparation,
+            None,
+            native::TrustUserCode::Acknowledged,
+        )
+        .unwrap();
+    let descriptor = lock(&root.bank).sources.slots[0]
+        .cancellation
+        .as_ref()
+        .unwrap()
+        .descriptor_lifetime_probe_on_control();
+    assert!(root.retire_native_source(binding));
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+    assert!(root.complete());
+    assert_eq!(
+        descriptor.strong_count(),
+        0,
+        "Root disposal must close its cancellation descriptor"
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn root_cancellation_creation_refusal_is_original_pre_spawn_failure() {
+    let root = root();
+    root.configure_native_sources(1).unwrap();
+    let (build, source, preparation) = input();
+    let binding = root
+        .begin_native_source_between(
+            identity(),
+            12,
+            &build,
+            source,
+            preparation,
+            None,
+            native::TrustUserCode::Acknowledged,
+            || {
+                Err(hex_plugin_host::Error::Io(std::io::Error::other(
+                    "original cancellation pair refusal",
+                )))
+            },
+            || panic!("native preparation must not start after cancellation creation refusal"),
+        )
+        .unwrap();
+    assert_eq!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Complete)
+    );
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
+    assert!(
+        returned
+            .error
+            .unwrap()
+            .contains("original cancellation pair refusal")
+    );
+    assert!(returned.cleanup_error.is_none());
+    assert!(root.complete());
+}
+
+#[test]
+fn native_source_controls_refuse_the_retiring_original_root() {
+    let outer = CandidateRoot::new(2).unwrap();
+    outer
+        .configure_domains(AudioCandidateDomainReservation {
+            max_retained_data_bytes: 8 * 1024 * 1024,
+            max_construction_peak_data_bytes: 8 * 1024 * 1024,
+        })
+        .unwrap();
+    outer.announce_retirement();
+    assert!(
+        outer.configure_native_source_preparation(1).is_err(),
+        "retiring Root must not create a new native source pool"
+    );
+    assert!(
+        outer
+            .with_native_effect_definition::<()>(&[], |_| panic!("retiring Root must not compile"))
+            .is_err()
     );
 }
