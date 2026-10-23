@@ -54,7 +54,7 @@ fn meter_map(old: &MeterMap, preview: &SectionReorderPreview) -> Result<MeterMap
     points.sort_by_key(|p| p.beat());
     MeterMap::new(points)
 }
-fn base_value(
+pub(super) fn base_value(
     points: &[GainPoint],
     fallback: f32,
     beat: BeatTime,
@@ -379,7 +379,7 @@ fn midi_fragments(
     }
     Ok(result)
 }
-fn take_id(next: &mut u64) -> Result<u64, Invalid> {
+pub(super) fn take_id(next: &mut u64) -> Result<u64, Invalid> {
     let id = *next;
     *next = next
         .checked_add(1)
