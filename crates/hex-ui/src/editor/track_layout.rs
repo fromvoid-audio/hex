@@ -1,11 +1,15 @@
 //! Arrangement-only layout state; resizing never edits the project or audio.
+//! Header overview has a separate transient height map: temporary resizing never
+//! overwrites normal custom heights. Stable track IDs survive topology changes;
+//! project replacement clears both layouts. Plain H belongs to this workspace
+//! only while the computer MIDI keyboard is disabled.
 use super::{
     EditorView,
     tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT},
 };
 use gpui::{
-    Context, Div, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, Window, canvas, div,
-    prelude::*, px,
+    Context, Div, KeyDownEvent, ListState, Modifiers, MouseButton, MouseMoveEvent, MouseUpEvent,
+    Window, canvas, div, prelude::*, px,
 };
 use hex_project::TrackId;
 use std::collections::BTreeMap;
@@ -22,10 +26,19 @@ pub(super) struct TrackLayout {
     width: Option<f32>,
     pub(super) available_width: Option<f32>,
     heights: BTreeMap<TrackId, f32>,
+    overview: Option<BTreeMap<TrackId, f32>>,
     drag: Option<ResizeDrag>,
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
+}
+impl TrackLayout {
+    fn active_heights(&self) -> &BTreeMap<TrackId, f32> {
+        self.overview.as_ref().unwrap_or(&self.heights)
+    }
+    fn active_heights_mut(&mut self) -> &mut BTreeMap<TrackId, f32> {
+        self.overview.as_mut().unwrap_or(&mut self.heights)
+    }
 }
 struct ResizeDrag {
     track: Option<TrackId>,
@@ -101,6 +114,71 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
+    /// Bubble after child editors; never register a global H or Cmd-H binding.
+    pub(super) fn track_overview_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if event.keystroke.key != "h"
+            || event.keystroke.modifiers != Modifiers::default()
+            || event.is_held
+            || self.mode != super::EditorMode::Arrangement
+            || self.computer_keyboard.enabled
+            || !(self.focus.is_focused(window) || self.track_header_focused(window))
+            || !self.drag_available()
+            || self.edit_pending()
+            || self.track_name.is_editing()
+            || self.sections.naming()
+            || self.sections.held()
+            || self.section_install_pending()
+            || self.tuning.open
+            || self.theme_settings.open
+            || self.changelog.is_open()
+            || self.controller_input_is_open()
+            || self.context_menu.is_some()
+            || (self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            || self.send_menu_track.is_some()
+            || self.project_tempo_editing(cx)
+            || self.gain_numeric_editing(cx)
+            || self.track_gain_controls.has_pending_draft(cx)
+            || self.gain_lane.pointer_is_active()
+            || self.sample_bpm_editing(cx)
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || self.export_dialog_open
+            || self.save_dialog_open
+            || self.preset_dialog_open
+            || self.arrangement_pan.is_some()
+            || self.pointer_down.is_some()
+            || self.project_spectrum.resize_is_active()
+            || self.device_panel.navigation.is_active()
+            || self.clip_paint_gesture.is_some()
+            || self.active_clip_drag.is_some()
+            || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.loop_rail_gesture.is_some()
+            || self.scrub_active()
+            || cx.has_active_drag()
+            || self.state.is_none()
+        {
+            return false;
+        }
+        if self.track_layout.overview.take().is_none() {
+            self.track_layout.overview = Some(BTreeMap::new());
+        }
+        self.track_scroll.remeasure();
+        cx.notify();
+        true
+    }
     fn maximum_header_width(&self) -> f32 {
         self.track_layout
             .available_width
@@ -119,14 +197,19 @@ impl EditorView {
     }
     pub(super) fn track_height(&self, track: TrackId) -> f32 {
         self.track_layout
-            .heights
+            .active_heights()
             .get(&track)
             .copied()
-            .unwrap_or(TRACK_ROW_HEIGHT)
+            .unwrap_or(if self.track_layout.overview.is_some() {
+                HEADER_ONLY_HEIGHT
+            } else {
+                TRACK_ROW_HEIGHT
+            })
     }
     pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
         if self.track_layout.generation != self.project_generation {
             self.track_layout.heights.clear();
+            self.track_layout.overview = None;
             self.track_layout.drag = None;
             self.track_layout.generation = self.project_generation;
             self.track_layout.tracks.clear();
@@ -144,6 +227,9 @@ impl EditorView {
                 self.restore_track_resize(drag);
             }
             self.track_layout.heights.retain(|id, _| ids.contains(id));
+            if let Some(heights) = self.track_layout.overview.as_mut() {
+                heights.retain(|id, _| ids.contains(id));
+            }
             let mut top = self.track_scroll.list.logical_scroll_top();
             let anchor = self.track_layout.tracks.get(top.item_ix).copied();
             top.item_ix = anchor
@@ -225,7 +311,7 @@ impl EditorView {
             previous_width: self.track_layout.width,
             // A modifier may change during capture: retain every custom height
             // once so all live updates have one complete cancellation owner.
-            previous_heights: track.map(|_| self.track_layout.heights.clone()),
+            previous_heights: track.map(|_| self.track_layout.active_heights().clone()),
             maximum,
         });
         self.focus.focus(window);
@@ -276,15 +362,17 @@ impl EditorView {
                 {
                     return;
                 }
-                for id in &self.track_layout.tracks {
-                    self.track_layout.heights.insert(*id, height);
+                let layout = &mut self.track_layout;
+                let heights = layout.overview.as_mut().unwrap_or(&mut layout.heights);
+                for id in &layout.tracks {
+                    heights.insert(*id, height);
                 }
                 self.track_scroll.remeasure();
             } else {
                 if height == self.track_height(track) {
                     return;
                 }
-                self.track_layout.heights.insert(track, height);
+                self.track_layout.active_heights_mut().insert(track, height);
                 self.invalidate_track_size(Some(track));
             }
         } else {
@@ -302,7 +390,7 @@ impl EditorView {
             return;
         }
         if let Some(previous) = drag.previous_heights {
-            self.track_layout.heights = previous;
+            *self.track_layout.active_heights_mut() = previous;
             self.track_scroll.remeasure();
         } else {
             self.track_layout.width = drag.previous_width;

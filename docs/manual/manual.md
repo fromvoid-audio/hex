@@ -98,6 +98,11 @@ keeps its own outline in either flavor.
 drag the bottom edge of a track header to resize that row. hold **option** while
 resizing to give all ordinary tracks the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
+with the computer midi keyboard off, press **h** in arrange to toggle a compact
+overview. press **h** again to restore each track's previous height. resizing in
+the overview is temporary; it does not replace normal heights. these view sizes
+last for the current editor session. return and main rows retain their own size.
+with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or
 **insert return track**. return buses stay pinned above **main** in arrange;
@@ -238,6 +243,7 @@ even when live audio output is unavailable.
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser / search | command+option+b / command+f |
+| compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | export | command+shift+e |
 | changelog | command+shift+l |
