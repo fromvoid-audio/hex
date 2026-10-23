@@ -379,7 +379,7 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
             assert_eq!(project.clip(clips[0]).unwrap().name(), "independent rename");
             if hold_ack {
                 assert!(matches!(&v.last_enqueued_edit, Some(Command::MoveClipsWithOverwrite { clips: selected, .. }) if selected == &clips));
-                assert!(v.error.as_ref().unwrap().message.contains("project changed"));
+                assert!(v.error.as_ref().unwrap().contains("project changed"));
             } else {
                 assert!(matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"));
             }
