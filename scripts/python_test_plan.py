@@ -20,12 +20,14 @@ REVIEWED_MODULES = frozenset({
     # Mach-O/parser and receipt-bound bootstrap fixtures depend on native helper
     # sources/build inputs, not ordinary app Rust. Those inputs fall back below.
     "test_vst3_macos_bootstrap",
+    "test_vst3_instance_worker",
 })
 # Explicit native acceptance must never disappear behind app-only selection.
 # Keep partial opt-ins comprehensive too; each owning suite validates its inputs.
 NATIVE_ACCEPTANCE_ENV = (
     "HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
     "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
+    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP",
 )
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",

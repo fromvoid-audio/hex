@@ -390,12 +390,18 @@ class NativeInstancePackageTests(unittest.TestCase):
         binary = self.app / delivery.DISCOVERY_ROOT / BOOT.INSTANCE_EXECUTABLE
         original = binary.read_bytes()
         binary.write_bytes(original + b"changed")
-        with self.assertRaises((delivery.DeliveryError, ValueError)):
+        with self.assertRaises(subprocess.CalledProcessError):
             delivery.verify(self.app)
         binary.write_bytes(original)
         receipt = self.app / delivery.INSTANCE_RECEIPT
         data = json.loads(receipt.read_text())
         data["source_commit"] = "0" * 40
         receipt.write_text(json.dumps(data))
-        with self.assertRaises((delivery.DeliveryError, ValueError)):
+        # Re-seal this owned negative fixture so the test reaches source
+        # validation rather than stopping at the intentionally broken seal.
+        self.manifest["vst3_instance"]["receipt_sha256"] = delivery.sha(receipt)
+        self.manifest["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.app / "Contents/Resources/test-build.json", self.manifest)
+        delivery.sign_bundle(self.app, self.signing)
+        with self.assertRaisesRegex(delivery.DeliveryError, "exact clean candidate"):
             delivery.verify(self.app)
