@@ -4,8 +4,11 @@ fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let service = Service::new(48000, 16, 8000000).unwrap();
     let _ = receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "eq source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let event = receive_service_event(&service);
@@ -414,11 +417,105 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
 
 #[gpui::test]
 fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
-    let (service, state, track, device) = fixture(false);
+    creation_history_and_round_trip(cx, CreationOwner::Track);
+}
+
+#[gpui::test]
+fn main_eq_catalog_creation_drag_history_and_round_trip(cx: &mut TestAppContext) {
+    creation_history_and_round_trip(cx, CreationOwner::Main);
+}
+
+#[gpui::test]
+fn return_eq_creation_drag_history_and_round_trip(cx: &mut TestAppContext) {
+    creation_history_and_round_trip(cx, CreationOwner::Return);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreationOwner {
+    Track,
+    Main,
+    Return,
+}
+
+fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, mut state, track, mut device) = fixture(false);
+    if owner != CreationOwner::Track {
+        service
+            .submit(Request::Edit(Command::AddReturnTrack {
+                name: "return sentinel".into(),
+            }))
+            .unwrap();
+        state = receive_service_event(&service).state;
+        service
+            .submit(Request::Edit(Command::InsertReturnDevice {
+                return_track: state.project.return_tracks()[0].id(),
+                before: None,
+                state: EqState::default().encode().unwrap(),
+            }))
+            .unwrap();
+        state = receive_service_event(&service).state;
+    }
+    let sentinel = Arc::clone(&state);
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
+    if owner != CreationOwner::Track {
+        editor.update(&mut visual, |view, cx| {
+            view.mode = crate::editor::EditorMode::Arrangement;
+            cx.notify();
+        });
+    }
     visual.run_until_parked();
+    if owner != CreationOwner::Track {
+        let return_id = sentinel.project.return_tracks()[0].id();
+        let focus = match owner {
+            CreationOwner::Main => "main-track-header".to_owned(),
+            CreationOwner::Return => format!("return-track-focus-{}", return_id.value()),
+            CreationOwner::Track => unreachable!(),
+        };
+        let header = visual
+            .debug_bounds(Box::leak(focus.into_boxed_str()))
+            .unwrap();
+        visual.simulate_click(
+            if owner == CreationOwner::Main {
+                point(header.left() + px(14.), header.center().y)
+            } else {
+                header.center()
+            },
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        if owner == CreationOwner::Main {
+            let add = visual.debug_bounds("device-add-toggle").unwrap();
+            visual.simulate_click(add.center(), Modifiers::default());
+            visual.run_until_parked();
+            let eq = visual.debug_bounds("add-main-effect-hex.eq").unwrap();
+            visual.simulate_click(eq.center(), Modifiers::default());
+            pump_until(&editor, cx, |view| {
+                settled(view) && view.state.as_ref().unwrap().project.main_devices().len() == 1
+            });
+        }
+        device = editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let entry = if owner == CreationOwner::Main {
+                assert!(view.selected_track.is_none());
+                assert!(view.focused_return.is_none());
+                assert_eq!(
+                    view.device_panel.main_selected,
+                    Some(view.project_generation)
+                );
+                &project.main_devices()[0]
+            } else {
+                assert_eq!(view.focused_return, Some(return_id));
+                assert_eq!(view.selected_track, Some(track));
+                &project.return_tracks()[0].devices()[0]
+            };
+            assert_eq!(entry.state().type_id(), EQ_TYPE_ID);
+            entry.id()
+        });
+        visual.run_until_parked();
+    }
     for (index, (x, kind)) in [
         (0.02, hex_engine::eq::NodeKind::LowCut),
         (0.98, hex_engine::eq::NodeKind::HighCut),
@@ -478,6 +575,37 @@ fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppC
         pump_until(&editor, cx, |v| settled(v) && read(v, device) == authored);
         visual.run_until_parked();
     }
+    if owner != CreationOwner::Track {
+        let before_parameter = editor.read_with(cx, |view, _| read(view, device));
+        let id = before_parameter.nodes[0].id;
+        // Undo may retire detail selection. Select the first authored node again,
+        // just as a user must, before editing its numeric controls.
+        let node = plot(&mut visual, device, 0.6, 0.7);
+        visual.simulate_click(node, Modifiers::default());
+        visual.run_until_parked();
+        enter_typed_value(
+            &mut visual,
+            device,
+            id.parameter(hex_engine::eq::NodeParameter::Frequency)
+                .unwrap(),
+            "1234",
+        );
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |view| {
+            settled(view) && (read(view, device).nodes[0].frequency_hz - 1234.).abs() < 0.01
+        });
+        let changed = editor.read_with(cx, |view, _| read(view, device));
+        assert_eq!(changed.nodes.len(), before_parameter.nodes.len());
+        assert_eq!(changed.nodes[0].id, id);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == before_parameter
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            settled(view) && read(view, device) == changed
+        });
+    }
     let authored = editor.read_with(cx, |v, _| read(v, device));
     assert!(
         authored
@@ -506,6 +634,38 @@ fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppC
         EqState::decode(reopened.state.project.device(device).unwrap().state()).unwrap(),
         authored
     );
+    if owner != CreationOwner::Track {
+        editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(project.tracks(), sentinel.project.tracks());
+            if owner == CreationOwner::Main {
+                assert_eq!(project.return_tracks(), sentinel.project.return_tracks());
+                assert!(view.selected_track.is_none());
+                assert!(view.focused_return.is_none());
+                assert_eq!(
+                    view.device_panel.main_selected,
+                    Some(view.project_generation)
+                );
+            } else {
+                assert_eq!(project.main_devices(), sentinel.project.main_devices());
+                assert_eq!(
+                    view.focused_return,
+                    Some(sentinel.project.return_tracks()[0].id())
+                );
+                assert_eq!(view.selected_track, Some(track));
+            }
+            assert_eq!(reopened.state.project.tracks(), project.tracks());
+            assert_eq!(
+                reopened.state.project.return_tracks(),
+                project.return_tracks()
+            );
+            assert_eq!(
+                reopened.state.project.main_devices(),
+                project.main_devices()
+            );
+        });
+    }
     std::fs::remove_file(path).unwrap();
 }
 
@@ -815,7 +975,7 @@ fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut Tes
 }
 
 #[path = "eq_graph_layout_tests.rs"]
-mod graph_layout_tests;
+pub(in crate::editor) mod graph_layout_tests;
 
 #[path = "eq_node_gesture_tests.rs"]
 mod node_gesture_tests;
@@ -936,3 +1096,6 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
     pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
     assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
 }
+
+#[path = "eq_held_pointer_tests.rs"]
+pub(in crate::editor) mod held_pointer_tests;

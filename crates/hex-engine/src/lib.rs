@@ -1,5 +1,15 @@
-//! Deterministic, sample-rate-locked stereo arrangement rendering.
-//! This is an original prototype, not a verified Live-compatible engine.
+//! # Purpose
+//! Compile canonical projects into immutable playback revisions and render deterministic stereo
+//! audio with bounded runtime state.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-devices, hex-lattice/hex-lattice-contract, hex-warp and control-side sha2
+//! resource verification; no UI or device-I/O dependency.
+//!
+//! # Does not own
+//! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
+//! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
+//! control owns preparation and final destruction.
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -61,6 +71,7 @@ pub use session_structure_preparation::SessionStructureCapacity;
 pub use session_tempo_preparation::SessionTempoCapacity;
 pub mod audio_transform;
 mod effect_clock;
+mod main_chain;
 mod native_device_view;
 pub use audio_input_storage::{
     AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
@@ -70,14 +81,19 @@ pub use audio_only_inputs::{
     AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
     ResidentSourceRefusal, StreamedSourceRefusal,
 };
+pub mod native_device_resources;
 mod owned_shared;
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
-    native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
+    SamplerParameter, is_empty_sampler_state_on_control,
+    is_sampler_configuration_history_on_control, native_device_catalog,
+    native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response,
+    native_effect_frequency_response, patch_sampler_parameter_on_control,
+    sampler_parameter_active_on_control, sampler_parameter_value_on_control,
+    sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
 mod gain_envelope;
@@ -1841,11 +1857,25 @@ pub struct Project {
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
+    main_device_chain: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    // Final causal arrival after Main, separate from the pre-Main summing graph.
+    main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
+    pub(crate) fn new_main_device_runtime(
+        &self,
+    ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
+        let mut instances = Vec::new();
+        instances
+            .try_reserve_exact(self.main_device_chain.len())
+            .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
+        instances.extend(self.main_device_chain.iter().cloned());
+        hex_lattice::NativeRuntimeChain::new_prepared(instances)
+    }
+
     /// Worker-only observation of accepted transformed PCM, independent of cache residency.
     pub fn audio_clip_views(&self) -> &[PreparedAudioClipView] {
         &self.audio_clip_views
@@ -1939,6 +1969,8 @@ impl Project {
             midi_routing: Vec::new(),
             loop_region,
             master_gain,
+            main_device_chain: Arc::from([]),
+            main_output_latency_frames: 0,
             has_streamed_sources,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
@@ -1998,9 +2030,7 @@ impl Project {
     }
     /// Known causal startup delay; compensation does not remove physical latency.
     pub fn main_latency_frames(&self) -> u32 {
-        self.signal_graph
-            .as_ref()
-            .map_or(0, |graph| graph.main_latency())
+        self.main_output_latency_frames
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -2011,6 +2041,45 @@ impl Project {
     /// Exclusive end of all compiled audio and instrument output, if any.
     pub fn audible_end_frame(&self) -> Option<u64> {
         self.audible_end_frame
+    }
+
+    /// Causal Main output end for an untrimmed, automatically sized offline
+    /// range. Ordinary source-length exports trim startup separately and must
+    /// continue to use `audible_end_frame`. Explicit ranges never use this bound.
+    pub fn untrimmed_main_end_frame(&self) -> Result<Option<u64>, Invalid> {
+        let Some(source_end) = self.audible_end_frame else {
+            return Ok(None);
+        };
+        let mut drain = 0_u64;
+        for device in self
+            .main_device_chain
+            .iter()
+            .filter(|device| !device.bypassed)
+        {
+            let tail = device.definition.as_ref().map_or(
+                hex_lattice::OutputTail::Finite { max_tail_frames: 0 },
+                hex_lattice::PreparedProcessorFactory::output_tail,
+            );
+            let hex_lattice::OutputTail::Finite { max_tail_frames } = tail else {
+                return Err(Invalid(
+                    "automatic Main range requires a finite tail; choose an explicit range",
+                ));
+            };
+            drain = drain
+                .checked_add(max_tail_frames)
+                .ok_or(Invalid("Main export drain overflow"))?;
+        }
+        let limit = u64::from(self.sample_rate)
+            .checked_mul(session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS)
+            .ok_or(Invalid("Main export drain overflow"))?;
+        if drain > limit {
+            return Err(Invalid("Main export drain exceeds its bounded horizon"));
+        }
+        source_end
+            .checked_add(u64::from(self.main_output_latency_frames))
+            .and_then(|end| end.checked_add(drain))
+            .map(Some)
+            .ok_or(Invalid("Main export range overflow"))
     }
 
     pub fn device_meter(
@@ -2035,6 +2104,7 @@ impl Project {
         self.return_buses
             .iter()
             .flat_map(|bus| bus.device_chain.iter())
+            .chain(self.main_device_chain.iter())
             .find(|device| device.device_id == device_id)
             .map(|device| &device.meter)
     }
@@ -2086,6 +2156,7 @@ impl PreparedMasterGain {
 pub(crate) struct RendererRuntime {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
     compensation: Option<signal_graph::SignalRuntime>,
@@ -2096,9 +2167,17 @@ impl RendererRuntime {
         let mut return_chains = Vec::new();
         let mut return_scratch = Vec::new();
         let mut runtime_error = None;
+        let main_chain = match project.new_main_device_runtime() {
+            Ok(chain) => chain,
+            Err(_) => {
+                runtime_error = Some("main runtime preparation failed");
+                hex_lattice::NativeRuntimeChain::empty()
+            }
+        };
         let compensation = match project
             .signal_graph
             .as_ref()
+            .filter(|graph| graph.needs_runtime())
             .map(|graph| signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
         {
@@ -2142,6 +2221,7 @@ impl RendererRuntime {
                         return Self {
                             device_chains,
                             return_chains,
+                            main_chain,
                             return_scratch,
                             runtime_error,
                             compensation,
@@ -2166,6 +2246,7 @@ impl RendererRuntime {
         Self {
             device_chains,
             return_chains,
+            main_chain,
             return_scratch,
             runtime_error,
             compensation,
@@ -2182,6 +2263,7 @@ impl RendererRuntime {
         for chain in &mut self.return_chains {
             chain.reset();
         }
+        self.main_chain.reset();
     }
 
     pub(crate) fn select_processor_audition(
@@ -2191,6 +2273,12 @@ impl RendererRuntime {
         selection: Option<hex_lattice::ProcessorAuditionSelection>,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -2227,6 +2315,12 @@ impl RendererRuntime {
         selection: hex_lattice::ProcessorAuditionSelection,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -2262,6 +2356,13 @@ impl RendererRuntime {
         identity: crate::PostNodeIdentity,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => {
+                self.main_chain.cancel_processor_audition_for_identity(
+                    identity.owner,
+                    identity.device_id,
+                    identity.device_type,
+                )
+            }
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -2296,12 +2397,15 @@ impl RendererRuntime {
         for chain in &mut self.return_chains {
             chain.cancel_all_processor_auditions();
         }
+        self.main_chain.cancel_all_processor_auditions();
     }
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
-        self.device_chains
-            .iter()
-            .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+        self.main_chain.has_stateful_processors()
+            || self
+                .device_chains
+                .iter()
+                .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
             || self
                 .return_chains
                 .iter()
@@ -2334,6 +2438,7 @@ impl RendererRuntime {
             }
         });
         tracks_match
+            && self.main_chain.can_inherit_from(&previous.main_chain)
             && project
                 .return_buses()
                 .iter()
@@ -2362,6 +2467,7 @@ impl RendererRuntime {
         previous: &Self,
         previous_project: &Project,
     ) {
+        self.main_chain.inherit_from(&previous.main_chain);
         for (index, track) in project.tracks().iter().enumerate() {
             let Some(track_id) = track.canonical_track_id() else {
                 continue;
@@ -2423,6 +2529,7 @@ impl RendererRuntime {
                 .device_chains
                 .iter_mut()
                 .chain(self.return_chains.iter_mut())
+                .chain(std::iter::once(&mut self.main_chain))
             {
                 chain.rollback_block();
             }
@@ -2475,6 +2582,7 @@ impl RendererRuntime {
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
+        self.main_chain.begin_block();
         let has_return_routes = !project.return_buses.is_empty()
             || project.tracks.iter().any(|track| !track.sends.is_empty());
         if has_return_routes {
@@ -2487,12 +2595,24 @@ impl RendererRuntime {
                 output.fill([0.0; 2]);
                 return Err(error);
             }
+            crate::main_chain::process(
+                &mut self.main_chain,
+                output,
+                0,
+                Some(&crate::effect_clock::ArrangementEffectClock::canonical(
+                    project.tempo_map.as_ref(),
+                    block_start,
+                )),
+                &mut None,
+            )
+            .map_err(|_| Invalid("main effect runtime failed"))?;
             for chain in &mut self.device_chains {
                 chain.commit_block();
             }
             for chain in &mut self.return_chains {
                 chain.commit_block();
             }
+            self.main_chain.commit_block();
             project.master_gain.apply(output);
             *position = next;
             return Ok(());
@@ -2610,11 +2730,23 @@ impl RendererRuntime {
                 }
             }
         }
+        // Neutral projects retain their original hot path. Non-neutral master
+        // gain is deliberately post-sum rather than folded into track gains.
+        crate::main_chain::process(
+            &mut self.main_chain,
+            output,
+            0,
+            Some(&crate::effect_clock::ArrangementEffectClock::canonical(
+                project.tempo_map.as_ref(),
+                block_start,
+            )),
+            &mut None,
+        )
+        .map_err(|_| Invalid("main effect runtime failed"))?;
         for chain in &mut self.device_chains {
             chain.commit_block();
         }
-        // Neutral projects retain their original hot path. Non-neutral master
-        // gain is deliberately post-sum rather than folded into track gains.
+        self.main_chain.commit_block();
         project.master_gain.apply(output);
         *position = next;
         Ok(())
@@ -2821,6 +2953,7 @@ impl<'a> Renderer<'a> {
             .device_chains
             .iter_mut()
             .chain(self.runtime.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.runtime.main_chain))
         {
             chain.set_metering(enabled);
         }
@@ -2906,47 +3039,17 @@ impl InstrumentTrack {
         start: u64,
         end: u64,
         minimum_start_exclusive: Option<u64>,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan),
+        visit: impl FnMut(&midi_compile::CompiledNoteSpan),
     ) {
-        let Some(root) = self.root else { return };
-        let mut stack = [(0_usize, false); 64];
-        let mut size = 1;
-        stack[0] = (root, false);
-        while size > 0 {
-            size -= 1;
-            let (index, emit) = stack[size];
-            let node = &self.nodes[index];
-            if emit {
-                let span = &self.spans[node.span_index];
-                if span.start < end
-                    && span.end > start
-                    && minimum_start_exclusive.is_none_or(|floor| span.start > floor)
-                {
-                    visit(span);
-                }
-                continue;
-            }
-            // A median onset beyond the query end only rules out this node and
-            // its right subtree. Earlier left-subtree spans may still be active.
-            if node.max_end > start {
-                if let Some(right) = node.right {
-                    if node.span_start < end && self.nodes[right].max_end > start {
-                        stack[size] = (right, false);
-                        size += 1;
-                    }
-                }
-                if node.span_start < end && self.spans[node.span_index].end > start {
-                    stack[size] = (index, true);
-                    size += 1;
-                }
-                if let Some(left) = node.left {
-                    if self.nodes[left].max_end > start {
-                        stack[size] = (left, false);
-                        size += 1;
-                    }
-                }
-            }
-        }
+        midi_activity::visit_arrangement_spans(
+            &self.spans,
+            &self.nodes,
+            self.root,
+            start,
+            end,
+            minimum_start_exclusive,
+            visit,
+        );
     }
 }
 
@@ -3079,6 +3182,8 @@ pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
 mod midi_activity;
+mod playback_observation;
+pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -3102,6 +3207,7 @@ pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,
     MIDI_TEMPLATE_QUERY_FRAMES, MidiEdgeBuffer, MidiInstrumentRenderContext, MidiRenderSpan,
     MidiSpanBuffer, MidiTemplateError, PreparedMidiInstrumentTemplate, PreparedMidiSourceTemplate,
+    SessionMidiOrigin,
 };
 pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
@@ -3110,7 +3216,7 @@ pub use playback::{
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
 pub use prepared_tempo::{
-    MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
+    MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap, SessionClockAnchor,
 };
 pub use session_inventory::{
     PreparedSessionAudioClip, PreparedSessionCell, PreparedSessionCellContent,
@@ -3125,3 +3231,10 @@ pub use session_playback::{
     SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
     SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
+
+#[cfg(test)]
+mod main_chain_review_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/routed_midi_fixture.rs"]
+mod routed_midi_fixture;

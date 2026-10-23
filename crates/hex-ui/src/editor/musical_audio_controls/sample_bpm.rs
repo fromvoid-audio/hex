@@ -14,7 +14,7 @@ pub(crate) struct Binding {
 impl EditorView {
     pub(crate) fn sample_bpm_editing(&self, cx: &Context<Self>) -> bool {
         self.sample_bpm_control.as_ref().is_some_and(|binding| {
-            self.selected_clip_data()
+            self.detail_audio_clip_data()
                 .is_some_and(|selection| selection.1 == binding.key.0)
                 && self.project_generation == binding.key.1
                 && self
@@ -55,8 +55,9 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
         view.sample_bpm_control = None;
     }
     if view.sample_bpm_control.is_none() {
-        let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm")).map(
-            |spec| {
+        let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm"))
+            .and_then(|spec| spec.with_keyboard_steps(1.0, 0.1))
+            .map(|spec| {
                 spec.with_codec(
                     |v| {
                         format!("{v:.6}")
@@ -66,8 +67,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                     },
                     |s| s.trim().trim_end_matches("bpm").trim().parse::<f64>().ok(),
                 )
-            },
-        );
+            });
         let config = spec.and_then(|spec| {
             NumericControlConfig::new(
                 "audio-sample-bpm",
@@ -75,14 +75,16 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 NumericControlKind::HorizontalSlider,
                 spec,
                 value,
-                super::super::device_panel::control_style(),
+                crate::theme::control_style(),
             )
         });
         let Ok(config) = config else { return div() };
         let entity = cx.new(|cx| {
             NumericControl::from_config(
                 cx,
-                config.with_appearance(NumericControlAppearance::InlineValue),
+                config
+                    .with_command_fine_steps()
+                    .with_appearance(NumericControlAppearance::InlineValue),
             )
         });
         let subscription =
@@ -97,7 +99,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                         .as_ref()
                         .is_none_or(|state| state.revision != key.2)
                     || view
-                        .selected_clip_data()
+                        .detail_audio_clip_data()
                         .is_none_or(|selection| selection.1 != id)
                 {
                     return;
@@ -184,6 +186,7 @@ mod ui_tests {
                 comparison_audio: None,
                 project: Arc::new(model.project().clone()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),

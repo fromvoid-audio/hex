@@ -170,6 +170,12 @@ pub(super) fn action_matches_project(
         SessionPlaybackCommand::LaunchClip { clip, .. } => project.session_cells().iter().any(
             |cell| matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip),
         ),
+        SessionPlaybackCommand::CueMidiClip { track, clip, .. } => {
+            project.session_cells().iter().any(|cell| {
+                cell.track() == track
+                    && matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip)
+            })
+        }
         SessionPlaybackCommand::LaunchScene { scene, .. } => {
             project.scenes().iter().any(|item| item.id() == scene)
         }
@@ -205,6 +211,7 @@ impl EditorView {
         match selection {
             Some(super::session_navigation::Selection::Scene(scene)) => {
                 if self.focus_empty_details(window, cx) {
+                    self.advance_selection_intent();
                     self.select_session_scene(scene);
                 }
             }
@@ -221,16 +228,19 @@ impl EditorView {
                 match content {
                     Some(Some(clip)) => {
                         if self.focus_clip_details(window, cx) {
+                            self.advance_selection_intent();
                             self.select_session_midi(track, scene, clip);
                         }
                     }
                     Some(None) => {
                         if self.focus_clip_details(window, cx) {
+                            self.advance_selection_intent();
                             self.select_session_cell(track, scene);
                         }
                     }
                     None => {
                         self.focus_track_details(window);
+                        self.advance_selection_intent();
                         self.select_session_cell(track, scene);
                     }
                 }
@@ -416,7 +426,7 @@ impl EditorView {
                     .iter()
                     .map(|track| {
                         let track_id = track.id();
-                        div()
+                        let header = div()
                             .id(("session-track", track.id().value()))
                             .debug_selector(move || format!("session-track-{}", track_id.value()))
                             .relative()
@@ -426,7 +436,10 @@ impl EditorView {
                                     .left_0()
                                     .right_0()
                                     .top_0()
-                                    .h(px(2.0))
+                                    .h(px(4.0))
+                                    .debug_selector(move || {
+                                        format!("session-track-color-strip-{}", track_id.value())
+                                    })
                                     .bg(rgb(theme::element_colors(track.color()).accent)),
                             )
                             .on_mouse_down(
@@ -465,7 +478,8 @@ impl EditorView {
                                 route_snapshot,
                                 routes_ready,
                                 transport_playing,
-                            ))
+                            ));
+                        self.device_drop_header(track_id, header, cx)
                     }),
             )
             .child(div().flex_1().min_w_0())
@@ -1016,6 +1030,7 @@ impl EditorView {
                                         && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
+                                        view.advance_selection_intent();
                                         view.select_session_cell(track_id, scene_id);
                                         view.selected_track = Some(track_id);
                                         view.selected_clip = Some(clip_id);
@@ -1028,7 +1043,10 @@ impl EditorView {
                                     }
                                     cx.notify();
                                 }),
-                            ),
+                            )
+                            .debug_selector(move || {
+                                format!("launch-midi-{}-{}", track_id.value(), scene_id.value())
+                            }),
                         )
                         .children(route_markers.into_iter().flatten().map(|marker| {
                             self.route_marker(
@@ -1048,6 +1066,7 @@ impl EditorView {
                                 && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_midi(track_id, scene_id, clip_id);
                             }
                             cx.notify();
@@ -1107,6 +1126,7 @@ impl EditorView {
                                         && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
+                                        view.advance_selection_intent();
                                         view.select_session_cell(track_id, scene_id);
                                         view.launch_clip(
                                             track_id,
@@ -1137,6 +1157,7 @@ impl EditorView {
                                 && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                             }
                             cx.notify();
@@ -1157,6 +1178,7 @@ impl EditorView {
                             {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                                 view.queue_session_command(
                                     with_quantization(
@@ -1186,6 +1208,7 @@ impl EditorView {
                             {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                             }
                             cx.notify();
@@ -1247,6 +1270,7 @@ impl EditorView {
                             && view.focus_empty_details(window, cx)
                         {
                             view.focus.focus(window);
+                            view.advance_selection_intent();
                             view.select_session_scene(scene_id);
                         }
                         cx.notify();
@@ -1261,6 +1285,7 @@ impl EditorView {
                         && view.focus_empty_details(window, cx)
                     {
                         view.focus.focus(window);
+                        view.advance_selection_intent();
                         view.select_session_scene(scene_id);
                         view.launch_scene(scene_id, revision, view.session_quantization);
                     }
@@ -1370,25 +1395,20 @@ impl EditorView {
         id: impl Into<ElementId>,
         listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        div()
+        let icon = hex_widgets::action(theme::text(glyph), theme::action_style())
             .id(id)
             .size(px(23.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
             .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: label.into(),
                 })
                 .into()
             })
-            .child(theme::text(glyph))
-            .on_click(listener)
+            .on_click(listener);
+        #[cfg(feature = "ui-test-support")]
+        let icon = icon.debug_selector(move || label.into());
+        icon
     }
 
     fn route_entry_for_track(
@@ -1489,6 +1509,9 @@ impl EditorView {
     }
 
     pub(super) fn select_session_midi(&mut self, track: TrackId, scene: SceneId, clip: ClipId) {
+        if self.detail_clip_id() != Some(clip) {
+            self.zoom_fit.clear_clip();
+        }
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {
@@ -1517,6 +1540,7 @@ impl EditorView {
     }
 
     pub(super) fn select_session_scene(&mut self, scene: SceneId) {
+        self.zoom_fit.clear_clip();
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {
@@ -1544,6 +1568,9 @@ impl EditorView {
     }
 
     pub(super) fn select_session_cell(&mut self, track: TrackId, scene: SceneId) {
+        if self.selected_cell != Some((track, scene)) {
+            self.zoom_fit.clear_clip();
+        }
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {

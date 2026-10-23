@@ -139,7 +139,7 @@ fn presentation(
     }
 }
 impl EditorView {
-    pub(super) fn gain_numeric_editing(&self, cx: &Context<Self>) -> bool {
+    pub(super) fn gain_numeric_editing(&self, cx: &gpui::App) -> bool {
         self.gain_recorder.numeric_editing(cx)
             || self
                 .gain_lane
@@ -384,6 +384,7 @@ impl EditorView {
                 return false;
             };
             GainPoint {
+                incoming_gain: None,
                 beat,
                 gain: pointer_gain(rect, pos[1]),
                 outgoing: hex_project::GainInterpolation::Linear,

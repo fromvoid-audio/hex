@@ -18,8 +18,11 @@ fn fixture(
 ) -> (Project, hex_project::ClipId) {
     let mut e = Editor::new(Project::new(48000).unwrap(), 32).unwrap();
     let Created::Track(track) = e
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "tuned".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     else {

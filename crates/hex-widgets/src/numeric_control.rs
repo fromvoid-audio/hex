@@ -59,6 +59,27 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new("down", NumericDown, Some("hex_numeric_control")),
         KeyBinding::new("shift-up", NumericUpFine, Some("hex_numeric_control")),
         KeyBinding::new("shift-down", NumericDownFine, Some("hex_numeric_control")),
+        // Only owners that opt in use Command for fine steps, including drafts.
+        KeyBinding::new(
+            "cmd-up",
+            NumericUpFine,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
+        KeyBinding::new(
+            "cmd-down",
+            NumericDownFine,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
+        KeyBinding::new(
+            "shift-up",
+            NumericUp,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
+        KeyBinding::new(
+            "shift-down",
+            NumericDown,
+            Some("hex_numeric_control && hex_numeric_command_steps"),
+        ),
     ]);
 }
 
@@ -67,6 +88,15 @@ pub enum NumericControlKind {
     Knob,
     HorizontalSlider,
     VerticalSlider,
+}
+
+/// Per-instance pointer direction, independent of visual slider geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericDragAxis {
+    /// Moving right increases the value.
+    Horizontal,
+    /// Moving upward increases the value.
+    Vertical,
 }
 
 /// Presentation-only geometry that keeps the same shared edit entity and events.
@@ -81,6 +111,9 @@ pub enum NumericControlAppearance {
     InlineValue,
     /// A rail and editable readout for a compact mixer/header row.
     CompactSlider,
+    /// One filled mixer field with centered editable text and default horizontal scrubbing.
+    /// Bipolar specs fill from the marked center; other scales fill from the left.
+    FilledSlider,
     DeviceMeters,
 }
 
@@ -122,6 +155,9 @@ pub struct NumericControlConfig {
     style: ControlStyle,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    drag_axis: Option<NumericDragAxis>,
+    command_fine_steps: bool,
+    value_drag_steps: bool,
 }
 
 impl NumericControlConfig {
@@ -146,7 +182,28 @@ impl NumericControlConfig {
             style,
             appearance: NumericControlAppearance::Standard,
             dial_layout: DialLayout::ReadoutGap,
+            drag_axis: None,
+            command_fine_steps: false,
+            value_drag_steps: false,
         })
+    }
+
+    /// Opt into continuous value-readout scrubbing in explicit units per pixel.
+    /// Keyboard uses the same steps; rails and default controls are unchanged.
+    pub fn with_value_drag_steps(mut self, coarse: f64, fine: f64) -> Result<Self, NumericError> {
+        if self.spec.integer_values() {
+            return Err(NumericError::InvalidScale);
+        }
+        self.spec = self.spec.with_keyboard_steps(coarse, fine)?;
+        self.value_drag_steps = true;
+        Ok(self)
+    }
+
+    /// Opt into Command-fine arrow steps and stepping a valid local text draft.
+    /// Shift remains coarse; other controls keep their existing Shift-fine policy.
+    pub fn with_command_fine_steps(mut self) -> Self {
+        self.command_fine_steps = true;
+        self
     }
 
     /// Select rail geometry from caller-owned control semantics, never density.
@@ -157,6 +214,13 @@ impl NumericControlConfig {
 
     pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
         self.appearance = appearance;
+        self
+    }
+
+    /// Override pointer scrubbing only; keyboard, capture and geometry stay shared.
+    /// Without an override the existing kind/readout convention is preserved.
+    pub fn with_drag_axis(mut self, axis: NumericDragAxis) -> Self {
+        self.drag_axis = Some(axis);
         self
     }
 }
@@ -172,11 +236,22 @@ struct Press {
     origin: Point<Pixels>,
     last_position: Point<Pixels>,
     start_value: f64,
+    // Pointer position, not an authored/draft value. Retains sub-frame motion
+    // between integer grid crossings without emitting a fractional value.
+    integer_pointer_position: Option<f64>,
+    unit_pointer_value: f64,
     target: PressTarget,
     dragging: bool,
 }
 
 /// One reusable knob/slider and its independently editable numeric value.
+#[derive(Clone, Copy)]
+struct TextMouseSelection {
+    anchor: usize,
+    origin: Point<Pixels>,
+    dragging: bool,
+}
+
 pub struct NumericControl {
     accessibility_binding: Option<gpui::AccessibilityBinding>,
     accessibility_pending: bool,
@@ -188,6 +263,7 @@ pub struct NumericControl {
     pub(crate) value: f64,
     pub(crate) draft: f64,
     enabled: bool,
+    commit_unchanged_text: bool,
     pub(crate) editing: bool,
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
@@ -199,12 +275,17 @@ pub struct NumericControl {
     pub(crate) last_bounds: Option<Bounds<Pixels>>,
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
+    text_mouse: Option<TextMouseSelection>,
+    pub(crate) text_click: crate::TextClickSelection,
     pub(crate) style: ControlStyle,
     meter_readout: crate::DeviceMeterReadout,
     inline_value_width: Option<f32>,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    drag_axis: Option<NumericDragAxis>,
     tab_navigation: bool,
+    command_fine_steps: bool,
+    value_drag_steps: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -269,6 +350,9 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            drag_axis,
+            command_fine_steps,
+            value_drag_steps,
         } = config;
         Self {
             accessibility_binding: None,
@@ -281,6 +365,7 @@ impl NumericControl {
             value,
             draft: value,
             enabled: true,
+            commit_unchanged_text: false,
             editing: false,
             text_modified: false,
             invalid_text: false,
@@ -292,12 +377,17 @@ impl NumericControl {
             last_bounds: None,
             last_origin_x: None,
             press: None,
+            text_mouse: None,
+            text_click: crate::TextClickSelection::default(),
             style,
             appearance,
             dial_layout,
+            drag_axis,
             meter_readout: Default::default(),
             inline_value_width: None,
             tab_navigation: false,
+            command_fine_steps,
+            value_drag_steps,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -391,6 +481,13 @@ impl NumericControl {
         }
     }
 
+    /// Opt into a Commit for explicitly modified, accepted text even when its
+    /// number is unchanged. This serves semantic owners such as replacing a
+    /// tempo map. Defaults off; cancellation and untouched text never commit.
+    pub fn set_commit_unchanged_text(&mut self, enabled: bool) {
+        self.commit_unchanged_text = enabled;
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled == enabled {
             return;
@@ -408,6 +505,8 @@ impl NumericControl {
 
     /// Call before removing an active control so its caller can cancel the edit.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         if let Some(press) = self.press.take() {
             if press.dragging {
                 self.value = press.start_value;
@@ -446,6 +545,8 @@ impl NumericControl {
             origin: event.position,
             last_position: event.position,
             start_value: self.draft,
+            integer_pointer_position: None,
+            unit_pointer_value: self.draft,
             target,
             dragging: false,
         });
@@ -453,6 +554,8 @@ impl NumericControl {
     }
 
     fn reset(&mut self, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         let start = self.draft;
         let value = self.spec.default();
         // Reset finishes the local edit even when the value is already at its
@@ -540,12 +643,79 @@ impl NumericControl {
             })
     }
 
+    fn text_index_for_point(&self, at: Point<Pixels>) -> usize {
+        let (Some(bounds), Some(line)) = (self.last_bounds, self.last_layout.as_ref()) else {
+            return 0;
+        };
+        if at.y < bounds.top() {
+            return 0;
+        }
+        if at.y > bounds.bottom() {
+            return self.text.len();
+        }
+        let shaped = line.closest_index_for_x(at.x - self.last_origin_x.unwrap_or(bounds.left()));
+        self.style.text_case.source_offset(&self.text, shaped)
+    }
+
     fn value_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.enabled {
+            return;
+        }
+        let focused = self.focus.is_focused(window);
+        if !focused || event.modifiers.shift {
+            self.text_click.clear();
+        }
+        let mut gesture = self.text_click;
+        let toggle = (!event.modifiers.shift)
+            .then(|| {
+                gesture.selection_for_down(
+                    event.click_count,
+                    focused
+                        && self.editing
+                        && !self.text.is_empty()
+                        && self.selected == (0..self.text.len()),
+                )
+            })
+            .flatten();
+        if self.editing {
+            let offset = self.text_index_for_point(event.position);
+            let anchor = if event.modifiers.shift && focused {
+                if self.reversed {
+                    self.selected.end
+                } else {
+                    self.selected.start
+                }
+            } else {
+                offset
+            };
+            self.marked = None;
+            if !focused || toggle == Some(true) {
+                self.selected = 0..self.text.len();
+                self.reversed = false;
+            } else if event.modifiers.shift {
+                self.select_to(offset);
+            } else {
+                self.move_to(offset);
+            }
+            self.press = None;
+            self.text_mouse = Some(TextMouseSelection {
+                anchor,
+                origin: event.position,
+                dragging: false,
+            });
+            self.text_click = gesture;
+            self.focus.focus(window);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        self.text_mouse = None;
+        self.text_click = gesture;
         self.begin_press(PressTarget::Value, event, cx);
         self.focus.focus(window);
     }
@@ -556,11 +726,40 @@ impl NumericControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.text_mouse = None;
+        self.text_click.clear();
         self.begin_press(PressTarget::Control, event, cx);
         self.focus.focus(window);
     }
 
     fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> (bool, bool) {
+        if let Some(mut selection) = self.text_mouse {
+            if !self.editing || event.pressed_button != Some(MouseButton::Left) {
+                self.text_mouse = None;
+                self.text_click.clear();
+                return (true, false);
+            }
+            if !selection.dragging
+                && f32::from(event.position.x - selection.origin.x)
+                    .hypot(f32::from(event.position.y - selection.origin.y))
+                    < 2.0
+            {
+                return (true, false);
+            }
+            selection.dragging = true;
+            self.text_mouse = Some(selection);
+            self.text_click.clear();
+            let offset = self.text_index_for_point(event.position);
+            let selected = selection.anchor.min(offset)..selection.anchor.max(offset);
+            let reversed = offset < selection.anchor;
+            let changed = self.selected != selected || self.reversed != reversed;
+            self.selected = selected;
+            self.reversed = reversed;
+            if changed {
+                cx.notify();
+            }
+            return (true, changed);
+        }
         let Some(mut press) = self.press else {
             return (false, false);
         };
@@ -602,20 +801,56 @@ impl NumericControl {
         press.last_position = event.position;
         self.press = Some(press);
         let shift = event.modifiers.shift;
-        let primary_delta = match (press.target, self.kind) {
-            (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
-            // Rectangular readouts always scrub vertically, independent of the
-            // track/dial presentation their owner uses.
-            _ => -delta_y,
+        let primary_delta = match self.drag_axis {
+            Some(NumericDragAxis::Horizontal) => delta_x,
+            Some(NumericDragAxis::Vertical) => -delta_y,
+            None => match (press.target, self.kind) {
+                (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
+                (PressTarget::Value, NumericControlKind::HorizontalSlider)
+                    if self.appearance == NumericControlAppearance::FilledSlider =>
+                {
+                    delta_x
+                }
+                // Other rectangular readouts scrub vertically, independent of the
+                // track/dial presentation their owner uses.
+                _ => -delta_y,
+            },
         };
         if primary_delta == 0.0 {
             return (true, false);
         }
         let sensitivity = if shift { 1200.0 } else { 120.0 };
-        let next = match self
-            .spec
-            .adjust(self.draft, f64::from(primary_delta) / sensitivity)
-        {
+        let delta = f64::from(primary_delta) / sensitivity;
+        let adjusted = if self.value_drag_steps && matches!(press.target, PressTarget::Value) {
+            // Accumulate each movement with its current modifier, preserving
+            // fractional motion. Clamping here prevents overshoot debt.
+            match self
+                .spec
+                .step(press.unit_pointer_value, f64::from(primary_delta), shift)
+            {
+                Ok(value) => {
+                    press.unit_pointer_value = value;
+                    self.press = Some(press);
+                    Ok(value)
+                }
+                Err(error) => Err(error),
+            }
+        } else if self.spec.integer_values() {
+            let position = match press.integer_pointer_position {
+                Some(position) => position,
+                None => match self.spec.to_normalized(press.start_value) {
+                    Ok(position) => position,
+                    Err(_) => return (true, false),
+                },
+            };
+            let position = (position + delta).clamp(0.0, 1.0);
+            press.integer_pointer_position = Some(position);
+            self.press = Some(press);
+            self.spec.from_normalized(position)
+        } else {
+            self.spec.adjust(self.draft, delta)
+        };
+        let next = match adjusted {
             Ok(value) => value,
             Err(_) => return (true, false),
         };
@@ -643,6 +878,10 @@ impl NumericControl {
     ) -> bool {
         if event.button != MouseButton::Left {
             return false;
+        }
+        if self.text_mouse.take().is_some() {
+            cx.notify();
+            return true;
         }
         let Some(press) = self.press.take() else {
             return false;
@@ -673,7 +912,26 @@ impl NumericControl {
     }
 
     fn emit_step(&mut self, direction: f64, fine: bool, cx: &mut Context<Self>) {
-        if !self.enabled || self.editing {
+        if !self.enabled {
+            return;
+        }
+        if self.editing {
+            // A composing or invalid draft must never be replaced with the old
+            // canonical value. Stepping remains local until Enter/blur commits.
+            if !self.command_fine_steps || self.marked.is_some() {
+                return;
+            }
+            if let Ok(current) = self.spec.parse(&self.text)
+                && let Ok(value) = self.spec.step(current, direction, fine)
+                && let Ok(text) = self.spec.format(value)
+            {
+                self.text = text;
+                self.text_modified = true;
+                self.invalid_text = false;
+                self.selected = 0..self.text.len();
+                self.reversed = false;
+                cx.notify();
+            }
             return;
         }
         if let Ok(value) = self.spec.step(self.draft, direction, fine) {
@@ -747,6 +1005,8 @@ impl NumericControl {
     }
 
     fn enter(&mut self, _: &NumericEnter, _: &mut Window, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         cx.stop_propagation();
         if !self.editing {
             return;
@@ -769,6 +1029,11 @@ impl NumericControl {
                         phase: NumericEventPhase::Commit,
                         value,
                     });
+                } else if self.commit_unchanged_text && self.text_modified {
+                    cx.emit(NumericControlEvent {
+                        phase: NumericEventPhase::Commit,
+                        value,
+                    });
                 }
                 self.text = self.spec.format(value).unwrap_or_default();
                 self.editing = false;
@@ -787,6 +1052,8 @@ impl NumericControl {
     /// owner hides or removes the control. Invalid text remains visible and
     /// editing so the owner can refuse that lifecycle change.
     pub fn finish_edit(&mut self, cx: &mut Context<Self>) -> Result<(), NumericError> {
+        self.text_mouse = None;
+        self.text_click.clear();
         if let Some(press) = self.press.take() {
             if press.dragging {
                 cx.emit(NumericControlEvent {
@@ -819,6 +1086,11 @@ impl NumericControl {
                 phase: NumericEventPhase::Change,
                 value,
             });
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value,
+            });
+        } else if self.commit_unchanged_text && self.text_modified {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
@@ -892,6 +1164,8 @@ impl NumericControl {
         finalized: NumericControlFinalValue,
         cx: &mut Context<Self>,
     ) {
+        self.text_mouse = None;
+        self.text_click.clear();
         if let Some(press) = self.press.take() {
             if press.dragging {
                 self.value = finalized.value;
@@ -925,6 +1199,8 @@ impl NumericControl {
     }
 
     fn escape(&mut self, _: &NumericEscape, _: &mut Window, cx: &mut Context<Self>) {
+        self.text_mouse = None;
+        self.text_click.clear();
         if self.press.is_some() {
             self.cancel(cx);
         } else if self.editing {
@@ -968,6 +1244,7 @@ impl NumericControl {
     }
 
     fn select_all(&mut self, _: &NumericSelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.invalidate_text_pointer_selection();
         cx.stop_propagation();
         if self.editing {
             self.selected = 0..self.text.len();
@@ -1069,13 +1346,20 @@ impl NumericControl {
         }
     }
 
+    pub(crate) fn invalidate_text_pointer_selection(&mut self) {
+        self.text_mouse = None;
+        self.text_click.clear();
+    }
+
     pub(crate) fn move_to(&mut self, offset: usize) {
+        self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         self.selected = offset..offset;
         self.reversed = false;
     }
 
     pub(crate) fn select_to(&mut self, offset: usize) {
+        self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         if self.reversed {
             self.selected.start = offset;
@@ -1138,10 +1422,11 @@ impl gpui::Render for NumericControl {
         }
         // A text draft owns printable keys even beneath editor shortcut contexts.
         // Keep numeric editing actions available in the same focused node.
-        let key_context = if self.editing {
-            "hex_numeric_control hex_text_editing"
-        } else {
-            "hex_numeric_control"
+        let key_context = match (self.editing, self.command_fine_steps) {
+            (true, true) => "hex_numeric_control hex_text_editing hex_numeric_command_steps",
+            (false, true) => "hex_numeric_control hex_numeric_command_steps",
+            (true, false) => "hex_numeric_control hex_text_editing",
+            (false, false) => "hex_numeric_control",
         };
         let entity = cx.entity();
         let enabled = self.enabled;
@@ -1350,6 +1635,72 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::FilledSlider) => {
+                let bipolar = self.spec.scale() == crate::NumericScale::Bipolar;
+                let origin = if bipolar { 0.5 } else { 0.0 };
+                let fill_id = format!("{}-bar-fill", self.id);
+                let center_id = format!("{}-bar-center", self.id);
+                let slider_id = format!("{}-slider", self.id);
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .w_full()
+                    .min_w(px(60.0))
+                    .h(px(18.0))
+                    .track_focus(&self.focus)
+                    .key_context(key_context)
+                    .child(
+                        div()
+                            .debug_selector(move || slider_id.clone())
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .rounded(px(crate::CONTROL_CORNER_RADIUS))
+                            .bg(rgb(style.rail))
+                            .child(
+                                div()
+                                    .debug_selector(move || fill_id.clone())
+                                    .absolute()
+                                    .left(relative(value.min(origin)))
+                                    .w(relative((value - origin).abs()))
+                                    .h_full()
+                                    .bg(rgb(if enabled { style.accent } else { style.muted }))
+                                    .opacity(0.35),
+                            )
+                            .when(bipolar, |bar| {
+                                bar.child(
+                                    div()
+                                        .debug_selector(move || center_id.clone())
+                                        .absolute()
+                                        .left(relative(0.5))
+                                        .w(px(1.0))
+                                        .h_full()
+                                        .bg(rgb(style.muted))
+                                        .opacity(0.6),
+                                )
+                            })
+                            .child(
+                                value_field_sized(
+                                    self.id.clone(),
+                                    value_text,
+                                    ValueFieldPresentation {
+                                        invalid: self.invalid_text,
+                                        editing: self.editing,
+                                        enabled,
+                                        style,
+                                        width: px(60.0),
+                                        height: px(18.0),
+                                    },
+                                    self.value_mouse_down_listener(cx),
+                                )
+                                .relative()
+                                .w_full()
+                                .h_full(),
+                            ),
+                    )
+            }
             (NumericControlKind::HorizontalSlider, NumericControlAppearance::CompactSlider) => {
                 div()
                     .id(self.id.clone())
@@ -1576,7 +1927,7 @@ impl gpui::Render for NumericControl {
                 })
                 .unwrap_or(false)
         });
-        if self.press.is_some() {
+        if self.press.is_some() || self.text_mouse.is_some() {
             root.child(GestureCaptureElement {
                 move_entity: entity.clone(),
                 up_entity: entity,
@@ -1729,7 +2080,7 @@ fn value_field_sized(
     child: NumericTextElement,
     presentation: ValueFieldPresentation,
     on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::Stateful<gpui::Div> {
     let ValueFieldPresentation {
         invalid,
         editing,
