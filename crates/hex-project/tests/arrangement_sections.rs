@@ -707,7 +707,7 @@ fn start_growth_inserts_prefix_and_keeps_the_section_start_fixed() {
     assert_eq!((clips[0].start(), clips[0].duration()), (0, 8_000));
     assert_eq!((clips[1].start(), clips[1].duration()), (16_000, 40_000));
     assert_eq!(clips[0].source_phase(), 173);
-    assert_eq!(clips[1].source_phase(), (173 + 8_000) % 48_000);
+    assert_eq!(clips[1].source_phase(), 8_173);
     // A MIDI gate crossing the inserted boundary is split at the seam; later
     // events retain their source phase and move by exactly two beats.
     let all_events = events(e.project());
@@ -813,7 +813,7 @@ fn deleting_a_section_removes_its_time_and_ripples_both_tracks_left() {
     assert_eq!((clips[0].start(), clips[0].duration()), (0, 8_000));
     assert_eq!((clips[1].start(), clips[1].duration()), (8_000, 32_000));
     assert_eq!(clips[0].source_phase(), 173);
-    assert_eq!(clips[1].source_phase(), (173 + 16_000) % 48_000);
+    assert_eq!(clips[1].source_phase(), 16_173);
     let seam = e.project().track(audio_track).unwrap().gain_lane().base()[1];
     assert_eq!(seam.beat, b(2));
     assert_eq!(seam.incoming_gain, Some(0.6));

@@ -564,7 +564,9 @@ impl EditorView {
                 }
             }
             Mode::RippleStart(id) | Mode::RippleEnd(id) => {
-                if let Some(marker) = &g.original {
+                if (x - g.anchor_x).abs() >= 4.0
+                    && let Some(marker) = &g.original
+                {
                     let edge = if matches!(g.mode, Mode::RippleStart(_)) {
                         hex_project::TrimEdge::Left
                     } else {
@@ -1889,6 +1891,40 @@ mod tests {
             let mut actual = v.state.as_ref().unwrap().project.snapshot();
             actual.next_id = before.next_id;
             assert_eq!(actual, before);
+        });
+    }
+    #[gpui::test]
+    fn stationary_non_grid_ripple_edge_click_does_not_change_music(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(cx, |v, cx| {
+            v.service
+                .submit(Request::EditArrangementSection {
+                    project_generation: v.project_generation,
+                    revision: v.state.as_ref().unwrap().revision,
+                    command: Command::SetArrangementSectionRange {
+                        section: ids[0],
+                        start: BeatTime::ZERO,
+                        end: BeatTime::from_ratio(19, 5).unwrap(),
+                    },
+                })
+                .unwrap();
+            let event = next(&v.service);
+            assert!(event.error.is_none());
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let edge = bounds(&mut visual, 0);
+        let down = point(
+            edge.origin.x + edge.size.width - px(1.0),
+            edge.origin.y + px(12.0),
+        );
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.pending.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
         });
     }
     #[gpui::test]

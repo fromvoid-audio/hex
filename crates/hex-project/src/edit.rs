@@ -2613,6 +2613,21 @@ impl Project {
     }
 }
 
+impl Command {
+    /// Structural section edits use stopped resident preparation/publication.
+    /// Metadata edits and marker merging do not alter musical material.
+    pub fn requires_stopped_section_edit(&self) -> bool {
+        matches!(
+            self,
+            Self::ReorderSectionBefore { .. }
+                | Self::ReorderSectionAfter { .. }
+                | Self::ResizeArrangementSection { .. }
+                | Self::DeleteArrangementSection(_)
+                | Self::DuplicateArrangementSection(_)
+        )
+    }
+}
+
 #[cfg(test)]
 mod overwrite_tests {
     use super::{Command, Created, insert_track_before};
@@ -2776,18 +2791,3 @@ mod overwrite_tests {
 #[cfg(test)]
 #[path = "track_remove_tests.rs"]
 mod track_remove_tests;
-
-impl Command {
-    /// Structural section edits use stopped resident preparation/publication.
-    /// Metadata edits and marker merging do not alter musical material.
-    pub fn requires_stopped_section_edit(&self) -> bool {
-        matches!(
-            self,
-            Self::ReorderSectionBefore { .. }
-                | Self::ReorderSectionAfter { .. }
-                | Self::ResizeArrangementSection { .. }
-                | Self::DeleteArrangementSection(_)
-                | Self::DuplicateArrangementSection(_)
-        )
-    }
-}

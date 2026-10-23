@@ -463,9 +463,11 @@ fn apply_transform(
             let fragments = transform_audio(
                 clip,
                 transform,
-                start_frame,
-                end_frame,
-                frame_length,
+                &FrameSplice {
+                    start: start_frame,
+                    end: end_frame,
+                    length: frame_length,
+                },
                 &old_tempo,
                 &new_tempo,
                 &mut next_id,
@@ -574,9 +576,9 @@ fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, I
             );
         }
     }
-    if !points.contains_key(&0) {
-        points.insert(0, old.tempo_at(BeatTime::ZERO));
-    }
+    points
+        .entry(0)
+        .or_insert_with(|| old.tempo_at(BeatTime::ZERO));
     let result = points
         .into_iter()
         .map(|(beat, tempo)| TempoPoint::new(BeatTime::from_raw(beat), tempo))
@@ -655,9 +657,9 @@ fn transformed_meter(old: &MeterMap, transform: Transform) -> Result<MeterMap, I
             );
         }
     }
-    if !points.contains_key(&0) {
-        points.insert(0, old.meter_at(BeatTime::ZERO));
-    }
+    points
+        .entry(0)
+        .or_insert_with(|| old.meter_at(BeatTime::ZERO));
     MeterMap::new(
         points
             .into_iter()
@@ -683,16 +685,21 @@ fn transformed_loop(
     )?))
 }
 
+/// Insert uses a synthetic blank end; only removal/copy ends are source fences.
+struct FrameSplice {
+    start: u64,
+    end: u64,
+    length: u64,
+}
 fn transform_audio(
     original: &crate::Clip,
     transform: Transform,
-    start_frame: u64,
-    end_frame: u64,
-    frame_length: u64,
+    frames: &FrameSplice,
     old: &std::sync::Arc<TempoMap>,
     new: &TempoMap,
     next_id: &mut u64,
 ) -> Result<Vec<crate::Clip>, Invalid> {
+    let (start_frame, end_frame, frame_length) = (frames.start, frames.end, frames.length);
     let clip_end = original
         .start()
         .checked_add(original.duration())
