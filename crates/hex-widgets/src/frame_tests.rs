@@ -571,6 +571,8 @@ fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppC
         clicks: clicks.clone(),
     });
     let mut visual = VisualTestContext::from_window(*handle, cx);
+    // The simulated pointer starts at the origin, inside the first control.
+    visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());
     visual.run_until_parked();
     let scale = visual.update(|window, _| window.scale_factor());
     for (name, width, height) in [
