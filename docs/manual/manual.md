@@ -91,6 +91,14 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+right-click a clip to switch its visual flavor. **use accent flavor** gives the
+track's color a saturated fill; **use muted flavor** uses a pale tint. selection
+keeps its own outline in either flavor.
+
+right-click a track header or the track area and choose **insert track** or
+**insert return track**. return buses stay pinned above **main** in arrange;
+their headers provide volume, activation and removal controls.
+
 the lower detail area follows the selected clip or device. selecting another
 track can change the available controls. a pending edit or load may need to
 finish before another document operation is available; check the displayed status
@@ -103,7 +111,14 @@ transport and audible result; a selected item is not evidence that it is playing
 # find, preview and import audio
 
 open the browser with **command+option+b**. press **command+f** to search.
-use the browser's categories and locations to narrow the results.
+use the browser's categories and locations to narrow the results. when a search
+is entered, click **×** inside the field to clear it and type a replacement.
+clearing keeps the selected category or location.
+
+drag a folder from the browser results onto **places** to bookmark it. the
+folder stays in its original location; bookmarking keeps the current browser
+source and search. dragging the same folder again preserves its existing place
+and icon. press **escape** or drop outside places to cancel.
 
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's
@@ -145,8 +160,15 @@ or keyboard control as a complete live-performance workflow.
 
 select a track and its device to show the corresponding controls. the set of
 available controls depends on the device. use the visible parameter labels and
-readouts, and check the audio after changing a sound. a device that looks familiar
+readouts, and check the audio after changing a sound. drag an effect from the
+browser onto a track header in arrange or console to append it to that track.
+header drops accept an instrument only when its device chain is empty; an
+occupied instrument slot is preserved. a device that looks familiar
 does not imply complete compatibility with another application's device.
+
+click a device header to focus its card, then press **0** to toggle its bypass.
+this uses the same state as the header bypass control and supports undo/redo.
+while a parameter field or browser search has focus, **0** remains text input.
 
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual

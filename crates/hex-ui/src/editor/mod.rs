@@ -34,6 +34,8 @@ mod clip_selection;
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
+mod track_header;
+mod track_header_device_drop;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
@@ -718,6 +720,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
+    piano_pitch_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
@@ -765,7 +768,6 @@ pub(super) struct EditorView {
     pending_open_path: Option<std::path::PathBuf>,
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
-    pending_new_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
@@ -1230,6 +1232,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                let boundary_cancelled = device_panel::cancel_sampler_boundary(view);
                 let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
@@ -1252,12 +1255,18 @@ impl EditorView {
                     let _ = audio.control.audition_cancel();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
-                if browser_cancelled || midi_cancelled || scrub_cancelled || paint_cancelled {
+                if boundary_cancelled
+                    || browser_cancelled
+                    || midi_cancelled
+                    || scrub_cancelled
+                    || paint_cancelled
+                {
                     cx.notify();
                 }
             }
         });
         let window_bounds = cx.observe_window_bounds(window, |view, window, cx| {
+            device_panel::cancel_sampler_boundary(view);
             view.cancel_fade_gesture(cx);
             view.cancel_project_spectrum_resize(cx);
             if view.cancel_trim_gesture(cx) {
@@ -1351,6 +1360,7 @@ impl EditorView {
             midi_hover: None,
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
+            piano_pitch_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
@@ -1398,7 +1408,6 @@ impl EditorView {
             pending_open_path: None,
             pending_open_mode: None,
             requested_audio_mode: None,
-            pending_new_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
             pending_group_copy: None,
@@ -1880,13 +1889,13 @@ pub(crate) fn sampler_keyboard_fixture_status(
 ) -> Result<String, String> {
     window.read(cx, |view: gpui::Entity<EditorView>, cx| {
         let view = view.read(cx);
-        format!("enabled={} suspended={} target={:?} request={} input={} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={}",
+        format!("enabled={} suspended={} target={:?} request={} input={} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={} physical={} callback_refused={}",
             view.computer_keyboard.enabled, view.computer_keyboard.suspended,
             view.computer_keyboard.target,
             view.computer_keyboard.request_id,
             view.computer_keyboard.input.is_some(),
             view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
-            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.edit_pending(), view.error, view.selected_clip,view.midi_draw_mode,view.midi_stroke.is_some(),view.selected_clip.and_then(|id|view.state.as_ref()?.project.midi_source(id).map(|s|s.notes().len())),view.midi_selection.len(),view.worker_requests_pending)
+            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.edit_pending(), view.error, view.selected_clip,view.midi_draw_mode,view.midi_stroke.is_some(),view.selected_clip.and_then(|id|view.state.as_ref()?.project.midi_source(id).map(|s|s.notes().len())),view.midi_selection.len(),view.worker_requests_pending,view.computer_keyboard.physical_notes().count(),view.computer_keyboard.input.as_ref().is_some_and(|input|input.rejected()))
     }).map_err(|e| e.to_string())
 }
 

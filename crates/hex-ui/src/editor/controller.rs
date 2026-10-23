@@ -982,6 +982,12 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if self.cancel_new_preparation() {
+                        visible_change |= replace_error(
+                            &mut self.error,
+                            "project worker stopped · new project cancelled",
+                        );
+                    }
                     self.pending_created_note_selection = None;
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
@@ -1102,6 +1108,7 @@ impl EditorView {
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        self.cancel_new_preparation();
                         if time_copy_request {
                             self.pending_created_note_selection = None;
                         }
@@ -1891,6 +1898,9 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        if event.request_complete && event.error.is_some() {
+            self.cancel_new_preparation();
+        }
         self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
@@ -1998,7 +2008,6 @@ impl EditorView {
             self.opening_project = false;
             self.pending_open_path = None;
             self.pending_open_mode = None;
-            self.pending_new_mode = None;
             self.duplicate_intent.cancel_chain();
             if !event.project_replaced || event.error.is_some() {
                 self.requested_audio_mode = None;
@@ -2820,7 +2829,10 @@ impl EditorView {
                 Some((*project_generation, *revision, *clip, *to_audio));
         }
         #[cfg(test)]
-        if let Request::Edit(command) | Request::EditArrangementSection { command, .. } = &request {
+        if let Request::Edit(command)
+        | Request::EditArrangementSection { command, .. }
+        | Request::MoveExistingClips { command, .. } = &request
+        {
             self.last_enqueued_edit = Some(command.clone());
         }
         #[cfg(test)]
@@ -2961,6 +2973,7 @@ impl EditorView {
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::ReorderTrack { .. }
+                | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
                 | Request::ConvertClip { .. }

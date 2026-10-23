@@ -12,6 +12,10 @@ widgets = (
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Query clear-slot composition contains a themed action and native input semantics.
+    'self.clear_search_slot(',
+    # Header drop wrapper preserves the existing themed row and only refines drag paint.
+    'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
@@ -55,7 +59,7 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
-    'self.browser_history_arrow(',
+    'self.browser_history_arrow(', 'self.browser_reveal_button(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
@@ -79,7 +83,7 @@ widgets = (
     'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
     'super::waveform::timeline_waveform_view_cached(',
-    'source_adjust_button(', 'gain_adjust_button(',
+    'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',

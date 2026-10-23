@@ -766,7 +766,8 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
                 view.cancel_duplicate_chain();
-                if view.cancel_loop_rail_gesture()
+                if super::device_panel::cancel_sampler_boundary(view)
+                    | view.cancel_loop_rail_gesture()
                     | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
@@ -834,12 +835,16 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
-            .on_action(cx.listener(|view, _: &NewProject, _, cx| {
-                view.new_project(hex_session::DocumentAudioMode::Resident);
+            .on_action(cx.listener(|view, _: &NewProject, window, cx| {
+                view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &NewStreamingProject, _, cx| {
-                view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+            .on_action(cx.listener(|view, _: &NewStreamingProject, window, cx| {
+                view.new_project(
+                    hex_session::DocumentAudioMode::VerifiedStreaming,
+                    window,
+                    cx,
+                );
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &OpenProject, window, cx| {

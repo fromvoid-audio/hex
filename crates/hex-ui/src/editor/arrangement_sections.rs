@@ -2321,7 +2321,8 @@ mod tests {
             editor.update(cx, |v, cx| {
                 assert!(!v.finalize_section_name_for_open(window, cx));
                 assert!(v.sections.naming());
-                v.new_project(hex_session::DocumentAudioMode::Resident);
+                v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
+                assert!(!v.project_open.busy());
                 assert!(v.sections.naming());
                 assert!(!v.opening_project);
             })
