@@ -74,6 +74,18 @@ fn native_source() -> String {
             "macos_stream_case.hpp",
             include_bytes!("../../native/macos_stream_case.hpp"),
         ),
+        (
+            "macos_processing.hpp",
+            include_bytes!("../../native/macos_processing.hpp"),
+        ),
+        (
+            "macos_processing_fixture.cpp",
+            include_bytes!("../../native/macos_processing_fixture.cpp"),
+        ),
+        (
+            "macos_processing_case.hpp",
+            include_bytes!("../../native/macos_processing_case.hpp"),
+        ),
     ];
     let mut h = Sha256::new();
     for (name, bytes) in inputs {
