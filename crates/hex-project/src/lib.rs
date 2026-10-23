@@ -46,6 +46,7 @@ pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod clip_clipboard;
 mod clip_copy;
 mod clip_duplicate;
