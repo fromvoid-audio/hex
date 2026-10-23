@@ -79,7 +79,7 @@ impl DeviceFrameStyle {
 /// Caller-resolved text against both idle and hover backgrounds. No palette or
 /// contrast policy lives in the widget library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceActionStyle {
+pub struct ActionStyle {
     pub background: u32,
     pub text: u32,
     pub hover_background: u32,

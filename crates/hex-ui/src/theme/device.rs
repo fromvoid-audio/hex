@@ -1,6 +1,6 @@
 //! Product-owned device roles. Widgets receive resolved colors, never identities.
 use super::{PaletteRole, color, readable_text};
-use hex_widgets::{ControlStyle, DeviceActionStyle, DeviceFrameStyle};
+use hex_widgets::{ActionStyle, ControlStyle, DeviceFrameStyle};
 
 /// Visual purpose, independent of device type, layout and parameter identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,10 +138,7 @@ pub(crate) enum DeviceActionRole {
     Destructive,
 }
 
-pub(crate) fn device_header_action_style(
-    selected: bool,
-    role: DeviceActionRole,
-) -> DeviceActionStyle {
+pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole) -> ActionStyle {
     let layout = device_style(DeviceStyleRole::Layout);
     let background = if selected {
         layout.accent
@@ -154,7 +151,7 @@ pub(crate) fn device_header_action_style(
         DeviceActionRole::Destructive => PaletteRole::Primary,
     });
     let hover_background = color(PaletteRole::Hover);
-    DeviceActionStyle {
+    ActionStyle {
         background,
         text: readable_text(background, preferred),
         hover_background,
@@ -162,14 +159,14 @@ pub(crate) fn device_header_action_style(
     }
 }
 
-pub(crate) fn device_segment_style(selected: bool) -> DeviceActionStyle {
+pub(crate) fn device_segment_style(selected: bool) -> ActionStyle {
     let background = color(if selected {
         PaletteRole::Secondary
     } else {
         PaletteRole::Raised
     });
     let hover_background = color(PaletteRole::Hover);
-    DeviceActionStyle {
+    ActionStyle {
         background,
         text: readable_text(background, color(PaletteRole::Text)),
         hover_background,
@@ -214,6 +211,12 @@ mod action_tests {
             },
         ] {
             super::super::apply_preferences(palette);
+            let workspace = super::super::action_style();
+            assert!(super::super::contrast_ratio(workspace.background, workspace.text) >= 4.5);
+            assert!(
+                super::super::contrast_ratio(workspace.hover_background, workspace.hover_text)
+                    >= 4.5
+            );
             for selected in [false, true] {
                 for role in [
                     DeviceActionRole::Normal,

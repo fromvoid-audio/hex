@@ -1249,20 +1249,12 @@ impl super::EditorView {
         handler: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(description)
             .w(px(20.0))
             .h(px(19.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .opacity(if enabled { 1.0 } else { 0.45 })
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.into(),
@@ -1273,7 +1265,6 @@ impl super::EditorView {
                 handler(view, window, cx);
                 cx.notify();
             }))
-            .child(theme::text(label))
     }
 }
 

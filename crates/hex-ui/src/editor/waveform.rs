@@ -612,17 +612,11 @@ pub(super) fn button(
     tooltip: &'static str,
     id: (&'static str, u64),
 ) -> gpui::Stateful<Div> {
-    div()
+    hex_widgets::action(theme::text(label), theme::action_style())
         .id(id)
         .w(px(19.0))
         .h(px(21.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
@@ -630,7 +624,6 @@ pub(super) fn button(
             })
             .into()
         })
-        .child(theme::text(label))
 }
 
 pub(super) struct ClipTooltip {
