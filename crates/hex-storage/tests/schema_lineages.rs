@@ -86,7 +86,7 @@ fn original_alpha_lineages_and_other_versions_refuse_without_rewriting_input() {
         assert_eq!(original, before);
     }
     let current: Value = serde_json::from_slice(&encode(&fixture()).unwrap()).unwrap();
-    for version in (0..35).chain([36, u32::MAX]) {
+    for version in (0..36).chain([37, u32::MAX]) {
         let mut old = current.clone();
         old["version"] = version.into();
         assert!(

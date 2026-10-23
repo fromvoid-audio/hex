@@ -1,10 +1,10 @@
-//! Current schema35 requires tuning, original/device assets and every MIDI clip-volume row.
+//! Current schema36 requires tuning, original/device assets and every MIDI clip-volume row.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV35<'a> {
+pub(crate) struct DocumentV36<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
@@ -12,6 +12,7 @@ pub(crate) struct DocumentV35<'a> {
     asset_sources: super::original_sources::Manifest,
     device_assets: super::device_assets::Manifest,
     main_devices: Vec<super::DeviceDtoV14>,
+    arrangement_sections: super::arrangement_sections::Manifest,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -131,11 +132,12 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV35<'a> {
+impl<'a> DocumentV36<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
         let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
             base,
+            arrangement_sections: super::arrangement_sections::Manifest::from_project(project),
             tuning: project.tuning().into(),
             midi_clip_volumes: super::midi_clip_volume::Manifest::from_project(project)?,
             asset_sources: super::original_sources::Manifest::from_project(project),
@@ -158,9 +160,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(35) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(36) {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
+    let sections: super::arrangement_sections::Manifest =
+        serde_json::from_value(object.remove("arrangement_sections").ok_or(
+            StorageError::Invalid("arrangement section inventory is missing"),
+        )?)?;
     let volumes: super::midi_clip_volume::Manifest =
         serde_json::from_value(object.remove("midi_clip_volumes").ok_or(
             StorageError::Invalid("midi clip volume inventory is missing"),
@@ -188,6 +194,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
     snapshot.tuning = tuning;
+    snapshot.arrangement_sections = sections.into_sections()?;
     snapshot.main_devices = main
         .devices
         .into_iter()

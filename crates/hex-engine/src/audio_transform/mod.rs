@@ -1,4 +1,7 @@
 //! Control-owned immutable audio transformation, cache and retained PCM accounting.
+//! Structural relocation may freeze original tempo/root context independently of
+//! destination placement. Cache identity, mapping, fades and events all consume
+//! that retained processing law; a crop never restarts full-root analysis.
 mod budget;
 mod events;
 mod mapping;
@@ -410,12 +413,12 @@ impl AudioTransformPreparation {
         }
         let (_, length, _, _) = edit.projected_domain(project.tempo_map())?;
         let tempo = if edit.musical_start.is_some() {
-            Some(self.shared_tempo(project.tempo_map())?)
+            Some(self.shared_tempo(edit.processing_tempo(project.tempo_map()))?)
         } else {
             None
         };
         let origin = if edit.musical_start.is_some() {
-            edit.projection_origin()?
+            edit.processing_origin()?
         } else {
             0
         };

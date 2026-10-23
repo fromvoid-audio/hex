@@ -1902,3 +1902,301 @@ fn derived_pcm_ingress_refusal_keeps_its_actual_reservation_and_buffer() {
     drop(refused);
     assert_eq!(budget.used(), 0);
 }
+
+#[test]
+fn section_reorder_preserves_complete_processed_roots_pcm_across_fractional_tempo_prefixes_and_repeated_moves()
+ {
+    section_pcm_oracle(true, false);
+}
+#[test]
+fn section_reorder_preserves_cropped_event_roots_and_raw_loop_fades_sample_exactly() {
+    section_pcm_oracle(true, true);
+    section_pcm_oracle(false, false);
+}
+fn section_pcm_oracle(transformed: bool, cropped: bool) {
+    use hex_project::{ElementColor, TempoPoint};
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let (mut editor, clip, media) = fixture(true);
+    let mut snapshot = editor.project().snapshot();
+    let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    audio.duration = 96_000;
+    audio.fade = hex_project::ClipFade::new(96_000, 0, 997, 1601).unwrap();
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    if transformed {
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let warp = default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            WarpMode::Texture {
+                grain_ms: 40,
+                fluctuation: 60,
+                seed: 91,
+            },
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+    }
+    for point in [
+        TempoPoint::new(beat(0), Tempo::new(123_456_789).unwrap()),
+        TempoPoint::new(beat(3), Tempo::new(97_333_331).unwrap()),
+        TempoPoint::new(beat(6), Tempo::new(177_777_779).unwrap()),
+        TempoPoint::new(beat(9), Tempo::new(83_123_457).unwrap()),
+    ] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: point.beat(),
+                tempo: point.tempo(),
+            })
+            .unwrap();
+    }
+    if cropped {
+        // Edits refer to the same complete root; a moved visible crop must not
+        // restart analysis or reinterpret events using the new tempo outside it.
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::MoveRange {
+                    start: beat(1).raw(),
+                    end: beat(2).raw(),
+                    destination: beat(4).raw(),
+                },
+            })
+            .unwrap();
+        for (edge, at) in [
+            (hex_project::TrimEdge::Right, beat(6)),
+            (hex_project::TrimEdge::Left, beat(1)),
+        ] {
+            let frame = editor.project().tempo_map().beat_to_frame(at).unwrap();
+            editor
+                .execute(Command::TrimClipEdge { clip, edge, frame })
+                .unwrap();
+        }
+        assert!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .events
+                .is_some()
+        );
+    }
+    let mut add = |name: &str, start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: name.into(),
+                color: ElementColor::Cyan,
+                start: beat(start),
+                end: beat(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let a = add("intro", 2, 4);
+    let c = add("chorus", 7, 10);
+    let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
+    let length = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(beat(12))
+        .unwrap()
+        .max(
+            editor.project().clip(clip).unwrap().start()
+                + editor.project().clip(clip).unwrap().duration(),
+        ) as usize;
+    let mut expected = render(&prepare(&editor, &media, &context), 0, length, 127);
+    // Repeated permutations also split already frozen roots. Source samples
+    // remain exact; no crop is rendered against destination-only tempo context.
+    for (source, target) in [(c, a), (a, c), (c, a), (a, c)] {
+        let preview = editor
+            .project()
+            .preview_section_reorder(source, target)
+            .unwrap();
+        let map = editor.project().tempo_map();
+        let s = map.beat_to_frame(preview.source_start()).unwrap() as usize;
+        let e = map.beat_to_frame(preview.source_end()).unwrap() as usize;
+        let t = map.beat_to_frame(preview.insertion_beat()).unwrap() as usize;
+        let mut permuted = Vec::with_capacity(length);
+        if t < s {
+            permuted.extend_from_slice(&expected[..t]);
+            permuted.extend_from_slice(&expected[s..e]);
+            permuted.extend_from_slice(&expected[t..s]);
+            permuted.extend_from_slice(&expected[e..]);
+        } else {
+            permuted.extend_from_slice(&expected[..s]);
+            permuted.extend_from_slice(&expected[e..t]);
+            permuted.extend_from_slice(&expected[s..e]);
+            permuted.extend_from_slice(&expected[t..]);
+        }
+        editor
+            .execute(Command::ReorderSectionBefore {
+                section: source,
+                before: target,
+            })
+            .unwrap();
+        let actual = render(&prepare(&editor, &media, &context), 0, length, 251);
+        assert_eq!(
+            actual, permuted,
+            "complete frozen source PCM must survive section permutation"
+        );
+        expected = permuted;
+        let snapshot = editor.project().snapshot();
+        assert_eq!(
+            Project::from_snapshot(snapshot.clone()).unwrap().snapshot(),
+            snapshot
+        );
+    }
+    if transformed {
+        let before = editor.project().snapshot();
+        let undo = editor.can_undo();
+        assert!(
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: beat(0),
+                    tempo: Tempo::new(120_000_000).unwrap()
+                })
+                .unwrap_err()
+                .0
+                .contains("processing rebase")
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert_eq!(editor.can_undo(), undo);
+    }
+}
+
+#[test]
+fn section_reorder_prepares_sounding_cross_track_audio_and_loop_midi_with_boundary_retriggers() {
+    use hex_project::ElementColor;
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let (mut editor, clip, media) = fixture(true);
+    let mut snapshot = editor.project().snapshot();
+    let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    audio.duration = 96_000;
+    audio.fade = hex_project::ClipFade::neutral(96_000).unwrap();
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "melody".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(midi) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(0),
+            length: beat(12),
+        })
+        .unwrap()
+    else {
+        panic!("midi")
+    };
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: midi,
+            source_length: beat(3),
+            source_start: beat(0),
+            loop_start: beat(0),
+            loop_end: beat(3),
+            looping: true,
+            length: beat(12),
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip: midi,
+            start: BeatTime::from_ratio(1, 2).unwrap(),
+            duration: beat(2),
+            pitch: 69,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut add = |start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: "part".into(),
+                color: ElementColor::Blue,
+                start: beat(start),
+                end: beat(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let a = add(2, 4);
+    let c = add(7, 10);
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original = prepare(&editor, &media, &context);
+    assert_eq!(
+        original.midi_preview().get(midi).unwrap().occurrence_count,
+        4
+    );
+    editor
+        .execute(Command::ReorderSectionBefore {
+            section: c,
+            before: a,
+        })
+        .unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    let mut intervals = prepared
+        .midi_preview()
+        .clips()
+        .iter()
+        .flat_map(|clip| clip.samples.iter())
+        .map(|sample| (sample.frame_start, sample.frame_gate_end, sample.pitch))
+        .collect::<Vec<_>>();
+    intervals.sort();
+    let expected = [
+        (1, 4),
+        (4, 7),
+        (9, 10),
+        (10, 11),
+        (13, 17),
+        (19, 20),
+        (20, 23),
+    ]
+    .into_iter()
+    .map(|(s, e)| (s * 4_000, e * 4_000, 69))
+    .collect::<Vec<_>>();
+    assert_eq!(
+        intervals, expected,
+        "actual prepared MIDI must include each cut/retrigger, not just moved clip markers"
+    );
+    let mixed = render(&prepared, 0, 96_000, 127);
+    editor
+        .execute(Command::Mute { track, muted: true })
+        .unwrap();
+    let audio_only = render(&prepare(&editor, &media, &context), 0, 96_000, 251);
+    assert!(
+        mixed.iter().zip(&audio_only).any(|(a, b)| a != b),
+        "the MIDI track must actually sound alongside original source audio"
+    );
+    assert_eq!(
+        editor.project().tracks()[0]
+            .clips()
+            .iter()
+            .map(|c| c.duration())
+            .sum::<u64>(),
+        96_000
+    );
+    assert!(editor.project().clip(clip).is_some());
+}

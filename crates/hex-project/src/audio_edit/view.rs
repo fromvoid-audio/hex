@@ -142,7 +142,13 @@ impl<'a> AudioViewProjection<'a> {
                 Ok(position)
             }
         };
-        let outer_frames = (frame(start)?, frame(end)?);
+        let (start_offset, end_offset) = clip.audio_edit().map_or((0, 0), |edit| {
+            (edit.placement_start_offset, edit.placement_end_offset)
+        });
+        let outer_frames = (
+            super::offset_frame(frame(start)?, start_offset)?,
+            super::offset_frame(frame(end)?, end_offset)?,
+        );
         if outer_frames.0 >= outer_frames.1 {
             return Err(Invalid("audio outer placement has no frames"));
         }
@@ -186,7 +192,8 @@ impl<'a> AudioViewProjection<'a> {
     pub fn occurrence_count(&self) -> u64 {
         self.count
     }
-    /// Technical root origin in the declared domain clock, even for silence.
+    /// Technical placement origin in the declared domain clock, even for
+    /// silence. A retained occurrence may carry a separate processing origin.
     pub fn root_origin(&self) -> i128 {
         i128::from(self.start) - i128::from(self.view_start) - i128::from(self.phase)
     }
@@ -206,19 +213,6 @@ impl<'a> AudioViewProjection<'a> {
             .checked_mul(i128::from(self.cycle))
             .ok_or(Invalid("audio occurrence origin overflow"))?;
         let root_origin = self.root_origin() + offset;
-        let root_frame_origin = self.frame(root_origin)?;
-        let root_last = self.frame(
-            root_origin
-                .checked_add(i128::from(self.domain_length))
-                .ok_or(Invalid("audio root end overflow"))?,
-        )?;
-        let root_frame_length = u64::try_from(root_last - root_frame_origin)
-            .map_err(|_| Invalid("audio root frame span is invalid"))?;
-        if root_frame_length == 0 || root_frame_length > MAX_AUDIO_DOMAIN_FRAMES {
-            return Err(Invalid(
-                "full audio root exceeds its frame limit or is empty",
-            ));
-        }
         let begin = if index == 0 {
             i128::from(self.start)
         } else {
@@ -232,6 +226,63 @@ impl<'a> AudioViewProjection<'a> {
             .map_err(|_| Invalid("audio occurrence exceeds project frames"))?;
         if destination_start >= destination_end {
             return Err(Invalid("audio occurrence has no frames"));
+        }
+        if let Some(edit) = self.clip.audio_edit()
+            && edit.processing_projection.is_some()
+        {
+            let source_origin = edit
+                .processing_origin()?
+                .checked_add(offset)
+                .ok_or(Invalid("audio source occurrence origin overflow"))?;
+            let source_tempo = edit.processing_tempo(self.tempo);
+            let source_first = audio_projection_frame(source_tempo, source_origin)?;
+            let source_frame = |position: i128| -> Result<u64, Invalid> {
+                u64::try_from(
+                    audio_projection_frame(source_tempo, source_origin + position)? - source_first,
+                )
+                .map_err(|_| Invalid("audio retained occurrence frame overflow"))
+            };
+            let root_start = source_frame(begin - root_origin)?;
+            let root_end = source_frame(end - root_origin)?;
+            let root_frame_length = source_frame(i128::from(self.domain_length))?;
+            if root_start >= root_end
+                || root_end > root_frame_length
+                || root_frame_length > MAX_AUDIO_DOMAIN_FRAMES
+            {
+                return Err(Invalid(
+                    "audio retained occurrence exceeds its processing root",
+                ));
+            }
+            return Ok(AudioViewOccurrence {
+                root_origin: source_origin,
+                root_frame_origin: source_first,
+                root_frame_length,
+                root_start,
+                root_end,
+                destination_start: if index == 0 {
+                    self.outer_frames.0
+                } else {
+                    destination_start
+                },
+                destination_end: if index + 1 == self.count {
+                    self.outer_frames.1
+                } else {
+                    destination_end
+                },
+            });
+        }
+        let root_frame_origin = self.frame(root_origin)?;
+        let root_last = self.frame(
+            root_origin
+                .checked_add(i128::from(self.domain_length))
+                .ok_or(Invalid("audio root end overflow"))?,
+        )?;
+        let root_frame_length = u64::try_from(root_last - root_frame_origin)
+            .map_err(|_| Invalid("audio root frame span is invalid"))?;
+        if root_frame_length == 0 || root_frame_length > MAX_AUDIO_DOMAIN_FRAMES {
+            return Err(Invalid(
+                "full audio root exceeds its frame limit or is empty",
+            ));
         }
         let root_start = u64::try_from(i128::from(destination_start) - root_frame_origin)
             .map_err(|_| Invalid("audio occurrence starts outside root"))?;
@@ -284,6 +335,14 @@ pub fn preview_view_resize(
     tempo: &TempoMap,
     operation: AudioViewResizeOperation,
 ) -> Result<AudioViewResize, Invalid> {
+    if clip
+        .audio_edit()
+        .is_some_and(|edit| edit.processing_projection.is_some())
+    {
+        return Err(Invalid(
+            "outer audio view edits after section reorder require an unsupported processing rebase; undo the reorder first",
+        ));
+    }
     AudioViewProjection::new(clip, tempo)?;
     let (clock, view_start, mut view_end, musical_start, old) = clip.audio_edit().map_or(
         (

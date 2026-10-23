@@ -136,11 +136,13 @@ fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims()
         track: source,
         points: vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.25,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ONE,
                 gain: 0.75,
                 outgoing: GainInterpolation::Step,

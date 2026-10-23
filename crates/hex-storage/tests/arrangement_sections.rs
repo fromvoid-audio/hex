@@ -1,0 +1,174 @@
+use hex_project::{BeatTime, Command, Created, Editor, ElementColor, Project};
+use serde_json::json;
+fn b(n: u64) -> BeatTime {
+    BeatTime::from_quarters(n).unwrap()
+}
+fn fixture() -> Project {
+    let mut e = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Imported { track, clip, .. } = e
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "Original.wav".into(),
+            sample_rate: 8_000,
+            frames: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("audio")
+    };
+    e.execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    e.execute(Command::SetAudioClipMusical {
+        clip,
+        enabled: true,
+    })
+    .unwrap();
+    e.execute(Command::ReplaceTrackGainEnvelope {
+        track,
+        points: [(0, 0.2), (6, 1.7), (12, 0.4)]
+            .into_iter()
+            .map(|(beat, gain)| hex_project::GainPoint {
+                beat: b(beat),
+                gain,
+                incoming_gain: None,
+                outgoing: hex_project::GainInterpolation::Linear,
+            })
+            .collect(),
+    })
+    .unwrap();
+    let context = hex_project::GainTouchContext {
+        recording_epoch: 1,
+        project_generation: 0,
+        canonical_revision: 1,
+        audio_revision: 1,
+        transport_epoch: 1,
+        gesture_epoch: 1,
+        gesture_serial: 1,
+        sample_rate: 8_000,
+        loop_pass: 0,
+    };
+    e.execute(Command::SpliceGainTouch {
+        track,
+        expected_epoch: 0,
+        span: hex_project::GainTouchSpan {
+            source_start: b(1),
+            start: b(1),
+            end: b(9),
+            context,
+            steps: [(1, 0.8), (3, 0.5), (8, 1.1)]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (beat, gain))| hex_project::GainTouchStep {
+                    beat: b(beat),
+                    gain,
+                    origin_beat: b(beat),
+                    source_sequence: i as u64 + 1,
+                })
+                .collect(),
+        },
+    })
+    .unwrap();
+    let mut add = |name: &str, start, end| {
+        let Created::ArrangementSection(id) = e
+            .execute(Command::AddArrangementSection {
+                name: name.into(),
+                color: ElementColor::Rose,
+                start: b(start),
+                end: b(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let a = add("Introduction", 2, 4);
+    let c = add("Chorus", 7, 10);
+    e.execute(Command::ReorderSectionBefore {
+        section: c,
+        before: a,
+    })
+    .unwrap();
+    e.project().clone()
+}
+#[test]
+fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_and_automation() {
+    let project = fixture();
+    let bytes = hex_storage::encode(&project).unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(doc["version"], 36);
+    assert_eq!(doc["arrangement_sections"][0]["name"], "Chorus");
+    assert_eq!(doc["arrangement_sections"][0]["color"], "rose");
+    assert!(
+        doc["audio_clip_state"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| !row["audio_edit"]["processing_projection"].is_null())
+    );
+    assert!(
+        project.tracks()[0]
+            .gain_envelope()
+            .iter()
+            .any(|point| point.incoming_gain.is_some_and(|left| left != point.gain))
+    );
+    assert!(
+        project.tracks()[0]
+            .gain_lane()
+            .spans()
+            .windows(2)
+            .any(|pair| pair[0].source_start > pair[1].source_start)
+    );
+    assert_eq!(
+        hex_storage::decode(&bytes).unwrap().snapshot(),
+        project.snapshot()
+    );
+}
+#[test]
+fn malformed_missing_overlap_duplicate_ids_and_unbounded_residuals_are_refused() {
+    let project = fixture();
+    let base: serde_json::Value =
+        serde_json::from_slice(&hex_storage::encode(&project).unwrap()).unwrap();
+    let mut cases = Vec::new();
+    let mut missing = base.clone();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("arrangement_sections");
+    cases.push(missing);
+    for (field, value) in [
+        ("id", json!(0)),
+        ("color", json!("unknown")),
+        ("end_raw", json!(0)),
+        ("name", json!("")),
+    ] {
+        let mut doc = base.clone();
+        doc["arrangement_sections"][0][field] = value;
+        cases.push(doc);
+    }
+    let mut overlap = base.clone();
+    overlap["arrangement_sections"][1]["start_raw"] = json!(b(3).raw());
+    cases.push(overlap);
+    let mut duplicate = base.clone();
+    duplicate["arrangement_sections"][1]["id"] = duplicate["arrangement_sections"][0]["id"].clone();
+    cases.push(duplicate);
+    let mut residual = base.clone();
+    residual["audio_clip_state"][0]["audio_edit"]["placement_start_offset"] = json!(2);
+    cases.push(residual);
+    let mut missing_projection = base.clone();
+    missing_projection["audio_clip_state"][0]["audio_edit"]
+        .as_object_mut()
+        .unwrap()
+        .remove("processing_projection");
+    cases.push(missing_projection);
+    let mut wrong_processing = base.clone();
+    wrong_processing["audio_clip_state"][0]["audio_edit"]["processing_projection"]["tempo_points"]
+        [0]["micro_bpm"] = json!(240_000_000);
+    cases.push(wrong_processing);
+    for doc in cases {
+        assert!(
+            hex_storage::decode(&serde_json::to_vec(&doc).unwrap()).is_err(),
+            "{doc}"
+        );
+    }
+}

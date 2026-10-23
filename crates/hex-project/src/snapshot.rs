@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
@@ -216,6 +217,11 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            arrangement_sections: self
+                .arrangement_sections
+                .iter()
+                .map(crate::ArrangementSectionSnapshot::from)
+                .collect(),
             tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
@@ -495,6 +501,16 @@ impl Project {
 
         let mut ids = BTreeSet::new();
         let mut max_id = 0_u64;
+        if snapshot.arrangement_sections.len() > crate::MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("arrangement section limit reached"));
+        }
+        for section in snapshot.arrangement_sections {
+            insert_id(section.id, &mut ids, &mut max_id)?;
+            project
+                .arrangement_sections
+                .push(crate::arrangement_sections::from_snapshot(section)?);
+        }
+        crate::arrangement_sections::validate(&project.arrangement_sections, project.tempo_map())?;
         let mut assets = BTreeMap::new();
         for asset in snapshot.assets {
             insert_id(asset.id, &mut ids, &mut max_id)?;

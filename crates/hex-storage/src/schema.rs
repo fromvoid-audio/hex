@@ -1,4 +1,5 @@
 pub(crate) mod appearance;
+mod arrangement_sections;
 pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
@@ -1258,6 +1259,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1296,6 +1298,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1334,6 +1337,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1379,6 +1383,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1424,6 +1429,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1469,6 +1475,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1514,6 +1521,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1577,6 +1585,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2013,6 +2022,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
@@ -2079,7 +2089,7 @@ impl DocumentV11 {
         if header.version == 33 {
             return Err(StorageError::Invalid("unsupported alpha project format 33"));
         }
-        if header.version == 35 {
+        if header.version == 36 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {
@@ -2362,6 +2372,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2502,6 +2513,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),

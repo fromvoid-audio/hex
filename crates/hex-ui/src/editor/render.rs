@@ -373,6 +373,7 @@ impl Render for EditorView {
         self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
+        self.reconcile_sections(window, cx);
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
@@ -448,7 +449,7 @@ impl Render for EditorView {
                 "hex_changelog"
             } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
-            } else if self.clip_name_edit.is_some() {
+            } else if self.clip_name_edit.is_some() || self.sections.naming() {
                 "hex_clip_name hex_text_editing"
             } else if self.tuning.open {
                 "hex_tuning"
@@ -642,15 +643,19 @@ impl Render for EditorView {
                 view.finish_track_name(false, window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
-                if !view.track_header_focused(window) {
+                if !view.section_name_begin(window, cx) && !view.track_header_focused(window) {
                     view.begin_clip_name(window, cx);
                 }
             }))
             .on_action(cx.listener(|view, _: &super::CommitClipName, window, cx| {
-                view.finish_clip_name(true, window, cx);
+                if !view.section_name_finish(true, window, cx) {
+                    view.finish_clip_name(true, window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &super::CancelClipName, window, cx| {
-                view.finish_clip_name(false, window, cx);
+                if !view.section_name_finish(false, window, cx) {
+                    view.finish_clip_name(false, window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
@@ -786,8 +791,9 @@ impl Render for EditorView {
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
-                let time_selection_canceled =
-                    view.cancel_time_selection_gesture() | view.cancel_clip_paint();
+                let time_selection_canceled = view.cancel_time_selection_gesture()
+                    | view.cancel_clip_paint()
+                    | view.cancel_section_pointer();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
                     view.midi_selection.clear() | view.clear_midi_time_selection()
@@ -1031,6 +1037,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
+                if view.delete_section(window) {
+                    cx.notify();
+                    return;
+                }
                 if view.delete_time_selection(window) {
                     cx.notify();
                     return;

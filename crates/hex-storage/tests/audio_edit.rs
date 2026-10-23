@@ -81,7 +81,7 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(value["version"], 35);
+    assert_eq!(value["version"], 36);
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
@@ -217,7 +217,7 @@ fn current_shapes_preserve_events_appearance_names_and_strict_validation() {
                 "mutation {mutation}"
             );
         }
-        assert_eq!(value["version"], 35);
+        assert_eq!(value["version"], 36);
         let raw = String::from_utf8(bytes.clone()).unwrap();
         for key in ["fade_shapes", "audio_event_state"] {
             let duplicate = format!("{{\"{key}\":[],{}", &raw[1..]);
