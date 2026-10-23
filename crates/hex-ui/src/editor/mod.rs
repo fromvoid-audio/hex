@@ -153,6 +153,8 @@ mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod track_compact_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod track_creation_ui_tests;
 mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
