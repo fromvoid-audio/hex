@@ -392,6 +392,14 @@ pub enum Command {
         source_start: u64,
         source_end: u64,
     },
+    /// Move a complete ordinary track before a stable anchor, or to the end
+    /// with None. Already adjacent, self, and already-last drops are no-ops.
+    /// Returns use distinct ReturnId owners and remain in their own partition;
+    /// Main is not a Track. Neither can be addressed by this typed command.
+    MoveTrackBefore {
+        track: TrackId,
+        before: Option<TrackId>,
+    },
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
@@ -2073,6 +2081,7 @@ impl Project {
                     source_end,
                 })
             }
+            Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
             Command::RemoveTracks(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
                     return Err(Invalid("track removal needs a bounded selection"));
