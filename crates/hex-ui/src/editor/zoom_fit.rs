@@ -1,8 +1,7 @@
 //! One prior fit viewport per existing view owner, never musical history. Clip
 //! changes retire clip-local back state; document replacement retires every view.
 use super::{EditorMode, EditorView, Viewport};
-use crate::theme;
-use gpui::{Context, Div, Stateful, Window, prelude::*, px, rgb};
+use gpui::{Context, Div, Stateful, Window, prelude::*, px};
 use hex_project::{BeatTime, ClipId};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -206,6 +205,15 @@ impl EditorView {
                 .map(|r| (r.start(), r.end()))
                 .or_else(|| self.selected_clip.and_then(clip_range))
                 .or_else(|| {
+                    self.sections.selected.and_then(|id| {
+                        let section = project.arrangement_section(id)?;
+                        Some((
+                            project.tempo_map().beat_to_frame(section.start()).ok()?,
+                            project.tempo_map().beat_to_frame(section.end()).ok()?,
+                        ))
+                    })
+                })
+                .or_else(|| {
                     project
                         .tracks()
                         .iter()
@@ -215,6 +223,12 @@ impl EditorView {
                                 .filter_map(audio_range)
                                 .chain(t.midi_clips().iter().filter_map(midi_range))
                         })
+                        .chain(project.arrangement_sections().iter().filter_map(|section| {
+                            Some((
+                                project.tempo_map().beat_to_frame(section.start()).ok()?,
+                                project.tempo_map().beat_to_frame(section.end()).ok()?,
+                            ))
+                        }))
                         .fold(None, |bounds, (a, b)| {
                             Some(bounds.map_or((a, b), |(first, last): (u64, u64)| {
                                 (first.min(a), last.max(b))
@@ -266,9 +280,6 @@ impl EditorView {
         .debug_selector(move || id.into())
         .opacity(if enabled { 1.0 } else { 0.35 })
         .when(!enabled, |el| el.cursor_default())
-        .when(enabled, |el| {
-            el.hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-        })
         .on_click(cx.listener(move |view, _, window, cx| {
             if !enabled
                 || generation != view.project_generation

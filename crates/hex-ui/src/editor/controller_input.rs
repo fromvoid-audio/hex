@@ -215,17 +215,13 @@ impl EditorView {
                 .iter()
                 .map(|port| theme::text(&port.name)),
         );
-        let port_config = SelectorConfig::new(
-            "controller-input-port",
-            choices,
-            0,
-            super::device_panel::control_style(),
-        );
+        let port_config =
+            SelectorConfig::new("controller-input-port", choices, 0, theme::control_style());
         let channel_config = SelectorConfig::new(
             "controller-input-channel",
             (1..=16).map(|channel| theme::text(format!("channel {channel}"))),
             usize::from(self.controller_input.channel),
-            super::device_panel::control_style(),
+            theme::control_style(),
         );
         let (Ok(port_config), Ok(channel_config)) = (port_config, channel_config) else {
             self.error = Some("controller input options exceed supported limits".into());

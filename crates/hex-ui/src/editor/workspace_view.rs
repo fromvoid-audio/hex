@@ -44,6 +44,7 @@ impl EditorView {
             || self.save_dialog_open
             || self.preset_dialog_open
             || self.track_resize_active()
+            || self.track_reorder_active()
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
             || self.project_spectrum.resize_is_active()

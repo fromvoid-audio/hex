@@ -3,6 +3,79 @@ use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_project::{BeatTime, Command, Created};
 
+#[test]
+fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_event_capacity(8192, Arc::new(AtomicBool::new(true)), 1);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    h.run(Request::Edit(Command::AddTrack {
+        name: "saved".into(),
+    }));
+    h.applied(applied);
+    let path = files.0.join("backpressured.hex");
+    let saved = h.run(Request::SaveNew(path.clone()));
+    let new = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert!(new.project_replaced);
+    h.release_relinquished_output();
+    // Keep New's actual Opened Client in the one-row channel. Its real
+    // ResidentSubmitted observation must remain backpressured on the worker.
+    // No fabricated status, sleeps-as-witness or waiting for New CURRENT.
+    let end = Instant::now() + Duration::from_secs(10);
+    while h.pending_observation_generation.load(Acquire) != 2 {
+        assert!(
+            Instant::now() < end,
+            "New did not reach observation backpressure"
+        );
+        std::thread::yield_now();
+    }
+    let terminal_without_audio_delivery = |service: &Service| loop {
+        if let Ok(event) = service.try_event() {
+            break event;
+        }
+        assert!(
+            Instant::now() < end,
+            "Open did not produce its real terminal"
+        );
+        std::thread::yield_now();
+    };
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service.submit(Request::Open(path.clone())).unwrap();
+    let refused = terminal_without_audio_delivery(&h.service);
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("final admission refusal")
+    );
+    assert!(!refused.project_replaced);
+    assert_eq!(refused.state.project, new.state.project);
+    assert_eq!(refused.state.revision, new.state.revision);
+    assert_eq!(h.pending_observation_generation.load(Acquire), 2);
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    h.service.submit(Request::Open(path)).unwrap();
+    let opened = terminal_without_audio_delivery(&h.service);
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.project_replaced && opened.open_complete);
+    assert_eq!(opened.state.project, saved.state.project);
+    // Resume UI delivery, closing the obsolete real Client, then require a
+    // fresh endpoint and exact generation/revision to reach the real callback.
+    h.pump();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (_, metadata) = h.applied(0);
+    assert_eq!(metadata.context.project_generation, 2);
+    assert_eq!(metadata.context.editor_revision, opened.state.revision);
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+}
+
 fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
     assert!(event.project_replaced && event.playback.is_none());
     assert!(h.submitted.is_none_or(|(_, metadata)| {
