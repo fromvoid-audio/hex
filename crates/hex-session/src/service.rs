@@ -7094,15 +7094,28 @@ mod service_tests {
     fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
         let directory = TestDir::new();
         let path = directory.0.join("tone.WAV");
-        fs::write(&path, wav_mono(&[4_000; 96])).expect("write wav fixture");
+        for overrun in [0, 4] {
+            let mut bytes = wav_mono(&[4_000; 96]);
+            let size = u32::try_from(bytes.len() - 8).unwrap() + overrun;
+            bytes[4..8].copy_from_slice(&size.to_le_bytes());
+            fs::write(&path, &bytes).expect("write wav fixture");
 
-        let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
-
-        assert_eq!(preview.playback_frames, 48);
-        assert_eq!(preview.sample_rate, 24_000);
-        assert_eq!(preview.waveform.source_frames, 48);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert!(!preview.waveform.bins.is_empty());
+            let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
+            assert_eq!(preview.playback_frames, 48);
+            assert_eq!(preview.sample_rate, 24_000);
+            assert_eq!(preview.waveform.source_frames, 48);
+            assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+            assert!(!preview.waveform.bins.is_empty());
+            let pcm = prepare_sample_preview(&path, 24_000).expect("prepare playback");
+            assert_eq!(pcm.sample_rate(), 24_000);
+            assert_eq!(pcm.frames().len(), 48);
+            assert!(
+                pcm.frames()
+                    .iter()
+                    .all(|frame| frame[0] > 0.0 && frame[0] == frame[1])
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]
