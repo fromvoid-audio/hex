@@ -6,6 +6,11 @@ use gpui::{MouseDownEvent, canvas, relative};
 use std::{cell::Cell, rc::Rc};
 
 const RULER_HEIGHT: f32 = 14.0;
+#[path = "sampler_boundary.rs"]
+mod boundary;
+pub(in crate::editor) use boundary::{
+    cancel as cancel_sampler_boundary, preview as sampler_boundary_preview,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SourceTarget {
@@ -60,9 +65,11 @@ impl SourceTarget {
 #[derive(Default)]
 pub(super) struct CursorState {
     cursor: Option<(SourceTarget, u64)>,
+    boundary: Option<boundary::Gesture>,
 }
 
 pub(super) fn reconcile_cursor(view: &mut EditorView) {
+    boundary::reconcile(view);
     if view
         .device_panel
         .sampler_cursor
@@ -121,7 +128,7 @@ pub(super) fn render(
     if frames == 0 {
         return shell.child(theme::text("source overview extent unavailable"));
     }
-    let parameter = |p| hex_engine::sampler_parameter_value_on_control(p, device.state()).ok();
+    let parameter = |p| view.sampler_display_value(track, device, p, cx).ok();
     let Some(start) = parameter(hex_engine::SamplerParameter::StartFrame) else {
         return shell.child(theme::text("source region unavailable"));
     };
@@ -157,6 +164,8 @@ pub(super) fn render(
         .map(|(_, frame)| frame);
     let hit_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
     let measured_bounds = Rc::clone(&hit_bounds);
+    let move_entity = cx.entity();
+    let up_entity = cx.entity();
     let waveform = div()
         .relative()
         .w_full()
@@ -175,6 +184,13 @@ pub(super) fn render(
                     return;
                 };
                 if !bounds.contains(&event.position) {
+                    return;
+                }
+                if boundary::begin(view, target, bounds, event.position, cx) {
+                    view.focus.focus(window);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 let Some(frame) = frame_at_x(
@@ -225,6 +241,16 @@ pub(super) fn render(
             "sampler-source-end",
             end / frames as f64,
             theme::PaletteRole::Primary,
+        ))
+        .child(boundary::handle(
+            true,
+            start / frames as f64,
+            !view.edit_pending(),
+        ))
+        .child(boundary::handle(
+            false,
+            end / frames as f64,
+            !view.edit_pending(),
         ));
     let waveform = if let (Some(enabled), Some(loop_start), Some(loop_end)) = (
         parameter(hex_engine::SamplerParameter::LoopEnabled),
@@ -267,7 +293,30 @@ pub(super) fn render(
                 move |bounds, _, _| {
                     measured_bounds.set(Some(bounds));
                 },
-                |_, _, _, _| {},
+                move |bounds, _, window, _| {
+                    let entity = move_entity.clone();
+                    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                        if phase.capture() {
+                            entity.update(cx, |view, cx| {
+                                if boundary::move_pointer(view, bounds, event, cx) {
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    });
+                    let entity = up_entity.clone();
+                    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
+                        if phase.capture() && event.button == MouseButton::Left {
+                            entity.update(cx, |view, cx| {
+                                if boundary::release(view, bounds, event.position, cx) {
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    });
+                },
             )
             .absolute()
             .top_0()
@@ -303,7 +352,17 @@ pub(super) fn render(
                         .child(theme::text(cursor.map_or(facts, |frame| {
                             cursor_label(frame, overview.sample_rate())
                         }))),
-                ),
+                )
+                .child(boundary::cursor_action(
+                    view,
+                    hex_engine::SamplerParameter::StartFrame,
+                    cx,
+                ))
+                .child(boundary::cursor_action(
+                    view,
+                    hex_engine::SamplerParameter::EndFrame,
+                    cx,
+                )),
         );
     shell.child(waveform)
 }

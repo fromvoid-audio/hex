@@ -55,6 +55,7 @@ mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod sampler_overview;
+pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_preview};
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
@@ -485,6 +486,9 @@ pub(super) fn view(
     }
     reconcile_eq_spectrum(view);
     sampler_overview::reconcile_cursor(view);
+    if window.is_some_and(|window| !view.focus.is_focused(window)) {
+        cancel_sampler_boundary(view);
+    }
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
