@@ -470,6 +470,7 @@ impl PreparedSessionInventory {
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, crate::Invalid> {
+        crate::midi_compile::require_supported_clip_volume(project)?;
         crate::gain_envelope::validate_project(project)?;
         let routed_plan = RoutedMidiPlan::prepare(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;

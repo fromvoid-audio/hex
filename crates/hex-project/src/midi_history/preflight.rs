@@ -23,6 +23,7 @@ impl Command {
                 | Self::UpdateMidiNotes { .. }
                 | Self::RemoveMidiNote(_)
                 | Self::RemoveMidiNotes { .. }
+                | Self::ReplaceMidiClipVolume { .. }
                 | Self::SetMidiClipSource { .. }
                 | Self::SetSessionMidiClipSource { .. }
         )
@@ -32,6 +33,11 @@ impl Command {
     pub fn prepare_sampler_midi_edit(&mut self, project: &Project) -> Result<bool, Invalid> {
         const MISSING: Invalid = Invalid("midi edit target is unavailable");
         match self {
+            Self::ReplaceMidiClipVolume { clip, volume } => {
+                let source = project.midi_source(*clip).ok_or(MISSING)?;
+                volume.validate_source_length(source.source_length())?;
+                return Ok(project.midi_clip_volume(*clip).ok_or(MISSING)? != volume);
+            }
             Self::ClearSessionCell { track, scene }
                 if project.session_cell(*track, *scene).is_none() =>
             {
@@ -45,7 +51,11 @@ impl Command {
             Self::DuplicateMidiSourceRange { clip, start, end } => {
                 let source = project.midi_source(*clip).ok_or(MISSING)?;
                 let range = crate::midi_source_range::Range::capture(source, *start, *end)?;
-                return Ok(range.count > 0 || range.source_length != source.source_length());
+                let volume = project.midi_clip_volume(*clip).ok_or(MISSING)?;
+                let copied = volume.duplicated_range(*start, *end, range.source_length)?;
+                return Ok(range.count > 0
+                    || range.source_length != source.source_length()
+                    || &copied != volume);
             }
             Self::UpdateMidiNote {
                 note,

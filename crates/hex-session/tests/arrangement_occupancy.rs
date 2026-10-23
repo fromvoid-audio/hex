@@ -188,7 +188,7 @@ fn worker_raw_import_and_midi_placement_carve_literal_pcm_and_saved_history() {
         assert_eq!(render(&opened, 89), literal);
         // Corrupt only a clip's placement in a separate current-format document.
         let mut document: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(document["version"], 34);
+        assert_eq!(document["version"], 35);
         let clips = document
             .pointer_mut("/tracks/0/audio_clips")
             .unwrap()

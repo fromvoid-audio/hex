@@ -12,6 +12,25 @@ use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
 use std::sync::Arc;
 
+/// Metadata ownership lands before the prepared clip-volume render consumer.
+/// Every project preparation path must refuse authored curves in the meantime;
+/// silently compiling unity would publish a different musical result.
+pub(crate) fn require_supported_clip_volume(project: &Project) -> Result<(), Invalid> {
+    if project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.midi_clips())
+        .any(|clip| !clip.volume().points().is_empty())
+        || project.session_cells().iter().any(|cell| {
+            matches!(cell.content(),
+            hex_project::SessionCellContent::Midi(clip) if !clip.volume().points().is_empty())
+        })
+    {
+        return Err(Invalid("midi clip volume playback is not prepared"));
+    }
+    Ok(())
+}
+
 pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
 /// Maximum prepared MIDI note occurrences across the entire project.
 pub const MAX_COMPILED_MIDI_OCCURRENCES: usize = 65_536;
