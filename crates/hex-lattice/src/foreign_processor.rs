@@ -87,7 +87,9 @@ pub trait ForeignProcessors {
     fn reject_callback(&mut self);
 }
 
-pub(crate) struct RefuseForeign;
+/// Explicit context for renderers without admitted foreign endpoints. A
+/// foreign node refuses instead of silently bypassing its required processing.
+pub struct RefuseForeign;
 impl ForeignProcessors for RefuseForeign {
     fn process_segment(
         &mut self,

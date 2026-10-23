@@ -14,8 +14,9 @@ pub mod conformance;
 mod foreign_processor;
 mod meter;
 mod owned_processor;
-use foreign_processor::RefuseForeign;
-pub use foreign_processor::{ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor};
+pub use foreign_processor::{
+    ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
+};
 mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
@@ -1224,6 +1225,25 @@ impl NativeRuntimeChain {
             .ok_or(DeviceContractError::InvalidDescriptor)?;
         Self::process_entries_tapped(entries, frames, frame_offset, clock, observer)?;
         Ok(())
+    }
+
+    /// Process a segment without observation through the same borrowed path.
+    pub fn process_range_with_foreign(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+    ) -> Result<(), DeviceContractError> {
+        self.process_range_tapped_with_foreign(
+            range,
+            frames,
+            frame_offset,
+            clock,
+            foreign,
+            &mut |_, _, _, _, _, _| {},
+        )
     }
 
     /// Stage a graph segment through the host's actual borrowed endpoints.

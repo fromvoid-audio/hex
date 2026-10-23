@@ -53,6 +53,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         for chain in &mut self.device_chains {
             chain.begin_block();
@@ -76,11 +77,18 @@ impl SessionPlayback {
                     observer,
                     capture,
                     None,
+                    foreign,
                 )?;
                 self.compensation
                     .as_ref()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
-                    .process_main(&mut self.main_chain, chunk, offset, observer)
+                    .process_main_with_foreign(
+                        &mut self.main_chain,
+                        chunk,
+                        offset,
+                        foreign,
+                        observer,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 continue;
             }

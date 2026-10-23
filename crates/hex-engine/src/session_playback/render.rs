@@ -14,6 +14,29 @@ impl SessionPlayback {
         self.render_with_post_node_observer(output, None)
     }
 
+    /// Render using borrowed, already admitted foreign endpoints. This stages
+    /// copied input only: the audio owner must separately accept the complete
+    /// physical callback after final host conversion. Every refusal revokes
+    /// staged foreign work; native state is never rolled back or replayed.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
+        self.render_internal_with_foreign(output, pages, observer, capture, None, foreign)?;
+        if let Some(project) = project {
+            project.main(output);
+        }
+        Ok(())
+    }
+
     pub fn render_control_sampler_export(
         &mut self,
         output: &mut [Frame],
@@ -264,8 +287,45 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_with_foreign(
+            output,
+            pages,
+            observer,
+            capture,
+            sources,
+            &mut hex_lattice::RefuseForeign,
+        )
+    }
+
+    fn render_internal_with_foreign<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        let result =
+            self.render_internal_borrowed(output, pages, observer, capture, sources, foreign);
+        if result.is_err() {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+        }
+        result
+    }
+
+    fn render_internal_borrowed<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut capture: Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
@@ -334,9 +394,9 @@ impl SessionPlayback {
             keyboard.begin_block();
         }
         let result = if self.playing {
-            self.render_playing(output, pages, &mut observer, &mut capture, sources)
+            self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
         } else {
-            self.render_keyboard_monitor(output, &mut observer, &mut capture, sources)
+            self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
         };
         if result.is_err() {
             for chain in self
@@ -409,6 +469,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -517,6 +578,7 @@ impl SessionPlayback {
                     observer,
                     capture,
                     sources,
+                    foreign,
                 )?;
             } else {
                 self.render_route_chunk(
@@ -538,10 +600,11 @@ impl SessionPlayback {
             }
             if let Some(compensation) = self.compensation.as_ref() {
                 compensation
-                    .process_main(
+                    .process_main_with_foreign(
                         &mut self.main_chain,
                         &mut output[output_offset..chunk_end],
                         output_offset,
+                        foreign,
                         observer,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;

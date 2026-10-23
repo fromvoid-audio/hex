@@ -730,6 +730,23 @@ impl SignalRuntime {
         offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.process_main_with_foreign(
+            chain,
+            frames,
+            offset,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_main_with_foreign(
+        &self,
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: &mut [Frame],
+        offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
         }
@@ -739,11 +756,12 @@ impl SignalRuntime {
                     .stamp_at_delay(self.graph.plan.nodes()[node].input_arrival_frames),
             );
             if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_clock(
+                chain.process_range_tapped_with_foreign(
                     index..index + 1,
                     frames,
                     offset,
                     Some(&clock),
+                    foreign,
                     &mut |owner, device, kind, phase, offset, frames| {
                         observer(
                             crate::PostNodeIdentity::new(owner, device, kind),
@@ -754,7 +772,13 @@ impl SignalRuntime {
                     },
                 )
             } else {
-                chain.process_range_with_clock(index..index + 1, frames, Some(&clock))
+                chain.process_range_with_foreign(
+                    index..index + 1,
+                    frames,
+                    offset,
+                    Some(&clock),
+                    foreign,
+                )
             }
             .map_err(|_| Invalid("main effect runtime failed"))?;
             if self
@@ -773,22 +797,48 @@ impl SignalRuntime {
         index: usize,
         track: &Track,
         chain: &mut hex_lattice::NativeRuntimeChain,
+        audio: Frame,
+        generator: Frame,
+        offset: usize,
+        metered: bool,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<Frame, Invalid> {
+        self.process_track_with_foreign(
+            index,
+            track,
+            chain,
+            audio,
+            generator,
+            offset,
+            metered,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_track_with_foreign(
+        &mut self,
+        index: usize,
+        track: &Track,
+        chain: &mut hex_lattice::NativeRuntimeChain,
         mut audio: Frame,
         mut generator: Frame,
         offset: usize,
         metered: bool,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
         audio[1] += self.inputs[index][1];
         let slot = track.instrument_position();
-        self.effects(
+        self.effects_with_foreign(
             &self.graph.tracks[index].devices[..slot],
             chain,
             0,
             &mut audio,
             offset,
+            foreign,
             observer,
         )?;
         track.apply_instrument_input_gain(std::slice::from_mut(&mut audio));
@@ -813,12 +863,13 @@ impl SignalRuntime {
         if metered {
             track.instrument_meter.observe_output(&[mixed]);
         }
-        self.effects(
+        self.effects_with_foreign(
             &self.graph.tracks[index].devices[slot..],
             chain,
             slot,
             &mut mixed,
             offset,
+            foreign,
             observer,
         )?;
         Ok(mixed)
@@ -832,6 +883,27 @@ impl SignalRuntime {
         offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.effects_with_foreign(
+            nodes,
+            chain,
+            start,
+            frame,
+            offset,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn effects_with_foreign(
+        &self,
+        nodes: &[usize],
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        start: usize,
+        frame: &mut Frame,
+        offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
             let clock = OriginClock(
                 self.delays
@@ -839,11 +911,12 @@ impl SignalRuntime {
             );
             let frames = std::slice::from_mut(frame);
             if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_clock(
+                chain.process_range_tapped_with_foreign(
                     start + local..start + local + 1,
                     frames,
                     offset,
                     Some(&clock),
+                    foreign,
                     &mut |owner, device, kind, phase, offset, frames| {
                         observer(
                             crate::PostNodeIdentity::new(owner, device, kind),
@@ -854,10 +927,12 @@ impl SignalRuntime {
                     },
                 )
             } else {
-                chain.process_range_with_clock(
+                chain.process_range_with_foreign(
                     start + local..start + local + 1,
                     frames,
+                    offset,
                     Some(&clock),
+                    foreign,
                 )
             }
             .map_err(|_| Invalid("compensated native device range is invalid"))?;

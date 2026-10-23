@@ -15,6 +15,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -170,7 +171,7 @@ impl SessionPlayback {
                         .as_mut()
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
                     let processed = compensation
-                        .process_track(
+                        .process_track_with_foreign(
                             index,
                             track,
                             &mut self.device_chains[index],
@@ -178,6 +179,7 @@ impl SessionPlayback {
                             generator[0],
                             frame_offset,
                             self.device_metering,
+                            foreign,
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -222,12 +224,13 @@ impl SessionPlayback {
                     let bus = &self.revision.arrangement().return_buses()[index];
                     let mut frame = self.return_scratch[index][0];
                     compensation
-                        .effects(
+                        .effects_with_foreign(
                             &compensation.graph.returns[index].devices,
                             &mut self.return_chains[index],
                             0,
                             &mut frame,
                             frame_offset,
+                            foreign,
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;

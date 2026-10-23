@@ -1918,6 +1918,8 @@ mod return_feed_tests;
 
 #[cfg(test)]
 mod compensation_tests;
+#[cfg(test)]
+mod foreign_tests;
 
 #[cfg(test)]
 mod routing_tests;
