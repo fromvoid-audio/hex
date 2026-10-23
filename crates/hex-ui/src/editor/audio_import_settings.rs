@@ -41,8 +41,10 @@ impl State {
     }
 }
 
-/// Convert all ordinary Arrangement entry points at admission, before queuing.
-/// Already captured Console batches and sampler requests are explicitly untouched.
+/// Capture enabled Arrangement import intent before queuing. Legacy Off imports
+/// keep their existing FIFO/destination/overwrite contract and inherently remain
+/// Off without any later preference read. Explicit batches retain their original
+/// strict source context; Console and sampler requests are untouched.
 fn capture(
     request: Request,
     warp: AudioImportWarp,
@@ -67,6 +69,7 @@ fn capture(
                 options,
             });
         }
+        other if warp == AudioImportWarp::Off => return Ok(other),
         Request::Import(path) => (
             path,
             AudioBatchDestination::NewTracks {
@@ -241,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn every_arrangement_entry_point_captures_policy_and_destination_before_queueing() {
+    fn off_retains_legacy_requests_and_enabled_imports_capture_policy_before_queueing() {
         let track = hex_project::TrackId(20);
         let path = PathBuf::from("/Original Case/sample.WAV");
         for enabled in [false, true] {
@@ -282,6 +285,40 @@ mod tests {
             ];
             for (request, overwrite, expected_start) in requests {
                 let request = capture(request, warp, context()).unwrap();
+                if !enabled {
+                    let (actual_path, actual_start, actual_overwrite) = match request {
+                        Request::Import(path) => (path, 0, false),
+                        Request::ImportToTrack {
+                            path,
+                            track: target,
+                            start,
+                        } => {
+                            assert_eq!(target, track);
+                            (path, start, false)
+                        }
+                        Request::ImportToTrackWithOverwrite {
+                            path,
+                            track: target,
+                            start,
+                        } => {
+                            assert_eq!(target, track);
+                            (path, start, true)
+                        }
+                        Request::ImportToNewTrack {
+                            path,
+                            before_track,
+                            start,
+                        } => {
+                            assert_eq!(before_track, Some(track));
+                            (path, start, false)
+                        }
+                        _ => panic!("off must preserve the legacy admission contract"),
+                    };
+                    assert_eq!(actual_path, path);
+                    assert_eq!(actual_start, expected_start);
+                    assert_eq!(actual_overwrite, overwrite);
+                    continue;
+                }
                 // A later preference change has no reference into the owned request.
                 let Request::ImportAudioBatch {
                     paths,
@@ -312,6 +349,28 @@ mod tests {
             }
         }
         assert_eq!(State::new(PathBuf::new()).policy(), AudioImportWarp::Off);
+    }
+
+    #[test]
+    fn queued_legacy_off_import_is_not_reinterpreted_when_preference_changes() {
+        let mut settings = State::new(PathBuf::new());
+        let request = capture(
+            Request::ImportToTrackWithOverwrite {
+                path: PathBuf::from("/queued.wav"),
+                track: hex_project::TrackId(9),
+                start: 4321,
+            },
+            settings.policy(),
+            context(),
+        )
+        .unwrap();
+        settings.preferences.auto_warp_beats = true;
+        assert_eq!(settings.policy(), AudioImportWarp::Beats);
+        // The worker owns this legacy request and never reads application settings.
+        assert!(
+            matches!(request, Request::ImportToTrackWithOverwrite { path, track, start }
+            if path == PathBuf::from("/queued.wav") && track == hex_project::TrackId(9) && start == 4321)
+        );
     }
 
     #[test]

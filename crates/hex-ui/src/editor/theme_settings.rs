@@ -1546,11 +1546,11 @@ mod tests {
                         PathBuf::from("/captured sample.wav"),
                     ))
                     .unwrap();
-                let hex_session::service::Request::ImportAudioBatch { options, .. } = request
-                else {
-                    panic!("arrangement import did not capture its policy");
-                };
-                options.warp
+                match request {
+                    hex_session::service::Request::Import(_) => hex_project::AudioImportWarp::Off,
+                    hex_session::service::Request::ImportAudioBatch { options, .. } => options.warp,
+                    _ => panic!("arrangement import did not retain its policy"),
+                }
             })
         }
         let _restore = RestoreTheme(theme::preferences());

@@ -510,3 +510,79 @@ fn beats_batch_failure_and_cancel_preserve_the_complete_previous_state() {
         drop(s);
     }
 }
+
+#[test]
+fn queued_legacy_off_import_keeps_overwrite_intent_after_an_unrelated_edit() {
+    let files = Files::new();
+    let original = files.wav("original.wav", 48_000, &[8192; 16]);
+    let replacement = files.wav("replacement.wav", 48_000, &[-4096; 8]);
+    for overwrite in [false, true] {
+        let (s, _) = service();
+        s.submit(Request::Import(original.clone())).unwrap();
+        let initial = event(&s);
+        assert!(initial.error.is_none(), "{:?}", initial.error);
+        let track = initial.state.project.tracks()[0].id();
+        // This owned legacy request was admitted with auto-warp Off. It carries
+        // no late application-preference read or newly imposed revision guard.
+        let queued = if overwrite {
+            Request::ImportToTrackWithOverwrite {
+                path: replacement.clone(),
+                track,
+                start: 4,
+            }
+        } else {
+            Request::ImportToTrack {
+                path: replacement.clone(),
+                track,
+                start: 4,
+            }
+        };
+        s.submit(Request::Edit(Command::RenameTrack {
+            track,
+            name: "queued rename".into(),
+        }))
+        .unwrap();
+        s.submit(queued).unwrap();
+        let renamed = event(&s);
+        assert!(renamed.error.is_none(), "{:?}", renamed.error);
+        let mut result = event(&s);
+        assert_eq!(renamed.state.revision, initial.state.revision + 1);
+        assert_eq!(result.state.project.tracks().len(), 1);
+        assert_eq!(result.state.project.tracks()[0].name(), "queued rename");
+        if !overwrite {
+            assert!(
+                result.error.is_some(),
+                "ordinary import must retain its overlap refusal"
+            );
+            assert_eq!(result.state.revision, renamed.state.revision);
+            assert_eq!(result.state.project, renamed.state.project);
+        } else {
+            assert!(result.error.is_none(), "{:?}", result.error);
+            assert_eq!(result.state.revision, renamed.state.revision + 1);
+            let clips = result.state.project.tracks()[0].clips();
+            assert_eq!(clips.len(), 3);
+            assert!(clips.iter().all(|clip| {
+                clip.audio_edit()
+                    .is_none_or(|edit| !edit.domain.warp_enabled)
+            }));
+            let mut playback = result.playback.take().unwrap();
+            playback.apply(hex_engine::playback::PlaybackCommand::Play);
+            let mut pcm = [[0.0; 2]; 16];
+            playback.render(&mut pcm).unwrap();
+            assert!(pcm[..4].iter().all(|frame| *frame == [0.25; 2]));
+            assert!(pcm[4..12].iter().all(|frame| *frame == [-0.125; 2]));
+            assert!(pcm[12..].iter().all(|frame| *frame == [0.25; 2]));
+            s.submit(Request::Undo).unwrap();
+            let undone = event(&s);
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(
+                undone.state.project.tracks(),
+                renamed.state.project.tracks()
+            );
+            s.submit(Request::Redo).unwrap();
+            let redone = event(&s);
+            assert_eq!(redone.state.project, result.state.project);
+        }
+        drop(s);
+    }
+}
