@@ -186,6 +186,14 @@ full disks with a useful error and a defined recovery path.
    content; do not traverse/render a whole project every frame. Consolidate design
    tokens as the UI grows. Verify focus, shortcuts, resizing, interaction, and
    accessibility. Current custom controls do not yet expose rich accessibility.
+   Ending pointer capture must not expose old canonical geometry while an edit
+   is in flight. Transfer the frozen final preview to an acknowledged display
+   owner: ordinary edits use `hex-ui::editor::pending_edit`'s receipt contract;
+   keyed device gestures keep their existing typed acknowledgement protocol.
+   Retire that preview with its exact terminal and canonical-state installation
+   in one receive, including refusal and source replacement. Add a focused
+   delayed-ACK test with completed repaints; testing only the final state misses
+   release flicker. Keep input cancellation separate from admitted edit custody.
 7. **Report unsupported features honestly.** No decorative controls that pretend
    to record, arm, load, save, warp, or host devices. Clearly identify the generated
    demo. Preserve unknown imported data when feasible; otherwise explain fidelity
