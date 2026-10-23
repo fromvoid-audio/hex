@@ -5,6 +5,8 @@
 //! use the sibling splice planner. Inner edges keep other markers fixed; shared
 //! edges keep the pair's outer span fixed. Crossed time becomes empty. Marker
 //! merging preserves the earliest identity/name/color and all musical material.
+//! Marker splitting retains the left identity and gives the adjoining right
+//! marker a fresh ID with matching name/color, without editing any musical data.
 //! Reordering cuts `[start,end)` and inserts it before/after the target's original
 //! range. Later destinations subtract the removed length. The entire intervening
 //! interval (including gaps) shifts by that length. All tracks, gain base/touch
@@ -298,6 +300,13 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         } => splice::resize_isolated(project, section, edge, boundary),
         Command::DeleteArrangementSection(section) => splice::delete(project, section),
         Command::DuplicateArrangementSection(section) => splice::duplicate(project, section),
+        Command::SplitArrangementSection { section, at } => {
+            let (right, mut sections) = project.preview_section_split(section, at)?;
+            let id = SectionId(project.allocate_id()?);
+            sections[right].id = id;
+            project.arrangement_sections = sections;
+            Ok(Created::ArrangementSection(id))
+        }
         Command::MergeArrangementSections(selected) => {
             project.arrangement_sections = project.preview_section_merge(&selected)?.sections;
             Ok(Created::None)
@@ -375,9 +384,51 @@ impl Project {
             Command::DuplicateArrangementSection(section) => {
                 splice::preview_duplicate(self, *section)
             }
+            Command::SplitArrangementSection { section, at } => {
+                let (_, sections) = self.preview_section_split(*section, *at)?;
+                Ok(SectionSplicePreview {
+                    sections,
+                    tempo_map: self.tempo_map.clone(),
+                })
+            }
             Command::MergeArrangementSections(selected) => self.preview_section_merge(selected),
             _ => Err(Invalid("command has no section splice preview")),
         }
+    }
+    // Preview uses the same zero-ID convention as copied marker previews. The
+    // fresh identity is allocated only by the canonical candidate, never input.
+    fn preview_section_split(
+        &self,
+        section: SectionId,
+        at: BeatTime,
+    ) -> Result<(usize, Vec<ArrangementSection>), Invalid> {
+        if self.arrangement_sections.len() >= MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("arrangement section limit reached"));
+        }
+        let index = self
+            .arrangement_sections
+            .iter()
+            .position(|s| s.id == section)
+            .ok_or(Invalid("arrangement section no longer exists"))?;
+        let source = &self.arrangement_sections[index];
+        if at <= source.start || at >= source.end {
+            return Err(Invalid(
+                "edit cursor must be strictly inside a section to split",
+            ));
+        }
+        self.tempo_map.beat_to_frame(at)?;
+        let mut sections = Vec::new();
+        sections
+            .try_reserve_exact(self.arrangement_sections.len() + 1)
+            .map_err(|_| Invalid("could not reserve section split"))?;
+        sections.extend(self.arrangement_sections.iter().cloned());
+        let mut right = source.clone();
+        right.id = SectionId(0);
+        right.start = at;
+        sections[index].end = at;
+        sections.insert(index + 1, right);
+        validate(&sections, &self.tempo_map)?;
+        Ok((index + 1, sections))
     }
     fn preview_section_merge(
         &self,
