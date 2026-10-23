@@ -85,6 +85,11 @@ class ReleaseTests(unittest.TestCase):
             (candidate / name).write_bytes(before)
         with patch.object(release, "source", return_value="d" * 40), self.assertRaisesRegex(release.Refusal, "source changed"):
             release.validate_plan(candidate)
+        plan = release.read(candidate / "plan.json")
+        plan["channel"] = "stable"
+        (candidate / "plan.json").write_bytes(release.encode(plan))
+        with self.assertRaisesRegex(release.Refusal, "version reservation"):
+            release.validate_plan(candidate)
 
     def test_release_environment_preserves_explicit_profile_and_binds_frozen_notes(self):
         candidate = self.cut()
@@ -95,11 +100,6 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(env["CARGO_PROFILE_TEST_DEBUG"], "0")
         self.assertEqual(env["HEX_RELEASE_CHANGELOG"], str(candidate / "notes.json"))
         self.assertEqual(env["HEX_RELEASE_LABEL"], "0.1.0-beta.1")
-        plan = release.read(candidate / "plan.json")
-        plan["channel"] = "stable"
-        (candidate / "plan.json").write_bytes(release.encode(plan))
-        with self.assertRaisesRegex(release.Refusal, "version reservation"):
-            release.validate_plan(candidate)
 
     def test_generation_failure_leaves_previous_release_and_no_new_reservation(self):
         first = self.cut()
