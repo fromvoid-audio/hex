@@ -989,6 +989,7 @@ impl EditorView {
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
+                    visible_change |= self.retire_pending_track_reorder();
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
                     visible_change |= self.retire_all_eq_creations();
@@ -1011,6 +1012,7 @@ impl EditorView {
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
+                let track_reorder_request = self.pending_track_reorder_matches(&request);
                 let duplicate_request = self.pending_duplicate_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
@@ -1037,6 +1039,9 @@ impl EditorView {
                         }
                         if section_request {
                             self.section_submitted();
+                        }
+                        if track_reorder_request {
+                            self.track_reorder_submitted();
                         }
                         if duplicate_request {
                             self.duplicate_submitted();
@@ -1074,6 +1079,9 @@ impl EditorView {
                         }
                         if section_request {
                             self.retire_pending_section();
+                        }
+                        if track_reorder_request {
+                            self.retire_pending_track_reorder();
                         }
                         if duplicate_request {
                             self.duplicate_intent.reject();
@@ -1135,6 +1143,9 @@ impl EditorView {
                         if section_request {
                             self.retire_pending_section();
                         }
+                        if track_reorder_request {
+                            self.retire_pending_track_reorder();
+                        }
                         if duplicate_request {
                             self.duplicate_intent.reject();
                         }
@@ -1162,6 +1173,7 @@ impl EditorView {
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
+        visible_change |= self.tick_track_reorder(now);
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
         visible_change |= self.tick_project_spectrum();
@@ -1886,6 +1898,7 @@ impl EditorView {
         let sampler_load_succeeded = event.error.is_none();
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
+        self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
         self.fade_request_complete(&event);
         self.eq_creation_request_complete(&event);
@@ -2941,6 +2954,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
+                | Request::ReorderTrack { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
                 | Request::ConvertClip { .. }
@@ -3004,6 +3018,7 @@ impl EditorView {
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
+        let track_reorder_request = self.pending_track_reorder_matches(&request);
         let duplicate_request = self.pending_duplicate_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
@@ -3025,6 +3040,9 @@ impl EditorView {
                 }
                 if section_request {
                     self.section_submitted();
+                }
+                if track_reorder_request {
+                    self.track_reorder_submitted();
                 }
                 if duplicate_request {
                     self.duplicate_submitted();

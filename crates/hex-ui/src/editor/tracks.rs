@@ -417,6 +417,10 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.track_row_builds = self.track_row_builds.saturating_add(1);
+        }
         let ClipViewTimeline {
             viewport,
             grid,
@@ -1012,6 +1016,14 @@ impl EditorView {
         let track_name = track.name().to_owned();
         let track_name_view = div()
             .id(("track-name", track_id.value()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.click_count == 1 {
+                        view.begin_track_reorder(track_id, event.position, window, cx);
+                    }
+                }),
+            )
             .relative()
             .children(self.track_selection.contains(track_id).then(|| {
                 div()
@@ -2066,6 +2078,7 @@ impl EditorView {
 
     pub(super) fn drag_available(&self) -> bool {
         !self.track_resize_active()
+            && !self.track_reorder_active()
             && self.clip_name_edit.is_none()
             && !self.opening_project
             && !self.close_prompt_open
