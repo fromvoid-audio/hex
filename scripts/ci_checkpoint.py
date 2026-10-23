@@ -59,13 +59,25 @@ def file_digest(path: Path) -> str:
         return value.hexdigest()
 
 
+def owner_digest(path: Path) -> str:
+    """Normalize the existing guard's state directory (macOS /var is an alias).
+
+    This is only for the runner-selected target owner path. The final marker
+    remains a regular non-symlink file; report/log evidence keeps stricter paths.
+    """
+    return file_digest(path.parent.resolve(strict=True) / path.name)
+
+
 def execution_inputs(root: Path, env: dict, steps) -> dict:
     """Hash environment values without publishing secrets, plus command binaries."""
+    if any(value and (key.startswith("HEX_VST3_") or key == "HEX_TEST_SIGNING_IDENTITY")
+           for key, value in env.items()):
+        raise ValueError("external native fixtures/signing inputs require fresh checks; checkpointing unavailable")
     search = os.pathsep.join(str((root / p).resolve()) if not Path(p).is_absolute() else p
                              for p in env.get("PATH", os.defpath).split(os.pathsep))
     tools = {}
     for name in sorted({s.argv[0] for s in steps} | {sys.executable}):
-        resolved = shutil.which(name, path=search)
+        resolved = str(root / name) if os.path.dirname(name) and not Path(name).is_absolute() else shutil.which(name, path=search)
         if resolved is None:
             raise ValueError("cannot identify checkpoint executable: " + name)
         path = Path(resolved).resolve(strict=True)
@@ -144,7 +156,8 @@ def seal(root: Path, report: dict, steps, inputs: dict, target: dict) -> dict:
     count = passed_prefix(report, plan)
     if report["disk_refusal"]["before_step"] != count:
         raise ValueError("resource refusal does not match the passed prefix")
-    return {"version": 1, "plan": plan, "execution_inputs": inputs,
+    return {"version": 1, "report_sha256": digest({k: v for k, v in report.items() if k != "checkpoint"}),
+            "plan": plan, "execution_inputs": inputs,
             "target": target, "passed_count": count, "logs": log_records(root, report, count)}
 
 

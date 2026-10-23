@@ -128,6 +128,9 @@ original summary and raw logs at their recorded paths.
 Missing/changed evidence, test failures, zero passing tests, interruptions, stale
 source, changed/foreign/recreated ownership or a lower/changed disk floor refuse.
 No automatic deletion or adoption occurs; the minimum remains at least 2 GiB.
+Explicit `HEX_VST3_*` or `HEX_TEST_SIGNING_IDENTITY` inputs disable checkpointing:
+external fixture/receipt trees and Keychain state can change at unchanged paths.
+Those runs still execute their complete ordinary validation; use a fresh run.
 
 Only original runs can continue; continued runs never emit another checkpoint.
 A refusal before a guarded Cargo target was established has no checkpoint. A

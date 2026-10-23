@@ -858,7 +858,7 @@ class LocalCiRunner:
             self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = dependency_inputs["sha256"]
             if self._resume_evidence is not None:
                 expected = self._resume_evidence["checkpoint"]["target"]
-                actual = {"owner_sha256": ci_checkpoint.file_digest(owner_path),
+                actual = {"owner_sha256": ci_checkpoint.owner_digest(owner_path),
                           "target_identity": target_identity, "cargo_identity": self.cargo_identity,
                           "dependency_inputs": dependency_inputs}
                 if self.adopt_target or actual != expected or owner_record["workspace_owner"] != current_workspace:
@@ -1858,7 +1858,7 @@ class LocalCiRunner:
                                 self._write_target_owner(self.target_owner_path, self.git_identity, checked=self.summary.get("exit_code") == 0)
                                 if self.summary.get("disk_refusal"):
                                     self._checkpoint_target = {
-                                        "owner_sha256": ci_checkpoint.file_digest(self.target_owner_path),
+                                        "owner_sha256": ci_checkpoint.owner_digest(self.target_owner_path),
                                         "target_identity": self._directory_identity(Path(self.cargo_identity["target_directory"])),
                                         "cargo_identity": self.cargo_identity,
                                         "dependency_inputs": self._dependency_inputs,
