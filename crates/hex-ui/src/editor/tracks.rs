@@ -6,12 +6,13 @@ use super::time_move_preview::{
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{
-    ClipTooltip, button, fade_envelope_samples, waveform_source_segment_view, waveform_summary_view,
+    ClipTooltip, button, button_with_style, fade_envelope_samples, waveform_source_segment_view,
+    waveform_summary_view,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
-    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
+    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb, rgba,
 };
 use hex_project::{BeatTime, Clip, MidiClip, MidiClipTrim, MidiSourcePlayback, Track};
 
@@ -137,7 +138,7 @@ fn midi_note_body(
     (notes, count)
 }
 
-fn clip_fade_layer(samples: Vec<(f32, f32)>) -> impl IntoElement + use<> {
+fn clip_fade_layer(samples: Vec<(f32, f32)>, active: bool) -> impl IntoElement + use<> {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -145,17 +146,33 @@ fn clip_fade_layer(samples: Vec<(f32, f32)>) -> impl IntoElement + use<> {
             let top = f32::from(bounds.origin.y);
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
-            let mut path = PathBuilder::stroke(px(1.25));
+            let mut shade = PathBuilder::fill();
+            if let Some((x, _)) = samples.first() {
+                shade.move_to(point(px(left + width * x), px(top)));
+            }
+            let mut path = active.then(|| PathBuilder::stroke(px(1.25)));
             for (index, (x, gain)) in samples.iter().copied().enumerate() {
                 let point = point(px(left + width * x), px(top + height * (1.0 - gain)));
-                if index == 0 {
-                    path.move_to(point);
-                } else {
-                    path.line_to(point);
+                if let Some(path) = path.as_mut() {
+                    if index == 0 {
+                        path.move_to(point);
+                    } else {
+                        path.line_to(point);
+                    }
                 }
+                shade.line_to(point);
             }
-            if let Ok(path) = path.build() {
-                window.paint_path(path, rgb(theme::color(theme::PaletteRole::Secondary)));
+            if let Some((x, _)) = samples.last() {
+                shade.line_to(point(px(left + width * x), px(top)));
+            }
+            shade.close();
+            if let Ok(shade) = shade.build() {
+                window.paint_path(shade, rgba(0x00000038));
+            }
+            if let Some(path) = path
+                && let Ok(path) = path.build()
+            {
+                window.paint_path(path, rgba(0x000000e0));
             }
         },
     )
@@ -400,6 +417,10 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.track_row_builds = self.track_row_builds.saturating_add(1);
+        }
         let ClipViewTimeline {
             viewport,
             grid,
@@ -432,6 +453,19 @@ impl EditorView {
                     }
                 }),
             );
+        let track_selected = self.track_selection.contains(track_id);
+        if track_selected {
+            clip_area = clip_area.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .debug_selector(move || format!("selected-track-lane-{}", track_id.value()))
+                    .bg(
+                        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .alpha(theme::TRACK_SELECTION_OPACITY),
+                    ),
+            );
+        }
         let lane_entity = cx.entity();
         clip_area = clip_area.children([canvas(
             move |bounds, _, cx| {
@@ -480,6 +514,38 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        if track_selected {
+            // Paint beneath clip content so every outer selection stroke stays
+            // intact, including where vertical clip edges cross these accents.
+            let edge = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .alpha(theme::TRACK_SELECTION_EDGE_OPACITY);
+            let stroke = 1.0 / scale_factor.max(1.0);
+            clip_area = clip_area
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-top-{}", track_id.value())
+                        })
+                        .bg(edge),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-bottom-{}", track_id.value())
+                        })
+                        .bg(edge),
+                );
+        }
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
@@ -993,8 +1059,16 @@ impl EditorView {
                 }),
             );
         let track_name = track.name().to_owned();
-        let track_name_view = div()
+        let track_name_view = super::track_header::name()
             .id(("track-name", track_id.value()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.click_count == 1 {
+                        view.begin_track_reorder(track_id, event.position, window, cx);
+                    }
+                }),
+            )
             .relative()
             .children(self.track_selection.contains(track_id).then(|| {
                 div()
@@ -1005,15 +1079,11 @@ impl EditorView {
                     .opacity(0.2)
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
-            .w_full()
-            .flex_shrink_0()
-            .min_w_0()
-            .h(px(18.0))
-            .cursor_pointer()
-            .truncate()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(self.track_name_label(track, cx))
+            .child(self.track_name_label(
+                super::track_name::Target::Track(track.id()),
+                track.name(),
+                cx,
+            ))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: track_name.clone(),
@@ -1021,13 +1091,15 @@ impl EditorView {
                 .into()
             });
         let live_volume = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        // Empty header gutters bubble to the shared selection/focus owner.
+        // Only actual control hit regions stop clicks; row-wide stops make the
+        // lower header background unreachable for ordinary/modifier selection.
         let header_content = if live_volume {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
             let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
-                .on_click(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .gap(px(2.0))
                 .child(
@@ -1039,6 +1111,7 @@ impl EditorView {
                     .h(px(18.0))
                     .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, window, cx| {
+                        cx.stop_propagation();
                         view.show_gain_lane(track_id, window, cx)
                     })),
                 )
@@ -1051,6 +1124,7 @@ impl EditorView {
                     .h(px(18.0))
                     .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
                         let next = if view.send_menu_track == Some(track_id) {
                             None
                         } else {
@@ -1066,7 +1140,7 @@ impl EditorView {
                         cx.notify();
                     })),
                 );
-            let activator = button(
+            let activator = button_with_style(
                 "",
                 if track.muted() {
                     "activate track"
@@ -1074,29 +1148,29 @@ impl EditorView {
                     "deactivate track"
                 },
                 ("track-mute", track_id.value()),
+                theme::action_style().with_state_colors(active_background, active_text),
             )
             .debug_selector(move || format!("track-mute-{}", track_id.value()))
             .flex_1()
             .min_w_0()
             .h(px(18.0))
-            .bg(rgb(active_background))
-            .text_color(rgb(active_text))
             .child(theme::text((track_index + 1).to_string()))
             .on_click(cx.listener(move |view, _, _, cx| {
+                cx.stop_propagation();
                 view.toggle_mute(track_id);
                 cx.notify();
             }));
-            let solo = button(
+            let solo = button_with_style(
                 "s",
                 "solo track · s · cmd+click additive",
                 ("track-solo", track_id.value()),
+                theme::action_style().with_state_colors(solo_background, solo_text),
             )
             .debug_selector(move || format!("track-solo-{}", track_id.value()))
             .w(px(28.0))
             .h(px(18.0))
-            .bg(rgb(solo_background))
-            .text_color(rgb(solo_text))
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+                cx.stop_propagation();
                 view.toggle_solo(track_id, !event.modifiers().platform);
                 cx.notify();
             }));
@@ -1141,7 +1215,6 @@ impl EditorView {
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
-                        .on_click(|_, _, cx| cx.stop_propagation())
                         .w(px(122.0))
                         .flex_shrink_0()
                         .flex()
@@ -1161,15 +1234,22 @@ impl EditorView {
                                 .w_full()
                                 .flex()
                                 .gap(px(2.0))
-                                .child(self.track_volume(track, cx))
-                                .child(self.track_pan(track, cx)),
+                                .child(
+                                    self.track_volume(track, cx)
+                                        .id(("track-volume-hit", track_id.value()))
+                                        .on_click(|_, _, cx| cx.stop_propagation()),
+                                )
+                                .child(
+                                    self.track_pan(track, cx)
+                                        .id(("track-pan-hit", track_id.value()))
+                                        .on_click(|_, _, cx| cx.stop_propagation()),
+                                ),
                         ),
                 )
         } else {
             let track_controls = div()
                 .id(("arrangement-track-controls", track_id.value()))
                 .debug_selector(move || format!("track-controls-{}", track_id.value()))
-                .on_click(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .items_center()
                 .gap_1()
@@ -1182,6 +1262,7 @@ impl EditorView {
                     )
                     .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, window, cx| {
+                        cx.stop_propagation();
                         view.show_gain_lane(track_id, window, cx);
                     })),
                 )
@@ -1193,6 +1274,7 @@ impl EditorView {
                         button("+", "increase track gain", ("gain-up", track_id.value()))
                             .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
                             .on_click(cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
                                 if view
                                     .state
                                     .as_ref()
@@ -1212,6 +1294,7 @@ impl EditorView {
                         button("−", "decrease track gain", ("gain-down", track_id.value()))
                             .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
                             .on_click(cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
                                 if view
                                     .state
                                     .as_ref()
@@ -1260,6 +1343,7 @@ impl EditorView {
                         theme::color(theme::PaletteRole::Muted)
                     }))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
                         view.toggle_mute(track_id);
                         cx.notify();
                     })),
@@ -1278,6 +1362,7 @@ impl EditorView {
                     }))
                     .on_click(cx.listener(
                         move |view, event: &gpui::ClickEvent, _, cx| {
+                            cx.stop_propagation();
                             view.toggle_solo(track_id, !event.modifiers().platform);
                             cx.notify();
                         },
@@ -1298,6 +1383,7 @@ impl EditorView {
                         },
                     )))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
                         let next = if view.send_menu_track == Some(track_id) {
                             None
                         } else {
@@ -1323,85 +1409,60 @@ impl EditorView {
         };
         let header_focus = self.track_header_focus(track_id, cx);
         let click_focus = header_focus.clone();
-        let header = div()
-            .id(("arrangement-track-header", track_id.value()))
-            .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
-            .track_focus(&header_focus)
-            .key_context("hex_track_header")
-            .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    view.select_track_with_modifiers(track_id, event.modifiers(), window);
-                    click_focus.focus(window);
-                    cx.notify();
-                }),
-            )
-            .w(px(self.track_header_width()))
-            .h(px(self.track_height(track_id)))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .relative()
-            .pb(px(3.0))
-            .justify_center()
-            .px_1()
-            .border_l_2()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(if selected {
-                theme::color(theme::PaletteRole::Raised)
-            } else {
-                theme::color(theme::PaletteRole::Surface)
-            }))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-            .child(header_content)
-            .children(self.track_resize_handles(track_id, cx))
-            .relative()
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(1.0))
-                    .bottom_0()
-                    .w(px(4.0))
-                    .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
-                    .bg(rgb(theme::element_colors(track.color()).accent)),
-            )
-            // Paint selection after opaque header content and its assigned-color
-            // strip. Keep layout/input bounds unchanged and resize feedback local.
-            .children(
-                (selected
-                    && self.active_trim_drag.is_none()
-                    && self.active_midi_trim_drag.is_none())
+        let header = super::track_header::surface(
+            ("arrangement-track-header", track_id.value()),
+            self.track_header_width(),
+            self.track_height(track_id),
+            selected,
+        )
+        .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
+        .track_focus(&header_focus)
+        .key_context("hex_track_header")
+        .on_click(
+            cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                view.select_track_with_modifiers(track_id, event.modifiers(), window);
+                click_focus.focus(window);
+                cx.notify();
+            }),
+        )
+        .child(header_content)
+        .children(self.track_resize_handles(track_id, cx))
+        .relative()
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(1.0))
+                .bottom_0()
+                .w(px(4.0))
+                .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
+                .bg(rgb(theme::element_colors(track.color()).accent)),
+        )
+        // Paint selection after opaque header content and its assigned-color
+        // strip. Keep layout/input bounds unchanged and resize feedback local.
+        .children(
+            (selected && self.active_trim_drag.is_none() && self.active_midi_trim_drag.is_none())
                 .then(|| {
-                    div()
-                        .absolute()
-                        // Inset one pixel inside the full header, accounting for
-                        // its existing left/bottom layout borders.
-                        .left(px(-1.0))
-                        .right(px(1.0))
-                        .top(px(1.0))
-                        .bottom_0()
-                        .border_1()
-                        .debug_selector(move || {
-                            format!("track-selection-outline-{}", track_id.value())
-                        })
-                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    super::track_header::selection_outline(format!(
+                        "track-selection-outline-{}",
+                        track_id.value()
+                    ))
                 }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_track_color_context_menu(event.position, track_id, window, cx);
-                }),
-            );
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                view.open_track_color_context_menu(event.position, track_id, window, cx);
+            }),
+        );
         div()
             .w_full()
             .h(px(self.track_height(track_id)))
             .flex_shrink_0()
             .flex()
             .child(clip_area)
-            .child(header)
+            .child(self.device_drop_header(track_id, header, cx))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1706,7 +1767,8 @@ impl EditorView {
                     fade_envelope_samples(clip.retained_fade(), clip.start(), start, end)
                 };
                 if !clip.retained_fade().is_neutral() && fade.len() >= 2 {
-                    content = content.child(clip_fade_layer(fade));
+                    content =
+                        content.child(clip_fade_layer(fade, self.fade_curve_active(clip.id())));
                 }
             }
             ClipPaintSource::Midi(clip) => {
@@ -1959,7 +2021,8 @@ impl EditorView {
                 fade_envelope_samples(fade, clip.start(), visible_start, visible_end)
             };
             if samples.len() >= 2 {
-                content = content.child(clip_fade_layer(samples));
+                content =
+                    content.child(clip_fade_layer(samples, self.fade_curve_active(clip.id())));
             }
         }
         let clip_pixel_width = self
@@ -1977,10 +2040,28 @@ impl EditorView {
             viewport,
             cx,
         );
+        let hover_generation = self.project_generation;
         let mut content = content
             .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
+            .on_hover(cx.listener(move |view, hovered, _, cx| {
+                if *hovered && view.project_generation != hover_generation {
+                    return;
+                }
+                let hovered_clip = (hover_generation, clip_id);
+                let next = if *hovered {
+                    Some(hovered_clip)
+                } else if view.hovered_fade_clip == Some(hovered_clip) {
+                    None
+                } else {
+                    view.hovered_fade_clip
+                };
+                if view.hovered_fade_clip != next {
+                    view.hovered_fade_clip = next;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -2031,6 +2112,7 @@ impl EditorView {
 
     pub(super) fn drag_available(&self) -> bool {
         !self.track_resize_active()
+            && !self.track_reorder_active()
             && self.clip_name_edit.is_none()
             && !self.opening_project
             && !self.close_prompt_open
