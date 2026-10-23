@@ -85,7 +85,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -102,8 +102,20 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(in crate::editor) fn fixture(
     cx: &mut TestAppContext,
+) -> (
+    Arc<Environment>,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    Vec<ClipId>,
+) {
+    fixture_with_service(cx, Service::new(48_000, 32, 8_000_000).unwrap())
+}
+
+pub(in crate::editor) fn fixture_with_service(
+    cx: &mut TestAppContext,
+    service: Service,
 ) -> (
     Arc<Environment>,
     gpui::AnyWindowHandle,
@@ -116,7 +128,6 @@ fn fixture(
     let wav = fixture_wav(&files);
     let directory = files.root();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
@@ -173,7 +184,7 @@ fn fixture(
         .unwrap();
     (files, handle, editor, clips)
 }
-fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
+pub(in crate::editor) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let center = visual.debug_bounds(selector).unwrap().center();
