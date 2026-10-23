@@ -438,6 +438,11 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
         assert_eq!(refused.state.project.snapshot(), before);
         h.refuse.store(false, std::sync::atomic::Ordering::Release);
         let changed = run_callback(&mut h, section_request(revision, command));
+        assert_eq!(
+            changed.state.project.meter_map(),
+            &hex_project::MeterMap::common_time(),
+            "stopped section publication must not install synthetic same-meter boundaries"
+        );
         assert!(changed.error.is_none(), "{:?}", changed.error);
         (applied, _) = h.applied(applied);
         let after = changed.state.project.snapshot();
