@@ -134,7 +134,6 @@ mod tests {
 #[derive(Clone, Copy)]
 pub(crate) enum DeviceActionRole {
     Normal,
-    Muted,
     Destructive,
     Enabled,
     Bypassed,
@@ -152,7 +151,7 @@ pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole)
     };
     let preferred = color(match role {
         DeviceActionRole::Normal | DeviceActionRole::Enabled => PaletteRole::Text,
-        DeviceActionRole::Muted | DeviceActionRole::Bypassed => PaletteRole::Muted,
+        DeviceActionRole::Bypassed => PaletteRole::Muted,
         DeviceActionRole::Destructive => PaletteRole::Primary,
     });
     let hover_background = if matches!(role, DeviceActionRole::Enabled) {
@@ -231,7 +230,6 @@ mod action_tests {
             for selected in [false, true] {
                 for role in [
                     DeviceActionRole::Normal,
-                    DeviceActionRole::Muted,
                     DeviceActionRole::Destructive,
                     DeviceActionRole::Enabled,
                     DeviceActionRole::Bypassed,
