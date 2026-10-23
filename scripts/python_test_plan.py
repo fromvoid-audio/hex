@@ -16,6 +16,9 @@ REVIEWED_MODULES = frozenset({
     # Release-ledger fixtures use only their tool and changelog module; edits
     # to those scripts still take the comprehensive unknown/tooling path.
     "test_release_notes",
+    # Release/manual fixtures own temporary inputs and mocked native tools; app
+    # Rust edits do not affect them. Tooling/docs/config edits remain full checks.
+    "test_hex_release", "test_manual",
     "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
     # Architecture fixtures exercise check-architecture.py policy/refusal logic;
     # that guard still runs for app source/doc edits. Policy/test edits fall back.
