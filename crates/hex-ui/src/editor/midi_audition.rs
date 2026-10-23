@@ -167,6 +167,7 @@ impl EditorView {
             || self.midi_velocity.gesture.is_some()
             || self.midi_group_gesture.is_some()
             || self.midi_marquee.is_some()
+            || self.velocity_marquee_active()
             || self.midi_creation.is_some()
             || self.midi_stroke.is_some()
             || self.tuning.client.snapshot().is_some()

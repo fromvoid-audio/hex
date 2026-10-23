@@ -30,6 +30,8 @@ pub struct ResidentFreshRuntimeFence {
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
     InheritRuntime,
+    /// The sink owns the shared stopped gate through exact callback installation.
+    StoppedArrangement,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
     /// New/Open only: admit one exact pending owner before canonical generation replacement.
@@ -119,6 +121,19 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    /// A bounded control-worker handshake; source/resource custody remains here.
+    fn begin_section_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("native stopped arrangement edits are unavailable".into())
+    }
+    /// Callback-observed stopped frame. None means the command prefix is pending.
+    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+        None
+    }
+    /// Precommit cancellation only. Accepted publication retains its gate.
+    fn cancel_section_edit(&mut self) {}
     fn begin_sampler_edit(
         &mut self,
         _context: hex_engine::AudioSourceContext,

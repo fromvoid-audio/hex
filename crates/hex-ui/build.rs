@@ -10,11 +10,22 @@ fn git(arguments: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    let dataset = std::path::Path::new("../../changelog/generated.json");
+    println!("cargo:rerun-if-env-changed=HEX_RELEASE_CHANGELOG");
+    println!("cargo:rerun-if-env-changed=HEX_RELEASE_LABEL");
+    let version =
+        std::env::var("HEX_RELEASE_LABEL").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
+    println!("cargo:rustc-env=HEX_DISPLAY_VERSION={version}");
+    let release_dataset = std::env::var_os("HEX_RELEASE_CHANGELOG");
+    let dataset = release_dataset
+        .as_deref()
+        .map(std::path::Path::new)
+        .unwrap_or_else(|| std::path::Path::new("../../changelog/generated.json"));
     let bytes = match std::fs::read(dataset) {
         Ok(bytes) if bytes.len() <= 1024 * 1024 => bytes,
         Ok(_) => panic!("changelog exceeds the validated dataset limit"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) if release_dataset.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+            Vec::new()
+        }
         Err(error) => panic!("cannot embed changelog: {error}"),
     };
     let output =
