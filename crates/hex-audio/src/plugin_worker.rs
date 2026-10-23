@@ -12,6 +12,40 @@ use std::{
 struct Completion {
     fault: Option<Fault>,
 }
+// The same terminal protects both endpoints and the processor's actual owner.
+// In particular, unwind/exit cannot drop a native child before joining control.
+enum Processor {
+    Function(Box<dyn FnMut(Block) -> Result<Block, Fault> + Send>),
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(Box<hex_plugin_host::native::Prepared>),
+}
+struct State {
+    worker: Worker,
+    processor: Option<Processor>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_error: Option<hex_plugin_host::Error>,
+}
+impl State {
+    fn process(&mut self, block: Block) -> Result<Block, Fault> {
+        match self.processor.as_mut() {
+            Some(Processor::Function(process)) => process(block),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Some(Processor::Native(instance)) => match instance.exchange_on_worker(block) {
+                Ok(reply) => Ok(reply),
+                Err(error) => {
+                    let fault = if matches!(error, hex_plugin_host::Error::Cancelled) {
+                        Fault::Revoked
+                    } else {
+                        Fault::Protocol
+                    };
+                    self.native_error = Some(error);
+                    Err(fault)
+                }
+            },
+            None => Err(Fault::Protocol),
+        }
+    }
+}
 
 /// Kept by the existing publication control owner, never by the callback.
 /// Joining and final queue/endpoint destruction occur on that control lane.
@@ -20,8 +54,8 @@ pub(crate) struct Reaper {
     join: Option<JoinHandle<Completion>>,
     result: Option<thread::Result<Completion>>,
     completed: Arc<AtomicU64>,
-    terminal: crate::native_callback_owner::Terminal<Worker>,
-    worker: Option<Box<Worker>>,
+    terminal: crate::native_callback_owner::Terminal<State>,
+    worker: Option<Box<State>>,
 }
 impl Reaper {
     /// Observation after matching reply publication; not a canonical/audio ACK
@@ -63,34 +97,48 @@ impl Drop for Reaper {
 pub(crate) fn spawn(
     control: Control,
     worker: Worker,
-    mut process: impl FnMut(Block) -> Result<Block, Fault> + Send + 'static,
+    process: impl FnMut(Block) -> Result<Block, Fault> + Send + 'static,
+) -> std::io::Result<Reaper> {
+    spawn_processor(control, worker, Processor::Function(Box::new(process)))
+}
+fn spawn_processor(
+    control: Control,
+    worker: Worker,
+    processor: Processor,
 ) -> std::io::Result<Reaper> {
     let completed = Arc::new(AtomicU64::new(0));
     let published = Arc::clone(&completed);
     // The existing once-only guard also covers worker unwinding. Even if the
     // callback carrier has retired first, a worker exit cannot finally free
     // its ring endpoints: the exact terminal remains on joining control.
-    let (mut guard, terminal) = crate::native_callback_owner::reserve(worker);
+    let (mut guard, terminal) = crate::native_callback_owner::reserve(State {
+        worker,
+        processor: Some(processor),
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        native_error: None,
+    });
     let join = thread::Builder::new()
         .name("hex-plugin-transport".into())
         .spawn(move || {
             let mut fault = None;
             loop {
-                let Some(worker) = guard.owner_mut() else {
+                let Some(state) = guard.owner_mut() else {
                     fault = Some(Fault::Protocol);
                     break;
                 };
-                match worker.receive() {
+                match state.worker.receive() {
                     Ok(Some(block)) => {
-                        let result = process(block).and_then(|reply| worker.complete(reply));
+                        let result = state
+                            .process(block)
+                            .and_then(|reply| state.worker.complete(reply));
                         if let Err(error) = result {
-                            worker.revoke();
+                            state.worker.revoke();
                             if error != Fault::Revoked {
                                 fault = Some(error);
                             }
                             break;
                         }
-                        published.store(worker.completed_blocks(), Release);
+                        published.store(state.worker.completed_blocks(), Release);
                     }
                     Ok(None) => thread::sleep(Duration::from_micros(50)),
                     Err(Fault::Revoked) => break,
@@ -112,9 +160,157 @@ pub(crate) fn spawn(
     })
 }
 
+/// Joining native processor/endpoint custody. This is not graph admission.
+/// The caller must retain this control owner until the matching callback has
+/// returned through its actual terminal guard. Never join/drop it on callback.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub struct NativeWorker {
+    reaper: Reaper,
+    binding: Binding,
+    quantum: u16,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl NativeWorker {
+    /// Construct exact paired queues from the consumed actual native lease.
+    /// No caller-supplied identity/prefix is treated as source authority.
+    pub fn start_on_control(
+        mut instance: hex_plugin_host::native::Prepared,
+    ) -> Result<(Self, Callback), hex_plugin_host::Error> {
+        instance.validate_worker_transfer_on_control()?;
+        let binding = instance.configuration().binding;
+        let quantum = instance.configuration().quantum;
+        let prefix = instance.completed_blocks_on_control();
+        let (control, callback, worker) =
+            channel_from_completed_prefix(binding, quantum, prefix)
+                .map_err(|fault| hex_plugin_host::Error::Protocol(fault.message()))?;
+        let reaper = spawn_processor(control, worker, Processor::Native(Box::new(instance)))
+            .map_err(|error| hex_plugin_host::Error::IoAt("native transport worker", error))?;
+        Ok((
+            Self {
+                reaper,
+                binding,
+                quantum,
+            },
+            callback,
+        ))
+    }
+    pub fn binding(&self) -> Binding {
+        self.binding
+    }
+    pub fn quantum_frames(&self) -> u16 {
+        self.quantum
+    }
+    /// Actual constructor pairing; scalar equality alone is insufficient.
+    pub fn owns_callback(&self, callback: &Callback) -> bool {
+        callback.matches_control(&self.reaper.control)
+    }
+    pub fn revoke_on_control(&self) {
+        self.reaper.revoke();
+    }
+    /// Diagnostic publication progress only; never native/root/graph readiness.
+    pub fn published_blocks_on_control(&self) -> u64 {
+        self.reaper.completed_blocks()
+    }
+    /// Join, retain the exact old ring endpoints, and consume the returned
+    /// native processor into its actual quiescent protocol. Unwind/refusal is
+    /// terminal and cannot become a retry. Old callback custody stays separate.
+    pub fn quiesce_on_control(
+        &mut self,
+    ) -> Result<hex_plugin_host::native::Quiescent, hex_plugin_host::Error> {
+        let joined = self.reaper.join_on_control();
+        let state = self
+            .reaper
+            .worker
+            .as_mut()
+            .ok_or(hex_plugin_host::Error::Protocol(
+                "native worker terminal missing",
+            ))?;
+        let failure = state.native_error.take().or_else(|| {
+            joined
+                .err()
+                .map(|fault| hex_plugin_host::Error::Protocol(fault.message()))
+        });
+        if let Some(error) = failure {
+            if let Some(Processor::Native(instance)) = state.processor.as_mut() {
+                if let Err(custody) = instance.cancel_and_reap_on_control() {
+                    return Err(hex_plugin_host::Error::Preparation {
+                        cause: Box::new(error),
+                        exit: None,
+                        custody_error: Some(custody.to_string()),
+                    });
+                }
+            }
+            return Err(error);
+        }
+        match state.processor.take() {
+            Some(Processor::Native(instance)) => (*instance).quiesce_on_control(),
+            other => {
+                state.processor = other;
+                Err(hex_plugin_host::Error::Protocol(
+                    "native worker already returned its source",
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn processor_capture_returns_to_control_after_exit_or_unwind() {
+        struct Capture(Arc<std::sync::Mutex<Option<thread::ThreadId>>>);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() = Some(thread::current().id());
+            }
+        }
+        for unwind in [false, true] {
+            let destroyed = Arc::new(std::sync::Mutex::new(None));
+            let capture = Capture(Arc::clone(&destroyed));
+            let (control, mut callback, worker) = channel(
+                Binding {
+                    root: 1,
+                    instance: 2,
+                    graph: 3,
+                    epoch: 4,
+                },
+                8,
+            )
+            .unwrap();
+            let mut reaper = spawn(control, worker, move |_| {
+                let _retained = &capture;
+                assert!(!unwind, "original processor unwind fixture");
+                Err(Fault::InvalidSamples)
+            })
+            .unwrap();
+            callback
+                .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                .unwrap();
+            callback.finish(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !reaper.is_finished() {
+                assert!(std::time::Instant::now() < deadline);
+                thread::yield_now();
+            }
+            assert_eq!(
+                reaper.join_on_control(),
+                Err(if unwind {
+                    Fault::Protocol
+                } else {
+                    Fault::InvalidSamples
+                })
+            );
+            assert_eq!(
+                *destroyed.lock().unwrap(),
+                None,
+                "join retains processor custody"
+            );
+            drop(callback);
+            drop(reaper);
+            assert_eq!(*destroyed.lock().unwrap(), Some(thread::current().id()));
+        }
+    }
     #[test]
     fn transport_review_backend_cancel_revokes_before_next_audio_request() {
         let binding = Binding {
@@ -165,7 +361,7 @@ mod tests {
         assert_eq!(reaper.join_on_control(), Err(Fault::InvalidSamples));
         assert_eq!(reaper.join_on_control(), Err(Fault::InvalidSamples));
         assert!(matches!(
-            reaper.worker.as_mut().unwrap().receive(),
+            reaper.worker.as_mut().unwrap().worker.receive(),
             Err(Fault::Revoked)
         ));
         drop((callback, reaper));
@@ -204,3 +400,6 @@ mod tests {
         assert_eq!(reaper.join_on_control(), Err(Fault::Protocol));
     }
 }
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod native_tests;

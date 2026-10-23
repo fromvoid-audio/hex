@@ -13,7 +13,7 @@
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 mod device;
-mod plugin_worker;
+pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};

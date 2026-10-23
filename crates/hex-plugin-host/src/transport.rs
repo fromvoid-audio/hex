@@ -295,6 +295,10 @@ impl Callback {
     pub fn reject(&mut self, fault: Fault) {
         let _ = self.fail::<()>(fault);
     }
+    /// Constructor pairing only; never native/root publication authority.
+    pub fn matches_control(&self, control: &Control) -> bool {
+        Arc::ptr_eq(&self.revoked, &control.revoked)
+    }
     pub fn binding(&self) -> Binding {
         self.binding
     }

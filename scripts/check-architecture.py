@@ -55,7 +55,7 @@ DEV_ALLOWED = {
     # Actual Session -> native adapter fixtures, never a production editor model.
     'hex-desktop': {'hex-project', 'hex-tuning', 'hex-storage'},
     # Actual provider/pair callback allocation probes; never a production edge.
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices'},
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},

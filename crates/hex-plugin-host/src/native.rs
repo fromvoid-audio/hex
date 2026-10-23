@@ -480,6 +480,10 @@ impl Prepared {
         Pending::prepare(build, source, options.preparation, cancellation, setup)?
             .complete_on_control(Some(options.presentation))
     }
+    /// Cumulative actual successful PCM exchanges, not callback/graph acceptance.
+    pub fn completed_blocks_on_control(&self) -> u64 {
+        self.sequence
+    }
     pub fn ready(&self) -> &Ready {
         &self.ready
     }

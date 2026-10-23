@@ -12,6 +12,12 @@ pub struct Quiescent {
     facts: Facts,
 }
 impl Prepared {
+    /// Check the actual child and cancellation state before transferring this
+    /// unique lease to a worker. This is not graph admission or a future-liveness
+    /// guarantee; subsequent exchange failures remain terminal.
+    pub fn validate_worker_transfer_on_control(&mut self) -> Result<()> {
+        self.require_live_epoch()
+    }
     fn require_live_epoch(&mut self) -> Result<()> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));

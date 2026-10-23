@@ -17,6 +17,8 @@ cpal = "=0.17.3"
 rtrb = "=0.3.4"
 
 [dev-dependencies]
+hex-plugin-scan = { path = "../hex-plugin-scan" }
+hex-plugin-state = { path = "../hex-plugin-state" }
 hex-plugin-host = { path = "../hex-plugin-host", features = ["test-support"] }
 # Real provider/pair allocation probes only; no production device dependency.
 hex-devices = { path = "../hex-devices" }

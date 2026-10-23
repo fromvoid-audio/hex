@@ -271,12 +271,8 @@ fn owned_worker_and_all_four_original_guards_retire_on_control_after_zero_alloca
     assert!(retirement.advance().unwrap());
     let records = records.lock().unwrap();
     assert_eq!(records.len(), 3);
-    for (name, thread) in records.iter() {
-        if *name == "processor" {
-            assert_ne!(*thread, control_thread);
-        } else {
-            assert_eq!(*thread, control_thread);
-        }
+    for (_, thread) in records.iter() {
+        assert_eq!(*thread, control_thread);
     }
     assert!(
         records.iter().position(|(name, _)| *name == "processor")
