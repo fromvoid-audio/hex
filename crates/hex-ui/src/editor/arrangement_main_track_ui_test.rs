@@ -67,6 +67,7 @@ fn completed_event(state: &ViewState) -> Event {
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        document_format_upgrade_required: false,
         open_complete: false,
         project_replaced: false,
         stopped_playback_restore_complete: false,
@@ -353,7 +354,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             let x = left + width * 0.2;
             let y = lane.top + lane.height * 0.7;
             let expected = viewport.start + viewport.length / 5;
-            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             view.update_time_selection_gesture(x, y, true);
             assert!(view.finish_time_selection_gesture());
             assert!(
@@ -362,7 +363,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             );
             assert_eq!(view.edit_cursor.expect("cursor").frame, expected);
 
-            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             assert!(view.update_time_selection_gesture(left + width * 0.6, y, true));
             assert!(view.finish_time_selection_gesture());
             let range = view.normalized_time_selection().expect("main range");
@@ -381,7 +382,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             assert!(view.finish_time_range_move_gesture());
             assert!(view.last_enqueued_edit.is_none());
 
-            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             // Inside Main's right edge but outside the narrower regular lane:
             // the timer must not spuriously scroll the viewport.
             view.update_time_selection_gesture(left + width - 0.5, y, true);

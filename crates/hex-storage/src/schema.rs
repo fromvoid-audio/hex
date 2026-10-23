@@ -1,14 +1,20 @@
 pub(crate) mod appearance;
+mod arrangement_sections;
 pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod device_assets;
+pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
 mod host_gain;
+pub(crate) mod legacy;
+pub(crate) mod legacy_early;
 mod midi_clip_volume;
+pub(crate) mod midi_one_shot;
+mod migrations;
 pub(crate) mod musical_audio;
 mod original_sources;
 pub(crate) mod playable_routing;
@@ -1258,6 +1264,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1296,6 +1303,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1334,6 +1342,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1379,6 +1388,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1424,6 +1434,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1469,6 +1480,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1514,6 +1526,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1577,6 +1590,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -1842,6 +1856,7 @@ impl DocumentV12 {
                                 id: clip.id,
                                 name: clip.name,
                                 source: MidiSourceSnapshot {
+                                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                                     source_length_raw: clip.source.source_length_raw,
                                     source_start_raw: clip.source.source_start_raw,
                                     loop_start_raw: clip.source.loop_start_raw,
@@ -2013,6 +2028,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
@@ -2079,7 +2095,7 @@ impl DocumentV11 {
         if header.version == 33 {
             return Err(StorageError::Invalid("unsupported alpha project format 33"));
         }
-        if header.version == 35 {
+        if header.version == 37 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {
@@ -2235,6 +2251,7 @@ impl DocumentV11 {
                                 id: clip.id,
                                 name: clip.name,
                                 source: MidiSourceSnapshot {
+                                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                                     source_length_raw: clip.source.source_length_raw,
                                     source_start_raw: clip.source.source_start_raw,
                                     loop_start_raw: clip.source.loop_start_raw,
@@ -2315,6 +2332,8 @@ impl DocumentV10 {
                                 clips
                                     .into_iter()
                                     .map(|c| MidiClipSnapshot {
+                                        one_shot_boundary:
+                                            hex_project::MidiOneShotBoundary::SourceEnd,
                                         volume: hex_project::MidiClipVolume::default(),
                                         name: "clip".into(),
                                         flavor: hex_project::ClipFlavor::default(),
@@ -2362,6 +2381,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
@@ -2454,6 +2474,7 @@ impl DocumentV9 {
                             clips
                                 .into_iter()
                                 .map(|c| MidiClipSnapshot {
+                                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                                     volume: hex_project::MidiClipVolume::default(),
                                     name: "clip".into(),
                                     flavor: hex_project::ClipFlavor::default(),
@@ -2502,6 +2523,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
@@ -2562,6 +2584,7 @@ fn midi_v10_from_snapshot(clip: MidiClipSnapshot) -> MidiClipDtoV10 {
 
 fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
     MidiClipSnapshot {
+        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
         volume: hex_project::MidiClipVolume::default(),
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
@@ -2683,6 +2706,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                             id: clip.id,
                             name: clip.name,
                             source: MidiSourceSnapshot {
+                                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                                 source_length_raw: clip.source.source_length_raw,
                                 source_start_raw: clip.source.source_start_raw,
                                 loop_start_raw: clip.source.loop_start_raw,

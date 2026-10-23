@@ -188,7 +188,7 @@ fn worker_raw_import_and_midi_placement_carve_literal_pcm_and_saved_history() {
         assert_eq!(render(&opened, 89), literal);
         // Corrupt only a clip's placement in a separate current-format document.
         let mut document: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
-        assert_eq!(document["version"], 35);
+        assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
         let clips = document
             .pointer_mut("/tracks/0/audio_clips")
             .unwrap()
@@ -222,4 +222,158 @@ fn worker_raw_import_and_midi_placement_carve_literal_pcm_and_saved_history() {
         assert_eq!(fs::read(bad).unwrap(), invalid);
         assert_eq!(fs::read(path).unwrap(), original_bytes);
     }
+}
+
+#[test]
+fn global_tempo_worker_publishes_natural_audio_onset_and_reopens_frozen_timing() {
+    use hex_project::{Tempo, WarpMode, default_audio_warp};
+    let files = Directory::new();
+    let service = Service::new(8_000, 32, 8_000_000).unwrap();
+    assert!(receive(&service).error.is_none());
+    let imported = run(
+        &service,
+        Request::Import(files.wav("tempo.wav", 1_000, 8_192)),
+    );
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let moved = run(
+        &service,
+        Request::Edit(Command::MoveClip {
+            clip,
+            track,
+            start: 4_000,
+        }),
+    );
+    let settings = default_audio_warp(
+        moved.state.project.clip(clip).unwrap(),
+        moved.state.project.tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        }),
+    );
+    let before = run(
+        &service,
+        Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: None,
+        }),
+    );
+    let changed = run(
+        &service,
+        Request::Edit(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        }),
+    );
+    let audio = changed.state.project.clip(clip).unwrap();
+    assert_eq!((audio.start(), audio.duration()), (8_000, 1_000));
+    let render_onset = |event: &Event, onset: u64| {
+        let revision = event
+            .playback
+            .as_ref()
+            .and_then(Playback::prepared_revision)
+            .unwrap()
+            .clone();
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback.apply(PlaybackCommand::PlayFrom(onset - 1));
+        let mut pcm = vec![[0.0; 2]; 1_002];
+        for chunk in pcm.chunks_mut(61) {
+            playback.render(chunk).unwrap();
+        }
+        let mut literal = vec![[0.25; 2]; 1_002];
+        literal[0] = [0.0; 2];
+        literal[1_001] = [0.0; 2];
+        assert_eq!(pcm, literal);
+    };
+    render_onset(&changed, 8_000);
+    let undo = run(&service, Request::Undo);
+    assert_eq!(undo.state.project, before.state.project);
+    render_onset(&undo, 4_000);
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project, changed.state.project);
+    render_onset(&redo, 8_000);
+    let path = files.0.join("tempo.hex");
+    assert!(run(&service, Request::SaveNew(path.clone())).save_complete);
+    run(
+        &service,
+        Request::Edit(Command::SetProjectTempo {
+            tempo: Tempo::new(90_000_000).unwrap(),
+        }),
+    );
+    let reopened = run(&service, Request::Open(path));
+    assert!(reopened.open_complete && reopened.project_replaced);
+    assert_eq!(reopened.state.project, changed.state.project);
+    render_onset(&reopened, 8_000);
+}
+
+#[test]
+fn selection_warp_is_one_worker_publication_with_per_source_settings_and_history() {
+    use hex_project::{ClipEdit, WarpMode};
+    let files = Directory::new();
+    let service = Service::new(8_000, 32, 8_000_000).unwrap();
+    assert!(receive(&service).error.is_none());
+    let imported = run(
+        &service,
+        Request::Import(files.wav("selection-a.wav", 1_000, 8_192)),
+    );
+    let first = imported.state.project.tracks()[0].clips()[0].id();
+    let before = run(
+        &service,
+        Request::Import(files.wav("selection-b.wav", 500, -4_096)),
+    );
+    let second = before.state.project.tracks()[1].clips()[0].id();
+    let warped = run(
+        &service,
+        Request::Edit(Command::EditClips {
+            clips: vec![first, second],
+            edit: ClipEdit::WarpEnabled { enabled: true },
+        }),
+    );
+    assert_eq!(warped.state.revision, before.state.revision + 1);
+    for (clip, frames) in [(first, 1_000), (second, 500)] {
+        let domain = &warped
+            .state
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain;
+        assert!(domain.warp_enabled);
+        let settings = domain.warp.as_ref().unwrap();
+        assert!(matches!(settings.mode, WarpMode::Beats { .. }));
+        assert_eq!(settings.markers.last().unwrap().source_frame, frames);
+    }
+    let undo = run(&service, Request::Undo);
+    assert_eq!(undo.state.project, before.state.project);
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project, warped.state.project);
+    let natural = run(
+        &service,
+        Request::Edit(Command::EditClips {
+            clips: vec![first, second],
+            edit: ClipEdit::WarpEnabled { enabled: false },
+        }),
+    );
+    let expected = (0..1_000)
+        .map(|frame| [if frame < 500 { 0.125 } else { 0.25 }; 2])
+        .collect::<Vec<_>>();
+    assert_eq!(render(&natural, 61), expected);
+    let path = files.0.join("group.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    run(
+        &service,
+        Request::Edit(Command::EditClips {
+            clips: vec![first, second],
+            edit: ClipEdit::Gain { millidb: -6_000 },
+        }),
+    );
+    let opened = run(&service, Request::Open(path));
+    assert_eq!(opened.state.project, natural.state.project);
+    assert_eq!(render(&opened, 127), expected);
 }

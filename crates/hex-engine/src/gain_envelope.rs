@@ -23,6 +23,7 @@ pub struct GainPreviewSegment {
 pub struct GainEnvelopeKnot {
     frame: u64,
     gain: f64,
+    incoming_gain: f64,
     outgoing: GainInterpolation,
 }
 impl GainEnvelopeKnot {
@@ -31,6 +32,9 @@ impl GainEnvelopeKnot {
     }
     pub fn gain(&self) -> f64 {
         self.gain
+    }
+    pub fn incoming_gain(&self) -> f64 {
+        self.incoming_gain
     }
     pub fn outgoing(&self) -> GainInterpolation {
         self.outgoing
@@ -178,12 +182,14 @@ fn fill_knots(
     let mut attempts = 0;
     let mut push = |beat: hex_project::BeatTime,
                     gain: f64,
+                    incoming_gain: f64,
                     outgoing: GainInterpolation|
      -> Result<(), Invalid> {
         let frame = tempo.beat_to_frame(beat).map_err(|e| Invalid(e.0))?;
         let knot = GainEnvelopeKnot {
             frame,
             gain,
+            incoming_gain,
             outgoing,
         };
         if knots
@@ -201,7 +207,12 @@ fn fill_knots(
         Ok(())
     };
     for (index, point) in points.iter().enumerate() {
-        push(point.beat, f64::from(point.gain), point.outgoing)?;
+        push(
+            point.beat,
+            f64::from(point.gain),
+            f64::from(point.incoming_gain.unwrap_or(point.gain)),
+            point.outgoing,
+        )?;
         if point.outgoing == GainInterpolation::Linear
             && let Some(next) = points.get(index + 1)
         {
@@ -209,8 +220,9 @@ fn fill_knots(
                 let fraction = (marker.beat().raw() - point.beat.raw()) as f64
                     / (next.beat.raw() - point.beat.raw()) as f64;
                 let gain = f64::from(point.gain)
-                    + (f64::from(next.gain) - f64::from(point.gain)) * fraction;
-                push(marker.beat(), gain, GainInterpolation::Linear)?;
+                    + (f64::from(next.incoming_gain.unwrap_or(next.gain)) - f64::from(point.gain))
+                        * fraction;
+                push(marker.beat(), gain, gain, GainInterpolation::Linear)?;
             }
         }
     }
@@ -307,7 +319,7 @@ impl PreparedGainEnvelope {
             return point.gain as f32;
         };
         let fraction = (frame - point.frame) as f64 / (next.frame - point.frame) as f64;
-        (point.gain + (next.gain - point.gain) * fraction) as f32
+        (point.gain + (next.incoming_gain - point.gain) * fraction) as f32
     }
     fn visit_segments(&self, mut start: u64, end: u64, visit: &mut impl FnMut(GainPreviewSegment)) {
         while start < end {
@@ -332,7 +344,13 @@ impl PreparedGainEnvelope {
             let end_gain = if held {
                 start_gain
             } else {
-                self.base_value_at(next)
+                self.knots
+                    .get(self.knots.partition_point(|knot| knot.frame < next))
+                    .filter(|knot| knot.frame == next)
+                    .map_or_else(
+                        || self.base_value_at(next),
+                        |knot| knot.incoming_gain as f32,
+                    )
             };
             visit(GainPreviewSegment {
                 start_frame: start,
@@ -406,6 +424,7 @@ mod tests {
         for track in &mut snapshot.tracks {
             track.gain_envelope = (0..256)
                 .map(|i| GainPoint {
+                    incoming_gain: None,
                     beat: BeatTime::from_quarters(i).unwrap(),
                     gain: 1.0,
                     outgoing: GainInterpolation::Linear,

@@ -68,7 +68,31 @@ pub(super) fn exercise(
         std::thread::sleep(Duration::from_millis(1));
     };
     let input = |visual: &mut VisualTestContext, parameter, text: &str| {
-        let center = visual.debug_bounds(selector(parameter)).unwrap().center();
+        let field = visual.debug_bounds(selector(parameter)).unwrap();
+        let rail = visual.debug_bounds("device-chain-scroll").unwrap();
+        let delta = if field.left() < rail.left() {
+            rail.left() - field.left() + gpui::px(4.0)
+        } else if field.right() > rail.right() {
+            rail.right() - field.right() - gpui::px(4.0)
+        } else {
+            gpui::px(0.0)
+        };
+        // The wide sampler intentionally scrolls in a narrow native window.
+        // Reach the actual input instead of clicking its offscreen layout bounds.
+        if delta != gpui::px(0.0) {
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: rail.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(delta, gpui::px(0.0))),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+        }
+        let field = visual.debug_bounds(selector(parameter)).unwrap();
+        assert!(
+            field.left() >= rail.left() && field.right() <= rail.right(),
+            "{parameter:?} must be reachable before text entry: {field:?} in {rail:?}"
+        );
+        let center = field.center();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");

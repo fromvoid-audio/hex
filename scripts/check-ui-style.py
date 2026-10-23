@@ -26,6 +26,7 @@ widgets = (
     'harmonics::tools(', 'restart)', 'oscillator_velocity)', 'quantize)',
     'row.child(', 'loop_cell)',
     'tools)', 'oscillator_fields)', 'link)', 'enabled)', 'hex_widgets::device_segment(',
+    'hex_widgets::action(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
@@ -58,7 +59,9 @@ widgets = (
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
-    'self.browser_audition_row(', 'mini_waveform(',
+    'self.browser_audition_row(',
+    # Shared sampler/browser waveform canvas contains no text.
+    'super::super::overview_waveform::render(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
