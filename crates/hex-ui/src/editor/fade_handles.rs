@@ -113,7 +113,12 @@ pub(super) struct FadeDrag {
     snap_grid: super::musical_time::SnapGrid,
 }
 
-fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Option<ClipFade> {
+// Curve motion retains subframe precision; endpoint lengths still round to frames.
+fn edited_fade(fade: ClipFade, handle: Handle, frames: f64, bend: i16) -> Option<ClipFade> {
+    if !frames.is_finite() {
+        return None;
+    }
+    let whole_frames = frames.round() as i128;
     let span = fade.span();
     let start = fade.in_start();
     let end_offset = fade.out_end_offset();
@@ -125,14 +130,14 @@ fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Optio
     let mut out_position = fade.out_position();
     let shift = |value: u64, upper: u64| {
         i128::from(value)
-            .saturating_add(frames)
+            .saturating_add(whole_frames)
             .clamp(0, i128::from(upper)) as u64
     };
     match handle {
         Handle::InTop => fade_in = shift(fade_in, span - start),
         Handle::OutTop => {
             fade_out = i128::from(fade_out)
-                .saturating_sub(frames)
+                .saturating_sub(whole_frames)
                 .clamp(0, i128::from(span - end_offset)) as u64
         }
         Handle::InBottom | Handle::OutBottom => return None,
@@ -152,40 +157,25 @@ fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Optio
                     *curve = next;
                 }
             }
-            if frames != 0 {
+            if frames != 0.0 {
                 *curve = (*curve).clamp(-500, 500);
             }
             let length = if out { fade.fade_out() } else { fade.fade_in() };
-            if length > 1 && (frames != 0 || bend != 0) {
-                let gain = curve_handle_gain(fade, out);
-                let original = fade.position_at_gain(out, gain)?;
-                let target = (original + frames as f64 / (length - 1) as f64).clamp(0.001, 0.999);
-                // Solve on control only; canonical playback does no search.
-                let shaped = fade
-                    .with_shape(start, end_offset, in_curve, out_curve)
-                    .ok()?;
-                let mut low = 1_u16;
-                let mut high = 999_u16;
-                while low < high {
-                    let mid = low + (high - low) / 2;
-                    let candidate = shaped
-                        .with_curve_positions(
-                            if out { in_position } else { mid },
-                            if out { mid } else { out_position },
-                        )
-                        .ok()?;
-                    if candidate.position_at_gain(out, curve_handle_gain(candidate, out))?
-                        < target - 1e-9
-                    {
-                        low = mid + 1;
-                    } else {
-                        high = mid;
-                    }
-                }
+            let changed = if out {
+                out_curve != fade.out_curve()
+            } else {
+                in_curve != fade.in_curve()
+            };
+            if length > 1 && (frames != 0.0 || changed) {
+                let original = fade.position_at_gain(out, curve_handle_gain(fade, out))?;
+                let target = (original + frames / (length - 1) as f64).clamp(0.001, 0.999);
+                // Explicit edits use the bounded ordinate, whose mapped half
+                // progress is the canonical horizontal position.
+                let position = (target * 1000.0).round().clamp(1.0, 999.0) as u16;
                 if out {
-                    out_position = low;
+                    out_position = position;
                 } else {
-                    in_position = low;
+                    in_position = position;
                 }
             }
         }
@@ -202,43 +192,35 @@ fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Optio
 // ramps multiply in playback/the shaded envelope, but must not pull the other
 // ramp's control outside its editing box.
 fn curve_handle_gain(fade: ClipFade, out: bool) -> f64 {
-    let curve = if out {
-        fade.out_curve()
-    } else {
-        fade.in_curve()
-    };
-    ((1001.0 - f64::from(curve)) / 2002.0).clamp(0.25, 0.75)
+    fade.curve_midpoint_gain(out).clamp(0.25, 0.75)
 }
 
-fn knots(fade: ClipFade) -> [(Handle, u64, f32); 6] {
+fn knots(fade: ClipFade) -> [(Handle, (u64, f64), f32); 6] {
     let end = fade.span() - fade.out_end_offset() - 1;
     let in_top = fade.in_start() + fade.fade_in().saturating_sub(1);
     let out_top = (end + 1).saturating_sub(fade.fade_out()).min(end);
-    let in_mid = fade.in_start()
-        + ((in_top - fade.in_start()) as f64
+    let interior = |start: u64, end: u64, out| {
+        let length = end - start;
+        let offset = length as f64
             * fade
-                .position_at_gain(false, curve_handle_gain(fade, false))
-                .unwrap_or(0.5))
-        .round() as u64;
-    let out_mid = out_top
-        + ((end - out_top) as f64
-            * fade
-                .position_at_gain(true, curve_handle_gain(fade, true))
-                .unwrap_or(0.5))
-        .round() as u64;
+                .position_at_gain(out, curve_handle_gain(fade, out))
+                .unwrap_or(0.5);
+        let whole = (offset.floor() as u64).min(length);
+        (start + whole, (offset - whole as f64).clamp(0.0, 1.0))
+    };
     [
-        (Handle::InTop, in_top, 1.0),
-        (Handle::InBottom, fade.in_start(), 0.0),
+        (Handle::InTop, (in_top, 0.0), 1.0),
+        (Handle::InBottom, (fade.in_start(), 0.0), 0.0),
         (
             Handle::InCurve,
-            in_mid,
+            interior(fade.in_start(), in_top, false),
             curve_handle_gain(fade, false) as f32,
         ),
-        (Handle::OutTop, out_top, 1.0),
-        (Handle::OutBottom, end, 0.0),
+        (Handle::OutTop, (out_top, 0.0), 1.0),
+        (Handle::OutBottom, (end, 0.0), 0.0),
         (
             Handle::OutCurve,
-            out_mid,
+            interior(out_top, end, true),
             curve_handle_gain(fade, true) as f32,
         ),
     ]
@@ -384,8 +366,8 @@ impl EditorView {
         if !dx.is_finite() || !dy.is_finite() || drag.lane.width <= 0.0 {
             return;
         }
-        let frames = (f64::from(dx) / f64::from(drag.lane.width) * drag.viewport.length as f64)
-            .round() as i128;
+        let frame_delta = f64::from(dx) / f64::from(drag.lane.width) * drag.viewport.length as f64;
+        let frames = frame_delta.round() as i128;
         let bend = (dy * 2002.0 / (drag.lane.height - super::clip_name::CLIP_NAME_HEIGHT).max(8.0))
             .round()
             .clamp(-2000.0, 2000.0) as i16;
@@ -442,7 +424,27 @@ impl EditorView {
                 }
             }
         } else {
-            let Some(next) = edited_fade(drag.original, drag.handle, frames, bend) else {
+            let delta = if matches!(drag.handle, Handle::InCurve | Handle::OutCurve) {
+                let Some(end) = drag
+                    .clip
+                    .start()
+                    .checked_add(drag.clip.duration())
+                    .zip(drag.viewport.end())
+                else {
+                    return;
+                };
+                let visible = end
+                    .0
+                    .min(end.1)
+                    .saturating_sub(drag.clip.start().max(drag.viewport.start))
+                    .max(1);
+                let width =
+                    (drag.lane.width * (visible as f32 / drag.viewport.length as f32)).max(3.0);
+                f64::from(dx) * visible.saturating_sub(1).max(1) as f64 / f64::from(width)
+            } else {
+                frame_delta
+            };
+            let Some(next) = edited_fade(drag.original, drag.handle, delta, bend) else {
                 return;
             };
             (next, None, None)
@@ -558,32 +560,46 @@ impl EditorView {
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
         let mut positions = Vec::with_capacity(6);
-        for (handle, domain_frame, gain) in knots(controls) {
+        for (handle, (domain_frame, subframe), gain) in knots(controls) {
             if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
                 || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
             {
                 continue;
             }
-            let local_frame = if local_controls {
-                Some(domain_frame)
-            } else if let Some(edit) = clip.audio_edit() {
-                edit.projected_fade(state.project.tempo_map())
-                    .and_then(|projection| projection.frame_at_domain_position(domain_frame))
-                    .ok()
-                    .flatten()
-                    .zip(edit.projected_domain(state.project.tempo_map()).ok())
-                    .and_then(|(root, (_, _, start, _))| root.checked_sub(start))
-            } else {
-                domain_frame.checked_sub(fade.offset())
+            let local_frame = |position: u64| -> Option<i128> {
+                if local_controls {
+                    Some(i128::from(position))
+                } else if let Some(edit) = clip.audio_edit() {
+                    edit.projected_fade(state.project.tempo_map())
+                        .and_then(|projection| projection.frame_at_domain_position(position))
+                        .ok()
+                        .flatten()
+                        .zip(edit.projected_domain(state.project.tempo_map()).ok())
+                        .map(|(root, (_, _, start, _))| i128::from(root) - i128::from(start))
+                } else {
+                    Some(i128::from(position) - i128::from(fade.offset()))
+                }
             };
-            let Some(frame) = local_frame.and_then(|frame| clip.start().checked_add(frame)) else {
+            let Some(first) = local_frame(domain_frame) else {
                 continue;
             };
-            if frame < visible.0 || frame >= visible.1 {
+            let subframe_offset = if subframe > 0.0 {
+                let Some(next) = domain_frame.checked_add(1).and_then(local_frame) else {
+                    continue;
+                };
+                (next - first) as f64 * subframe
+            } else {
+                0.0
+            };
+            // Subtract integer origins before conversion, preserving short-clip
+            // precision even near the maximum absolute project frame.
+            let relative = (first - i128::from(visible.0 - clip.start())) as f64 + subframe_offset;
+            if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
+            {
                 continue;
             }
-            let fraction = (frame - visible.0) as f32
-                / (visible.1 - visible.0).saturating_sub(1).max(1) as f32;
+            let fraction =
+                (relative / (visible.1 - visible.0).saturating_sub(1).max(1) as f64) as f32;
             let pixel_width =
                 (lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32)).max(3.0);
             if !pixel_width.is_finite() {
@@ -748,20 +764,20 @@ mod tests {
             .unwrap()
             .with_shape(10, 10, 0, 0)
             .unwrap();
-        let bent = edited_fade(fade, Handle::InCurve, 0, 700).unwrap();
+        let bent = edited_fade(fade, Handle::InCurve, 0.0, 700).unwrap();
         assert_eq!(
             (bent.in_start(), bent.fade_in(), bent.fade_out()),
             (10, 40, 30)
         );
         assert!(bent.gain_at(20) < fade.gain_at(20));
         assert_eq!(
-            edited_fade(bent, Handle::InTop, i128::MAX - 100, 0)
+            edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0)
                 .unwrap()
                 .fade_in(),
             90
         );
         assert_eq!(
-            edited_fade(bent, Handle::OutTop, i128::MIN, 0)
+            edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0)
                 .unwrap()
                 .fade_out(),
             90
@@ -866,7 +882,7 @@ mod two_axis_tests {
             for handle in [Handle::InCurve, Handle::OutCurve] {
                 for dx in [-100000, 100000] {
                     for dy in [-2000, 2000] {
-                        let edited = edited_fade(original, handle, dx, dy).unwrap();
+                        let edited = edited_fade(original, handle, f64::from(dx), dy).unwrap();
                         let out = handle == Handle::OutCurve;
                         let gain = curve_handle_gain(edited, out);
                         let x = edited.position_at_gain(out, gain).unwrap();
@@ -878,10 +894,10 @@ mod two_axis_tests {
             }
         }
         let legacy = original.with_shape(0, 0, 900, -900).unwrap();
-        assert_eq!(edited_fade(legacy, Handle::InCurve, 0, 10), Some(legacy));
-        let inward = edited_fade(legacy, Handle::InCurve, 0, -10).unwrap();
+        assert_eq!(edited_fade(legacy, Handle::InCurve, 0.0, 10), Some(legacy));
+        let inward = edited_fade(legacy, Handle::InCurve, 0.0, -10).unwrap();
         assert!(curve_handle_gain(inward, false) > curve_handle_gain(legacy, false));
-        let moved = edited_fade(legacy, Handle::InCurve, 500, 0).unwrap();
+        let moved = edited_fade(legacy, Handle::InCurve, 500.0, 0).unwrap();
         assert!((curve_handle_gain(moved, false) - curve_handle_gain(legacy, false)).abs() < 0.001);
         let before = legacy
             .position_at_gain(false, curve_handle_gain(legacy, false))

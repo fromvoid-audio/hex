@@ -248,7 +248,9 @@ fn historical_edited_audio_and_automation_keep_every_value() {
         }
         expected["version"] = CURRENT_SCHEMA_VERSION.into();
         let project = decode(fixture).unwrap();
-        assert_eq!(value(&encode(&project).unwrap()), expected);
+        let mut current = value(&encode(&project).unwrap());
+        assert_centered_fade_defaults(&mut current, &expected);
+        assert_eq!(current, expected);
         assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
         let mut editor = Editor::new(project.clone(), 8).unwrap();
         editor.execute(Command::MasterGain { gain: 0.25 }).unwrap();

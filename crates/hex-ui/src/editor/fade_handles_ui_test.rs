@@ -961,3 +961,67 @@ fn real_refusal_retires_frozen_curve_with_its_canonical_state(cx: &mut TestAppCo
     });
     assert!(visual.debug_bounds(selector).is_none());
 }
+
+#[gpui::test]
+fn sample_zoomed_short_curves_follow_subframe_pointer_motion(cx: &mut TestAppContext) {
+    for out in [false, true] {
+        let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+        let mut model = hex_project::Editor::new(project, 8).unwrap();
+        let fade =
+            ClipFade::new(96_000, 0, if out { 0 } else { 3 }, if out { 3 } else { 0 }).unwrap();
+        model
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(window, cx);
+        editor.update(&mut visual, |v, cx| {
+            v.viewport = Some(Viewport {
+                start: if out { 95_996 } else { 0 },
+                length: 4,
+            });
+            cx.notify();
+        });
+        key(&mut visual, true, "f");
+        let kind = if out {
+            Handle::OutCurve
+        } else {
+            Handle::InCurve
+        };
+        let selector: &'static str =
+            Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+        let from = visual
+            .debug_bounds(selector)
+            .expect("sample-zoomed curve handle")
+            .center();
+        let to = point(from.x + px(20.0), from.y);
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let preview = editor.read_with(&visual, |v, _| {
+            v.fade_preview(clip)
+                .expect("subframe movement edits the curve")
+        });
+        let moved = visual.debug_bounds(selector).unwrap().center();
+        assert!(
+            (f32::from(moved.x - from.x) - 20.0).abs() < 1.5,
+            "diamond follows the pointer without whole-sample steps"
+        );
+        assert_eq!(
+            (preview.fade_in(), preview.fade_out()),
+            (fade.fade_in(), fade.fade_out())
+        );
+        assert_eq!((preview.in_curve(), preview.out_curve()), (0, 0));
+        assert_ne!(
+            preview.gain_at(if out { 95_998 } else { 1 }),
+            fade.gain_at(if out { 95_998 } else { 1 })
+        );
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
+        model.execute(command).unwrap();
+        assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
+    }
+}

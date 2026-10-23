@@ -132,6 +132,12 @@ impl ClipFade {
         self.out_position
     }
 
+    /// Gain at mapped half progress of the selected individual ramp. This
+    /// ordinate is independent of horizontal position and the opposite ramp.
+    pub fn curve_midpoint_gain(self, out: bool) -> f64 {
+        bend(0.5, if out { self.out_curve } else { self.in_curve })
+    }
+
     /// Drawing-only inverse; playback evaluates the bounded polynomial directly.
     /// `out` selects the fade-out's forward-time coordinate (gain decreases).
     pub fn position_at_gain(self, out: bool, gain: f64) -> Option<f64> {

@@ -332,6 +332,8 @@ fn two_axis_fades_are_independent_monotone_and_preserve_centered_legacy_pcm() {
             }
             assert_eq!((fade_in.gain_at(0), fade_in.gain_at(1000)), (0.0, 1.0));
             let anchor = fade_in.gain_at(u64::from(position));
+            assert_eq!(fade_in.curve_midpoint_gain(false) as f32, anchor);
+            assert_eq!(fade_out.curve_midpoint_gain(true) as f32, anchor);
             assert!((anchor - (1001.0 - f32::from(curve)) / 2002.0).abs() < 1e-6);
             for gain in [0.25, 0.5, 0.75] {
                 let x = fade_in.position_at_gain(false, gain).unwrap();
