@@ -609,3 +609,218 @@ fn actual_multiple_native_nodes_route_exact_epochs_and_accept_only_final_host_ou
         assert!(source.retire_on_control().unwrap().status.success());
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn registered_sampler_and_real_native_effect_share_the_resident_compiler_and_original_resources() {
+    // Match the existing bounded production preparation-worker stack.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(sampler_with_native_effect_on_control)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[cfg(feature = "allocation-probe")]
+fn sampler_with_native_effect_on_control() {
+    use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    use hex_project::BeatTime;
+    use std::sync::atomic::AtomicBool;
+    let mut f = fixture(2, false);
+    let track = f.editor.project().tracks()[0].id();
+    let Created::Asset(asset) = f
+        .editor
+        .execute(Command::ImportDeviceAsset {
+            path: "original.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("original device asset")
+    };
+    let mut sampler = hex_devices::sampler::state::SamplerState::for_source_frames(4).unwrap();
+    sampler.mode = hex_devices::sampler::state::AuthoredMode::OneShot {
+        gate: hex_devices::sampler::GateMode::Trigger,
+    };
+    sampler.envelope = hex_devices::sampler::Envelope {
+        attack_seconds: 0.0,
+        decay_seconds: 0.0,
+        sustain: 1.0,
+        release_seconds: 0.0,
+    };
+    f.editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: sampler
+                .to_native()
+                .unwrap()
+                .with_asset_references(vec![DeviceAssetReference {
+                    slot: DeviceAssetSlot::new(1).unwrap(),
+                    asset: DeviceAssetKey::new(asset.value()).unwrap(),
+                }])
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = f
+        .editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("hybrid MIDI clip")
+    };
+    f.editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let limits = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 64,
+        root_rows: 16,
+        max_retained_bytes: 20_000_000,
+        max_construction_peak_bytes: 20_000_000,
+    };
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                hex_engine::OwnedAudioSource::try_resident(
+                    48_000,
+                    vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]],
+                )
+                .ok()
+                .unwrap(),
+            ),
+            0,
+            limits,
+            4,
+            &cancel,
+            || Ok::<_, hex_engine::native_device_resources::ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &store,
+        f.editor.project(),
+        20_000_000,
+        &cancel,
+    )
+    .unwrap();
+    let definition = NativeEffectDefinition::new(std::slice::from_ref(&f.effect)).unwrap();
+    let builtins = hex_devices::native_registry().unwrap();
+    let mut definitions = builtins.definitions().to_vec();
+    definitions.push(&definition);
+    let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+    let transforms = hex_engine::audio_transform::AudioTransformPreparation::default();
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare_with_device_resources_and_effect_registry(
+            f.editor.project(),
+            &f.media,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &resources,
+            resources
+                .compiler_scan_work_on_control(f.editor.project())
+                .unwrap(),
+            &cancel,
+            &effects,
+        )
+        .unwrap(),
+    );
+    assert!(
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .is_err(),
+        "foreign facts cannot replace the original registered sampler resource set"
+    );
+    let mut playback = hex_engine::playback::Playback::try_from_prepared_with_device_resources(
+        revision, &resources,
+    )
+    .unwrap();
+    // Compile an independent dry graph against the very same original source
+    // store; no PCM is reconstructed from saved state or effect facts.
+    f.editor.execute(Command::RemoveDevice(f.device)).unwrap();
+    let dry_resources = PreparedDeviceResources::prepare_on_control(
+        &store,
+        f.editor.project(),
+        20_000_000,
+        &cancel,
+    )
+    .unwrap();
+    let dry_revision = Arc::new(
+        hex_engine::PreparedRevision::prepare_with_device_resources(
+            f.editor.project(),
+            &f.media,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &transforms,
+            &dry_resources,
+            dry_resources
+                .compiler_scan_work_on_control(f.editor.project())
+                .unwrap(),
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let mut dry = hex_engine::playback::Playback::try_from_prepared_with_device_resources(
+        dry_revision,
+        &dry_resources,
+    )
+    .unwrap();
+    dry.apply(hex_engine::PlaybackCommand::Play);
+    let mut reference = [[0.0; 2]; 48];
+    dry.render(&mut reference).unwrap();
+    assert!(
+        reference[..4] != f.samples[..4],
+        "the registered sampler actually contributes alongside the audio clip"
+    );
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let (mut worker, mut callbacks) = f.effect.into_parts();
+    let mut output = [[0.0; 2]; 64];
+    for (index, chunk) in output.chunks_mut(8).enumerate() {
+        let measured = allocation_counter::measure(|| {
+            callbacks.begin_host_callback(8).unwrap();
+            playback
+                .render_with_foreign_processors(chunk, None, None, None, &mut callbacks)
+                .unwrap();
+            callbacks.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while worker.published_blocks_on_control() < index as u64 + 1 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+    assert_eq!(output[..16], [[0.0; 2]; 16]);
+    for (index, frame) in reference.iter().enumerate() {
+        let gain = 0.5 + (index / 8) as f32 * 0.125;
+        assert_eq!(output[index + 16], [frame[0] * gain, frame[1] * gain]);
+    }
+    let stopped = worker.quiesce_on_control().unwrap();
+    drop(callbacks);
+    drop(worker);
+    assert!(stopped.retire_on_control().unwrap().status.success());
+}
