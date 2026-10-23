@@ -6,7 +6,7 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 impl EditorView {
-    pub(super) fn transport(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn transport(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
@@ -17,7 +17,15 @@ impl EditorView {
             "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
+        let field = self.project_tempo_input(cx);
         let mut row = header::toolbar_row()
+            .child(field)
+            .child(self.control_icon(
+                "♯",
+                "project tuning · cmd+alt+t",
+                |view, window, cx| view.open_tuning(window, cx),
+                cx,
+            ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
             .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
             .child(self.control_icon(
@@ -64,7 +72,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "↻",
-                    "toggle loop on/off · l · cmd+l sets selected clip",
+                    "toggle loop on/off · l or cmd+l sets selection",
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
@@ -101,7 +109,7 @@ impl EditorView {
                 div()
                     .w(px(1.0))
                     .h(px(20.0))
-                    .mx_1()
+                    .mx(px(1.0))
                     .bg(rgb(theme::color(theme::PaletteRole::Border))),
             )
             .child(self.control_icon(
@@ -129,16 +137,12 @@ impl EditorView {
                 cx,
             ))
             .children([self.snap_control(cx)])
-            .child(self.control_icon(
-                "fit",
-                "fit timeline · cmd+0",
-                |view, _, _| view.fit_timeline(),
-                cx,
-            ))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx))
             .child(
                 self.control_icon(
                     "▤",
-                    "show arrangement",
+                    "show arrange view · tab",
                     |view, _, _| view.set_mode(EditorMode::Arrangement),
                     cx,
                 )
@@ -151,7 +155,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "▦",
-                    "show session",
+                    "show console view · tab",
                     |view, _, _| view.set_mode(EditorMode::Session),
                     cx,
                 )
@@ -163,7 +167,24 @@ impl EditorView {
             )
             .child(
                 div()
-                    .w(px(82.0))
+                    .debug_selector({
+                        let name = self.workspace_view_name();
+                        move || name.to_owned()
+                    })
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_xs()
+                    .child(theme::text(self.workspace_view_name())),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "project position".into())
+                    // Size the short readout to its text; retain the existing
+                    // upper bound for unusually long project positions.
+                    .max_w(px(82.0))
+                    .flex_shrink_0()
+                    .line_clamp(1)
+                    .text_ellipsis()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .child(theme::text(self.position_label())),
@@ -179,7 +200,9 @@ impl EditorView {
                 div()
                     .id("audio output status")
                     .debug_selector(|| "audio output status".into())
-                    .flex_1()
+                    // Status takes available width before the empty spacer;
+                    // a zero flex basis could collapse it at minimum width.
+                    .w(px(230.0))
                     .max_w(px(230.0))
                     .min_w_0()
                     // Keep a definite wrap width during GPUI's second layout
@@ -202,6 +225,7 @@ impl EditorView {
         if self.state().is_none() {
             row = row.child(
                 div()
+                    .debug_selector(|| "project loading".into())
                     .px_2()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -272,20 +296,12 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(description)
             .debug_selector(move || description.into())
             .w(px(header::CONTROL_SIZE))
             .h(px(header::CONTROL_SIZE))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| MiniTooltip {
                     description: tooltip_description.clone(),
@@ -296,24 +312,15 @@ impl EditorView {
                 handler(view, window, cx);
                 cx.notify();
             }))
-            .child(theme::text(label))
     }
 
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(self.snap_grid.label()), theme::action_style())
             .id("clip move snap grid")
             .debug_selector(|| "arranger-snap-toggle".to_owned())
             .w(px(68.0))
             .h(px(header::CONTROL_SIZE))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(|_, cx| {
                 cx.new(|_| MiniTooltip {
                     description: "arranger snap · click to toggle adaptive snapping".into(),
@@ -324,7 +331,6 @@ impl EditorView {
                 view.toggle_snap_grid();
                 cx.notify();
             }))
-            .child(theme::text(self.snap_grid.label()))
     }
 
     fn position_label(&self) -> String {

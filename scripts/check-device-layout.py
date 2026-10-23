@@ -102,7 +102,7 @@ def chrome_errors(stream: list[Token], label: str, *, paint: bool = True) -> lis
         while type_start >= 2 and stream[type_start - 1].text == "::":
             type_start -= 2
         return_type = type_start > 0 and stream[type_start - 1].text == ">"
-        if token.text in {"ControlStyle", "DeviceFrameStyle", "DeviceActionStyle", "StyleRefinement"} and following == "{" and not return_type:
+        if token.text in {"ControlStyle", "DeviceFrameStyle", "ActionStyle", "StyleRefinement"} and following == "{" and not return_type:
             errors.append(f"{label}:{token.line}: resolve device styles in theme/device.rs")
         if token.text.startswith("0x"):
             errors.append(f"{label}:{token.line}: device-local color literal; use a semantic theme role")
@@ -127,8 +127,10 @@ ENTRY_POINTS = {
         "render_effect": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
         "render_instrument": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
         "action_button": ("hex_widgets::device_action", "theme::device_header_action_style"),
-        "control_style": ("theme::device_style",),
+        "control_style": ("theme::control_style",),
         "device_layout_style": ("theme::device_style",),
+    },
+    PANEL / "bindings.rs": {
         "parameter_style": ("theme::device_style",),
     },
     PANEL / "parameter_rows.rs": {

@@ -368,8 +368,8 @@ fn copied_musical_edits_isolate_crop_placement_domain_and_history() {
     }
     let copied_edit = editor.project().clip(copied).unwrap().audio_edit().unwrap();
     assert_ne!(
-        copied_edit.musical_start,
-        original.audio_edit().unwrap().musical_start
+        copied_edit.live_musical_start(),
+        original.audio_edit().unwrap().live_musical_start()
     );
     assert!(copied_edit.view_start > 0);
     assert_eq!(copied_edit.domain.pitch_cents, -257);
@@ -393,4 +393,156 @@ fn copied_musical_edits_isolate_crop_placement_domain_and_history() {
         assert!(editor.redo());
         assert_eq!(editor.project(), expected);
     }
+}
+
+#[test]
+fn lower_fade_resize_crops_musical_warp_events_without_changing_the_processing_root() {
+    use hex_project::{AudioEventEdit, ClipFade};
+    let (mut editor, clip) = fixture(true);
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let root_length = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .clock
+        .length();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split {
+                at: root_length / 2,
+            },
+        })
+        .unwrap();
+    let fade = ClipFade::new(48_000, 0, 12_000, 10_000)
+        .unwrap()
+        .with_shape(1000, 2000, 700, -600)
+        .unwrap()
+        .with_curve_positions(250, 750)
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    // Existing handle edits explicitly fit retained lengths to this 64k-frame
+    // crop; the old projected domain would put the upper knots elsewhere.
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 64_000);
+    for (edge, frame) in [(TrimEdge::Left, 4000), (TrimEdge::Right, 60_000)] {
+        let original = editor.project().clone();
+        let before = original.clip(clip).unwrap();
+        let preview = before
+            .preview_fade_edge_trim(edge, frame, 48_000, original.tempo_map())
+            .unwrap();
+        editor
+            .execute(Command::TrimClipFadeEdge { clip, edge, frame })
+            .unwrap();
+        let changed = editor.project().clip(clip).unwrap();
+        assert_eq!(changed, &preview);
+        assert_eq!(
+            changed.start() + changed.duration(),
+            if edge == TrimEdge::Left {
+                64_000
+            } else {
+                frame
+            }
+        );
+        let before_root = before.audio_edit().unwrap();
+        let after_root = changed.audio_edit().unwrap();
+        let mut expected_domain = (*before_root.domain).clone();
+        expected_domain.fade = after_root.domain.fade;
+        expected_domain.fade_start = after_root.domain.fade_start;
+        expected_domain.fade_projection = after_root.domain.fade_projection.clone();
+        assert_eq!(
+            *after_root.domain, expected_domain,
+            "source, warp, pitch, phase, source gains and embedded events are retained"
+        );
+        assert_eq!(
+            after_root.live_musical_start(),
+            Some(
+                editor
+                    .project()
+                    .tempo_map()
+                    .frame_to_beat(changed.start())
+                    .unwrap()
+            )
+        );
+        let edited = changed.retained_fade();
+        match edge {
+            TrimEdge::Left => assert_eq!(changed.start() + edited.fade_in(), 13_000),
+            TrimEdge::Right => assert_eq!(
+                changed.start() + changed.duration() - edited.fade_out(),
+                52_000
+            ),
+        }
+        assert_eq!(changed.retained_fade().in_curve(), 700);
+        assert_eq!(changed.retained_fade().out_curve(), -600);
+        assert_eq!(
+            (
+                changed.retained_fade().in_position(),
+                changed.retained_fade().out_position()
+            ),
+            (250, 750)
+        );
+        let snapshot = Project::from_snapshot(editor.project().snapshot()).unwrap();
+        assert_eq!(&snapshot, editor.project());
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &original);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &snapshot);
+        assert!(editor.undo());
+    }
+    // Neutral retained roots also clamp beyond their immutable processing bounds.
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    editor
+        .execute(Command::TrimClipFadeEdge {
+            clip,
+            edge: TrimEdge::Right,
+            frame: u64::MAX,
+        })
+        .unwrap();
+    assert_eq!(editor.project(), &before);
+    editor
+        .execute(Command::TrimClipFadeEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 4000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipFadeEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 0,
+        })
+        .unwrap();
+    assert_eq!(editor.project(), &before);
 }

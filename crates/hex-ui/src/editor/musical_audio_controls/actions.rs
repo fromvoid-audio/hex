@@ -7,12 +7,12 @@ pub(super) enum Action {
     Pitch(i16),
     Anchor,
     Warp,
-    Mode(i8),
+    SelectMode(u8),
     Grain(i16),
     Fluctuation(i8),
     Seed,
     Preserve,
-    Tail,
+    SelectTail(BeatsTail),
     Decay(i8),
     Formants(i8),
     Resolution(i16),
@@ -80,7 +80,9 @@ pub(super) fn command(
         Action::Anchor => {
             return Ok(Command::SetAudioClipMusical {
                 clip: id,
-                enabled: clip.audio_edit().is_none_or(|e| e.musical_start.is_none()),
+                enabled: clip
+                    .audio_edit()
+                    .is_none_or(|e| e.live_musical_start().is_none()),
             });
         }
         Action::Warp => {
@@ -187,13 +189,13 @@ pub(super) fn command(
         .ok_or(Invalid("enable warp to edit its mode or markers"))?
         .clone();
     match action {
-        Action::Mode(direction) => {
-            let choices = modes();
-            let index = choices
-                .iter()
-                .position(|m| std::mem::discriminant(m) == std::mem::discriminant(&settings.mode))
-                .ok_or(Invalid("warp mode missing"))?;
-            settings.mode = choices[(index as i8 + direction).rem_euclid(6) as usize];
+        Action::SelectMode(index) => {
+            let mode = *modes()
+                .get(usize::from(index))
+                .ok_or(Invalid("warp algorithm missing"))?;
+            if std::mem::discriminant(&mode) != std::mem::discriminant(&settings.mode) {
+                settings.mode = mode;
+            }
         }
         Action::Grain(delta) => match &mut settings.mode {
             WarpMode::Tones { grain_ms } | WarpMode::Texture { grain_ms, .. } => {
@@ -224,13 +226,11 @@ pub(super) fn command(
                 };
             }
         }
-        Action::Tail => {
+        Action::SelectTail(selected) => {
             if let WarpMode::Beats { tail, .. } = &mut settings.mode {
-                *tail = match tail {
-                    BeatsTail::Off => BeatsTail::Forward,
-                    BeatsTail::Forward => BeatsTail::Alternating,
-                    BeatsTail::Alternating => BeatsTail::Off,
-                };
+                *tail = selected;
+            } else {
+                return Err(Invalid("select beats to edit transient looping"));
             }
         }
         Action::Decay(delta) => {
@@ -304,5 +304,72 @@ pub(super) fn command(
     Ok(Command::SetAudioClipWarp {
         clip: id,
         settings: Some(settings),
+    })
+}
+
+/// Every control declares its group semantics here; source indices are local.
+/// No wildcard: adding an action requires choosing its selection behavior.
+pub(super) fn selection_command(
+    project: &hex_project::Project,
+    id: ClipId,
+    action: Action,
+) -> Result<Command, hex_project::Invalid> {
+    use hex_project::{ClipEdit, WarpAdjustment};
+    let edit = match action {
+        Action::Pitch(cents) => ClipEdit::PitchBy { cents },
+        Action::Warp => ClipEdit::WarpEnabled {
+            enabled: project
+                .clip(id)
+                .ok_or(hex_project::Invalid("audio clip no longer exists"))?
+                .audio_edit()
+                .is_none_or(|edit| !edit.domain.warp_enabled),
+        },
+        Action::SelectMode(index) => ClipEdit::WarpMode {
+            mode: *modes()
+                .get(usize::from(index))
+                .ok_or(hex_project::Invalid("warp algorithm missing"))?,
+        },
+        Action::Grain(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Grain(delta),
+        },
+        Action::Fluctuation(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Fluctuation(delta),
+        },
+        Action::Seed => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Seed,
+        },
+        Action::Preserve => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Preserve,
+        },
+        Action::SelectTail(tail) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Tail(tail),
+        },
+        Action::Decay(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Decay(delta),
+        },
+        Action::Formants(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Formants(delta),
+        },
+        Action::Resolution(delta) => ClipEdit::WarpAdjust {
+            adjustment: WarpAdjustment::Resolution(delta),
+        },
+        Action::Anchor
+        | Action::MarkerAdd
+        | Action::MarkerFrame(..)
+        | Action::MarkerBeat(..)
+        | Action::MarkerRemove(_)
+        | Action::EnvelopeAdd
+        | Action::EnvelopeFrame(..)
+        | Action::EnvelopeGain(..)
+        | Action::EnvelopeRemove(_)
+        | Action::Page(_) => {
+            // Scalar commands are widened by the central property resolver.
+            // Indexed source commands retain their explicit source scope.
+            return command(project, id, action);
+        }
+    };
+    Ok(Command::EditClips {
+        clips: vec![id],
+        edit,
     })
 }

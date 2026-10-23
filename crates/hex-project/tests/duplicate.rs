@@ -164,7 +164,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             gain: hex_project::ClipGain::UNITY,
             id,
             asset: 1,
-            start: 0,
+            start: id - 3,
             duration: 1,
             source_offset: 0,
             source_length: 1,
@@ -174,6 +174,9 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
@@ -181,6 +184,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![hex_project::AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "Samples/One.wav".into(),
             source_sample_rate: 48_000,
@@ -219,7 +223,11 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         return_tracks: Vec::new(),
     })
     .expect("valid clip-limit fixture");
-    let full_clip = full.tracks()[0].clips()[0].id();
+    let full_clip = full.tracks()[0]
+        .clips()
+        .last()
+        .expect("last full clip")
+        .id();
     let mut full_editor = Editor::new(full, 8).expect("full editor");
     let before = full_editor.project().clone();
     assert!(

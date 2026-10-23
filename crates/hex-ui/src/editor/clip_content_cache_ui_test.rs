@@ -11,8 +11,10 @@ fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, r
     let old = view.state.as_ref().expect("current state");
     view.state = Some(Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project,
         waveforms: old.waveforms.clone(),
+        source_overviews: old.source_overviews.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(&old.midi_preview),
         gain_preview: old.gain_preview.clone(),
@@ -74,7 +76,14 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
         visual.rendered_background(selector),
         Some(
             gpui::rgb(theme::clip_fill(
-                hex_project::ElementColor::Gray,
+                editor.read_with(cx, |view, _| view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(source)
+                    .unwrap()
+                    .color()),
                 hex_project::ClipFlavor::Muted,
                 false
             ))
@@ -553,7 +562,14 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
         visual.rendered_background(selector),
         Some(
             gpui::rgb(theme::clip_fill(
-                hex_project::ElementColor::Gray,
+                editor.read_with(cx, |view, _| view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(source)
+                    .unwrap()
+                    .color()),
                 hex_project::ClipFlavor::Muted,
                 true
             ))

@@ -149,7 +149,7 @@ fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext
 }
 
 #[gpui::test]
-fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
+fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     cx: &mut TestAppContext,
 ) {
     cx.update(super::bind_editor_keys);
@@ -212,13 +212,22 @@ fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
             .is_some()
     );
 
+    let before = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    assert!(visual.debug_bounds("section-edit-cursor").is_some());
     visual.simulate_keystrokes("cmd-e");
     editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
-            Some(Command::SplitTracksAtFrame { tracks, frame })
-                if tracks == &[audio_track, midi_track] && *frame == view.edit_cursor.unwrap().frame
-        ));
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "a gap must not fall through to song-wide clip splitting"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|e| e.contains("strictly inside a section"))
+        );
     });
 }
 
@@ -1024,7 +1033,12 @@ fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
             start: 100_000,
             length: 100_000,
         });
-        assert!(view.begin_time_selection_gesture(f32::from(start.x), f32::from(start.y), true));
+        assert!(view.begin_time_selection_gesture(
+            f32::from(start.x),
+            f32::from(start.y),
+            true,
+            false
+        ));
         assert!(view.update_time_selection_gesture(
             f32::from(lane.origin.x + lane.size.width + px(10.0)),
             f32::from(start.y),
@@ -1040,7 +1054,12 @@ fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
         assert_eq!(view.visible_viewport(384_000), before_stale_tick);
     });
     editor.update(cx, |view, _| {
-        assert!(view.begin_time_selection_gesture(f32::from(start.x), f32::from(start.y), true));
+        assert!(view.begin_time_selection_gesture(
+            f32::from(start.x),
+            f32::from(start.y),
+            true,
+            false
+        ));
         assert!(view.update_time_selection_gesture(
             f32::from(lane.origin.x + lane.size.width + px(10.0)),
             f32::from(start.y),
@@ -1300,12 +1319,17 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         playback: None,
         status: None,
         error: Some("test rejection".to_owned()),
+        recovery_failure: None,
         request_complete: true,
+        sampler_load_complete: None,
+        sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        document_format_upgrade_required: false,
         open_complete: false,
         project_replaced: false,
         stopped_playback_restore_complete: false,
@@ -1313,6 +1337,11 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         duplicate_complete: false,
         restore_complete: None,
         device_preview: None,
+        tuning_preview: None,
+        tuning_gesture_ack: None,
+        tuning_gesture_request: false,
+        active_tuning_gesture: None,
+        tuning_library: None,
         gesture_ack: None,
         gesture_protocol_ack: false,
         gesture_request: false,
@@ -1571,5 +1600,79 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
             view.last_transport_command.is_none(),
             "midi focus keeps Space"
         );
+    });
+}
+
+#[gpui::test]
+fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let mut model = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("midi track")
+    };
+    let (state, source_slot) =
+        hex_engine::native_device_resources::sampler_import_template_on_control(4).unwrap();
+    model
+        .execute(Command::ImportDeviceAssetIntoEmptyInstrument {
+            track,
+            path: "original.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+            state,
+            source_slot,
+        })
+        .unwrap();
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for selection in [false, true] {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, _| {
+                view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                    track,
+                    frame: 73_000,
+                    generation: view.project_generation,
+                    pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+                    pulse_started: Instant::now(),
+                });
+                view.time_selection = selection.then_some(super::time_selection::TimeSelection {
+                    anchor_track: track,
+                    end_track: track,
+                    anchor_frame: 52_000,
+                    end_frame: 28_000,
+                });
+                view.last_transport_command = None;
+                window.focus(&view.focus);
+            })
+        });
+        visual.simulate_keystrokes("space");
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                    if selection { 28_000 } else { 73_000 }
+                )),
+                "sampler uses the ordinary selected start, selection={selection}"
+            );
+        });
+    }
+    editor.update(cx, |view, _| {
+        let token = view.play_intent.reserve_token().unwrap();
+        view.play_intent.admit(token, true);
+        view.last_transport_command = None;
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::Pause),
+            "sampler uses ordinary pause without resetting the cursor"
+        );
+        assert_eq!(view.edit_cursor.unwrap().frame, 73_000);
     });
 }

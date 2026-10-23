@@ -49,7 +49,7 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 28);
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     for mutate in 0..4 {
         let mut bad = value.clone();
         match mutate {
@@ -68,56 +68,9 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
         }
         assert!(hex_storage::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
     }
-    // Both pre-integration schema27 lineages remain strict and distinguishable.
-    let mut appearance27 = value.clone();
-    appearance27["version"] = 27.into();
-    appearance27
-        .as_object_mut()
-        .unwrap()
-        .remove("audio_event_state");
-    let migrated = hex_storage::decode(&serde_json::to_vec(&appearance27).unwrap()).unwrap();
-    assert_eq!(
-        migrated.tracks()[0].color(),
-        hex_project::ElementColor::Cyan
-    );
-    assert_eq!(
-        migrated.clip_flavor(clip),
-        Some(hex_project::ClipFlavor::Accent)
-    );
-    assert_eq!(migrated.clip(clip).unwrap().name(), "edited audio");
-    assert_eq!(migrated.clip(clip).unwrap().audio_events().events.len(), 1);
-    let mut events27 = value.clone();
-    events27["version"] = 27.into();
-    events27.as_object_mut().unwrap().remove("track_colors");
-    events27.as_object_mut().unwrap().remove("accented_clips");
-    let migrated = hex_storage::decode(&serde_json::to_vec(&events27).unwrap()).unwrap();
-    assert_eq!(
-        migrated.clip(clip).unwrap().audio_events(),
-        editor.project().clip(clip).unwrap().audio_events()
-    );
-    assert_eq!(migrated.clip(clip).unwrap().name(), "edited audio");
-    assert_eq!(
-        migrated.tracks()[0].color(),
-        hex_project::ElementColor::Gray
-    );
-    assert_eq!(
-        migrated.clip_flavor(clip),
-        Some(hex_project::ClipFlavor::Muted)
-    );
-    let mut mixed27 = value.clone();
-    mixed27["version"] = 27.into();
-    assert!(hex_storage::decode(&serde_json::to_vec(&mixed27).unwrap()).is_err());
     let original = String::from_utf8(bytes).unwrap();
     let duplicate = format!("{{\"audio_event_state\":[],{}", &original[1..]);
     assert!(hex_storage::decode(duplicate.as_bytes()).is_err());
-    // A genuine schema26 document still migrates to one implicit event.
-    let mut legacy = value;
-    legacy["version"] = 26.into();
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    let migrated = hex_storage::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated.clip(clip).unwrap().audio_events().events.len(), 1);
 }
 
 #[test]

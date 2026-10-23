@@ -215,7 +215,17 @@ fn unchanged_move_preserves_order_and_redo_branch() {
     let a = asset(&mut e);
     let t = track(&mut e, "one");
     let first = clip(&mut e, t, a);
-    let _second = clip(&mut e, t, a);
+    let _second = e
+        .execute(Command::PlaceClip {
+            track: t,
+            asset: a,
+            start: 60,
+            duration: 50,
+            source_offset: 5,
+            source_length: 20,
+            looping: true,
+        })
+        .unwrap();
     e.execute(Command::Gain {
         track: t,
         gain: 0.5,

@@ -1,11 +1,15 @@
 //! Prepared, stateless source-note spans for ongoing MIDI instruments.
 use super::{
-    MIDI_TEMPLATE_QUERY_FRAMES, MidiTemplateError, PreparedMidiSourceTemplate, SourceSpan,
-    require_positive_frame_advance,
+    MIDI_TEMPLATE_QUERY_FRAMES, MidiTemplateError, PreparedMidiSourceTemplate, SessionMidiOrigin,
+    SourceSpan, require_positive_frame_advance,
 };
+mod current_sampler;
 mod density;
+mod gates;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
+pub(crate) use current_sampler::CurrentSamplerEventCustody;
 use density::admit_voice_density;
+pub(crate) use gates::PreparedMidiGateTemplate;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_project::{BeatTime, TempoMap};
@@ -103,6 +107,7 @@ fn silent_note_sample(
     _age_frames: u64,
     _gate_frames: u64,
     _release_frames: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     [0.0; 2]
 }
@@ -494,7 +499,7 @@ impl MidiReleaseVoice {
 /// Borrowed timing and oscillator context for additive ongoing-source renders.
 /// The context owns no buffers or graph state and performs no preparation.
 pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTempoMap> {
-    launch: BeatTime,
+    origin: SessionMidiOrigin,
     timing: &'a T,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
@@ -510,9 +515,14 @@ impl<T: MidiTiming + ?Sized> Clone for MidiInstrumentRenderContext<'_, T> {
 }
 
 impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
-    pub fn new(launch: BeatTime, timing: &'a T, _table: &'a SineTable) -> Self {
+    pub fn new(launch: BeatTime, timing: &'a T, table: &'a SineTable) -> Self {
+        Self::with_origin(SessionMidiOrigin::launch(launch), timing, table)
+    }
+    /// Keep timing and output span metadata on the global performance clock;
+    /// only the elapsed source origin changes, with no historical-note chase.
+    pub fn with_origin(origin: SessionMidiOrigin, timing: &'a T, _table: &'a SineTable) -> Self {
         Self {
-            launch,
+            origin,
             timing,
             onset_floor_exclusive: None,
             suppressions: &[],
@@ -880,12 +890,30 @@ impl PreparedMidiInstrumentTemplate {
         end_frame: u64,
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
-        self.query_with_onset_floor(launch, timing, start_frame, end_frame, buffer, None)
+        self.query_with_origin(
+            SessionMidiOrigin::launch(launch),
+            timing,
+            start_frame,
+            end_frame,
+            buffer,
+        )
     }
 
-    pub(crate) fn query_after_onset<T: MidiTiming + ?Sized>(
+    /// Query spans from an inclusive elapsed cue without shifting MidiTiming.
+    pub fn query_with_origin<T: MidiTiming + ?Sized>(
         &self,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        start_frame: u64,
+        end_frame: u64,
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
+        self.query_with_onset_floor(origin, timing, start_frame, end_frame, buffer, None)
+    }
+
+    pub(crate) fn query_after_onset_with_origin<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
         timing: &T,
         start_frame: u64,
         end_frame: u64,
@@ -893,7 +921,7 @@ impl PreparedMidiInstrumentTemplate {
         onset_floor_exclusive: BeatTime,
     ) -> Result<(), MidiTemplateError> {
         self.query_with_onset_floor(
-            launch,
+            origin,
             timing,
             start_frame,
             end_frame,
@@ -904,7 +932,7 @@ impl PreparedMidiInstrumentTemplate {
 
     fn query_with_onset_floor<T: MidiTiming + ?Sized>(
         &self,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
         timing: &T,
         start_frame: u64,
         end_frame: u64,
@@ -912,8 +940,8 @@ impl PreparedMidiInstrumentTemplate {
         onset_floor_exclusive: Option<BeatTime>,
     ) -> Result<(), MidiTemplateError> {
         buffer.len = 0;
-        let result = self.query_inner(
-            launch,
+        let result = self.query_view().query_inner(
+            origin,
             timing,
             start_frame,
             end_frame,
@@ -931,6 +959,26 @@ impl PreparedMidiInstrumentTemplate {
     pub fn render<T: MidiTiming + ?Sized>(
         &self,
         launch: BeatTime,
+        timing: &T,
+        table: &SineTable,
+        start_frame: u64,
+        output: &mut [[f32; 2]],
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
+        self.render_with_origin(
+            SessionMidiOrigin::launch(launch),
+            timing,
+            table,
+            start_frame,
+            output,
+            buffer,
+        )
+    }
+
+    /// Direct analytic render from a source-elapsed cue on global timing.
+    pub fn render_with_origin<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
         timing: &T,
         _table: &SineTable,
         start_frame: u64,
@@ -955,7 +1003,7 @@ impl PreparedMidiInstrumentTemplate {
             buffer.len = 0;
             return Err(MidiTemplateError::ArithmeticOverflow);
         };
-        if let Err(error) = self.query(launch, timing, start_frame, end, buffer) {
+        if let Err(error) = self.query_with_origin(origin, timing, start_frame, end, buffer) {
             output.fill([0.0; 2]);
             return Err(error);
         }
@@ -1015,7 +1063,7 @@ impl PreparedMidiInstrumentTemplate {
             }
         };
         self.query_with_onset_floor(
-            context.launch,
+            context.origin,
             context.timing,
             start_frame,
             end_frame,
@@ -1052,283 +1100,10 @@ impl PreparedMidiInstrumentTemplate {
         }
         Ok(())
     }
-
-    fn query_inner<T: MidiTiming + ?Sized>(
-        &self,
-        launch: BeatTime,
-        timing: &T,
-        start_frame: u64,
-        end_frame: u64,
-        buffer: &mut MidiSpanBuffer,
-        onset_floor_exclusive: Option<BeatTime>,
-    ) -> Result<(), MidiTemplateError> {
-        if start_frame > end_frame {
-            return Err(MidiTemplateError::InvalidFrameRange);
-        }
-        if end_frame - start_frame > MIDI_TEMPLATE_QUERY_FRAMES {
-            return Err(MidiTemplateError::QueryTooWide);
-        }
-        if timing.sample_rate() != self.sample_rate {
-            return Err(MidiTemplateError::TempoRateMismatch);
-        }
-        if timing.max_micro_bpm() > self.admitted_max_micro_bpm {
-            return Err(MidiTemplateError::TempoMapTooFast);
-        }
-        if start_frame == end_frame {
-            return Ok(());
-        }
-        let lower = timing
-            .beat_lower_bound_for_frame(start_frame)
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        let upper = timing
-            .beat_lower_bound_for_frame(end_frame)
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        if upper <= u128::from(launch.raw()) {
-            return Ok(());
-        }
-        if lower == TempoMap::BEAT_RANGE_SENTINEL {
-            return Err(MidiTemplateError::BeatDomainExhausted);
-        }
-        let launch_raw = u128::from(launch.raw());
-        let relative_start = lower.saturating_sub(launch_raw);
-        let relative_end = upper.saturating_sub(launch_raw);
-        if relative_start >= relative_end {
-            return Ok(());
-        }
-        let low = relative_start;
-        let high = relative_end;
-        let mut context = QueryContext {
-            launch_raw,
-            timing,
-            start_frame,
-            end_frame,
-            buffer,
-            visits: 0,
-            onset_floor_exclusive: onset_floor_exclusive.map(BeatTime::raw),
-        };
-        self.append_intervals(
-            &self.intro,
-            &self.intro_nodes,
-            self.intro_root,
-            0,
-            low,
-            high,
-            0,
-            &mut context,
-        )?;
-        if let Some(period) = self.period {
-            self.append_periods(low, high, period, &mut context)?;
-        }
-        context.buffer.slots[..context.buffer.len].sort_unstable_by_key(|span| {
-            span.map_or((u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX), |span| {
-                (
-                    span.start_frame,
-                    span.track.value(),
-                    span.clip.value(),
-                    span.note.value(),
-                    span.iteration,
-                )
-            })
-        });
-        Ok(())
-    }
-
-    fn append_periods<T: MidiTiming + ?Sized>(
-        &self,
-        low: u128,
-        high: u128,
-        period: u64,
-        context: &mut QueryContext<'_, T>,
-    ) -> Result<(), MidiTemplateError> {
-        if self.repeats.is_empty() || high <= u128::from(self.first_pass) {
-            return Ok(());
-        }
-        let period = u128::from(period);
-        let first_pass = u128::from(self.first_pass);
-        let earliest_base = low.saturating_sub(period + u128::from(self.release_raw));
-        let first_iteration = if earliest_base <= first_pass {
-            0
-        } else {
-            (earliest_base - first_pass) / period
-        };
-        let last_iteration = (high - 1 - first_pass) / period;
-        if first_iteration > last_iteration {
-            return Ok(());
-        }
-        let count = last_iteration - first_iteration + 1;
-        if count > MIDI_SPAN_MAX_PERIOD_WINDOWS {
-            return Err(MidiTemplateError::SpanPeriodWorkBoundExceeded);
-        }
-        let mut iteration = first_iteration;
-        while iteration <= last_iteration {
-            let base = first_pass
-                .checked_add(
-                    iteration
-                        .checked_mul(period)
-                        .ok_or(MidiTemplateError::BeatDomainExhausted)?,
-                )
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            let repeat_number = u64::try_from(iteration)
-                .map_err(|_| MidiTemplateError::BeatDomainExhausted)?
-                .checked_add(1)
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            self.append_intervals(
-                &self.repeats,
-                &self.repeat_nodes,
-                self.repeat_root,
-                base,
-                low,
-                high,
-                repeat_number,
-                context,
-            )?;
-            iteration = iteration
-                .checked_add(1)
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn append_intervals<T: MidiTiming + ?Sized>(
-        &self,
-        spans: &[VoiceSpan],
-        nodes: &[IntervalNode],
-        root: Option<usize>,
-        base: u128,
-        low: u128,
-        high: u128,
-        iteration: u64,
-        context: &mut QueryContext<'_, T>,
-    ) -> Result<(), MidiTemplateError> {
-        let Some(root) = root else {
-            return Ok(());
-        };
-        let mut stack = [0_usize; 64];
-        let mut stack_len = 1;
-        stack[0] = root;
-        while stack_len > 0 {
-            stack_len -= 1;
-            let node_index = stack[stack_len];
-            context.visits += 1;
-            if context.visits > MIDI_SPAN_MAX_QUERY_VISITS {
-                return Err(MidiTemplateError::SpanVisitBoundExceeded);
-            }
-            let node = nodes[node_index];
-            let span = spans[node.span];
-            let start = base
-                .checked_add(u128::from(span.start))
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            let end = base
-                .checked_add(span.raw_end)
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            if start < high && end > low {
-                self.push_span(span, base, iteration, context)?;
-            }
-            // The stored min-start/max-end aggregates prune the interval
-            // reporter on both sides of the raw query range. The admission
-            // proof bounds raw candidates before exact frame filtering.
-            let local_low = low.saturating_sub(base);
-            let local_high = high.saturating_sub(base);
-            let may_intersect = |child: usize| {
-                u128::from(nodes[child].min_start) < local_high && nodes[child].max_end > local_low
-            };
-            if let Some(left) = node.left.filter(|left| may_intersect(*left)) {
-                if stack_len >= stack.len() {
-                    return Err(MidiTemplateError::SpanVisitBoundExceeded);
-                }
-                stack[stack_len] = left;
-                stack_len += 1;
-            }
-            if let Some(right) = node.right.filter(|right| may_intersect(*right)) {
-                if stack_len >= stack.len() {
-                    return Err(MidiTemplateError::SpanVisitBoundExceeded);
-                }
-                stack[stack_len] = right;
-                stack_len += 1;
-            }
-        }
-        Ok(())
-    }
-
-    fn push_span<T: MidiTiming + ?Sized>(
-        &self,
-        span: VoiceSpan,
-        base: u128,
-        iteration: u64,
-        context: &mut QueryContext<'_, T>,
-    ) -> Result<(), MidiTemplateError> {
-        let start_relative = base
-            .checked_add(u128::from(span.start))
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let gate_relative = base
-            .checked_add(u128::from(span.gate_end))
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let start_raw = context
-            .launch_raw
-            .checked_add(start_relative)
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let gate_raw = context
-            .launch_raw
-            .checked_add(gate_relative)
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        if context
-            .onset_floor_exclusive
-            .is_some_and(|floor| start_raw < u128::from(floor))
-        {
-            return Ok(());
-        }
-        let start_raw =
-            u64::try_from(start_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
-        let gate_raw =
-            u64::try_from(gate_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
-        let onset = context
-            .timing
-            .beat_to_frame(BeatTime::from_raw(start_raw))
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        let gate_end = context
-            .timing
-            .beat_to_frame(BeatTime::from_raw(gate_raw))
-            .map_err(|_| MidiTemplateError::TempoConversion)?;
-        let voice =
-            if self.event_source {
-                None
-            } else {
-                Some(self.bank.sampler(span.sampler_index).ok_or(
-                    MidiTemplateError::InvalidSource("midi note sampler index is invalid"),
-                )?)
-            };
-        let end = gate_end
-            .checked_add(self.release_frames)
-            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
-        if onset >= context.end_frame || end <= context.start_frame {
-            return Ok(());
-        }
-        if context.buffer.len >= MIDI_SPAN_BUFFER_CAPACITY {
-            return Err(MidiTemplateError::TooManySpans);
-        }
-        context.buffer.slots[context.buffer.len] = Some(MidiRenderSpan {
-            start_frame: onset,
-            gate_end_frame: gate_end,
-            end_frame: end,
-            onset_beat: BeatTime::from_raw(start_raw),
-            gate_end_beat: BeatTime::from_raw(gate_raw),
-            pitch: span.pitch,
-            channel: span.channel,
-            velocity: span.velocity,
-            track: self.track,
-            clip: self.clip,
-            note: span.note,
-            iteration,
-            voice,
-        });
-        context.buffer.len += 1;
-        Ok(())
-    }
 }
 
 struct QueryContext<'a, T: MidiTiming + ?Sized> {
-    launch_raw: u128,
+    origin: SessionMidiOrigin,
     timing: &'a T,
     start_frame: u64,
     end_frame: u64,
@@ -1499,6 +1274,7 @@ mod note_bank_lifetime_tests {
         age: u64,
         gate: u64,
         release: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         if age < gate.saturating_add(release) {
             [

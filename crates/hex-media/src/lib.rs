@@ -1,4 +1,13 @@
-//! Bounded control-side WAV import and sample-rate conversion for validated stereo audio.
+//! # Purpose
+//! Own bounded control-side WAV decoding, verified source readers, sample-rate conversion and
+//! waveform summaries.
+//!
+//! # Dependencies
+//! Uses hex-engine/hex-project data contracts and sha2 for source verification.
+//!
+//! # Does not own
+//! Does not edit projects, schedule device playback or open callback-owned files. Original-rate
+//! source coordinates remain distinct from project-rate derivatives.
 use hex_engine::Audio;
 use std::{
     fmt,
@@ -8,6 +17,8 @@ use std::{
 };
 
 mod adpcm;
+mod native_source;
+pub use native_source::{NativeDecodedAudio, NativeSourceRefusal};
 mod resample;
 mod resample_kernel;
 mod stream;

@@ -1,4 +1,5 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
+mod sampler;
 mod utility;
 use super::*;
 use crate::{
@@ -9,6 +10,9 @@ use crate::{
     },
     owned_shared::OwnedShared,
 };
+pub(crate) use sampler::{
+    compiler_quote as sampler_compiler_quote, compiler_workspace_quote as sampler_workspace_bound,
+};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArrangementTrackCapacity {
     pub row_bytes: usize,
@@ -17,6 +21,7 @@ pub struct ArrangementTrackCapacity {
     pub send_bytes: usize,
     pub gain_bytes: usize,
     pub pair_bytes: usize,
+    pub midi_bytes: usize,
     pub meter_payload_bytes: usize,
     pub meter_declared_overhead_bytes: usize,
     pub chain_payload_bytes: usize,
@@ -34,6 +39,7 @@ impl ArrangementTrackCapacity {
             self.send_bytes,
             self.gain_bytes,
             self.pair_bytes,
+            self.midi_bytes,
             self.meter_payload_bytes,
             self.meter_declared_overhead_bytes,
             self.chain_payload_bytes,
@@ -69,10 +75,11 @@ struct Row {
     gain: GainCopyCustody,
     prepared_gain: Option<PreparedGainEnvelope>,
     meter: Option<OwnedShared<hex_lattice::DeviceMeter>>,
-    chain: Option<OwnedShared<[hex_lattice::PreparedProcessorInstance]>>,
+    chain: Option<OwnedShared<[hex_lattice::PreparedRuntimeInstance]>>,
     utility: utility::UtilityCustody,
+    sampler: sampler::SamplerTrackConstruction,
     bare_meter: Option<Arc<hex_lattice::DeviceMeter>>,
-    bare_chain: Option<Arc<[hex_lattice::PreparedProcessorInstance]>>,
+    bare_chain: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
     meter_declaration: Option<SharedDeclaration>,
     chain_declaration: Option<SharedDeclaration>,
     handles: [u64; 2],
@@ -165,6 +172,10 @@ impl TrackAssembly {
             ..Default::default()
         };
         for r in &self.rows {
+            c.midi_bytes = c
+                .midi_bytes
+                .checked_add(r.sampler.backing_bytes(r.actual(root)?)?)
+                .ok_or(AudioStorageError::Overflow)?;
             let (clips, sends, gain) = if let Some(t) = r.actual(root)? {
                 if r.clips.capacity() != 0
                     || r.sends.capacity() != 0
@@ -279,11 +290,15 @@ impl TrackAssembly {
                         || r.root_index.is_some()
                         || r.track.is_some(),
                 ) + r.utility.handles()
+                    + r.sampler.handles()
             })
             .sum();
         c.reserved_handle_destinations = self
             .active
             .checked_mul(2)
+            .and_then(|n| {
+                n.checked_add(self.rows.iter().map(|r| r.sampler.handles()).sum::<usize>())
+            })
             .ok_or(AudioStorageError::Overflow)?;
         c.bytes()?;
         Ok(c)
@@ -320,6 +335,17 @@ impl TrackAssembly {
         project: &hex_project::Project,
         pairs: &[Pair],
     ) -> Result<(), AudioStorageError> {
+        self.reserve_with_sampler(project, pairs, None)
+    }
+    pub(super) fn reserve_with_sampler(
+        &mut self,
+        project: &hex_project::Project,
+        pairs: &[Pair],
+        samplers: Option<(
+            &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+            &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        )>,
+    ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
                 r.id.is_some()
@@ -333,18 +359,21 @@ impl TrackAssembly {
                     || r.bare_meter.is_some()
                     || r.bare_chain.is_some()
                     || r.prepared_gain.is_some()
+                    || r.sampler.present()
             })
         {
             return Err(AudioStorageError::Capacity);
         }
         crate::gain_envelope::validate_project(project).map_err(invalid)?;
-        if project.tracks().iter().any(|t| {
-            t.instrument().is_some()
-                || !t.midi_clips().is_empty()
-                || t.devices()
-                    .iter()
-                    .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-        }) {
+        if samplers.is_none()
+            && project.tracks().iter().any(|t| {
+                t.instrument().is_some()
+                    || !t.midi_clips().is_empty()
+                    || t.devices()
+                        .iter()
+                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+            })
+        {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         self.phase = Phase::Reserved;
@@ -420,6 +449,12 @@ impl TrackAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (r, t) in self.rows.iter_mut().zip(project.tracks()) {
+            if let Some((metadata, contexts)) = samplers {
+                if let Some(config) = metadata.configuration(t.id()) {
+                    let _ = (config, contexts); // compile only after workspace admission
+                    r.source_mix = Some(PreparedTrackMix::identity());
+                }
+            }
             r.gain
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
@@ -454,6 +489,20 @@ impl TrackAssembly {
                     .handle
                     .checked_add(1)
                     .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn compile_current_sampler_tracks(
+        &mut self,
+        project: &hex_project::Project,
+        metadata: &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+        contexts: &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    ) -> Result<(), AudioStorageError> {
+        for (row, track) in self.rows.iter_mut().zip(project.tracks()) {
+            if let Some(config) = metadata.configuration(track.id()) {
+                row.sampler
+                    .reserve(project, track, config, metadata.id, contexts)?;
             }
         }
         Ok(())
@@ -558,6 +607,7 @@ impl TrackAssembly {
                     sends: mem::take(&mut r.sends),
                     instrument_id: None,
                     instrument_state: None,
+                    tuning_identity: Default::default(),
                     instrument_bypassed: false,
                     instrument_input_gain: 1.0,
                     instrument_output_gain: 1.0,
@@ -568,6 +618,9 @@ impl TrackAssembly {
                     mutable_instrument: false,
                     mutable_looping_source: false,
                 });
+                if let Some(track) = r.track.as_mut() {
+                    r.sampler.install(track)?;
+                }
             }
             r.installed_ordinal = Some(index);
             #[cfg(test)]
@@ -595,6 +648,11 @@ impl TrackAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
+        if let Some(t) = r.track.as_mut() {
+            if r.sampler.present() {
+                r.sampler.restore(t)?;
+            }
+        }
         if let Some(t) = &r.track {
             if r.installed_ordinal != Some(r.ordinal)
                 || r.clips.capacity() != 0
@@ -654,6 +712,7 @@ impl TrackAssembly {
                 sends,
                 instrument_id: _,
                 instrument_state: _,
+                tuning_identity: _,
                 instrument_bypassed: _,
                 instrument_input_gain: _,
                 instrument_output_gain: _,
@@ -711,6 +770,7 @@ impl TrackAssembly {
         }
         r.gain.restore(&mut r.prepared_gain).map_err(gain_error)?;
         r.gain.clear_on_control();
+        r.sampler.dispose();
         r.sends.clear();
         r.pairs.clear();
         r.id = None;
@@ -738,6 +798,7 @@ impl TrackAssembly {
                     || r.bare_meter.is_some()
                     || r.bare_chain.is_some()
                     || r.prepared_gain.is_some()
+                    || r.sampler.present()
             })
         {
             return Err(AudioStorageError::Capacity);
@@ -936,6 +997,7 @@ impl TrackAssembly {
                 meter,
                 chain,
                 utility,
+                sampler,
                 bare_meter,
                 bare_chain,
                 meter_declaration,
@@ -955,6 +1017,7 @@ impl TrackAssembly {
                 gain.visit_audio_storage(l)?;
             }
             let actual = r.actual(root)?;
+            sampler.visit(l, actual)?;
             let actual_clips = if let Some(t) = actual {
                 let Track {
                     track_id: _,
@@ -970,6 +1033,7 @@ impl TrackAssembly {
                     sends,
                     instrument_id: _,
                     instrument_state,
+                    tuning_identity: _,
                     instrument_bypassed: _,
                     instrument_input_gain: _,
                     instrument_output_gain: _,
@@ -980,9 +1044,8 @@ impl TrackAssembly {
                     mutable_looping_source,
                     midi_source_index,
                 } = t;
-                if instrument.is_some()
+                if (!sampler.present() && (instrument.is_some() || *mutable_instrument))
                     || instrument_state.is_some()
-                    || *mutable_instrument
                     || *mutable_looping_source
                     || midi_source_index.is_some()
                 {

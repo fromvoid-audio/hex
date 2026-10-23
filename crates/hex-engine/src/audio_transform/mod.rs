@@ -1,4 +1,7 @@
 //! Control-owned immutable audio transformation, cache and retained PCM accounting.
+//! Structural relocation may freeze original tempo/root context independently of
+//! destination placement. Cache identity, mapping, fades and events all consume
+//! that retained processing law; a crop never restarts full-root analysis.
 mod budget;
 mod events;
 mod mapping;
@@ -15,6 +18,60 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
+    Ok(if domain.warp_enabled {
+        match domain
+            .warp
+            .as_ref()
+            .ok_or(Invalid("warp settings missing"))?
+            .mode
+        {
+            WarpMode::RePitch => hex_warp::Mode::RePitch,
+            WarpMode::Beats { tail, decay, .. } => hex_warp::Mode::Beats {
+                division_frames: None,
+                tail: match tail {
+                    BeatsTail::Off => hex_warp::Tail::Off,
+                    BeatsTail::Forward => hex_warp::Tail::Forward,
+                    BeatsTail::Alternating => hex_warp::Tail::Alternating,
+                },
+                decay,
+            },
+            WarpMode::Tones { grain_ms } => hex_warp::Mode::Tones { grain_ms },
+            WarpMode::Texture {
+                grain_ms,
+                fluctuation,
+                seed,
+            } => hex_warp::Mode::Texture {
+                grain_ms,
+                fluctuation,
+                seed,
+            },
+            WarpMode::Complex => hex_warp::Mode::Complex,
+            WarpMode::ComplexPro { formants, envelope } => {
+                hex_warp::Mode::ComplexPro { formants, envelope }
+            }
+        }
+    } else {
+        hex_warp::Mode::Resample
+    })
+}
+
+/// Check the existing renderer's projected stretch capability without PCM or
+/// preparation/cache ownership. Allocates the same bounded metadata map (at most
+/// 8192 segments and 1024 explicit attacks); this is control-side work, not a
+/// callback API and not a proof of available render memory or work budget.
+pub fn validate_clip_warp_preview(
+    clip: &hex_project::Clip,
+    tempo: &hex_project::TempoMap,
+) -> Result<(), Invalid> {
+    let Some(edit) = clip.audio_edit() else {
+        return Ok(());
+    };
+    let (map, _) = mapping::prepare_map(edit, tempo, &AtomicBool::new(false))?;
+    map.validate_stretch(render_mode(&edit.domain)?, edit.domain.pitch_cents)
+        .map_err(warp_error)
+}
+
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
 /// Conservative full-original PCM charge, including pending cache entries.
@@ -355,13 +412,13 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let (_, length, _, _) = edit.projected_domain(project.tempo_map())?;
-        let tempo = if edit.musical_start.is_some() {
-            Some(self.shared_tempo(project.tempo_map())?)
+        let tempo = if edit.reference_start_raw().is_some() {
+            Some(self.shared_tempo(edit.processing_tempo(project.tempo_map()))?)
         } else {
             None
         };
-        let origin = if edit.musical_start.is_some() {
-            edit.projection_origin()?
+        let origin = if edit.reference_start_raw().is_some() {
+            edit.processing_origin()?
         } else {
             0
         };
@@ -443,41 +500,7 @@ impl AudioTransformPreparation {
             gain_q16: p.gain_q16,
         }));
         let domain = &edit.domain;
-        let mode = if domain.warp_enabled {
-            match domain
-                .warp
-                .as_ref()
-                .ok_or(Invalid("warp settings missing"))?
-                .mode
-            {
-                WarpMode::RePitch => hex_warp::Mode::RePitch,
-                WarpMode::Beats { tail, decay, .. } => hex_warp::Mode::Beats {
-                    division_frames: None,
-                    tail: match tail {
-                        BeatsTail::Off => hex_warp::Tail::Off,
-                        BeatsTail::Forward => hex_warp::Tail::Forward,
-                        BeatsTail::Alternating => hex_warp::Tail::Alternating,
-                    },
-                    decay,
-                },
-                WarpMode::Tones { grain_ms } => hex_warp::Mode::Tones { grain_ms },
-                WarpMode::Texture {
-                    grain_ms,
-                    fluctuation,
-                    seed,
-                } => hex_warp::Mode::Texture {
-                    grain_ms,
-                    fluctuation,
-                    seed,
-                },
-                WarpMode::Complex => hex_warp::Mode::Complex,
-                WarpMode::ComplexPro { formants, envelope } => {
-                    hex_warp::Mode::ComplexPro { formants, envelope }
-                }
-            }
-        } else {
-            hex_warp::Mode::Resample
-        };
+        let mode = render_mode(domain)?;
         let input = hex_warp::Input {
             frames: source.frames(),
             sample_rate: source.sample_rate(),
@@ -573,8 +596,7 @@ impl AudioTransformPreparation {
             && domain.pitch_cents == 0
             && !domain.warp_enabled
             && domain.source_gain.is_empty()
-            && domain.fade.fade_in() == 0
-            && domain.fade.fade_out() == 0;
+            && domain.fade.is_neutral();
         if direct && matches!(source, PreparedAudioSourceRef::Streamed(_)) {
             if !domain.looping && view_start >= domain.source_length {
                 return Ok(None);
@@ -620,7 +642,7 @@ impl AudioTransformPreparation {
         }
         let PreparedAudioSourceRef::Resident(source) = source else {
             return Err(Invalid(
-                "audio events, pitch, warp and source-envelope preparation currently requires resident audio; streamed source changes were not committed",
+                "audio events, pitch, warp, source-envelope and fade preparation currently require resident audio; streamed source changes were not committed",
             ));
         };
         let audio = self.prepare_audio(project, edit, asset, source)?;

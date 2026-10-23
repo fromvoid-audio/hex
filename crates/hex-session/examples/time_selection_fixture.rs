@@ -1,4 +1,7 @@
 //! Create-new mixed audio/MIDI fixtures for the native time-selection profiler.
+//! Alternating 0.75s audio/MIDI placements retain 100 clips and 400 notes per
+//! track across 75s. Historical overlapping 50s fixtures are not equivalent
+//! performance inputs; generate new fixtures without rewriting existing files.
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipGain, ClipSnapshot, Meter, MeterPoint, MidiClipSnapshot,
     MidiNoteSnapshot, Project, Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
@@ -32,7 +35,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 flavor: hex_project::ClipFlavor::default(),
                 id: id(),
                 asset: 1,
-                start: position * 48_000,
+                start: position * 72_000,
                 duration: 36_000,
                 source_offset: 0,
                 source_length: 48_000,
@@ -55,10 +58,12 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 });
             }
             midi_clips.push(MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip,
-                start_raw: BeatTime::from_quarters(position * 2)?.raw(),
+                start_raw: BeatTime::from_ratio(position * 6 + 3, 2)?.raw(),
                 length_raw: length,
                 source_length_raw: length,
                 source_start_raw: 0,
@@ -90,9 +95,13 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         });
     }
     Ok(Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: wav.to_path_buf(),
             source_sample_rate: 48_000,
@@ -164,7 +173,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     generate(Path::new(&directory))?;
     writeln!(
         std::io::stdout().lock(),
-        "created 1/100-track fixtures; 100 clips and 400 notes per track; shared 48000 hz stereo wav"
+        "created 1/100-track fixtures; 100 clips and 400 notes per track across 75s; shared 48000 hz stereo wav"
     )?;
 
     Ok(())
@@ -180,6 +189,19 @@ mod tests {
             for track in project.tracks() {
                 assert_eq!(track.clips().len(), 50);
                 assert_eq!(track.midi_clips().len(), 50);
+                assert_eq!(track.clips().last().unwrap().start(), 49 * 72_000);
+                let last = track.midi_clips().last().unwrap();
+                assert_eq!(
+                    project.tempo_map().beat_to_frame(BeatTime::from_raw(
+                        last.start().raw() + last.length().raw()
+                    ))?,
+                    3_600_000
+                );
+                assert!(track.midi_clips().iter().all(|clip| {
+                    clip.notes().iter().all(|note| {
+                        note.start().raw() + note.duration().raw() <= clip.length().raw()
+                    })
+                }));
                 assert!(
                     track
                         .midi_clips()

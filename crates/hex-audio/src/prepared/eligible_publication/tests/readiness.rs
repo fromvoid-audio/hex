@@ -527,8 +527,11 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
     edit.execute(hex_project::Command::RemoveTrack(a_track))
         .unwrap();
     let hex_project::Created::Track(b_track) = edit
-        .execute(hex_project::Command::AddTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "replacement".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -608,16 +611,20 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
     // The observer facade uses the same real ready chunks and carries offsets
     // across them. EQ8 capture selection itself remains outside this Utility-
     // only eligible class; no fake EQ8 target is installed for this probe.
-    let mut observed = [false; 512];
+    let mut observed = [[false; 512]; 2];
     let mut observed_output = [[0.0; 2]; 512];
     let measured = allocation_counter::measure(|| {
         data.owner_mut().unwrap().run(|c, _| {
             let Some(ActivePublication::Eligible(active)) = c.active.as_mut() else {
                 panic!("active")
             };
-            let mut observe = |_identity, offset: usize, frames: &[Frame]| {
-                assert!(offset + frames.len() <= observed.len());
-                observed[offset..offset + frames.len()].fill(true);
+            let mut observe = |_identity, phase, offset: usize, frames: &[Frame]| {
+                let index = match phase {
+                    hex_engine::NodeSignalPhase::Input => 0,
+                    hex_engine::NodeSignalPhase::Output => 1,
+                };
+                assert!(offset + frames.len() <= observed[index].len());
+                observed[index][offset..offset + frames.len()].fill(true);
             };
             let outcome = active.render_streamed(
                 &mut c.domain_pages,
@@ -643,7 +650,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
         ),
         (0, 0, 0, 0)
     );
-    assert!(observed.into_iter().all(|seen| seen));
+    assert!(observed.into_iter().flatten().all(|seen| seen));
     let b_ticket = control
         .stage_eligible_audio_candidate(b, vec![domain], PublicationPolicy::InheritRuntime, 0)
         .ok()

@@ -82,6 +82,9 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, hex_project::Invalid>>()?;
     let snapshot = Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
@@ -89,6 +92,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         sample_rate: RATE,
         next_id: 102 + clips_total,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: PathBuf::from("profile-source.wav"),
             source_sample_rate: RATE,

@@ -39,6 +39,8 @@ pub struct NumericSpec {
     unit: Option<Arc<str>>,
     formatter: Option<NumericFormatter>,
     parser: Option<NumericParser>,
+    keyboard_steps: Option<(f64, f64)>,
+    integer_values: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +104,31 @@ impl NumericSpec {
             unit: unit.map(Into::into),
             formatter: None,
             parser: None,
+            keyboard_steps: None,
+            integer_values: false,
         })
+    }
+
+    /// Opt into whole values on a linear grid. Typed/external fractions refuse;
+    /// only normalized pointer selection rounds to the nearest grid point.
+    /// The bounded ±2^31 domain leaves ample f64 precision for normalized
+    /// round trips, including negative values and both exact endpoints.
+    pub fn with_integer_values(mut self) -> Result<Self, NumericError> {
+        if self.scale != NumericScale::Linear {
+            return Err(NumericError::InvalidScale);
+        }
+        if [self.min, self.max, self.default]
+            .into_iter()
+            .any(|v| !v.is_finite() || v.fract() != 0.0 || v.abs() > 2_147_483_648.0)
+        {
+            return Err(NumericError::InvalidRange);
+        }
+        self.integer_values = true;
+        self.keyboard_steps = Some((1.0, 1.0));
+        Ok(self)
+    }
+    pub const fn integer_values(&self) -> bool {
+        self.integer_values
     }
 
     /// Supply display and input codecs for domain-specific units or notation.
@@ -136,7 +162,10 @@ impl NumericSpec {
     }
 
     pub fn validate(&self, value: f64) -> Result<f64, NumericError> {
-        if value.is_finite() && (self.min..=self.max).contains(&value) {
+        if value.is_finite()
+            && (self.min..=self.max).contains(&value)
+            && (!self.integer_values || value.fract() == 0.0)
+        {
             Ok(value)
         } else {
             Err(NumericError::InvalidValue)
@@ -181,7 +210,11 @@ impl NumericSpec {
                 normalized_to_amplitude(position, self.min, self.max)
             }
         };
-        self.validate(value)
+        self.validate(if self.integer_values {
+            value.round().clamp(self.min, self.max)
+        } else {
+            value
+        })
     }
 
     /// Apply a normalized drag delta. Shift/fine adjustment is selected by the caller.
@@ -193,6 +226,24 @@ impl NumericSpec {
         self.from_normalized(position.clamp(0.0, 1.0))
     }
 
+    /// Choose explicit coarse/fine keyboard steps in the displayed unit.
+    /// Existing controls retain their normalized adjustment law by default.
+    pub fn with_keyboard_steps(mut self, coarse: f64, fine: f64) -> Result<Self, NumericError> {
+        if self.scale == NumericScale::LinearAmplitudeDecibels {
+            return Err(NumericError::InvalidScale);
+        }
+        if !coarse.is_finite()
+            || !fine.is_finite()
+            || fine <= 0.0
+            || coarse < fine
+            || (self.integer_values && (coarse.fract() != 0.0 || fine.fract() != 0.0))
+        {
+            return Err(NumericError::InvalidRange);
+        }
+        self.keyboard_steps = Some((coarse, fine));
+        Ok(self)
+    }
+
     /// Apply keyboard increments in the parameter's displayed unit.
     pub fn step(&self, value: f64, direction: f64, fine: bool) -> Result<f64, NumericError> {
         if !direction.is_finite() {
@@ -201,6 +252,10 @@ impl NumericSpec {
         let value = self.validate(value)?;
         if direction == 0.0 {
             return Ok(value);
+        }
+        if let Some((coarse, small)) = self.keyboard_steps {
+            let step = if fine { small } else { coarse };
+            return self.validate((value + step * direction).clamp(self.min, self.max));
         }
         if self.scale != NumericScale::LinearAmplitudeDecibels {
             return self.adjust(value, (if fine { 0.001 } else { 0.01 }) * direction);
@@ -649,5 +704,114 @@ mod tests {
         assert!(
             (positive_range.step(1.0, 1.0, false).unwrap() - amplitude_at_db(1.0)).abs() < 1.0e-12
         );
+    }
+}
+
+#[cfg(test)]
+mod keyboard_step_tests {
+    use super::*;
+    #[test]
+    fn explicit_steps_keep_integer_counts_and_fine_pitch_edits_in_their_domains() {
+        let count = NumericSpec::new(3.0, 48.0, 7.0, NumericScale::Linear, 0, None::<Arc<str>>)
+            .unwrap()
+            .with_keyboard_steps(1.0, 1.0)
+            .unwrap();
+        assert_eq!(count.step(7.0, 1.0, false).unwrap(), 8.0);
+        assert_eq!(count.step(7.0, -1.0, true).unwrap(), 6.0);
+        assert_eq!(count.step(48.0, 1.0, false).unwrap(), 48.0);
+        let hz = NumericSpec::new(
+            10.0,
+            20000.0,
+            220.0,
+            NumericScale::Logarithmic,
+            2,
+            None::<Arc<str>>,
+        )
+        .unwrap()
+        .with_keyboard_steps(1.0, 0.01)
+        .unwrap();
+        assert_eq!(hz.step(220.0, 1.0, true).unwrap(), 220.01);
+        assert!(hz.with_keyboard_steps(f64::NAN, 0.01).is_err());
+    }
+}
+
+#[cfg(test)]
+mod integer_tests {
+    use super::*;
+    #[test]
+    fn whole_domain_refuses_fractional_inputs_and_normalized_selection_is_exact() {
+        let spec = NumericSpec::new(-8.0, 8.0, 0.0, NumericScale::Linear, 0, None::<String>)
+            .unwrap()
+            .with_integer_values()
+            .unwrap();
+        for value in -8..=8 {
+            let value = f64::from(value);
+            assert_eq!(spec.parse(&spec.format(value).unwrap()).unwrap(), value);
+            assert_eq!(
+                spec.from_normalized(spec.to_normalized(value).unwrap())
+                    .unwrap(),
+                value
+            );
+        }
+        for input in ["0.5", "-0.5", "nan", "inf", "9"] {
+            assert!(spec.parse(input).is_err(), "{input}");
+        }
+        assert!(spec.validate(0.5).is_err());
+        assert!(spec.format(0.5).is_err());
+        assert!(spec.clone().with_keyboard_steps(1.0, 0.1).is_err());
+        assert_eq!(spec.from_normalized(0.51).unwrap(), 0.0);
+        assert_eq!(spec.from_normalized(0.54).unwrap(), 1.0);
+        assert_eq!(spec.from_normalized(-10.0).unwrap(), -8.0);
+        assert_eq!(spec.from_normalized(10.0).unwrap(), 8.0);
+        assert!(spec.from_normalized(f64::NAN).is_err());
+        assert_eq!(spec.step(0.0, 1.0, true).unwrap(), 1.0);
+        let continuous =
+            NumericSpec::new(-8.0, 8.0, 0.0, NumericScale::Linear, 0, None::<String>).unwrap();
+        assert_eq!(continuous.parse("0.5").unwrap(), 0.5);
+        assert!(!continuous.integer_values());
+    }
+    #[test]
+    fn whole_domain_refuses_ambiguous_large_bounds_and_retains_large_safe_endpoints() {
+        for (min, max, default) in [
+            (0.5, 4.0, 1.0),
+            (0.0, 4.5, 1.0),
+            (0.0, 4.0, 1.5),
+            (0.0, 9_007_199_254_740_992.0, 0.0),
+        ] {
+            assert!(
+                NumericSpec::new(min, max, default, NumericScale::Linear, 0, None::<String>)
+                    .unwrap()
+                    .with_integer_values()
+                    .is_err()
+            );
+        }
+        let spec = NumericSpec::new(
+            -2_147_483_648.0,
+            2_147_483_648.0,
+            0.0,
+            NumericScale::Linear,
+            0,
+            None::<String>,
+        )
+        .unwrap()
+        .with_integer_values()
+        .unwrap();
+        for value in [
+            -2_147_483_648.0,
+            -2_147_483_647.0,
+            -1.0,
+            0.0,
+            1.0,
+            16_777_215.0,
+            16_777_216.0,
+            2_147_483_647.0,
+            2_147_483_648.0,
+        ] {
+            assert_eq!(
+                spec.from_normalized(spec.to_normalized(value).unwrap())
+                    .unwrap(),
+                value
+            );
+        }
     }
 }
