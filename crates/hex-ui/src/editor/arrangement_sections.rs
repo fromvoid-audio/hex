@@ -448,6 +448,10 @@ impl EditorView {
         if !self.sections_available() {
             return self.section_hit(x, y).is_some();
         }
+        if !double && self.section_hit(x, y).is_none() && self.main_time_range_grab(x, y).is_some()
+        {
+            return false;
+        }
         let Some(state) = self.state.as_ref() else {
             return false;
         };
