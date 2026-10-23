@@ -463,7 +463,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
                 NumericControlKind::HorizontalSlider,
                 spec,
                 f64::from(gain) * 100.0,
-                super::device_panel::control_style(),
+                crate::theme::control_style(),
             )
         });
         let config = match config {

@@ -20,6 +20,22 @@ pub(crate) use device::{
 use std::borrow::Cow;
 use std::cell::Cell;
 
+/// Common widget palette for device panels, workspace fields and preferences.
+pub(crate) fn control_style() -> hex_widgets::ControlStyle {
+    device_style(DeviceStyleRole::Control)
+}
+
+/// Common workspace action colors, resolved from the native widget palette.
+pub(crate) fn action_style() -> hex_widgets::ActionStyle {
+    let style = control_style();
+    hex_widgets::ActionStyle {
+        background: style.raised,
+        text: readable_text(style.raised, style.text),
+        hover_background: style.hover,
+        hover_text: None,
+    }
+}
+
 /// Shared translucency for arranger and clip-editor time ranges.
 pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
 
