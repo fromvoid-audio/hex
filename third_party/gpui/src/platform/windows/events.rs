@@ -545,8 +545,8 @@ impl WindowsWindowInner {
         };
         drop(lock);
 
-        let wheel_distance =
-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
+        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
         let mut cursor_point = POINT {
             x: lparam.signed_loword().into(),
             y: lparam.signed_hiword().into(),
@@ -554,6 +554,7 @@ impl WindowsWindowInner {
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
             direction_inverted_from_device: false,
+            is_momentum: false,
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
             delta: ScrollDelta::Lines(match modifiers.shift {
                 true => Point {
@@ -564,6 +565,11 @@ impl WindowsWindowInner {
                     y: wheel_distance,
                     x: 0.0,
                 },
+            }),
+            wheel_ticks: Some(if modifiers.shift {
+                Point { x: wheel_ticks, y: 0.0 }
+            } else {
+                Point { x: 0.0, y: wheel_ticks }
             }),
             modifiers,
             touch_phase: TouchPhase::Moved,
@@ -592,8 +598,8 @@ impl WindowsWindowInner {
             .wheel_scroll_chars;
         drop(lock);
 
-        let wheel_distance =
-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
+        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
+        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
         let mut cursor_point = POINT {
             x: lparam.signed_loword().into(),
             y: lparam.signed_hiword().into(),
@@ -601,11 +607,13 @@ impl WindowsWindowInner {
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let event = PlatformInput::ScrollWheel(ScrollWheelEvent {
             direction_inverted_from_device: false,
+            is_momentum: false,
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
             delta: ScrollDelta::Lines(Point {
                 x: wheel_distance,
                 y: 0.0,
             }),
+            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
             modifiers: current_modifiers(),
             touch_phase: TouchPhase::Moved,
         });

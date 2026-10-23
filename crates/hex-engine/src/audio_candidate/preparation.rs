@@ -131,27 +131,47 @@ impl AudioCandidatePreparation {
         asset: AssetId,
         audio: &crate::Audio,
     ) -> Result<(), AudioStorageError> {
+        self.copy_resident_frames_on_control(asset, audio.sample_rate(), audio.frames())
+    }
+    /// Copy only the borrowed original-rate leaf into this actual persistent
+    /// candidate cell. No source owner, file path or project-rate derivative is
+    /// adopted, and no borrow survives the synchronous control operation.
+    pub fn copy_original_source_on_control(
+        &mut self,
+        asset: AssetId,
+        source: crate::OwnedAudioSourceView<'_>,
+    ) -> Result<(), AudioStorageError> {
+        let frames = source
+            .resident_frames()
+            .ok_or(AudioStorageError::UnsupportedGraph)?;
+        self.copy_resident_frames_on_control(asset, source.sample_rate(), frames)
+    }
+    fn copy_resident_frames_on_control(
+        &mut self,
+        asset: AssetId,
+        sample_rate: u32,
+        frames: &[crate::Frame],
+    ) -> Result<(), AudioStorageError> {
         self.collecting(asset)?;
         if !self.resident_draft.is_empty() || self.resident_draft.capacity() != 0 {
             return Err(AudioStorageError::SourceMismatch);
         }
-        let requested = audio
-            .frames()
+        let requested = frames
             .len()
             .checked_mul(std::mem::size_of::<crate::Frame>())
             .and_then(|n| n.checked_add(std::mem::size_of::<crate::AudioData>()))
             .ok_or(AudioStorageError::Overflow)?;
         self.validate_collection_bytes(requested)?;
         self.resident_draft
-            .try_reserve_exact(audio.frames().len())
+            .try_reserve_exact(frames.len())
             .map_err(|_| AudioStorageError::Allocation)?;
         self.validate_collection_bytes(std::mem::size_of::<crate::AudioData>())?;
-        self.resident_draft.extend_from_slice(audio.frames());
+        self.resident_draft.extend_from_slice(frames);
         // This fixed constructor has no user code or recoverable unwind after
         // taking the Vec; all Result refusals return that exact Vec. Fatal OOM
         // follows the existing constructor convention.
         match crate::OwnedAudioSource::try_resident(
-            audio.sample_rate(),
+            sample_rate,
             std::mem::take(&mut self.resident_draft),
         ) {
             Ok(source) => {
@@ -184,6 +204,32 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
+        self.prepare_with_sampler(project, source_generation, context, None)
+    }
+    /// Explicit closed native CURRENT construction from already copied original
+    /// PCM. Generic audio-only preparation still refuses resourceful graphs.
+    pub fn prepare_current_sampler_on_control(
+        &mut self,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        hash_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), AudioStorageError> {
+        self.prepare_with_sampler(
+            project,
+            source_generation,
+            context,
+            Some((hash_frames, cancel)),
+        )
+    }
+    fn prepare_with_sampler(
+        &mut self,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+    ) -> Result<(), AudioStorageError> {
         if self.failed
             || self.cleaning
             || self.complete
@@ -192,6 +238,8 @@ impl AudioCandidatePreparation {
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        crate::midi_compile::require_supported_clip_volume(project)
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         if self.bank.is_none() && self.token.is_none() {
             OwnedAudioInputs::try_new_in_place(
                 &mut self.sources,
@@ -205,14 +253,23 @@ impl AudioCandidatePreparation {
             .ok_or(AudioStorageError::SourceMismatch)?;
         if self.token.is_none() {
             self.token = Some(
-                custody
-                    .begin_prepared_revision_in_place_on_control(
+                match sampler {
+                    Some((work, cancel)) => custody.begin_current_sampler_in_place_on_control(
                         project,
                         source_generation,
                         context,
                         &mut self.bank,
-                    )
-                    .map_err(|refused| refused.reason)?,
+                        work,
+                        cancel,
+                    ),
+                    None => custody.begin_prepared_revision_in_place_on_control(
+                        project,
+                        source_generation,
+                        context,
+                        &mut self.bank,
+                    ),
+                }
+                .map_err(|refused| refused.reason)?,
             );
         }
         let draft = self
@@ -232,6 +289,78 @@ impl AudioCandidatePreparation {
     #[cfg(any(test, feature = "instrument-test-support"))]
     pub fn test_source_collection_identity(&self) -> (usize, usize) {
         (self.sources.as_ptr() as usize, self.sources.capacity())
+    }
+    /// Correlation only, never an owner/source or native admission capability.
+    pub fn current_sampler_context(&self) -> Option<crate::AudioSourceContext> {
+        let owner = self.owner.as_ref()?;
+        owner.inner.runtime.as_ref()?.sampler_sources.as_ref()?;
+        owner.source_context()
+    }
+    /// Actual resident PCM backing in this completed native constructor. This
+    /// scalar observes capacity and grants no ownership or retirement authority.
+    pub fn current_sampler_pcm_capacity_frames(&self) -> Result<u64, AudioStorageError> {
+        self.owner
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .inner
+            .custody
+            .native_sampler_pcm_capacity_frames()
+    }
+    pub fn resident_pcm_capacity_frames(&self) -> Result<u64, AudioStorageError> {
+        self.owner
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .inner
+            .custody
+            .resident_pcm_capacity_frames()
+    }
+    /// Validate an intact, never-published resident CURRENT constructor before
+    /// a destination native Root takes the opaque cell. Refusal retains it.
+    pub fn preflight_current_sampler_adoption_on_control(
+        &mut self,
+        context: crate::AudioSourceContext,
+        sample_rate: u32,
+        source_capacity: usize,
+        ledger: crate::AudioStorageLedgerReservation,
+        external_runtime_bytes: usize,
+    ) -> Result<super::AudioCandidateConstructorSummary, AudioStorageError> {
+        if self.failed
+            || self.cleaning
+            || self.complete
+            || self.owner_runtime_done
+            || self.first_panic.is_some()
+            || self.failed_incomplete()
+            || self.bank.is_some()
+            || self.custody.is_some()
+            || self.token.is_some()
+            || self.sources.capacity() != 0
+            || self.resident_draft.capacity() != 0
+            || self.draft.as_ref().is_none_or(|d| !d.transferred_empty())
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let owner = self
+            .owner
+            .as_mut()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if owner
+            .inner
+            .custody
+            .native_sampler_source_capacity()
+            .is_none_or(|n| n > source_capacity)
+            || owner.source_context() != Some(context)
+            || owner.sample_rate() != sample_rate
+            || owner.phase() != AudioCandidateDisposalPhase::Owned
+            || owner.streamed_sources().next().is_some()
+            || owner
+                .inner
+                .runtime
+                .as_ref()
+                .is_none_or(|r| r.sampler_sources.is_none())
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        owner.seal_constructor_with_runtime_storage_on_control(ledger, external_runtime_bytes)
     }
     pub(super) fn take_preflighted_owner(&mut self) -> Option<AudioCandidateOwner> {
         self.owner.take()
@@ -460,3 +589,96 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }
+#[test]
+fn original_leaf_copy_keeps_original_rate_and_rebinds_catalog_to_actual_new_bank() {
+    use crate::native_device_resources::{
+        DeviceResourceCatalog, OriginalResourceSource, ResourceCatalogReservation,
+    };
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(16000).unwrap(), 8).unwrap();
+    let hex_project::Created::Asset(asset) = editor
+        .execute(hex_project::Command::ImportDeviceAsset {
+            path: "original.wav".into(),
+            sample_rate: 8000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let input_limits = crate::AudioStorageReservation {
+        allocation_items: 16,
+        handle_obligations: 8,
+        max_prepared_data_bytes: 1_000_000,
+        max_construction_data_bytes: 2_000_000,
+        caller_retained_bytes: 0,
+        caller_construction_bytes: 0,
+    };
+    let pcm = vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0, 0.0]];
+    let original = OwnedAudioInputs::try_new(
+        vec![(
+            asset,
+            crate::OwnedAudioSource::try_resident(8000, pcm)
+                .ok()
+                .unwrap(),
+        )],
+        input_limits,
+    )
+    .ok()
+    .unwrap();
+    let original_token = original.source_token(asset).unwrap();
+    let leaf = original.source_view(&original_token).unwrap();
+    let original_pointer = leaf.resident_frames().unwrap().as_ptr();
+    let mut cell = AudioCandidatePreparation::try_new_on_control(1, input_limits).unwrap();
+    cell.copy_original_source_on_control(asset, leaf).unwrap();
+    OwnedAudioInputs::try_new_in_place(&mut cell.sources, input_limits, &mut cell.bank).unwrap();
+    let copied = cell.bank.as_ref().unwrap();
+    let view = copied
+        .source_view(&copied.source_token(asset).unwrap())
+        .unwrap();
+    assert_eq!(view.sample_rate(), 8000);
+    assert_eq!(view.resident_frames().unwrap().len(), 4);
+    assert_ne!(view.resident_frames().unwrap().as_ptr(), original_pointer);
+    assert_eq!(
+        view.resident_frames().unwrap(),
+        original
+            .source_view(&original_token)
+            .unwrap()
+            .resident_frames()
+            .unwrap()
+    );
+    let catalog = DeviceResourceCatalog::prepare_inputs_on_control(
+        copied,
+        &[OriginalResourceSource {
+            asset,
+            sample_rate: 8000,
+            frames: 4,
+        }],
+        ResourceCatalogReservation {
+            metadata_bytes: 65536,
+            hash_frames: 4,
+        },
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let state = hex_devices::sampler::state::SamplerState::for_source_frames(4)
+        .unwrap()
+        .to_native()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    let scope = catalog.prepare_scope_on_control(&state, 65536).unwrap();
+    assert!(catalog.resources_from_inputs(&original, &scope).is_err());
+    let resources = catalog.resources_from_inputs(copied, &scope).unwrap();
+    let observed = hex_lattice::DeviceResources::get(&resources, 0).unwrap();
+    assert_eq!(observed.sample_rate, 8000);
+    assert_eq!(observed.pcm.frame(0), Some([0.125, -0.25]));
+}
+
+#[cfg(test)]
+#[path = "current_sampler/tests.rs"]
+mod current_sampler_tests;

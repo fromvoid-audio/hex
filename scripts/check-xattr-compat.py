@@ -22,7 +22,7 @@ def verify():
     provenance = json.loads((VENDOR / "hex-provenance.json").read_text())
     assert (provenance["package"], provenance["version"], provenance["archive_sha256"]) == (
         "xattr", "0.2.3", ARCHIVE_SHA256)
-    assert set(provenance["patched_files"]) == {"src/sys/mod.rs"}
+    assert set(provenance["patched_files"]) == {"src/sys/mod.rs", "src/sys/linux_macos/macos.rs"}
     expected = provenance["original_files"] | provenance["patched_files"]
     extras = {str(p.relative_to(VENDOR)) for p in VENDOR.rglob("*") if p.is_file()} - set(expected)
     assert extras == {"hex-provenance.json", "hex-patches.diff", "HEX-PATCHES.md"}, extras
@@ -48,8 +48,9 @@ def main():
     target = args.target or host
     if "linux" not in target and "apple-darwin" not in target:
         parser.error("regression supports Linux and macOS targets")
-    command = ["cargo", "build", "--locked", "-p", "xattr", "--target", target,
-               "--message-format=json"]
+    # Apply the warning regression to xattr itself, beyond dependency cap-lints.
+    command = ["cargo", "rustc", "--locked", "-p", "xattr", "--lib", "--target", target,
+               "--message-format=json", "--", "-D", "deprecated"]
     result = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True)
     artifacts = {}
     for line in result.stdout.splitlines():

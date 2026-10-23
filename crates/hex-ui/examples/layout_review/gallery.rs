@@ -1,6 +1,7 @@
 //! Functional view-local fixtures; no engine, project, audio or settings I/O.
 #[path = "compositions.rs"]
 mod compositions;
+mod eq;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "tests.rs"]
 mod tests;
@@ -23,6 +24,7 @@ enum Entry {
     Utility,
     Saturator,
     Eq8,
+    Eq,
     Compressor,
     Gate,
     AutoPan,
@@ -31,11 +33,12 @@ enum Entry {
     Unsupported,
     Parts,
 }
-const ENTRIES: [Entry; 11] = [
+const ENTRIES: [Entry; 12] = [
     Entry::Vector,
     Entry::Utility,
     Entry::Saturator,
     Entry::Eq8,
+    Entry::Eq,
     Entry::Compressor,
     Entry::Gate,
     Entry::AutoPan,
@@ -51,6 +54,7 @@ impl Entry {
             Self::Utility => "utility",
             Self::Saturator => "saturator",
             Self::Eq8 => "eq8",
+            Self::Eq => "eq",
             Self::Compressor => "compressor",
             Self::Gate => "gate",
             Self::AutoPan => "auto pan",
@@ -66,6 +70,7 @@ impl Entry {
             Self::Utility => "utility",
             Self::Saturator => "saturator",
             Self::Eq8 => "eq8",
+            Self::Eq => "eq",
             Self::Compressor => "compressor",
             Self::Gate => "gate",
             Self::AutoPan => "auto-pan",
@@ -81,7 +86,7 @@ impl Entry {
             Self::Utility => device_composition::UTILITY_FRAME_WIDTH,
             Self::AutoPan => device_composition::AUTO_PAN_FRAME_WIDTH,
             Self::Saturator => device_composition::SATURATOR_FRAME_WIDTH,
-            Self::Eq8 => device_composition::EQ8_FRAME_WIDTH,
+            Self::Eq8 | Self::Eq => device_composition::EQ8_FRAME_WIDTH,
             Self::Compressor => device_composition::COMPRESSOR_FRAME_WIDTH,
             Self::Gate => device_composition::GATE_FRAME_WIDTH,
             _ => device_composition::GENERIC_FRAME_WIDTH,
@@ -93,6 +98,7 @@ impl Entry {
             Self::Utility
                 | Self::Saturator
                 | Self::Eq8
+                | Self::Eq
                 | Self::Compressor
                 | Self::Gate
                 | Self::AutoPan
@@ -106,6 +112,7 @@ impl Entry {
             Self::Utility => (4, 6, 1),
             Self::Saturator => (3, 0, 1),
             Self::Eq8 => (4, 8, 9),
+            Self::Eq => (4, 9, 3),
             Self::Compressor => (6, 0, 0),
             Self::Gate => (6, 0, 0),
             Self::AutoPan => (3, 0, 0),
@@ -137,6 +144,8 @@ struct Number {
     height: f32,
 }
 struct Fixture {
+    entry: Entry,
+    _subscriptions: Vec<gpui::Subscription>,
     numbers: Vec<Number>,
     toggles: Vec<Entity<Toggle>>,
     selectors: Vec<Entity<Selector>>,
@@ -145,6 +154,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(entry: Entry, cx: &mut Context<Gallery>) -> Result<Self, String> {
+        if entry == Entry::Eq {
+            return eq::fixture(cx);
+        }
         let (numbers, toggles, selectors) = entry.counts();
         let generic = matches!(entry, Entry::Instrument | Entry::Effect);
         let mut numeric = Vec::new();
@@ -250,6 +262,8 @@ impl Fixture {
             )
         });
         Ok(Self {
+            entry,
+            _subscriptions: Vec::new(),
             numbers: numeric,
             toggles: switches,
             selectors: choices,
@@ -277,6 +291,10 @@ impl Fixture {
                     .set_external_style(theme::device_style(theme::DeviceStyleRole::Control), cx);
                 control.set_enabled(!disabled, cx);
             });
+        }
+        if self.entry == Entry::Eq {
+            eq::sync(self, cx);
+            return;
         }
         self.graph.update(cx, |graph, cx| {
             let _ = graph.set_model(

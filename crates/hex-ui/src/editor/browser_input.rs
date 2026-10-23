@@ -42,6 +42,7 @@ pub(super) struct BrowserSearch {
     reversed: bool,
     marked: Option<Range<usize>>,
     mouse_selection: Option<MouseSelection>,
+    text_click: hex_widgets::TextClickSelection,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     last_origin_x: Option<Pixels>,
@@ -57,6 +58,7 @@ impl BrowserSearch {
             reversed: false,
             marked: None,
             mouse_selection: None,
+            text_click: hex_widgets::TextClickSelection::default(),
             last_layout: None,
             last_bounds: None,
             last_origin_x: None,
@@ -79,30 +81,29 @@ impl BrowserSearch {
     }
     pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         self.focus(window);
         self.unmark_text(window, cx);
         self.select_all(&BrowserSelectAll, window, cx);
     }
 
-    // Results share this input's FocusHandle. Their explicit mouse entry into
-    // text mode selects all too, while retaining the current down-point for drag.
-    pub(super) fn select_all_on_mouse_entry(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let selection = self.mouse_selection;
-        self.focus_and_select_all(window, cx);
-        self.mouse_selection = selection;
-    }
-
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         self.content.clear();
         self.selected = 0..0;
         self.reversed = false;
         self.marked = None;
         cx.notify();
+    }
+
+    /// Browser-owned location restoration, without focus or a text edit event.
+    pub(super) fn restore_query(&mut self, content: &str, cx: &mut Context<Self>) {
+        // Reuse clear's complete input/gesture invariants (including any shared
+        // selection policy), then publish only the final value at update end.
+        self.clear(cx);
+        self.content.push_str(content);
+        self.selected = self.content.len()..self.content.len();
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -135,6 +136,7 @@ impl BrowserSearch {
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let offset = offset.min(self.content.len());
         if self.reversed {
             self.selected.start = offset;
@@ -150,6 +152,7 @@ impl BrowserSearch {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let offset = offset.min(self.content.len());
         self.selected = offset..offset;
         self.reversed = false;
@@ -204,6 +207,7 @@ impl BrowserSearch {
 
     fn select_all(&mut self, _: &BrowserSelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.mouse_selection = None;
+        self.text_click.clear();
         self.selected = 0..self.content.len();
         self.reversed = false;
         cx.notify();
@@ -291,6 +295,19 @@ impl BrowserSearch {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.focus.is_focused(window);
+        let mut gesture = self.text_click;
+        if !focused || event.modifiers.shift {
+            gesture.clear();
+        }
+        let toggle = (!event.modifiers.shift)
+            .then(|| {
+                gesture.selection_for_down(
+                    event.click_count,
+                    focused && !self.content.is_empty() && self.selected == (0..self.content.len()),
+                )
+            })
+            .flatten();
         let offset = self.index_for_point(event.position);
         let anchor = if event.modifiers.shift && self.focus.is_focused(window) {
             if self.reversed {
@@ -304,20 +321,26 @@ impl BrowserSearch {
         self.unmark_text(window, cx);
         if !self.clip_name && !self.focus.is_focused(window) {
             self.focus_and_select_all(window, cx);
+        } else if let Some(all) = toggle {
+            if all {
+                self.select_all(&BrowserSelectAll, window, cx);
+            } else {
+                self.move_to(offset, cx);
+            }
         } else if event.modifiers.shift {
             self.select_to(offset, cx);
         } else {
             self.move_to(offset, cx);
         }
+        self.text_click = gesture;
         self.focus.focus(window);
         self.mouse_selection = Some(MouseSelection {
             anchor,
             origin: event.position,
             dragging: false,
         });
-        if self.clip_name {
-            cx.stop_propagation();
-        }
+        // The field owns this click; its browser parent owns non-text clicks.
+        cx.stop_propagation();
     }
 
     fn mouse_move(
@@ -331,6 +354,7 @@ impl BrowserSearch {
         };
         if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
             self.mouse_selection = None;
+            self.text_click.clear();
             return;
         }
         // A focus click stays Select All through ordinary pointer jitter. A
@@ -341,6 +365,7 @@ impl BrowserSearch {
         {
             return;
         }
+        self.text_click.clear();
         if let Some(selection) = self.mouse_selection.as_mut() {
             selection.dragging = true;
         }
@@ -387,6 +412,7 @@ impl EntityInputHandler for BrowserSearch {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.marked = None;
+        self.text_click.clear();
     }
 
     fn replace_text_in_range(
@@ -397,6 +423,7 @@ impl EntityInputHandler for BrowserSearch {
         cx: &mut Context<Self>,
     ) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -430,6 +457,7 @@ impl EntityInputHandler for BrowserSearch {
         cx: &mut Context<Self>,
     ) {
         self.mouse_selection = None;
+        self.text_click.clear();
         let range = range
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -781,7 +809,9 @@ impl Element for BrowserSearchElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = state.selection.take() {
+        if focus.is_focused(window)
+            && let Some(selection) = state.selection.take()
+        {
             window.paint_quad(selection);
         }
         if let Some(line) = state.line.take() {
