@@ -49,7 +49,7 @@ fn beat_at_x(
     }
     let start = if let Some(step) = grid.step_raw() {
         let last_grid = clip_length.raw().saturating_sub(1) / step * step;
-        midi_drag::snap_raw(raw, grid).min(last_grid)
+        midi_drag::creation_start(raw, grid).min(last_grid)
     } else {
         raw.min(clip_length.raw().saturating_sub(1))
     };
@@ -188,7 +188,7 @@ impl EditorView {
             selected_note_data.map_or_else(
                 || {
                     format!(
-                        "{} beats · click: cursor · drag: select · double-click: add",
+                        "{} beats · drag: time · shift-drag: notes · double-click: add",
                         beat_label(beat_span.raw())
                     )
                 },
@@ -247,7 +247,13 @@ impl EditorView {
                     self.midi_group_gesture
                         .as_ref()
                         .map(|gesture| match gesture.kind() {
-                            midi_drag::HitKind::Move => gpui::CursorStyle::ClosedHand,
+                            midi_drag::HitKind::Move => {
+                                if gesture.is_copy() {
+                                    gpui::CursorStyle::DragCopy
+                                } else {
+                                    gpui::CursorStyle::ClosedHand
+                                }
+                            }
                             midi_drag::HitKind::ResizeLeading => gpui::CursorStyle::ResizeLeft,
                             midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
                         })
@@ -265,6 +271,7 @@ impl EditorView {
             && draw_stroke.is_none()
             && draw_creation.is_none()
             && draw_marquee.is_none()
+            && self.midi_time_selection.gesture.is_none()
             && self.piano_pitch_zoom.is_none()
             && !self.midi_pan.enabled
             && self.midi_pan.gesture.is_none();
@@ -319,7 +326,9 @@ impl EditorView {
                 } else {
                     None
                 };
-                if let Some(target) = hovered {
+                if let Some(cursor) = drag_cursor {
+                    window.set_cursor_style(cursor, &hitbox);
+                } else if let Some(target) = hovered {
                     let cursor = if draw_mode {
                         gpui::CursorStyle::Crosshair
                     } else {
@@ -329,8 +338,6 @@ impl EditorView {
                             midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
                         }
                     };
-                    window.set_cursor_style(cursor, &hitbox);
-                } else if let Some(cursor) = drag_cursor {
                     window.set_cursor_style(cursor, &hitbox);
                 }
                 let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {
@@ -444,23 +451,17 @@ impl EditorView {
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
                         theme::color(theme::PaletteRole::Secondary),
                     );
-                    if w >= 6.0 && note.leading_edge_visible {
-                        quad(
-                            x,
-                            y + 1.0,
-                            1.0,
-                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                            theme::color(theme::PaletteRole::Text),
-                        );
-                    }
-                    if w >= 6.0 && note.trailing_edge_visible {
-                        quad(
-                            x + w - 1.0,
-                            y + 1.0,
-                            1.0,
-                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                            theme::color(theme::PaletteRole::Text),
-                        );
+                    let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
+                    let border = theme::color(theme::PaletteRole::Background);
+                    quad(x, y + 1.0, w, 1.0, border);
+                    quad(x, y + note_height, w, 1.0, border);
+                    if w >= 3.0 {
+                        if note.leading_edge_visible {
+                            quad(x, y + 1.0, 1.0, note_height, border);
+                        }
+                        if note.trailing_edge_visible {
+                            quad(right - 1.0, y + 1.0, 1.0, note_height, border);
+                        }
                     }
                 }
                 for id in draw_selected.iter().copied() {
@@ -616,12 +617,13 @@ impl EditorView {
                 }
 
                 if let Some(target) = hovered
+                    && draw_selected.binary_search(&target.note).is_err()
                     && let Some(note) = canvas_scene.note(target.note)
                     && let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
                 {
                     let top = note.y * height + 1.0;
                     let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
-                    let color = theme::color(theme::PaletteRole::Text);
+                    let color = theme::color(theme::PaletteRole::SecondaryText);
                     quad(left, top, right - left, 1.0, color);
                     quad(left, top + note_height - 1.0, right - left, 1.0, color);
                     quad(left, top, 1.0, note_height, color);
@@ -639,11 +641,7 @@ impl EditorView {
                             top,
                             3.0_f32.min(right - left),
                             note_height,
-                            theme::color(if draw_selected.binary_search(&target.note).is_ok() {
-                                theme::PaletteRole::Text
-                            } else {
-                                theme::PaletteRole::Primary
-                            }),
+                            theme::color(theme::PaletteRole::SecondaryText),
                         );
                     }
                 }
@@ -720,6 +718,9 @@ impl EditorView {
                     revision,
                     clip: clip_id,
                     clip_length: clip_len.raw(),
+                    // The checked playback minimum is captured on gesture
+                    // admission, never prepared or scanned during painting.
+                    minimum_gate: 1,
                     grid,
                     effective_grid: grid,
                     snap_modifier: false,
@@ -811,12 +812,12 @@ impl EditorView {
                             return;
                         }
                         view.midi_focus.focus(window);
-                        view.clear_midi_time_selection();
                         let mut hit_cycle = view.midi_hit_cycle;
                         let hit = event_scene
                             .hit(x, y, width, height, &mut hit_cycle)
                             .and_then(|id| event_scene.note(id));
                         if view.midi_draw_mode {
+                            view.clear_midi_time_selection();
                             if event.click_count != 1 {
                                 return;
                             }
@@ -833,6 +834,8 @@ impl EditorView {
                             return;
                         }
                         if let Some(note) = hit {
+                            view.clear_midi_time_selection();
+                            view.midi_time_selection.cancel();
                             view.midi_hit_cycle = hit_cycle;
                             if event.click_count >= 2 {
                                 view.midi_note_gesture = None;
@@ -973,17 +976,27 @@ impl EditorView {
                             ) else {
                                 return;
                             };
-                            view.midi_marker = Some(local_beat.raw());
-                            view.midi_marquee = view
-                                .midi_marquee_context(rendered_context.bounds)
-                                .and_then(|context| {
-                                    super::midi_selection::Marquee::begin(
-                                        context,
-                                        [x, y],
-                                        event.modifiers.shift,
-                                        &view.midi_selection,
-                                    )
-                                });
+                            if event.modifiers.shift {
+                                view.clear_midi_time_selection();
+                                view.midi_time_selection.cancel();
+                                view.midi_marker = Some(local_beat.raw());
+                                view.midi_marquee = view
+                                    .midi_marquee_context(rendered_context.bounds)
+                                    .and_then(|context| {
+                                        super::midi_selection::Marquee::begin(
+                                            context,
+                                            [x, y],
+                                            true,
+                                            &view.midi_selection,
+                                        )
+                                    });
+                            } else {
+                                view.begin_midi_grid_time_selection(
+                                    rendered_context.bounds,
+                                    f32::from(event.position.x),
+                                    event.modifiers.platform,
+                                );
+                            }
                             view_cx.notify();
                             return;
                         }
@@ -1011,6 +1024,8 @@ impl EditorView {
                         if local >= authoring_length.raw() || duration == 0 {
                             return;
                         }
+                        view.clear_midi_time_selection();
+                        view.midi_time_selection.cancel();
                         view.midi_marquee = None;
                         view.begin_midi_creation(
                             rendered_context,
@@ -1022,6 +1037,7 @@ impl EditorView {
                                 channel: 0,
                                 velocity: 100,
                             },
+                            StrokeModifiers::from_platform(event.modifiers),
                         );
                         view_cx.notify();
                     });
@@ -1094,6 +1110,16 @@ impl EditorView {
                             }
                             return;
                         }
+                        if view.midi_grid_time_selection_active() {
+                            if view.update_midi_time_selection(
+                                rendered_context.bounds,
+                                f32::from(event.position.x),
+                                event.modifiers.platform,
+                            ) {
+                                view_cx.notify();
+                            }
+                            return;
+                        }
                         if let Some(mut marquee) = view.midi_marquee.take() {
                             let last = [
                                 f32::from(event.position.x - bounds.origin.x),
@@ -1133,6 +1159,7 @@ impl EditorView {
                             return;
                         }
                         let detail_clip = view.detail_clip_id();
+                        view.update_midi_copy_modifier(event.modifiers.alt);
                         if let Some(gesture) = &mut view.midi_group_gesture {
                             let current =
                                 gesture.is_current(super::midi_group_drag::GroupContext {
@@ -1233,6 +1260,15 @@ impl EditorView {
                             view_cx.notify();
                             return;
                         }
+                        if view.midi_grid_time_selection_active() {
+                            view.finish_midi_time_selection(
+                                rendered_context.bounds,
+                                f32::from(event.position.x),
+                                event.modifiers.platform,
+                            );
+                            view_cx.notify();
+                            return;
+                        }
                         if view.midi_stroke.is_some() {
                             view.finish_midi_draw(
                                 [
@@ -1289,6 +1325,7 @@ impl EditorView {
                             view_cx.notify();
                             return;
                         }
+                        view.update_midi_copy_modifier(event.modifiers.alt);
                         if let Some(mut gesture) = view.midi_group_gesture.take() {
                             let pending = view.edit_pending();
                             let context = super::midi_group_drag::GroupContext {
@@ -1399,17 +1436,6 @@ impl EditorView {
                             }));
                         }
                         view_cx.notify();
-                    });
-                });
-                let modifier_entity = entity.clone();
-                window.on_modifiers_changed(move |event, _, cx| {
-                    modifier_entity.update(cx, |view, view_cx| {
-                        let modifiers_match = view.midi_stroke.as_ref().is_none_or(|stroke| {
-                            stroke.modifiers_match(event.modifiers.platform, event.modifiers.alt)
-                        });
-                        if !modifiers_match && view.cancel_midi_stroke() {
-                            view_cx.notify();
-                        }
                     });
                 });
             },
@@ -1988,6 +2014,63 @@ impl EditorView {
         ));
     }
 
+    /// Modifier events belong to the focused editor dispatch path. A listener
+    /// inside the canvas is below the roll's focus node and misses these events.
+    pub(super) fn refresh_piano_note_modifiers(
+        &mut self,
+        modifiers: gpui::Modifiers,
+        window: &mut gpui::Window,
+    ) -> bool {
+        let pointer = window.mouse_position();
+        let x = f32::from(pointer.x);
+        let y = f32::from(pointer.y);
+        let mut changed = self.update_midi_copy_modifier(modifiers.alt);
+        if let Some(gesture) = self.midi_group_gesture.as_mut() {
+            changed |= gesture.update([x, y], modifiers.platform);
+        }
+        if let Some(gesture) = self.midi_note_gesture.as_mut() {
+            changed |= midi_drag::update_with_modifier(gesture, x, y, modifiers.platform);
+        }
+        if let Some(bounds) = self
+            .midi_creation
+            .as_ref()
+            .map(super::midi_creation::Creation::bounds)
+        {
+            changed |=
+                self.update_midi_creation(bounds, x, StrokeModifiers::from_platform(modifiers));
+        }
+        let modifiers_match = self
+            .midi_stroke
+            .as_ref()
+            .is_none_or(|stroke| stroke.modifiers_match(modifiers.platform, modifiers.alt));
+        changed | (!modifiers_match && self.cancel_midi_stroke())
+    }
+
+    fn update_midi_copy_modifier(&mut self, copy: bool) -> bool {
+        if copy && let Some(note) = self.midi_note_gesture {
+            match super::midi_group_drag::GroupGesture::from_note_copy(
+                note,
+                self.midi_selection.epoch(),
+            ) {
+                Ok(Some(group)) => {
+                    self.midi_note_gesture = None;
+                    self.midi_group_gesture = Some(group);
+                    return true;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    // Refuse the requested copy instead of releasing a move.
+                    self.midi_note_gesture = None;
+                    self.error = Some(error.into());
+                    return true;
+                }
+            }
+        }
+        self.midi_group_gesture
+            .as_mut()
+            .is_some_and(|gesture| gesture.set_copy(copy))
+    }
+
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
@@ -2239,10 +2322,7 @@ mod tests {
         let x = 31.25;
         for (grid, expected) in [
             (midi_drag::MidiGrid::Quarter, BeatTime::ONE.raw()),
-            (
-                midi_drag::MidiGrid::Eighth,
-                BeatTime::ONE.raw() + BeatTime::ONE.raw() / 2,
-            ),
+            (midi_drag::MidiGrid::Eighth, BeatTime::ONE.raw()),
             (
                 midi_drag::MidiGrid::Sixteenth,
                 BeatTime::ONE.raw() + BeatTime::ONE.raw() / 4,
@@ -2279,7 +2359,7 @@ mod tests {
             beat_at_x(x, 100.0, BeatTime::ZERO, span, clip, snapped_from_free)
                 .unwrap()
                 .raw(),
-            BeatTime::ONE.raw() + BeatTime::ONE.raw() / 4
+            BeatTime::ONE.raw()
         );
     }
 
@@ -2343,3 +2423,7 @@ mod resize_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_note_copy_ui_tests.rs"]
 mod copy_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_input_refinement_ui_tests.rs"]
+mod input_refinement_tests;
