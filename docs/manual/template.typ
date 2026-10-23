@@ -1,5 +1,5 @@
 #set document(title: [hex manual], date: none)
-#set page(paper: "a4", margin: 19mm, footer: context [
+#set page(paper: "a4", fill: white, margin: 19mm, footer: context [
   #set text(size: 8pt, fill: rgb("68747a"))
   #grid(columns: (1fr, auto), [hex · $version$], counter(page).display("1"))
 ])
