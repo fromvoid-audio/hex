@@ -41,7 +41,22 @@ pub enum Command {
         section: crate::SectionId,
         color: crate::ElementColor,
     },
+    /// Remove the marker only, preserving all musical content and song time.
     RemoveArrangementSection(crate::SectionId),
+    /// Insert empty time or remove edge time song-wide, keeping marker start fixed.
+    /// Left edits its prefix; Right edits its suffix. No time stretching occurs.
+    ResizeArrangementSection {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        length: crate::BeatTime,
+    },
+    /// Remove the section's entire half-open time interval and close the gap.
+    DeleteArrangementSection(crate::SectionId),
+    /// Insert a song-wide copy immediately after the source, allocating new IDs.
+    DuplicateArrangementSection(crate::SectionId),
+    /// Merge the earliest-to-latest selected marker span, including intervening
+    /// markers/gaps, retaining earliest identity/name/color and all music.
+    MergeArrangementSections(Vec<crate::SectionId>),
     /// One song-wide cut-and-insert permutation, resolved against stable IDs.
     ReorderSectionBefore {
         section: crate::SectionId,
@@ -1470,7 +1485,11 @@ impl Project {
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
             | Command::ReorderSectionBefore { .. }
-            | Command::ReorderSectionAfter { .. }) => {
+            | Command::ReorderSectionAfter { .. }
+            | Command::ResizeArrangementSection { .. }
+            | Command::DeleteArrangementSection(_)
+            | Command::DuplicateArrangementSection(_)
+            | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
             }
             Command::SetTuning(tuning) => {
@@ -2628,6 +2647,21 @@ impl Project {
             },
         );
         Ok(id)
+    }
+}
+
+impl Command {
+    /// Structural section edits use stopped resident preparation/publication.
+    /// Metadata edits and marker merging do not alter musical material.
+    pub fn requires_stopped_section_edit(&self) -> bool {
+        matches!(
+            self,
+            Self::ReorderSectionBefore { .. }
+                | Self::ReorderSectionAfter { .. }
+                | Self::ResizeArrangementSection { .. }
+                | Self::DeleteArrangementSection(_)
+                | Self::DuplicateArrangementSection(_)
+        )
     }
 }
 

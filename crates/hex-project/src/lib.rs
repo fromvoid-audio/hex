@@ -22,7 +22,8 @@
 mod arrangement_occupancy;
 mod arrangement_sections;
 pub use arrangement_sections::{
-    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS, SectionReorderPreview,
+    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
+    SectionReorderPreview, SectionSplicePreview,
 };
 mod audio_events;
 mod project_tempo;
@@ -276,12 +277,14 @@ impl Asset {
 mod clip_fade;
 pub use clip_fade::ClipFade;
 
-/// Edge used by the canonical absolute-frame clip trim command.
+/// Edge used by clip trimming and structural section resizing.
+/// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
+/// length while keeping its start fixed and rippling later song content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrimEdge {
-    /// Inclusive timeline start frame.
+    /// Leading edge or section prefix.
     Left,
-    /// Exclusive timeline end frame.
+    /// Trailing edge or section suffix.
     Right,
 }
 /// Saved audio-clip gain in integer millidecibels, before track processing.
