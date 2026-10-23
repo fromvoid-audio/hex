@@ -495,6 +495,7 @@ impl Command {
             | Self::SetArrangementSectionColor { .. }
             | Self::RemoveArrangementSection(..)
             | Self::ReorderSectionBefore { .. }
+            | Self::ReorderSectionAfter { .. }
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
