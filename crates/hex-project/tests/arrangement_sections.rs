@@ -1220,6 +1220,11 @@ fn failed_section_splice_preparation_preserves_redo_ids_and_canonical_sources() 
             edge: hex_project::TrimEdge::Left,
             length: b(3),
         },
+        Command::ResizeArrangementSectionEdge {
+            section: first,
+            edge: hex_project::TrimEdge::Left,
+            boundary: b(3),
+        },
         Command::DeleteArrangementSection(first),
         Command::DuplicateArrangementSection(first),
         Command::MergeArrangementSections(vec![last, first]),
@@ -1242,11 +1247,234 @@ fn failed_section_splice_preparation_preserves_redo_ids_and_canonical_sources() 
             edge: hex_project::TrimEdge::Right,
             length: BeatTime::from_raw(u64::MAX),
         },
+        Command::ResizeArrangementSectionEdge {
+            section: first,
+            edge: hex_project::TrimEdge::Left,
+            boundary: b(4),
+        },
+        Command::ResizeArrangementSectionEdge {
+            section: first,
+            edge: hex_project::TrimEdge::Right,
+            boundary: b(8),
+        },
         Command::MergeArrangementSections(vec![first, first]),
         Command::MergeArrangementSections(vec![]),
     ] {
         assert!(e.execute(command).is_err());
         assert_eq!(e.project().snapshot(), before);
         assert!(e.can_redo());
+    }
+}
+
+#[test]
+fn shared_seam_preserves_outer_span_and_markers_or_clears_only_crossed_music_atomically() {
+    for marker_only in [false, true] {
+        for boundary in [b(3), b(5)] {
+            let (mut editor, left, right) = fixture();
+            editor
+                .execute(Command::SetArrangementSectionRange {
+                    section: right,
+                    start: b(4),
+                    end: b(10),
+                })
+                .unwrap();
+            let other = section(&mut editor, "later", 12, 14);
+            let before = editor.project().snapshot();
+            let outside = editor.project().arrangement_section(other).unwrap().clone();
+            let music = events(editor.project());
+            let command = Command::ResizeArrangementSectionBoundary {
+                left,
+                right,
+                boundary,
+                marker_only,
+            };
+            assert_eq!(command.requires_stopped_section_edit(), !marker_only);
+            let preview = editor
+                .project()
+                .preview_arrangement_section_edit(&command)
+                .unwrap();
+            editor.execute(command).unwrap();
+            let p = editor.project();
+            assert_eq!(p.arrangement_section(left).unwrap().start(), b(2));
+            assert_eq!(p.arrangement_section(left).unwrap().end(), boundary);
+            assert_eq!(p.arrangement_section(right).unwrap().start(), boundary);
+            assert_eq!(p.arrangement_section(right).unwrap().end(), b(10));
+            assert_eq!(p.arrangement_section(other), Some(&outside));
+            assert_eq!(preview.sections(), p.arrangement_sections());
+            assert_eq!(preview.tempo_map(), p.tempo_map());
+            let after = p.snapshot();
+            if marker_only {
+                let mut without_markers = after.clone();
+                without_markers.arrangement_sections = before.arrangement_sections.clone();
+                assert_eq!(
+                    without_markers, before,
+                    "metadata resize preserves every other field"
+                );
+            } else {
+                let lo = boundary.min(b(4)).raw();
+                let hi = boundary.max(b(4)).raw();
+                let mut expected = Vec::new();
+                for (start, length, pitch) in music {
+                    let end = start + length;
+                    if start < lo {
+                        expected.push((start, end.min(lo) - start, pitch));
+                    }
+                    if end > hi {
+                        expected.push((start.max(hi), end - start.max(hi), pitch));
+                    }
+                }
+                expected.sort();
+                assert_eq!(
+                    events(p),
+                    expected,
+                    "only music crossed by the moving seam is removed"
+                );
+            }
+            assert!(editor.undo());
+            let mut undone = editor.project().snapshot();
+            undone.next_id = before.next_id;
+            assert_eq!(undone, before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn shared_seam_invalid_or_refused_preparation_preserves_redo_and_original_state() {
+    let (mut editor, left, right) = fixture();
+    // Gapped markers are not shared boundaries.
+    assert!(
+        editor
+            .execute(Command::ResizeArrangementSectionBoundary {
+                left,
+                right,
+                boundary: b(5),
+                marker_only: true
+            })
+            .is_err()
+    );
+    editor
+        .execute(Command::SetArrangementSectionRange {
+            section: right,
+            start: b(4),
+            end: b(10),
+        })
+        .unwrap();
+    editor
+        .execute(Command::RenameArrangementSection {
+            section: left,
+            name: "draft".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    for marker_only in [false, true] {
+        for (a, c, boundary) in [
+            (left, right, b(2)),
+            (left, right, b(10)),
+            (right, left, b(5)),
+            (left, left, b(5)),
+        ] {
+            assert!(
+                editor
+                    .execute(Command::ResizeArrangementSectionBoundary {
+                        left: a,
+                        right: c,
+                        boundary,
+                        marker_only
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.can_redo());
+        }
+        assert!(
+            editor
+                .execute_prepared::<(), hex_project::Invalid>(
+                    Command::ResizeArrangementSectionBoundary {
+                        left,
+                        right,
+                        boundary: b(5),
+                        marker_only
+                    },
+                    |_| Err(hex_project::Invalid("refused shared seam preparation")),
+                )
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.can_redo());
+    }
+}
+
+#[test]
+fn isolated_edges_preserve_other_sections_and_clear_only_the_crossed_interval() {
+    for (edge, boundary) in [
+        (hex_project::TrimEdge::Left, b(1)),
+        (hex_project::TrimEdge::Left, b(3)),
+        (hex_project::TrimEdge::Right, b(3)),
+        (hex_project::TrimEdge::Right, b(5)),
+    ] {
+        let (mut editor, left, _) = fixture();
+        let before = editor.project().snapshot();
+        let original = editor.project().arrangement_section(left).unwrap().clone();
+        let music = events(editor.project());
+        let command = Command::ResizeArrangementSectionEdge {
+            section: left,
+            edge,
+            boundary,
+        };
+        let preview = editor
+            .project()
+            .preview_arrangement_section_edit(&command)
+            .unwrap();
+        editor.execute(command).unwrap();
+        let after = editor.project().snapshot();
+        let marker = editor.project().arrangement_section(left).unwrap();
+        let (expected_start, expected_end, old_edge) = match edge {
+            hex_project::TrimEdge::Left => (boundary, original.end(), original.start()),
+            hex_project::TrimEdge::Right => (original.start(), boundary, original.end()),
+        };
+        assert_eq!(
+            (marker.start(), marker.end()),
+            (expected_start, expected_end)
+        );
+        for section in editor
+            .project()
+            .arrangement_sections()
+            .iter()
+            .filter(|s| s.id() != left)
+        {
+            assert_eq!(
+                before
+                    .arrangement_sections
+                    .iter()
+                    .find(|s| s.id == section.id().value())
+                    .unwrap(),
+                &hex_project::ArrangementSectionSnapshot::from(section)
+            );
+        }
+        assert_eq!(preview.sections(), editor.project().arrangement_sections());
+        assert_eq!(preview.tempo_map(), editor.project().tempo_map());
+        let lo = old_edge.min(boundary).raw();
+        let hi = old_edge.max(boundary).raw();
+        let mut expected = Vec::new();
+        for (start, length, pitch) in music {
+            let end = start + length;
+            if start < lo {
+                expected.push((start, end.min(lo) - start, pitch));
+            }
+            if end > hi {
+                expected.push((start.max(hi), end - start.max(hi), pitch));
+            }
+        }
+        expected.sort();
+        assert_eq!(events(editor.project()), expected);
+        assert!(editor.undo());
+        let mut undone = editor.project().snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
     }
 }
