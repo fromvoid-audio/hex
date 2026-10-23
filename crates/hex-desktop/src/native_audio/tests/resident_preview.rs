@@ -16,6 +16,7 @@ struct ResidentSink {
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
     pending_present: Arc<AtomicBool>,
+    pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
     fn resident_publication_enabled(&self) -> bool {
@@ -86,6 +87,15 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn poll(&mut self) {
         self.inner.poll();
+        self.pending_observation_generation.store(
+            match self.inner.pending_observation.as_ref() {
+                Some(EditorAudioEvent::Publication { context, .. }) => {
+                    context.project_generation + 1
+                }
+                _ => 0,
+            },
+            std::sync::atomic::Ordering::Release,
+        );
         self.pending_present.store(
             self.inner.resident.pending.is_some(),
             std::sync::atomic::Ordering::Release,
@@ -105,6 +115,7 @@ pub(super) struct ResidentHarness {
     pub(super) refuse: Arc<AtomicBool>,
     pub(super) budget_refuse: Arc<AtomicBool>,
     pub(super) pending_present: Arc<AtomicBool>,
+    pub(super) pending_observation_generation: Arc<AtomicU64>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
@@ -118,8 +129,15 @@ impl ResidentHarness {
         Self::with_open_gate(frame_limit, Arc::new(AtomicBool::new(true)))
     }
     pub(super) fn with_open_gate(frame_limit: u64, gate: Arc<AtomicBool>) -> Self {
+        Self::with_event_capacity(frame_limit, gate, 4)
+    }
+    pub(super) fn with_event_capacity(
+        frame_limit: u64,
+        gate: Arc<AtomicBool>,
+        capacity: usize,
+    ) -> Self {
         let allow_unavailable = !gate.load(Acquire);
-        let (sender, events) = mpsc::sync_channel(4);
+        let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
         let mut inner = NativeAudioSink::new(sender);
@@ -146,6 +164,7 @@ impl ResidentHarness {
         let refuse = Arc::new(AtomicBool::new(false));
         let budget_refuse = Arc::new(AtomicBool::new(false));
         let pending_present = Arc::new(AtomicBool::new(false));
+        let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -155,6 +174,7 @@ impl ResidentHarness {
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
                 pending_present: Arc::clone(&pending_present),
+                pending_observation_generation: Arc::clone(&pending_observation_generation),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -168,6 +188,7 @@ impl ResidentHarness {
             refuse,
             budget_refuse,
             pending_present,
+            pending_observation_generation,
             allow_unavailable,
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
