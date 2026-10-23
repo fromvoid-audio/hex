@@ -431,7 +431,7 @@ mod tests {
         // The worker owns this legacy request and never reads application settings.
         assert!(
             matches!(request, Request::ImportToTrackWithOverwrite { path, track, start }
-            if path == PathBuf::from("/queued.wav") && track == target_ids().0 && start == 4321)
+            if path == std::path::Path::new("/queued.wav") && track == target_ids().0 && start == 4321)
         );
     }
 
