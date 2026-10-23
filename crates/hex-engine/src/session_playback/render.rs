@@ -1825,7 +1825,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
                 return Err(SessionPlaybackError::MutableInstrumentEvents);
             }
         }
-        RouteOwner::Session { clip, launch } => {
+        RouteOwner::Session { clip, origin } => {
             let prepared = revision
                 .session()
                 .midi_clip_for_track(clip, track_id)
@@ -1836,7 +1836,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
             if prepared.instrument_enabled() {
                 prepared
                     .instrument_template()
-                    .query(launch, timing, performance_frame, source_end, spans)
+                    .query_with_origin(origin, timing, performance_frame, source_end, spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 for span in spans.spans() {
                     onsets
@@ -2012,7 +2012,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
         }
         RouteOwner::Silence => {}
-        RouteOwner::Session { clip, launch } => {
+        RouteOwner::Session { clip, origin } => {
             if matches!(stage, SourceStage::Audio) {
                 return Ok(());
             }
@@ -2024,7 +2024,8 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                 return Err(SessionPlaybackError::ClipTrackMismatch);
             }
             if prepared.instrument_enabled() && !prepared.instrument_template().is_event_source() {
-                let context = crate::MidiInstrumentRenderContext::new(launch, timing, table);
+                let context =
+                    crate::MidiInstrumentRenderContext::with_origin(origin, timing, table);
                 let context = historical_floor.map_or(context, |floor| context.after_onset(floor));
                 let context = context
                     .with_suppressions(suppressions)

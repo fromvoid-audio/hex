@@ -117,6 +117,12 @@ impl RuntimeRef<'_> {
     pub(super) fn session_route_count(&self) -> usize {
         self.status().map_or(0, |s| s.route_count)
     }
+    pub(super) fn session_clock_anchor(&self) -> Option<hex_engine::SessionClockAnchor> {
+        match self {
+            Self::Legacy(p) => p.session_clock_anchor(),
+            Self::Eligible(p) => p.session_clock_anchor(),
+        }
+    }
     pub(super) fn session_route_status(
         &self,
         index: usize,

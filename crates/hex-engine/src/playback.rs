@@ -1113,6 +1113,13 @@ impl Playback {
             .map_or(0, |runtime| runtime.route_count())
     }
 
+    /// Effective Session clock translation for revision-bound route observers.
+    pub fn session_clock_anchor(&self) -> Option<crate::SessionClockAnchor> {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.clock_anchor())
+    }
+
     /// Read one Session route without allocation.
     pub fn session_route_status(&self, index: usize) -> Option<crate::SessionRouteStatus> {
         self.session_runtime

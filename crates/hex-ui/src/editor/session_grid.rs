@@ -170,6 +170,12 @@ pub(super) fn action_matches_project(
         SessionPlaybackCommand::LaunchClip { clip, .. } => project.session_cells().iter().any(
             |cell| matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip),
         ),
+        SessionPlaybackCommand::CueMidiClip { track, clip, .. } => {
+            project.session_cells().iter().any(|cell| {
+                cell.track() == track
+                    && matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip)
+            })
+        }
         SessionPlaybackCommand::LaunchScene { scene, .. } => {
             project.scenes().iter().any(|item| item.id() == scene)
         }

@@ -975,7 +975,7 @@ fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut Tes
 }
 
 #[path = "eq_graph_layout_tests.rs"]
-mod graph_layout_tests;
+pub(in crate::editor) mod graph_layout_tests;
 
 #[path = "eq_node_gesture_tests.rs"]
 mod node_gesture_tests;
@@ -1098,4 +1098,4 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
 }
 
 #[path = "eq_held_pointer_tests.rs"]
-mod held_pointer_tests;
+pub(in crate::editor) mod held_pointer_tests;

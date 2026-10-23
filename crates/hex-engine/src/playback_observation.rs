@@ -4,8 +4,14 @@
 //! Consumers must correlate them with the actual applied output/context/audio revision.
 use crate::midi_compile::{CompiledNoteSpan, SpanNode};
 use crate::midi_template::PreparedMidiGateTemplate;
-use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoMap, SessionTimingView};
-use crate::{Invalid, MidiSpanBuffer, PreparedRevision, SessionPlaybackOwner};
+use crate::prepared_tempo::{
+    AnchoredSessionTempoView, PreparedPeriodicSessionTempo, PreparedTempoMap,
+    SessionBaseTimingView, SessionTimingView,
+};
+use crate::{
+    Invalid, MidiSpanBuffer, PreparedRevision, SessionClockAnchor, SessionMidiOrigin,
+    SessionPlaybackOwner,
+};
 use hex_project::{BeatTime, ClipId, TrackId};
 use std::sync::Arc;
 
@@ -253,11 +259,43 @@ impl PreparedMidiActivity {
             .find(|clip| clip.track == track && clip.clip.value() == clip_id)
             .map(|clip| clip.clip)
     }
+    /// Resolve an accepted performance cursor on the exact Session clock,
+    /// including periodic tempo and the applied runtime's revision translation.
+    pub fn performance_beat_at(
+        &self,
+        frame: u64,
+        clock_anchor: Option<SessionClockAnchor>,
+    ) -> Result<BeatTime, Invalid> {
+        use crate::MidiTiming;
+        self.activity_timing(clock_anchor)?
+            .frame_to_beat(frame)
+            .map_err(|_| Invalid("midi activity performance beat is unavailable"))
+    }
+
+    fn activity_timing(
+        &self,
+        clock_anchor: Option<SessionClockAnchor>,
+    ) -> Result<SessionTimingView<'_>, Invalid> {
+        if self.tempo_unavailable {
+            return Err(Invalid("midi activity tempo is unavailable"));
+        }
+        let base = self
+            .periodic
+            .map_or(SessionBaseTimingView::Canonical(&self.timing), |periodic| {
+                SessionBaseTimingView::Periodic(periodic.view(&self.timing))
+            });
+        Ok(clock_anchor.map_or_else(
+            || SessionTimingView::from_base(base),
+            |anchor| SessionTimingView::Anchored(AnchoredSessionTempoView::new(base, anchor)),
+        ))
+    }
+
     pub fn gate_keys(
         &self,
         track: TrackId,
         owner: SessionPlaybackOwner,
-        launch: Option<BeatTime>,
+        origin: Option<SessionMidiOrigin>,
+        clock_anchor: Option<SessionClockAnchor>,
         cursors: (u64, u64),
         spans: &mut MidiSpanBuffer,
     ) -> Result<[u64; 2], Invalid> {
@@ -300,19 +338,12 @@ impl PreparedMidiActivity {
                     .find(|source| source.track == track && source.clip == clip)
                     .ok_or(Invalid("midi activity source is unavailable"))?;
                 if source.enabled {
-                    let launch = launch.ok_or(Invalid("midi activity launch is unavailable"))?;
-                    if self.tempo_unavailable {
-                        return Err(Invalid("midi activity tempo is unavailable"));
-                    }
-                    let timing = self
-                        .periodic
-                        .map_or(SessionTimingView::Canonical(&self.timing), |periodic| {
-                            SessionTimingView::Periodic(periodic.view(&self.timing))
-                        });
+                    let origin = origin.ok_or(Invalid("midi activity origin is unavailable"))?;
+                    let timing = self.activity_timing(clock_anchor)?;
                     source
                         .gates
-                        .query(
-                            launch,
+                        .query_with_origin(
+                            origin,
                             &timing,
                             cursors.1,
                             cursors

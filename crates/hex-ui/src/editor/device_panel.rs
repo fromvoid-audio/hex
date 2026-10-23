@@ -2610,4 +2610,4 @@ fn empty_panel(message: &str) -> Stateful<Div> {
 mod return_view;
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests;
+pub(in crate::editor) mod tests;

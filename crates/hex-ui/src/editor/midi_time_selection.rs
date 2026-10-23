@@ -1,5 +1,6 @@
 //! Source-local time selection shares ruler geometry and the existing edit-reply
-//! selection owner. No Arrangement selection reflection or playback seek occurs.
+//! selection owner. Drag selection does not seek or reflect Arrangement state;
+//! stationary blank clicks delegate playback cueing to the existing cue owner.
 use super::*;
 use hex_project::BeatTime;
 
@@ -212,6 +213,13 @@ impl EditorView {
             return;
         };
         let Some((start, end)) = capture.interval() else {
+            // A stationary blank-ruler click cues playback. Source-start marker
+            // drags and real time selections retain their separate owners.
+            if (capture.last_x - capture.down_x).abs() < 3.0
+                && let Some(beat) = beat_at(capture.context, capture.last_x, capture.invert)
+            {
+                self.request_midi_source_cue(capture.context.clip, beat);
+            }
             return;
         };
         if let Err(error) = self.midi_time_selection.set(Selection {
