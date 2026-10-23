@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <string>
 #include <csignal>
 #include <unistd.h>
 #include <limits>
@@ -32,11 +33,17 @@ static void trace(int stage,int factory_refs=-1) {
     // Only this owned SDK module implements the opt-in trace. Normal traces
     // run on control; explicit hang/crash faults use a processing-entry barrier.
     // No normal DSP path performs file I/O; the helper never reads this variable.
-    auto* output=std::fopen(path,"wb");if (!output) return;
+    // Cancellation may retire this process at any instruction. Publish a
+    // completed trace atomically so an interrupted next write cannot erase the
+    // last observed SDK stage/counters; this remains owned-fixture control I/O.
+    const auto pending=std::string(path)+".next";
+    auto* output=std::fopen(pending.c_str(),"wb");if (!output) return;
     const int values[]={stage,observed.violations,observed.created,observed.initialized,observed.terminated,
         observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
         observed.blocks,observed.flushes,static_cast<int>(objects.load()),factory_refs};
-    std::fwrite(values,sizeof(int),14,output);std::fclose(output);
+    const bool written=std::fwrite(values,sizeof(int),14,output)==14;
+    const bool closed=std::fclose(output)==0;
+    if(written && closed) std::rename(pending.c_str(),path);
 }
 // Deterministic foreign-hang control: the test observes the actual SDK stage,
 // then cancels. A separate release file lets failing tests retire their own
@@ -76,9 +83,16 @@ public:
         }
         return Processor::queryInterface(iid,out);
     }
+    uint32 presentation_calls=0;
+    uint32 PLUGIN_API getLatencySamples() override {
+        if(!control()) return std::numeric_limits<uint32>::max();
+        trace(presentation_calls?15:14); // actual facts phase versus applied presentation
+        return fault==36 && presentation_calls?7:0;
+    }
     tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
         if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
             (direction==kInput && !inputs) || fault==17) return kResultFalse;
+        ++presentation_calls;
         (direction==kInput?input_latency:output_latency)=value;return kResultOk;
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
@@ -289,7 +303,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>35) return false;next_fault=value;
+        if (value>36) return false;next_fault=value;
     }
     trace(1,0);
     if (next_fault==27) fault_hang(8);

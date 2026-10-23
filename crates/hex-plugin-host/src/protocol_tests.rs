@@ -24,8 +24,6 @@ fn config() -> Configuration {
         quantum: 8,
         input_channels: 2,
         output_channels: 2,
-        input_presentation_frames: 77,
-        output_presentation_frames: 91,
         bundle: "/owned.vst3".into(),
         executable: "Contents/MacOS/fixture".into(),
     }
@@ -40,7 +38,7 @@ fn hex(s: &str) -> Vec<u8> {
 fn configuration_matches_independent_little_endian_wire_and_refuses_bad_profile() {
     // Independent Python struct.pack fixture, not constructed through this codec.
     let golden = hex(
-        "4858564943463031b300000001000100000000000000020000000000000003000000000000000400000000000000484558500102030405060708090a0b0c0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c000000000070e74008000202000000004d0000005b0000000b0000002f6f776e65642e7673743316000000436f6e74656e74732f4d61634f532f66697874757265",
+        "4858564943463032ab00000001000100000000000000020000000000000003000000000000000400000000000000484558500102030405060708090a0b0c0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c000000000070e74008000202000000000b0000002f6f776e65642e7673743316000000436f6e74656e74732f4d61634f532f66697874757265",
     );
     let config = config();
     assert_eq!(config.encode().unwrap(), golden);
@@ -75,7 +73,10 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
     out.extend(config.quantum.to_le_bytes());
     out.extend([config.input_channels, config.output_channels]);
     out.extend(u32::MAX.to_le_bytes());
-    out.extend([1, 1]);
+    out.extend([1, 1]); // applied, actual contributions supplied
+    out.extend(77_u32.to_le_bytes());
+    out.extend(91_u32.to_le_bytes());
+    out.push(1); // component state exists
     out.extend((state.payload().len() as u16).to_le_bytes());
     out.extend(state.payload());
     out
@@ -84,7 +85,7 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
 fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_latency() {
     let config = config();
     let body = ready_body(&config);
-    let ready = Ready::decode(&body, &config).unwrap();
+    let ready = Ready::decode(&body, &config, known()).unwrap();
     assert_eq!(ready.algorithmic_latency_frames, u32::MAX);
     assert_eq!(
         hex_plugin_state::decode(&ready.initial_state)
@@ -92,21 +93,28 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
             .component,
         Some([1, 2, 3].as_slice())
     );
-    for offset in [0, 2, 34, 50, 58, 60, 61, 66, 67, 68, 70, 78, 94, 126] {
+    for offset in [
+        0, 2, 34, 50, 58, 60, 61, 66, 67, 68, 72, 76, 77, 79, 87, 103, 135,
+    ] {
         let mut wrong = body.clone();
         wrong[offset] ^= 0x80;
-        assert!(Ready::decode(&wrong, &config).is_err(), "field{offset}");
+        assert!(
+            Ready::decode(&wrong, &config, known()).is_err(),
+            "field{offset}"
+        );
     }
     for length in [0, 1, 34, 66, 69, body.len() - 1] {
-        assert!(Ready::decode(&body[..length], &config).is_err());
+        assert!(Ready::decode(&body[..length], &config, known()).is_err());
     }
     let mut trailing = body.clone();
     trailing.push(0);
-    assert!(Ready::decode(&trailing, &config).is_err());
+    assert!(Ready::decode(&trailing, &config, known()).is_err());
     let mut absent = body.clone();
     absent[66] = 0;
     assert_eq!(
-        Ready::decode(&absent, &config).unwrap().presentation,
+        Ready::decode(&absent, &config, known())
+            .unwrap()
+            .presentation,
         Presentation::Absent
     );
 }
@@ -149,4 +157,53 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
     let mut nonfinite = block;
     nonfinite.pcm[0][0] = f32::NAN;
     assert!(config.validate_block(&nonfinite, 0).is_err());
+}
+
+fn known() -> Option<PresentationLatency> {
+    Some(PresentationLatency {
+        input_frames: 77,
+        output_frames: 91,
+    })
+}
+#[test]
+fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowledge_state() {
+    let config = config();
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(config.identity.class.bytes());
+    body.extend(config.identity.binary.executable_sha256);
+    body.extend(config.identity.binary.info_sha256);
+    body.extend(config.sample_rate.to_le_bytes());
+    body.extend(config.quantum.to_le_bytes());
+    body.extend([config.input_channels, config.output_channels]);
+    body.extend(u32::MAX.to_le_bytes());
+    body.push(1);
+    assert_eq!(
+        Facts::decode(&body, &config).unwrap(),
+        Facts {
+            algorithmic_latency_frames: u32::MAX,
+            presentation_available: true
+        }
+    );
+    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 130] {
+        let mut bad = body.clone();
+        bad[offset] ^= 0x80;
+        assert!(Facts::decode(&bad, &config).is_err());
+    }
+    assert!(Facts::decode(&body[..130], &config).is_err());
+    body.push(0);
+    assert!(Facts::decode(&body, &config).is_err());
+    let absent = presentation_request(config.binding, None).unwrap();
+    let zero = presentation_request(
+        config.binding,
+        Some(PresentationLatency {
+            input_frames: 0,
+            output_frames: 0,
+        }),
+    )
+    .unwrap();
+    assert_eq!(absent.len(), 12 + 35);
+    assert_eq!(zero.len(), 12 + 43);
+    assert_ne!(absent, zero);
+    assert!(Ready::decode(&ready_body(&config), &config, None).is_err());
 }
