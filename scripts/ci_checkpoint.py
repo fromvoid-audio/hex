@@ -84,7 +84,9 @@ def execution_inputs(root: Path, env: dict, steps) -> dict:
         tools[name] = {"path": str(path), "sha256": file_digest(path),
                        "mode": path.stat().st_mode}
     return {"environment_sha256": digest({k: v for k, v in env.items()
-            if k not in {"_", "HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"}}),
+            # Tool-call identity changes between invocations and is not consumed
+            # by repository checks/builds. Keep actual configuration values bound.
+            if k not in {"_", "CODEX_TOOL_CALL_ID", "HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"}}),
             "tools": tools, "python_version": sys.version, "platform": sys.platform}
 
 

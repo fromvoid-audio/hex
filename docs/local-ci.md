@@ -118,13 +118,15 @@ versus new command counts, cache cleanup, elapsed time and minimum free space;
 inheriting observations does not imply that Cargo artifacts are reusable.
 
 Continuation requires a nonempty passing prefix, an unexecuted suffix, the same
-clean exact source, complete plan/argv/configurations, environment, command
+clean exact source, complete plan/argv/configurations, check/build environment, command
 binaries, toolchain, dependencies, target directory identity and unchanged owner
 record. The normal exclusive target lock and conservative cache invalidation
 still apply. A conservative macOS/Linux process snapshot refuses any visible
 Cargo/compiler job, including jobs whose target is unknown; wait for them to
 finish. An unavailable/unrecognized process inventory refuses too. Preserve the
 original summary and raw logs at their recorded paths.
+Shell bookkeeping and the per-invocation `CODEX_TOOL_CALL_ID` are excluded from
+the environment identity; actual build/check configuration remains bound.
 Missing/changed evidence, test failures, zero passing tests, interruptions, stale
 source, changed/foreign/recreated ownership or a lower/changed disk floor refuse.
 No automatic deletion or adoption occurs; the minimum remains at least 2 GiB.

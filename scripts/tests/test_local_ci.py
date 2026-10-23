@@ -456,6 +456,7 @@ fi
         self.assertIn("cargo clean --profile dev --target-dir " + str(case.target), calls)
         self.assertIn("--package fixture --package other", calls)
         self.assertEqual(case.path.read_bytes(), original_bytes)
+
         self.assertEqual(prefix_log.read_bytes(), log_bytes)
         report = json.loads(resumed.summary_path.read_text())
         self.assertEqual(report["status"], "passed")
@@ -484,6 +485,25 @@ fi
             with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
                 delivery.validate_ci(resumed.summary_path, resumed, report["commit"])
         self.assertEqual(case.path.read_bytes(), original_bytes)
+
+    def test_checkpoint_continuation_ignores_only_transport_call_id_environment_drift(self):
+        case = self.checkpoint_fixture("checkpoint-call-id", env_overrides={"CODEX_TOOL_CALL_ID": "call-A"})
+        resumed_env = {**case.env, "CODEX_TOOL_CALL_ID": "call-B"}
+        inputs = local_ci.ci_checkpoint.execution_inputs(case.root, case.env, case.steps)
+        self.assertEqual(inputs, local_ci.ci_checkpoint.execution_inputs(case.root, resumed_env, case.steps))
+        semantic = local_ci.ci_checkpoint.execution_inputs(case.root, {**resumed_env, "RUSTFLAGS": "--cfg changed"}, case.steps)
+        self.assertNotEqual(inputs["environment_sha256"], semantic["environment_sha256"])
+        original_bytes = case.path.read_bytes()
+        calls_before = self.call_log.read_text()
+        with patch.object(local_ci.ci_checkpoint, "require_no_jobs"):
+            result, resumed = self.checkpoint_continue(case, env=resumed_env)
+        self.assertEqual(result, 0)
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-prefix", calls)
+        self.assertEqual(calls.count("cargo test checkpoint-suffix"), 1)
+        self.assertEqual([row["execution"] for row in resumed.summary["steps"]], ["inherited", "executed"])
+        self.assertEqual(case.path.read_bytes(), original_bytes)
+        local_ci.ci_checkpoint.validate_inheritance(case.root, resumed.summary)
 
     def test_checkpoint_continuation_refuses_changed_inputs_before_any_stage_or_cleanup(self):
         cases = ("source", "plan", "plan-order", "argv", "test-configuration", "toolchain", "environment", "dependency", "floor",
