@@ -41,6 +41,14 @@ static void publish_trace(const char* path,const int* values,size_t count) {
     const bool written=std::fwrite(values,sizeof(int),count,output)==count;
     if (std::fclose(output)==0 && written) std::rename(pending.c_str(),path);
 }
+static bool module_event(char event) {
+    const auto* path=std::getenv("HEX_ORIGINAL_INSTANCE_MODULE_EVENTS");
+    if(!path) return true;
+    if(!std::strlen(path) || std::strlen(path)>4096) return false;
+    auto* output=std::fopen(path,"ab");if(!output) return false;
+    const bool written=std::fputc(event,output)!=EOF;
+    return std::fclose(output)==0 && written;
+}
 static void trace(int stage,int factory_refs=-1) {
     // Opt-in original fixture control observations, atomically published so a
     // guardian exit cannot truncate the last completed phase. Normal DSP does
@@ -180,12 +188,15 @@ public:
     uint32 presentation_calls=0;
     uint32 PLUGIN_API getLatencySamples() override {
         if(!control()) return std::numeric_limits<uint32>::max();
+        if(fault==66 && observed.stops) fault_hang(21);
         trace(presentation_calls?15:14); // actual facts phase versus applied presentation
+        if(fault==68 && observed.stops && presentation_calls>2) return restored_latency+1;
         return fault==36 && presentation_calls?7:(fault>=37?restored_latency:0);
     }
     tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
         if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
             (direction==kInput && !inputs) || fault==17) return kResultFalse;
+        if(fault==67 && observed.stops) fault_hang(22);
         ++presentation_calls;
         (direction==kInput?input_latency:output_latency)=value;return kResultOk;
     }
@@ -312,6 +323,17 @@ public:
         if (!active || (enabled?processing:(!processing || !same_worker()))) return kResultFalse;
         if (pthread_main_np()) { ++observed.violations;return kResultFalse; }
         if (enabled && fault==18) return kResultFalse;
+        if(!enabled) {
+            if(fault==58) return kResultFalse;
+            if(fault==59) throw std::runtime_error("original SDK quiescence exception");
+            if(fault==60) fault_crash(20);
+            if(fault==61) fault_hang(20);
+        } else if(observed.starts) {
+            if(fault==62) return kResultFalse;
+            if(fault==63) throw std::runtime_error("original SDK resume exception");
+            if(fault==64) fault_crash(23);
+            if(fault==65) fault_hang(23);
+        }
         if (enabled) { worker=pthread_self();thread_bound=true;++observed.starts; }
         else ++observed.stops;
         processing=enabled;
@@ -429,8 +451,9 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>57) return false;next_fault=value;
+        if (value>68) return false;next_fault=value;
     }
+    if(!module_event('E')) return false;
     trace(1,0);
     if (next_fault==27) fault_hang(8);
     if (next_fault==30) fault_crash(8);
@@ -439,6 +462,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     return next_fault!=19;
 }
 extern "C" __attribute__((visibility("default"))) bool bundleExit() {
+    if(!module_event('X')) return false;
     trace(6,static_cast<int>(processing_factory.count()));
     if (next_fault==29) fault_hang(10);
     if (next_fault==32) fault_crash(10);
