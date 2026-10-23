@@ -358,7 +358,7 @@ fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
 #[test]
 fn structural_section_splices_use_stopped_publication_and_preserve_failed_history() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
-    for kind in 0..3 {
+    for kind in 0..5 {
         let mut h = ResidentHarness::new();
         let initial = h.next();
         assert!(initial.error.is_none());
@@ -376,8 +376,16 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
             length: BeatTime::from_quarters(8).unwrap(),
         }));
         (applied, _) = h.applied(applied);
-        let (event, section) = add(&mut h, event.state.revision, "intro", 0, 2);
+        let (mut event, section) = add(&mut h, event.state.revision, "intro", 0, 2);
         (applied, _) = h.applied(applied);
+        let adjacent = if kind == 3 {
+            let (next, id) = add(&mut h, event.state.revision, "next", 2, 4);
+            event = next;
+            (applied, _) = h.applied(applied);
+            Some(id)
+        } else {
+            None
+        };
         let before = event.state.project.snapshot();
         let revision = event.state.revision;
         let command = match kind {
@@ -387,7 +395,18 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
                 length: BeatTime::from_quarters(3).unwrap(),
             },
             1 => Command::DeleteArrangementSection(section),
-            _ => Command::DuplicateArrangementSection(section),
+            2 => Command::DuplicateArrangementSection(section),
+            3 => Command::ResizeArrangementSectionBoundary {
+                left: section,
+                right: adjacent.unwrap(),
+                boundary: BeatTime::from_quarters(3).unwrap(),
+                marker_only: false,
+            },
+            _ => Command::ResizeArrangementSectionEdge {
+                section,
+                edge: hex_project::TrimEdge::Right,
+                boundary: BeatTime::from_quarters(3).unwrap(),
+            },
         };
         h.audio
             .as_mut()
