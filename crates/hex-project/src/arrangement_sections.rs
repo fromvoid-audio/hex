@@ -10,8 +10,8 @@
 //! interval (including gaps) shifts by that length. All tracks, gain base/touch
 //! lanes, tempo and meter follow one permutation; the loop keeps its musical
 //! beat interval. Authored tempo/meter points remain present even when their
-//! values match neighbors. Synthetic meter anchors start a bar fragment at each
-//! splice seam; equal signatures still carry meaningful bar-origin semantics.
+//! values match neighbors. Synthetic meter anchors are added only where the
+//! effective signature changes; equal-meter section seams do not restart bars.
 //! The session/transport owner excludes active playback/recording
 //! and pending commits before canonical preparation.
 //! Audio sample intervals use the exact integer-frame cut/insert permutation.
@@ -341,6 +341,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
     }
 }
+mod meter;
 mod reorder;
 use reorder::{reorder, reorder_after};
 

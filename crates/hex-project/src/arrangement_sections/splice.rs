@@ -8,9 +8,7 @@
 //! retains original processing/source custody and one Editor transaction owns
 //! publication/history or complete refusal.
 use super::*;
-use crate::{
-    GainInterpolation, GainLane, GainPoint, MeterMap, MeterPoint, TempoMap, TempoPoint, TrimEdge,
-};
+use crate::{GainInterpolation, GainLane, GainPoint, MeterMap, TempoMap, TempoPoint, TrimEdge};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy)]
@@ -616,82 +614,57 @@ fn transformed_meter(old: &MeterMap, transform: Transform) -> Result<MeterMap, I
     let start = transform.start();
     let end = transform.end();
     let length = transform.length();
-    let mut points = BTreeMap::<u64, crate::Meter>::new();
+    let mut result = meter::MeterEdit::default();
     match transform {
-        Transform::Insert { at, length, .. } => {
+        Transform::Insert { at, .. } => {
             let prior = old.points()[old
                 .points()
                 .partition_point(|point| point.beat() < at)
                 .saturating_sub(1)]
             .meter();
             for point in old.points() {
-                if point.beat() < at {
-                    points.insert(point.beat().raw(), point.meter());
-                } else {
-                    points.insert(
-                        point
-                            .beat()
-                            .raw()
-                            .checked_add(length)
-                            .ok_or(Invalid("section meter point overflow"))?,
-                        point.meter(),
-                    );
-                }
+                result.original(transform.map_position(point.beat())?, *point);
             }
-            points.insert(at.raw(), prior);
-            points.insert(end.raw(), old.meter_at(at));
+            result.seam(at, prior);
+            result.seam(end, old.meter_at(at));
         }
         Transform::Delete { .. } => {
             for point in old.points() {
-                if point.beat() < start {
-                    points.insert(point.beat().raw(), point.meter());
-                } else if point.beat() >= end {
-                    points.insert(point.beat().raw() - length, point.meter());
+                if point.beat() < start || point.beat() >= end {
+                    result.original(transform.map_position(point.beat())?, *point);
                 }
             }
-            points.insert(start.raw(), old.meter_at(end));
+            result.seam(start, old.meter_at(end));
         }
         Transform::Duplicate { .. } => {
             for point in old.points() {
                 let beat = point.beat();
                 if beat < end {
-                    points.insert(beat.raw(), point.meter());
+                    result.original(beat, *point);
                 }
-                if start <= beat && beat < end {
-                    points.insert(
-                        beat.raw()
-                            .checked_add(length)
-                            .ok_or(Invalid("section meter point overflow"))?,
-                        point.meter(),
-                    );
-                }
-                if beat >= end {
-                    points.insert(
-                        beat.raw()
-                            .checked_add(length)
-                            .ok_or(Invalid("section meter point overflow"))?,
-                        point.meter(),
+                if beat >= start {
+                    result.original(
+                        BeatTime::from_raw(
+                            beat.raw()
+                                .checked_add(length)
+                                .ok_or(Invalid("section meter point overflow"))?,
+                        ),
+                        *point,
                     );
                 }
             }
-            points.insert(end.raw(), old.meter_at(start));
-            points.insert(
-                end.raw()
-                    .checked_add(length)
-                    .ok_or(Invalid("section meter end overflow"))?,
+            result.seam(end, old.meter_at(start));
+            result.seam(
+                BeatTime::from_raw(
+                    end.raw()
+                        .checked_add(length)
+                        .ok_or(Invalid("section meter end overflow"))?,
+                ),
                 old.meter_at(end),
             );
         }
     }
-    points
-        .entry(0)
-        .or_insert_with(|| old.meter_at(BeatTime::ZERO));
-    MeterMap::new(
-        points
-            .into_iter()
-            .map(|(beat, meter)| MeterPoint::new(BeatTime::from_raw(beat), meter))
-            .collect(),
-    )
+    result.finish(old.meter_at(BeatTime::ZERO))
 }
 
 fn transformed_loop(

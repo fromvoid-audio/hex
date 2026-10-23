@@ -89,6 +89,11 @@ fn fixture() -> Project {
         before: a,
     })
     .unwrap();
+    assert_eq!(
+        e.project().meter_map(),
+        &hex_project::MeterMap::common_time(),
+        "section reorder must not persist synthetic same-meter seams"
+    );
     e.project().clone()
 }
 #[test]
