@@ -1059,7 +1059,7 @@ impl EditorView {
                 }),
             );
         let track_name = track.name().to_owned();
-        let track_name_view = div()
+        let track_name_view = super::track_header::name()
             .id(("track-name", track_id.value()))
             .on_mouse_down(
                 MouseButton::Left,
@@ -1079,14 +1079,6 @@ impl EditorView {
                     .opacity(0.2)
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
-            .w_full()
-            .flex_shrink_0()
-            .min_w_0()
-            .h(px(18.0))
-            .cursor_pointer()
-            .truncate()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
                 track.name(),
@@ -1417,78 +1409,53 @@ impl EditorView {
         };
         let header_focus = self.track_header_focus(track_id, cx);
         let click_focus = header_focus.clone();
-        let header = div()
-            .id(("arrangement-track-header", track_id.value()))
-            .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
-            .track_focus(&header_focus)
-            .key_context("hex_track_header")
-            .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    view.select_track_with_modifiers(track_id, event.modifiers(), window);
-                    click_focus.focus(window);
-                    cx.notify();
-                }),
-            )
-            .w(px(self.track_header_width()))
-            .h(px(self.track_height(track_id)))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .relative()
-            .pb(px(3.0))
-            .justify_center()
-            .px_1()
-            .border_l_2()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(if selected {
-                theme::color(theme::PaletteRole::Raised)
-            } else {
-                theme::color(theme::PaletteRole::Surface)
-            }))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-            .child(header_content)
-            .children(self.track_resize_handles(track_id, cx))
-            .relative()
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(1.0))
-                    .bottom_0()
-                    .w(px(4.0))
-                    .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
-                    .bg(rgb(theme::element_colors(track.color()).accent)),
-            )
-            // Paint selection after opaque header content and its assigned-color
-            // strip. Keep layout/input bounds unchanged and resize feedback local.
-            .children(
-                (selected
-                    && self.active_trim_drag.is_none()
-                    && self.active_midi_trim_drag.is_none())
+        let header = super::track_header::surface(
+            ("arrangement-track-header", track_id.value()),
+            self.track_header_width(),
+            self.track_height(track_id),
+            selected,
+        )
+        .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
+        .track_focus(&header_focus)
+        .key_context("hex_track_header")
+        .on_click(
+            cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                view.select_track_with_modifiers(track_id, event.modifiers(), window);
+                click_focus.focus(window);
+                cx.notify();
+            }),
+        )
+        .child(header_content)
+        .children(self.track_resize_handles(track_id, cx))
+        .relative()
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(1.0))
+                .bottom_0()
+                .w(px(4.0))
+                .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
+                .bg(rgb(theme::element_colors(track.color()).accent)),
+        )
+        // Paint selection after opaque header content and its assigned-color
+        // strip. Keep layout/input bounds unchanged and resize feedback local.
+        .children(
+            (selected && self.active_trim_drag.is_none() && self.active_midi_trim_drag.is_none())
                 .then(|| {
-                    div()
-                        .absolute()
-                        // Inset one pixel inside the full header, accounting for
-                        // its existing left/bottom layout borders.
-                        .left(px(-1.0))
-                        .right(px(1.0))
-                        .top(px(1.0))
-                        .bottom_0()
-                        .border_1()
-                        .debug_selector(move || {
-                            format!("track-selection-outline-{}", track_id.value())
-                        })
-                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    super::track_header::selection_outline(format!(
+                        "track-selection-outline-{}",
+                        track_id.value()
+                    ))
                 }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    view.open_track_color_context_menu(event.position, track_id, window, cx);
-                }),
-            );
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                view.open_track_color_context_menu(event.position, track_id, window, cx);
+            }),
+        );
         div()
             .w_full()
             .h(px(self.track_height(track_id)))

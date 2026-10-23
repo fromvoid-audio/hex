@@ -90,7 +90,15 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
 #[gpui::test]
 fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut TestAppContext) {
     let (project, _) = project_with_returns(16);
-    let (handle, _) = editor_window(cx, project, Arc::default());
+    let mut model = Editor::new(project, 64).unwrap();
+    for index in 0..40 {
+        model
+            .execute(Command::AddTrack {
+                name: format!("regular {index}"),
+            })
+            .unwrap();
+    }
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
@@ -107,7 +115,7 @@ fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut Test
     let detail = visual
         .debug_bounds("clip-view-toggle-row")
         .expect("detail pane remains available");
-    assert_eq!(returns.size.height, px(67.0));
+    assert_eq!(returns.size.height, px(88.0));
     assert!(
         returns.origin.y >= content.origin.y + content.size.height - px(1.0),
         "returns={returns:?}, content={content:?}"
@@ -116,6 +124,16 @@ fn return_section_is_bounded_and_pinned_above_main_at_minimum_size(cx: &mut Test
     assert!(main.origin.y + main.size.height <= detail.origin.y + px(1.0));
     assert!(content.size.height > px(1.0));
     assert!(visual.debug_bounds("return-track-row-1").is_some());
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll.set_offset(point(px(0.0), px(-500.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("pinned-return-tracks").unwrap(),
+        returns
+    );
+    assert_eq!(visual.debug_bounds("pinned-main-track").unwrap(), main);
 }
 
 #[gpui::test]
@@ -565,4 +583,110 @@ fn main_selection_handle_option_drag_copies_the_project_rectangle(cx: &mut TestA
                 if range.tracks() == track_ids && *track == track_ids[0]
         ));
     });
+}
+
+#[gpui::test]
+fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut TestAppContext) {
+    for count in [0, 1, 2, 4, 16] {
+        for mode in [
+            hex_session::DocumentAudioMode::Resident,
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+        ] {
+            let (project, returns) = project_with_returns(count);
+            let mut model = Editor::new(project, 8).unwrap();
+            let Created::Track(track) = model
+                .execute(Command::AddTrack {
+                    name: "ordinary".into(),
+                })
+                .unwrap()
+            else {
+                panic!("ordinary track")
+            };
+            let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+            editor.update(cx, |view, cx| {
+                view.document_audio_mode = mode;
+                cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.simulate_resize(size(px(880.0), px(540.0)));
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("return-track-section-header").is_none());
+            assert!(visual.debug_bounds("add-return-track").is_none());
+            let section = visual.debug_bounds("pinned-return-tracks").unwrap();
+            assert_eq!(
+                section.size.height,
+                px(count.min(2) as f32 * super::tracks::TRACK_ROW_HEIGHT)
+            );
+            let main = visual.debug_bounds("pinned-main-track").unwrap();
+            assert!(section.bottom() <= main.top() + px(1.0));
+            let ordinary = visual
+                .debug_bounds(Box::leak(
+                    format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            if let Some(id) = returns.first() {
+                let header = visual
+                    .debug_bounds(Box::leak(
+                        format!("return-track-header-{}", id.value()).into_boxed_str(),
+                    ))
+                    .unwrap();
+                assert_eq!(header.size, ordinary.size);
+                assert_eq!(header.right(), ordinary.right());
+                if count == 1 {
+                    // The minimum window correctly clamps headers to 176px.
+                    // Give the shared width owner room for a real resize.
+                    visual.simulate_resize(size(px(1280.0), px(800.0)));
+                    visual.run_until_parked();
+                    let handle = visual
+                        .debug_bounds(Box::leak(
+                            format!("track-width-resize-{}", track.value()).into_boxed_str(),
+                        ))
+                        .unwrap()
+                        .center();
+                    let to = point(handle.x - px(64.0), handle.y);
+                    visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+                    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+                    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+                    visual.run_until_parked();
+                    let ordinary = visual
+                        .debug_bounds(Box::leak(
+                            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+                        ))
+                        .unwrap();
+                    let resized = visual
+                        .debug_bounds(Box::leak(
+                            format!("return-track-header-{}", id.value()).into_boxed_str(),
+                        ))
+                        .unwrap();
+                    assert_eq!(resized.size.width, header.size.width + px(64.0));
+                    assert_eq!(resized.size, ordinary.size);
+                    assert_eq!(resized.right(), ordinary.right());
+                }
+                let header = visual
+                    .debug_bounds(Box::leak(
+                        format!("return-track-header-{}", id.value()).into_boxed_str(),
+                    ))
+                    .unwrap();
+                let gain_prefix = if mode == hex_session::DocumentAudioMode::Resident {
+                    "return-volume"
+                } else {
+                    "return-gain-up"
+                };
+                for prefix in [
+                    "return-track-focus",
+                    gain_prefix,
+                    "return-mute",
+                    "return-remove",
+                ] {
+                    let control = visual
+                        .debug_bounds(Box::leak(
+                            format!("{prefix}-{}", id.value()).into_boxed_str(),
+                        ))
+                        .unwrap();
+                    assert!(control.left() >= header.left() && control.right() <= header.right());
+                    assert!(control.top() >= header.top() && control.bottom() <= header.bottom());
+                }
+            }
+        }
+    }
 }

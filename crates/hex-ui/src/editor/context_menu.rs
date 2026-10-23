@@ -39,6 +39,9 @@ pub(super) enum EditorContextAction {
         id: Option<&'static str>,
     },
     InsertTrack(InsertTrackAction),
+    InsertReturn {
+        generation: u64,
+    },
     InsertScene {
         generation: u64,
         revision: u64,
@@ -136,15 +139,25 @@ impl EditorView {
             selected: 0,
             focus,
             previous_focus,
-            items: vec![MenuItem {
-                label: "insert track",
-                swatch: None,
-                checked: false,
-                action: EditorContextAction::InsertTrack(InsertTrackAction {
-                    generation: self.project_generation,
-                    before_track,
-                }),
-            }],
+            items: vec![
+                MenuItem {
+                    label: "insert track",
+                    swatch: None,
+                    checked: false,
+                    action: EditorContextAction::InsertTrack(InsertTrackAction {
+                        generation: self.project_generation,
+                        before_track,
+                    }),
+                },
+                MenuItem {
+                    label: "insert return track",
+                    swatch: None,
+                    checked: false,
+                    action: EditorContextAction::InsertReturn {
+                        generation: self.project_generation,
+                    },
+                },
+            ],
         });
         self.append_adaptive_grid_choices();
         cx.notify();
@@ -216,20 +229,9 @@ impl EditorView {
             return;
         }
         let revision = state.revision;
-        let previous_focus = self
-            .context_menu
-            .take()
-            .and_then(|menu| menu.previous_focus)
-            .or_else(|| window.focused(cx));
-        let focus = cx.focus_handle();
-        window.focus(&focus);
-        self.context_menu = Some(PopupMenu {
-            icon_grid: None,
-            position,
-            selected: 0,
-            focus,
-            previous_focus,
-            items: vec![MenuItem {
+        self.open_track_context_menu(position, None, window, cx);
+        if let Some(menu) = &mut self.context_menu {
+            menu.items.push(MenuItem {
                 label: "rename track · cmd+r",
                 swatch: None,
                 checked: false,
@@ -238,8 +240,8 @@ impl EditorView {
                     revision,
                     target,
                 },
-            }],
-        });
+            });
+        }
         cx.notify();
     }
 
@@ -432,6 +434,28 @@ impl EditorView {
             } => {
                 self.insert_console_scene(before, generation, revision, cx);
             }
+            EditorContextAction::InsertReturn { generation } => {
+                if generation != self.project_generation {
+                    return;
+                }
+                let Some(state) = &self.state else {
+                    return;
+                };
+                let count = state.project.return_tracks().len();
+                if count >= hex_project::MAX_RETURN_TRACKS {
+                    self.error = Some("return track limit reached".into());
+                    cx.notify();
+                    return;
+                }
+                device_panel::enqueue_return_edit(
+                    self,
+                    Command::AddReturnTrack {
+                        name: format!("return {}", count + 1),
+                    },
+                    cx,
+                );
+                cx.notify();
+            }
             EditorContextAction::InsertTrack(action) => {
                 if action.generation != self.project_generation {
                     return;
@@ -524,6 +548,9 @@ impl EditorView {
                     !self.browser_source_removable(source)
                 }
                 EditorContextAction::InsertTrack(_) => false,
+                EditorContextAction::InsertReturn { generation } => {
+                    *generation != self.project_generation
+                }
                 EditorContextAction::AdaptiveGrid { generation, .. } => {
                     *generation != self.project_generation
                 }
@@ -790,7 +817,7 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 14);
+            assert_eq!(menu.items.len(), 15);
             assert_eq!(
                 menu.items
                     .iter()
@@ -1165,5 +1192,165 @@ mod tests {
                 });
             }
         }
+    }
+    #[gpui::test]
+    fn track_menu_inserts_return_with_real_history_and_saved_routing(cx: &mut TestAppContext) {
+        use crate::editor::midi_canvas::creation_tests::{fixture, pump};
+        for mode in [
+            super::super::EditorMode::Arrangement,
+            super::super::EditorMode::Session,
+        ] {
+            let (mut visual, editor, environment, _) = fixture(cx);
+            editor.update(&mut visual, |view, cx| {
+                view.mode = mode;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let original = editor.read_with(&visual, |view, _| {
+                view.state.as_ref().unwrap().project.clone()
+            });
+            let track = original.tracks()[0].id();
+            let prefix = if mode == super::super::EditorMode::Arrangement {
+                "arrangement-track-header"
+            } else {
+                "session-track"
+            };
+            let header = visual
+                .debug_bounds(Box::leak(
+                    format!("{prefix}-{}", track.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            visual.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(header.center(), MouseButton::Right, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                let menu = view.context_menu.as_ref().unwrap();
+                assert_eq!(menu.items[0].label, "insert track");
+                assert_eq!(menu.items[1].label, "insert return track");
+                assert!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .return_tracks()
+                        .is_empty()
+                );
+            });
+            visual.simulate_keystrokes("down enter");
+            pump(&editor, &mut visual);
+            let inserted = editor.read_with(&visual, |view, _| {
+                let p = &view.state.as_ref().unwrap().project;
+                assert_eq!(p.tracks(), original.tracks());
+                assert_eq!(p.return_tracks().len(), 1);
+                assert_eq!(p.return_tracks()[0].name(), "return 1");
+                assert!(p.return_tracks()[0].devices().is_empty());
+                assert!(view.context_menu.is_none());
+                p.clone()
+            });
+            editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                let mut expected = original.snapshot();
+                expected.next_id = inserted.snapshot().next_id;
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected);
+            });
+            editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, inserted)
+            });
+            let path = environment.root().join("return-menu.hex");
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::SaveNew(path.clone())))
+            });
+            pump(&editor, &mut visual);
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Open(path)))
+            });
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, inserted)
+            });
+        }
+    }
+    #[gpui::test]
+    fn return_insertion_refuses_stale_menu_and_capacity_consumed_after_open(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::editor::midi_canvas::creation_tests::{fixture, pump};
+        let (mut visual, editor, _environment, _) = fixture(cx);
+        // Capture from a real current menu, then change document generation.
+        let action = visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_track_context_menu(point(px(600.0), px(100.0)), None, window, cx);
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.label == "insert return track")
+                    .unwrap()
+                    .action
+                    .clone()
+            })
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None,
+            }))
+        });
+        pump(&editor, &mut visual);
+        let original = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.clone()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.select_context_item(action, window, cx);
+                assert_eq!(view.worker_requests_pending, 0);
+                assert_eq!(view.state.as_ref().unwrap().project, original);
+            })
+        });
+        for index in 0..hex_project::MAX_RETURN_TRACKS - 1 {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+                    name: format!("return {index}")
+                })))
+            });
+            pump(&editor, &mut visual);
+        }
+        let action = visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.open_track_context_menu(point(px(600.0), px(100.0)), None, window, cx);
+                view.context_menu
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .find(|item| item.label == "insert return track")
+                    .unwrap()
+                    .action
+                    .clone()
+            })
+        });
+        // The last slot is consumed while this menu's generation stays current.
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+                name: "last slot".into()
+            })))
+        });
+        pump(&editor, &mut visual);
+        let full = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.clone()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.select_context_item(action, window, cx);
+                assert_eq!(view.error.as_deref(), Some("return track limit reached"));
+                assert_eq!(view.worker_requests_pending, 0);
+                assert!(view.context_menu.is_none());
+                assert_eq!(view.state.as_ref().unwrap().project, full);
+            })
+        });
     }
 }
