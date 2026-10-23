@@ -2390,9 +2390,9 @@ fn bypass_action(
             "toggle device bypass"
         },
         if bypassed {
-            theme::DeviceActionRole::Muted
+            theme::DeviceActionRole::Bypassed
         } else {
-            theme::DeviceActionRole::Normal
+            theme::DeviceActionRole::Enabled
         },
         selected,
     )

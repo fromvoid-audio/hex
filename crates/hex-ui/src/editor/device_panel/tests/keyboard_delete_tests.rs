@@ -986,18 +986,21 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
             actual.clone()
         });
         visual.run_until_parked();
+        super::header_actions_tests::assert_power_paint(&mut visual, device, false);
         visual.simulate_keystrokes("cmd-z");
         pump_until(&editor, cx, settled);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, original)
         });
         visual.run_until_parked();
+        super::header_actions_tests::assert_power_paint(&mut visual, device, true);
         visual.simulate_keystrokes("cmd-shift-z");
         pump_until(&editor, cx, settled);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, changed)
         });
         visual.run_until_parked();
+        super::header_actions_tests::assert_power_paint(&mut visual, device, false);
         visual.simulate_keystrokes("0");
         pump_until(&editor, cx, settled);
         editor.read_with(cx, |view, _| {
@@ -1020,6 +1023,16 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
     let event = receive_service_event(&reopened);
     assert!(event.error.is_none());
     assert_eq!(event.state.project, expected);
+    let (handle, _) = browser.window(cx, reopened, event.state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for device in [effect, instrument] {
+        super::header_actions_tests::assert_power_paint(
+            &mut visual,
+            device,
+            !expected.device(device).unwrap().bypassed(),
+        );
+    }
 }
 
 #[gpui::test]
