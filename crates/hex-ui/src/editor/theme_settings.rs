@@ -957,6 +957,7 @@ impl EditorView {
                     )
                     .child(controls),
             );
+        let settings = self.audio_import_settings_row(cx);
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
@@ -974,6 +975,7 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
+            .child(settings)
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);

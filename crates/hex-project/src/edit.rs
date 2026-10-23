@@ -1252,6 +1252,7 @@ impl Project {
     pub(crate) fn apply_audio_imports(
         &mut self,
         commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
     ) -> Result<Vec<Created>, Invalid> {
         let count = commands.len();
         let mut incoming = Vec::new();
@@ -1343,23 +1344,42 @@ impl Project {
                 playback_frames,
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
+            let mut clip = Clip {
+                name: "clip".into(),
+                flavor: crate::ClipFlavor::default(),
+                id: ClipId(0),
+                asset,
+                start,
+                duration: playback_frames,
+                source_offset: 0,
+                source_length: playback_frames,
+                looping: false,
+                source_phase: 0,
+                fade: ClipFade::neutral(playback_frames)?,
+                gain: crate::ClipGain::UNITY,
+                edit: None,
+            };
+            if warp == crate::AudioImportWarp::Beats {
+                let settings = crate::default_audio_warp(
+                    &clip,
+                    self.tempo_map(),
+                    crate::WarpMode::Beats {
+                        preserve: crate::BeatsPreserve::Transients,
+                        tail: crate::BeatsTail::Forward,
+                        decay: 100,
+                    },
+                )?;
+                let mut edit = crate::AudioClipEdit::capture(&clip);
+                edit.anchor(clip.start, self.tempo_map())?;
+                let domain = std::sync::Arc::make_mut(&mut edit.domain);
+                domain.warp = Some(settings);
+                domain.warp_enabled = true;
+                clip.edit = Some(std::sync::Arc::new(edit));
+                crate::audio_edit::project_clip(&mut clip, self.tempo_map())?;
+            }
             incoming.push(crate::ClipGroupPreview {
                 track,
-                content: crate::ClipGroupContent::Audio(Clip {
-                    name: "clip".into(),
-                    flavor: crate::ClipFlavor::default(),
-                    id: ClipId(0),
-                    asset,
-                    start,
-                    duration: playback_frames,
-                    source_offset: 0,
-                    source_length: playback_frames,
-                    looping: false,
-                    source_phase: 0,
-                    fade: ClipFade::neutral(playback_frames)?,
-                    gain: crate::ClipGain::UNITY,
-                    edit: None,
-                }),
+                content: crate::ClipGroupContent::Audio(clip),
             });
             owners.push((track, asset));
         }

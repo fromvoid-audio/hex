@@ -2687,6 +2687,13 @@ impl EditorView {
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
+        let request = match self.capture_audio_import_policy(request) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.into());
+                return false;
+            }
+        };
         let selection = self.created_note_selection_intent(&request);
         let pending_before = self.worker_requests_pending;
         let accepted = self.enqueue_request(request, false);
@@ -2806,7 +2813,10 @@ impl EditorView {
         }
         #[cfg(test)]
         if let Request::ImportAudioBatch {
-            paths, destination, ..
+            paths,
+            destination,
+            options,
+            ..
         } = &request
         {
             if let [path] = paths.as_slice() {
@@ -2814,7 +2824,7 @@ impl EditorView {
                     hex_session::import_batch::AudioBatchDestination::Console(_) => {}
                     hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
                         self.last_enqueued_import_to_track =
-                            Some((path.clone(), *track, *start, true))
+                            Some((path.clone(), *track, *start, options.overwrite))
                     }
                     hex_session::import_batch::AudioBatchDestination::NewTracks {
                         before_track,

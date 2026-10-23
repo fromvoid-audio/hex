@@ -6,6 +6,22 @@ pub(crate) mod console;
 pub use console::ConsoleDestination;
 pub(crate) use console::{ResolvedCell, normalize as normalize_imports};
 
+/// Immutable import intent captured before decode. Ordinary and Console callers
+/// retain Off; overwrite preserves the existing destination-specific placement law.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioImportOptions {
+    pub warp: hex_project::AudioImportWarp,
+    pub overwrite: bool,
+}
+impl Default for AudioImportOptions {
+    fn default() -> Self {
+        Self {
+            warp: hex_project::AudioImportWarp::Off,
+            overwrite: true,
+        }
+    }
+}
+
 /// Captured Arrangement destination; paths and members retain input order.
 #[derive(Clone, Copy, Debug)]
 pub enum AudioBatchDestination {
@@ -41,10 +57,16 @@ pub(crate) fn prepare_asset_free(
     input: Preparation<'_>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
-    let revision = Arc::new(input.media.prepare(
+    // The fallback has no native publication sink, but imported musical sources
+    // still require the same transform/waveform owner as later ordinary edits.
+    // MediaBank::prepare alone only compiled raw/verified sources.
+    let revision = Arc::new(crate::prepare_with_waveforms(
         input.project,
+        input.media,
         input.table,
         input.previous.map(|artifact| artifact.session().as_ref()),
+        input.transforms,
+        input.waveforms,
     )?);
     admit()?;
     Ok(revision)
@@ -57,6 +79,8 @@ impl Session {
     /// immediately before commit. It must not mutate the canonical session.
     /// Media stays resident after Undo, bounded by the existing retained budget.
     /// Decode/resample and any per-file limits are the worker caller's duty.
+    /// This lower-level default entry point imports with Warp Off. The worker's
+    /// captured options are applied privately before placement/preparation.
     pub fn import_prepared_batch_revision(
         &mut self,
         prepared: Vec<PreparedImport>,
@@ -70,7 +94,7 @@ impl Session {
             destination,
             expected_project,
             previous,
-            true,
+            AudioImportOptions::default(),
             admit,
             prepare_asset_free,
         )
@@ -84,7 +108,7 @@ impl Session {
         destination: AudioBatchDestination,
         expected_project: &Project,
         previous: Option<&hex_engine::PreparedRevision>,
-        overwrite: bool,
+        options: AudioImportOptions,
         mut admit: impl FnMut() -> Result<(), SessionError>,
         prepare: impl FnOnce(
             Preparation<'_>,
@@ -216,7 +240,7 @@ impl Session {
                         source_end: frames,
                     }
                 }
-                AudioBatchDestination::Track { track, .. } if !overwrite => {
+                AudioBatchDestination::Track { track, .. } if !options.overwrite => {
                     Command::ImportPreparedAudioClip {
                         track,
                         start: cursor,
@@ -275,44 +299,46 @@ impl Session {
         let limits = self.native_reservation;
         let max_frames = self.max_resident_frames;
         let shutdown = &self.shutdown;
-        let (_, (created, revision)) =
-            self.editor
-                .execute_audio_imports_prepared(commands, |candidate, results| {
-                    let created =
-                        console::normalize(candidate, results, console_cell, residents.len())?;
-                    for (result, resident) in created.iter().zip(&residents) {
-                        let Created::Imported { asset, .. } = result else {
-                            return Err(SessionError::Invalid(
-                                "audio batch did not create its asset",
-                            ));
-                        };
-                        if candidate_media
-                            .insert(*asset, resident.audio.clone())
-                            .is_some()
-                        {
-                            return Err(SessionError::Invalid(
-                                "audio batch asset identity collision",
-                            ));
-                        }
+        let (_, (created, revision)) = self.editor.execute_audio_imports_with_warp_prepared(
+            commands,
+            options.warp,
+            |candidate, results| {
+                let created =
+                    console::normalize(candidate, results, console_cell, residents.len())?;
+                for (result, resident) in created.iter().zip(&residents) {
+                    let Created::Imported { asset, .. } = result else {
+                        return Err(SessionError::Invalid(
+                            "audio batch did not create its asset",
+                        ));
+                    };
+                    if candidate_media
+                        .insert(*asset, resident.audio.clone())
+                        .is_some()
+                    {
+                        return Err(SessionError::Invalid(
+                            "audio batch asset identity collision",
+                        ));
                     }
-                    let revision = prepare(
-                        Preparation {
-                            project: candidate,
-                            media: &candidate_media,
-                            native,
-                            table: sine_table,
-                            transforms,
-                            waveforms,
-                            legacy: &legacy,
-                            limits,
-                            max_frames,
-                            shutdown,
-                            previous,
-                        },
-                        &mut admit,
-                    )?;
-                    Ok::<_, SessionError>((created, revision))
-                })?;
+                }
+                let revision = prepare(
+                    Preparation {
+                        project: candidate,
+                        media: &candidate_media,
+                        native,
+                        table: sine_table,
+                        transforms,
+                        waveforms,
+                        legacy: &legacy,
+                        limits,
+                        max_frames,
+                        shutdown,
+                        previous,
+                    },
+                    &mut admit,
+                )?;
+                Ok::<_, SessionError>((created, revision))
+            },
+        )?;
         // All fallible work is complete. Created/results correspond one-for-one.
         for (result, resident) in created.iter().zip(residents) {
             if let Created::Imported { asset, .. } = result {

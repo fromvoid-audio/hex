@@ -492,6 +492,7 @@ pub enum Request {
         destination: AudioBatchDestination,
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
+        options: crate::import_batch::AudioImportOptions,
     },
     ImportToTrack {
         path: PathBuf,
@@ -608,6 +609,7 @@ impl Request {
                 destination,
                 context,
                 control: Arc::clone(&control),
+                options: Default::default(),
             },
             control,
         ))
@@ -2816,6 +2818,7 @@ fn run_worker(
                     destination,
                     context,
                     control,
+                    options,
                 } => {
                     audio_batch_complete = Some(Arc::clone(&control));
                     let actual = AudioBatchContext {
@@ -2833,6 +2836,7 @@ fn run_worker(
                             &session,
                             actual,
                             Arc::clone(&control),
+                            options,
                         )
                         .and_then(|job| {
                             if session.audio_mode() == DocumentAudioMode::Resident

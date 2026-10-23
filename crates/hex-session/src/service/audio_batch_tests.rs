@@ -361,3 +361,152 @@ fn worker_conversion_failure_retains_mixed_case_source_without_history_or_media(
     assert!(refused.playback.is_none());
     assert_eq!(control.progress().phase, AudioBatchPhase::Failed);
 }
+
+#[test]
+fn captured_beats_import_is_one_revision_with_source_local_markers_history_and_roundtrip() {
+    let files = Files::new();
+    let first = files.wav("long.wav", 48_000, &[8192; 24_000]);
+    let second = files.wav("short.wav", 48_000, &[-4096; 12_000]);
+    for (warp, members) in [
+        (hex_project::AudioImportWarp::Off, vec![first.clone()]),
+        (
+            hex_project::AudioImportWarp::Beats,
+            vec![first.clone(), second.clone()],
+        ),
+    ] {
+        let (s, initial) = service();
+        let (mut request, control) =
+            Request::audio_batch(members, new_tracks(), context(&initial.state)).unwrap();
+        if let Request::ImportAudioBatch { options, .. } = &mut request {
+            options.warp = warp;
+        }
+        s.submit(request).unwrap();
+        let mut imported = event(&s);
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        assert_eq!(imported.state.revision, initial.state.revision + 1);
+        let count = if warp == hex_project::AudioImportWarp::Beats {
+            2
+        } else {
+            1
+        };
+        assert_eq!(imported.state.project.tracks().len(), count);
+        for (index, track) in imported.state.project.tracks().iter().enumerate() {
+            let clip = &track.clips()[0];
+            let frames = if index == 0 { 24_000 } else { 12_000 };
+            assert_eq!(clip.duration(), frames);
+            if warp == hex_project::AudioImportWarp::Off {
+                assert!(clip.audio_edit().is_none());
+            } else {
+                let domain = &clip.audio_edit().unwrap().domain;
+                assert!(domain.warp_enabled);
+                let settings = domain.warp.as_ref().unwrap();
+                assert!(matches!(
+                    settings.mode,
+                    hex_project::WarpMode::Beats {
+                        preserve: hex_project::BeatsPreserve::Transients,
+                        tail: hex_project::BeatsTail::Forward,
+                        decay: 100
+                    }
+                ));
+                assert_eq!(settings.markers[0].source_frame, 0);
+                assert_eq!(settings.markers[1].source_frame, frames);
+                assert_eq!(settings.markers[0].beat, hex_project::BeatTime::ZERO);
+                assert_eq!(
+                    settings.markers[1].beat,
+                    if index == 0 {
+                        hex_project::BeatTime::ONE
+                    } else {
+                        hex_project::BeatTime::from_raw(hex_project::BeatTime::ONE.raw() / 2)
+                    }
+                );
+            }
+        }
+        let mut playback = imported.playback.take().unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut out = [[0.0; 2]; 32];
+        playback.render(&mut out).unwrap();
+        let expected = if count == 2 { 0.125 } else { 0.25 };
+        assert!(out.iter().all(|frame| (frame[0] - expected).abs() < 1e-6));
+        assert_eq!(control.progress().phase, AudioBatchPhase::Completed);
+        s.submit(Request::Undo).unwrap();
+        let undone = event(&s);
+        assert!(undone.state.project.tracks().is_empty());
+        assert_eq!(undone.state.project.assets().count(), 0);
+        assert_eq!(
+            undone.state.project.tempo_map(),
+            initial.state.project.tempo_map()
+        );
+        assert!(!undone.state.can_undo);
+        s.submit(Request::Redo).unwrap();
+        let redone = event(&s);
+        assert_eq!(redone.state.project, imported.state.project);
+        let document = files.0.join(format!("import-{count}.hex"));
+        s.submit(Request::SaveNew(document.clone())).unwrap();
+        let saved = event(&s);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        s.submit(Request::Edit(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+        }))
+        .unwrap();
+        let mut changed = event(&s);
+        assert!(changed.error.is_none(), "{:?}", changed.error);
+        for (old, new) in imported
+            .state
+            .project
+            .tracks()
+            .iter()
+            .zip(changed.state.project.tracks())
+        {
+            assert_eq!(
+                new.clips()[0].duration(),
+                old.clips()[0].duration() * if count == 2 { 2 } else { 1 }
+            );
+        }
+        let mut slower = changed.playback.take().unwrap();
+        slower.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut stretched = vec![[0.0; 2]; 24_032];
+        slower.render(&mut stretched).unwrap();
+        if count == 2 {
+            assert!(stretched[24_000..].iter().any(|frame| frame[0] > 0.1));
+        } else {
+            assert!(stretched[24_000..].iter().all(|frame| *frame == [0.0; 2]));
+        }
+        s.submit(Request::Open(document)).unwrap();
+        let reopened = event(&s);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert_eq!(reopened.state.project, imported.state.project);
+        drop(s);
+    }
+}
+
+#[test]
+fn beats_batch_failure_and_cancel_preserve_the_complete_previous_state() {
+    let files = Files::new();
+    let good = files.wav("good.wav", 48_000, &[4096; 24_000]);
+    let bad = files.0.join("bad.wav");
+    fs::write(&bad, b"malformed").unwrap();
+    for cancel in [false, true] {
+        let (s, initial) = service();
+        let (mut request, control) = Request::audio_batch(
+            vec![good.clone(), bad.clone()],
+            new_tracks(),
+            context(&initial.state),
+        )
+        .unwrap();
+        if let Request::ImportAudioBatch { options, .. } = &mut request {
+            options.warp = hex_project::AudioImportWarp::Beats;
+        }
+        if cancel {
+            assert_eq!(control.request_cancel(), AudioBatchCancel::Requested);
+        }
+        s.submit(request).unwrap();
+        let refused = event(&s);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, initial.state.project);
+        assert_eq!(refused.state.revision, initial.state.revision);
+        assert!(!refused.state.can_undo);
+        assert!(!refused.state.unsaved);
+        assert!(refused.state.waveforms.is_empty());
+        drop(s);
+    }
+}

@@ -25,11 +25,11 @@ mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
-    AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
-    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
-    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    AudioImportWarp, AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection,
+    AudioViewResize, AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES,
+    MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint,
+    WarpMarker, WarpMode, WarpSettings, audio_projection_beat, audio_projection_frame,
+    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 mod appearance;
 mod clip_conversion;
