@@ -186,9 +186,9 @@ fn creation_floors_onset_and_free_preview_commits_one_pixel_at_both_zooms(cx: &m
                 } else {
                     v.midi_creation.as_ref().unwrap().preview
                 };
-                let raw = (f64::from(f32::from(
-                    (down.x - roll.origin.x - px(1.0)) / (roll.size.width - px(2.0)),
-                )) * span as f64) as u64;
+                let raw =
+                    (f64::from((down.x - roll.origin.x - px(1.0)) / (roll.size.width - px(2.0)))
+                        * span as f64) as u64;
                 let free = grid == MidiGrid::Off || invert;
                 if free {
                     assert_eq!(note.start.raw(), raw);
