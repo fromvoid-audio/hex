@@ -351,6 +351,11 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             editor.update(&mut visual, |v, cx| {
                 v.receive(event);
+                assert!(v.pending_clip_move.is_some());
+                let refused = next_with_error(&v.service);
+                assert!(refused.error.as_ref().unwrap().contains("project changed"));
+                v.receive(refused);
+                assert!(v.pending_clip_move.is_none());
                 cx.notify();
             });
         } else {
@@ -372,10 +377,12 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
                 assert_eq!(current.name(), "independent rename");
             }
             assert_eq!(project.clip(clips[0]).unwrap().name(), "independent rename");
-            assert!(
-                matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"),
-                "no movement command after pending/stale refusal"
-            );
+            if hold_ack {
+                assert!(matches!(&v.last_enqueued_edit, Some(Command::MoveClipsWithOverwrite { clips: selected, .. }) if selected == &clips));
+                assert!(v.error.as_ref().unwrap().contains("project changed"));
+            } else {
+                assert!(matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"));
+            }
         });
     }
 }
