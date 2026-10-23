@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import shutil
+import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -452,6 +453,10 @@ class DeliveryTests(unittest.TestCase):
         runner.git_identity = {"workspace_root":str(source), "git_common_dir":str(source / ".git"), "commit":candidate}
         scope = [{"name":"hex-desktop", "version":"0.1.0", "spec":"hex-desktop@0.1.0"}]
         runner.cargo_identity["workspace_packages"] = scope
+        # The substituted metadata query must populate the same complete package
+        # view as production before name-scoped cleanup can be proven safe.
+        runner._release_metadata = {"workspace_members": [scope[0]["spec"]], "packages": [
+            {"id": scope[0]["spec"], "name": "hex-desktop", "source": None}]}
         _, dev_owner = delivery.ci.target_state_paths(target.parent.parent, runner.target_state_dir)
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
@@ -711,10 +716,59 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
             resolve.return_value = plan
-            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            next(s for s in evidence["steps"] if s["step_id"] == "runner-tests")["test_results"] = {
+                "python_executions": [2], "python_skipped": [2]}
             delivery.write_json(report, evidence)
             with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+
+
+    def test_core_shared_python_refuses_native_before_pending_but_dev_and_full_work(self):
+        # Synthetic passing reports exercise the consumer, not product tests.
+        # The existing fake-tool fixture runs the actual guarded release boundary.
+        import test_local_ci as fixtures
+        fixture = fixtures.LocalCiRunnerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        runner = fixture.runner("core-python-consumer")
+        self.assertTrue(runner._capture_repository_state("start_tree"))
+        tree = runner.summary["start_tree"]
+        impact = delivery.ci.ci_plan.python_tests
+        selected = impact.select("merge", ["crates/hex-engine/src/lib.rs"],
+            [{"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml"}],
+            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES), env={})
+        plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "base", "python_tests": selected}
+        dependencies = {"fixture": "same guarded inputs"}
+        def evidence_for(chosen):
+            return {"schema_version": 2, "mode": chosen["profile"], "status": "passed",
+                    "stale": False, "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": chosen,
+                    "target_cache": {"dependency_inputs": dependencies},
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}}
+                              for step in delivery.ci.planned_steps(chosen)]}
+        report = fixture.repo / "core-ci.json"
+        delivery.write_json(report, evidence_for(plan))
+        with patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan) as resolve, \
+                patch.object(runner, "_dependency_context", return_value=dependencies):
+            def verify():
+                delivery.validate_ci(report, runner, tree["commit"])
+            with self.assertRaisesRegex(delivery.DeliveryError, "full audit"):
+                with runner.guarded_release(verification_check=verify):
+                    self.fail("partial Python coverage reached release pending/build boundary")
+            self.assertFalse(list(fixture.target_state_dir.glob("*.release-owner.json")))
+            self.assertIsNone(runner.target_lock)
+            calls = fixture.call_log.read_text()
+            self.assertNotIn("cargo build", calls)
+            self.assertNotIn("cargo clean", calls)
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+            complete = {**plan, "profile": "release", "python_tests": impact.select(
+                "release", [], [], set(), sorted(impact.REVIEWED_MODULES))}
+            resolve.return_value = complete
+            delivery.write_json(report, evidence_for(complete))
+            delivery.validate_ci(report, runner, tree["commit"])
 
 
 @unittest.skipUnless(sys.platform == "darwin", "native macOS signature behavior")
@@ -860,6 +914,8 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                if ownership.get("cleanup_log"):
+                    self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")
@@ -1026,6 +1082,116 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(owner.read_bytes(), owner_before)
             print("real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified", flush=True)
 
+
+
+@unittest.skipUnless(os.environ.get("HEX_VST3_DISCOVERY_RECEIPT") and os.environ.get("HEX_VST3_PACKAGE_SCANNER")
+                     and os.environ.get("HEX_VST3_PACKAGE_FIXTURES"), "explicit native package qualification inputs required")
+class NativeDiscoveryPackageTests(unittest.TestCase):
+    """Real nested signing/lookup/protocol fixtures; never starts the Hex UI."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hex-discovery-package-")
+        self.addCleanup(self.temporary.cleanup)
+        self.app = Path(self.temporary.name).resolve() / "hex.app"
+        self.contents = self.app / "Contents"
+        (self.contents / "MacOS").mkdir(parents=True)
+        (self.contents / "Resources").mkdir()
+        self.input = Path(os.environ["HEX_VST3_DISCOVERY_RECEIPT"]).resolve()
+        self.scanner = Path(os.environ["HEX_VST3_PACKAGE_SCANNER"]).resolve()
+        self.fixtures = Path(os.environ["HEX_VST3_PACKAGE_FIXTURES"]).resolve()
+        self.candidate = json.loads(self.input.read_text())["source_commit"]
+        self.signing = delivery.signing_configuration(json.loads((delivery.ROOT / "scripts/hex-test-build.json").read_text()))
+        # Original isolated package fixture, not a playable desktop/user-test app.
+        shutil.copy2(self.scanner, self.contents / "MacOS/hex")
+        (self.contents / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "hex", "CFBundleIdentifier": delivery.IDENTITY, "CFBundlePackageType": "APPL"}))
+        evidence = delivery.stage_discovery(self.app, self.input, self.candidate,
+                                           {"path": str(self.scanner), "sha256": delivery.sha(self.scanner)}, self.signing)
+        self.receipt = {"schema": 2, "profile": "release", "source": self.candidate,
+                        "signing": self.signing, "vst3_discovery": evidence}
+        self.seal()
+
+    def seal(self):
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        delivery.verify(self.app)
+
+    def scan(self, name="normal"):
+        executable = self.app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER
+        module = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures" / (name + ".vst3")
+        process = subprocess.Popen([str(executable), "--bundled", "--trust-user-code", str(module), "3000"],
+                                   cwd="/", env={"PATH": "/no-checkout-or-tools"}, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # communicate cannot be retried with new input after its first call.
+        # Initial stdin remains open so cancellation is available if needed.
+        try:
+            out, err = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.send_signal(signal.SIGTERM)  # standalone scoped cancellation, never group kill
+            try:
+                process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.fail(f"owned scanner {process.pid} retained after cancellation; no forced termination")
+            self.fail("packaged original fixture exceeded qualification deadline")
+        return process.returncode, out, err
+
+    def test_signed_package_scans_thin_and_universal_outside_checkout(self):
+        for name in ("normal", "universal"):
+            code, out, err = self.scan(name)
+            self.assertEqual(code, 0, err.decode(errors="replace"))
+            report = json.loads(out)
+            self.assertIsNone(report["error"])
+            self.assertTrue(report["cleanup"]["direct_reaped"])
+            self.assertEqual(report["cleanup"]["direct_exit_code"], 0)
+            self.assertEqual(len(report["discovery"]["classes"]), 2)
+            self.assertNotIn(b"forbidden ordinary instance", report["stderr"].encode())
+
+    def test_missing_changed_and_stale_package_refuse_before_selected_module_load(self):
+        root = self.app / delivery.DISCOVERY_ROOT
+        helper = root / "hex-vst3-host.app/Contents/MacOS/hex-vst3-factory-scan"
+        original = helper.read_bytes()
+        for change in ("missing", "changed"):
+            if change == "missing":
+                helper.unlink()
+            else:
+                helper.write_bytes(original + b"changed")
+            code, out, err = self.scan("load-crash")
+            self.assertEqual(code, 1)
+            self.assertEqual(out, b"")
+            self.assertIn(b"factory scan refused", err)
+            helper.write_bytes(original)
+            helper.chmod(0o755)
+        receipt = self.app / delivery.DISCOVERY_RECEIPT
+        data = json.loads(receipt.read_text())
+        data["source_commit"] = "0" * 40
+        delivery.write_json(receipt, data)
+        self.receipt["vst3_discovery"]["receipt_sha256"] = delivery.sha(receipt)
+        # Re-seal caller-owned fixture to reach the source-binding refusal.
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        code, out, err = self.scan("load-crash")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn(b"stale native discovery package source", err)
+
+    def test_resealed_real_wrong_architecture_helper_is_rejected_before_load(self):
+        root = self.app / delivery.DISCOVERY_ROOT
+        helper_app = root / "hex-vst3-host.app"
+        helper = helper_app / "Contents/MacOS/hex-vst3-factory-scan"
+        wrong = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures/wrong-architecture.vst3/Contents/MacOS/fixture"
+        shutil.copy2(wrong, helper)
+        delivery.sign_discovery(helper_app, "org.portalsurfer.hex.vst3.discovery", self.signing)
+        receipt = self.app / delivery.DISCOVERY_RECEIPT
+        data = json.loads(receipt.read_text())
+        data["bundle_files"] = delivery.discovery_builder().inventory(helper_app)
+        delivery.write_json(receipt, data)
+        self.receipt["vst3_discovery"]["receipt_sha256"] = delivery.sha(receipt)
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        code, out, err = self.scan("load-crash")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn(b"factory scan refused", err)
 
 if __name__ == "__main__":
     unittest.main()

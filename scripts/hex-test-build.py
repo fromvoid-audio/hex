@@ -55,7 +55,7 @@ def sha(path: Path) -> str:
 def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
                        expected_owner_sha256: str | None = None,
                        expected_recreated_target_identity: dict[str, int] | None = None,
-                       recovery_inactive_check=None, verification_check=None):
+                       recovery_inactive_check=None, verification_check=None, discovery=False):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
@@ -63,6 +63,10 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
     """
     recovery = {"adopt": adopt}
     argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
+    if discovery:
+        if package != "hex-desktop":
+            raise DeliveryError("discovery tools require the desktop build")
+        argv[5:5] = ["-p", "hex-plugin-scan", "--bin", "hex-desktop", "--bin", "hex-vst3-scan-macos"]
     recovery["requested_build_argv"] = argv
     if verification_check is not None:
         recovery["verification_check"] = verification_check
@@ -89,6 +93,14 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
         if len(binaries) != 1:
             raise DeliveryError("no unique optimized artifact from Cargo")
         ownership["artifact"] = runner.identify_release_artifact(binaries[0], argv)
+        if discovery:
+            scanners = [Path(event["executable"]) for event in events
+                        if event.get("reason") == "compiler-artifact" and event.get("executable")
+                        and event.get("target", {}).get("name") == "hex-vst3-scan-macos"
+                        and event.get("profile", {}).get("opt_level") == "3"]
+            if len(scanners) != 1:
+                raise DeliveryError("no unique optimized discovery scanner from Cargo")
+            ownership["discovery_scanner"] = runner.identify_release_artifact(scanners[0], argv)
         runner.validate_release_inputs(ownership)
         if verification_check is not None:
             verification_check()
@@ -96,6 +108,145 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
                 or runner.summary["release_artifact_tree"] != runner.summary["start_tree"]):
             raise DeliveryError("source changed during optimized compilation")
         yield binaries[0], ownership
+
+
+DISCOVERY_ROOT = Path("Contents/Helpers")
+DISCOVERY_RECEIPT = Path("Contents/Resources/vst3-discovery.json")
+DISCOVERY_APP = "hex-vst3-host.app"
+DISCOVERY_SCANNER = "hex-vst3-scan-macos"
+INSTANCE_RECEIPT = Path("Contents/Resources/vst3-instance.json")
+INSTANCE_APP = "hex-vst3-instance.app"
+
+
+def discovery_builder():
+    native = ROOT / "crates/hex-plugin-scan/native"
+    sys.path.insert(0, str(native))
+    try:
+        spec = importlib.util.spec_from_file_location("hex_discovery_builder", native / "macos_bootstrap.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+def validate_discovery_input(path: Path, candidate: str, *, packaged=False) -> dict:
+    assert_plain_path(path.absolute())
+    data = discovery_builder().verify(path)
+    if (data.get("scope") != "native-macos-factory-discovery"
+            or data.get("source_commit") != candidate or data.get("source_dirty") is not False
+            or data.get("package_layout") != ("hex-app-discovery-v1" if packaged else None)):
+        raise DeliveryError("discovery helper must be minimal and built from the exact clean candidate")
+    return data
+
+
+def sign_discovery(path: Path, identifier: str, signing: dict) -> None:
+    run(["codesign", "--force", "--sign", signing["certificate_sha1"], "--identifier", identifier,
+         "--timestamp=none", str(path)])
+    run(["codesign", "--verify", "--strict", str(path)])
+    actual = native_signature(path)
+    if actual["identifier"] != identifier or actual["team_identifier"] != signing["team_identifier"]:
+        raise DeliveryError("discovery tool signer/identifier differs from configuration")
+
+
+def stage_discovery(stage: Path, source: Path, candidate: str, scanner: dict, signing: dict) -> dict:
+    data = validate_discovery_input(source, candidate)
+    scanner_path = Path(scanner["path"])
+    assert_plain_path(scanner_path)
+    if sha(scanner_path) != scanner["sha256"]:
+        raise DeliveryError("optimized discovery scanner changed before staging")
+    builder = discovery_builder()
+    builder.macho(scanner_path, 2)
+    destination = stage / DISCOVERY_ROOT
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source.parent / DISCOVERY_APP, destination / DISCOVERY_APP)
+    shutil.copy2(scanner_path, destination / DISCOVERY_SCANNER)
+    if (builder.inventory(destination / DISCOVERY_APP) != data["bundle_files"]
+            or sha(destination / DISCOVERY_SCANNER) != scanner["sha256"]):
+        raise DeliveryError("discovery inputs changed during staging")
+    if validate_discovery_input(source, candidate) != data:
+        raise DeliveryError("discovery native receipt changed during staging")
+    input_receipt_sha256 = sha(source)
+    sign_discovery(destination / DISCOVERY_APP, "org.portalsurfer.hex.vst3.discovery", signing)
+    sign_discovery(destination / DISCOVERY_SCANNER, "org.portalsurfer.hex.vst3.scan", signing)
+    data["bundle_files"] = builder.inventory(destination / DISCOVERY_APP)
+    data["signing"] = {"mode": "Developer ID local discovery; not notarized; no added entitlements", **signing}
+    data["package_layout"] = "hex-app-discovery-v1"
+    packaged_receipt = stage / DISCOVERY_RECEIPT
+    write_json(packaged_receipt, data)
+    builder.verify(packaged_receipt)
+    # Re-signing is explicit: preserve input provenance and identify final bytes.
+    return {"source": candidate, "input_receipt_sha256": input_receipt_sha256, "input_scanner": scanner,
+            "root": str(DISCOVERY_ROOT), "scanner_sha256": sha(destination / DISCOVERY_SCANNER),
+            "receipt_sha256": sha(packaged_receipt), "signing": signing}
+
+
+def verify_discovery_package(app: Path, receipt: dict) -> None:
+    evidence = receipt["vst3_discovery"]
+    if evidence.get("source") != receipt.get("source") or evidence.get("root") != str(DISCOVERY_ROOT):
+        raise DeliveryError("discovery package source/location mismatch")
+    root = app / DISCOVERY_ROOT
+    packaged_receipt = app / DISCOVERY_RECEIPT
+    data = validate_discovery_input(packaged_receipt, receipt["source"], packaged=True)
+    if sha(packaged_receipt) != evidence.get("receipt_sha256") or sha(root / DISCOVERY_SCANNER) != evidence.get("scanner_sha256"):
+        raise DeliveryError("discovery package changed")
+    discovery_builder().macho(root / DISCOVERY_SCANNER, 2)
+    for path, identifier in [(root / DISCOVERY_APP, "org.portalsurfer.hex.vst3.discovery"),
+                             (root / DISCOVERY_SCANNER, "org.portalsurfer.hex.vst3.scan")]:
+        run(["codesign", "--verify", "--strict", str(path)])
+        actual = native_signature(path)
+        if actual["identifier"] != identifier or actual["team_identifier"] != receipt["signing"]["team_identifier"]:
+            raise DeliveryError("discovery package signer/identifier mismatch")
+    if data.get("signing", {}).get("certificate_sha1") != receipt["signing"]["certificate_sha1"]:
+        raise DeliveryError("discovery native receipt signer mismatch")
+
+
+def validate_instance_input(path: Path, candidate: str, *, packaged=False) -> dict:
+    assert_plain_path(path.absolute())
+    data = discovery_builder().verify(path)
+    if (data.get("scope") != "native-macos-instance"
+            or data.get("source_commit") != candidate or data.get("source_dirty") is not False
+            or data.get("package_layout") != ("hex-app-instance-v1" if packaged else None)):
+        raise DeliveryError("instance helper must be minimal and built from the exact clean candidate")
+    return data
+
+
+def stage_instance(stage: Path, source: Path, candidate: str, signing: dict) -> dict:
+    data = validate_instance_input(source, candidate)
+    builder = discovery_builder()
+    destination = stage / DISCOVERY_ROOT / INSTANCE_APP
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source.parent / INSTANCE_APP, destination)
+    if (builder.inventory(destination) != data["bundle_files"]
+            or validate_instance_input(source, candidate) != data):
+        raise DeliveryError("instance inputs changed during staging")
+    input_receipt_sha256 = sha(source)
+    sign_discovery(destination, "org.portalsurfer.hex.vst3.instance", signing)
+    data["bundle_files"] = builder.inventory(destination)
+    data["signing"] = {"mode": "Developer ID local instance; not notarized; no added entitlements", **signing}
+    data["package_layout"] = "hex-app-instance-v1"
+    packaged_receipt = stage / INSTANCE_RECEIPT
+    write_json(packaged_receipt, data)
+    builder.verify(packaged_receipt)
+    return {"source": candidate, "input_receipt_sha256": input_receipt_sha256,
+            "root": str(DISCOVERY_ROOT), "receipt_sha256": sha(packaged_receipt), "signing": signing}
+
+
+def verify_instance_package(app: Path, receipt: dict) -> None:
+    evidence = receipt["vst3_instance"]
+    if evidence.get("source") != receipt.get("source") or evidence.get("root") != str(DISCOVERY_ROOT):
+        raise DeliveryError("instance package source/location mismatch")
+    packaged_receipt = app / INSTANCE_RECEIPT
+    data = validate_instance_input(packaged_receipt, receipt["source"], packaged=True)
+    if sha(packaged_receipt) != evidence.get("receipt_sha256"):
+        raise DeliveryError("instance package changed")
+    helper = app / DISCOVERY_ROOT / INSTANCE_APP
+    run(["codesign", "--verify", "--strict", str(helper)])
+    actual = native_signature(helper)
+    if (actual["identifier"] != "org.portalsurfer.hex.vst3.instance"
+            or actual["team_identifier"] != receipt["signing"]["team_identifier"]
+            or data.get("signing", {}).get("certificate_sha1") != receipt["signing"]["certificate_sha1"]):
+        raise DeliveryError("instance package signer mismatch")
 
 
 def write_json(path: Path, value: object) -> None:
@@ -217,6 +368,8 @@ def verify_native_executable(binary: Path) -> None:
 
 
 def verify(app: Path) -> dict:
+    if (app / "Contents/Resources/release-build.json").exists():
+        return verify_distribution(app)
     assert_identity(app)
     receipt = json.loads((app / "Contents/Resources/test-build.json").read_text())
     actual = native_signature(app / "Contents/MacOS/hex")
@@ -232,6 +385,68 @@ def verify(app: Path) -> dict:
         raise DeliveryError(f"artifact checksum mismatch: {app}")
     if not os.access(app / "Contents/MacOS/hex", os.X_OK):
         raise DeliveryError("packaged binary is not executable")
+    verify_native_executable(app / "Contents/MacOS/hex")
+    if receipt.get("vst3_discovery") is not None:
+        verify_discovery_package(app, receipt)
+    if receipt.get("vst3_instance") is not None:
+        verify_instance_package(app, receipt)
+    return receipt
+
+
+def verify_distribution(app: Path) -> dict:
+    """Verify the sealed distribution receipt, shared by release and installer.
+
+    The full bundle seal authenticates all resources. Distribution archive hashes
+    and notarization/stapling are checked by hex-release; local launch verification
+    never needs a network call. No distribution receipt is a test-build receipt.
+    """
+    assert_identity(app)
+    resources = app / "Contents/Resources"
+    receipt = json.loads((resources / "release-build.json").read_bytes())
+    if (not isinstance(receipt, dict) or receipt.get("schema") != 1
+            or receipt.get("channel") not in {"beta", "nightly", "stable"}
+            or receipt.get("profile") != "release"
+            or receipt.get("verification") != {"mode": "full-ci", "tests": "passed"}
+            or type(receipt.get("build")) is not int or receipt["build"] < 1
+            or not isinstance(receipt.get("source"), str)
+            or re.fullmatch(r"[0-9a-f]{40}", receipt["source"]) is None):
+        raise DeliveryError("invalid distribution receipt")
+    signing = signing_configuration(json.loads((ROOT / "scripts/hex-test-build.json").read_bytes()))
+    if receipt.get("signing") != signing:
+        raise DeliveryError("distribution signer differs from configuration")
+    verify_signed_bundle(app, signing, native_signature(app / "Contents/MacOS/hex"))
+    signature = subprocess.run(["codesign", "--display", "--verbose=4", "--entitlements", "-", str(app)],
+                               check=True, capture_output=True)
+    entitlements = plistlib.loads(signature.stdout)
+    details = signature.stderr.decode("utf-8", errors="replace")
+    if (not re.search(r"flags=.*\bruntime\b", details)
+            or not re.search(r"(?m)^Timestamp=.+", details)
+            or entitlements != {"com.apple.security.device.audio-input": True}):
+        raise DeliveryError("distribution app requires timestamp, hardened runtime and exact audio-input entitlement")
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    if info.get("NSMicrophoneUsageDescription") != "hex uses audio input to record audio into your project.":
+        raise DeliveryError("distribution microphone usage description differs")
+    for key, expected in (("CFBundleVersion", str(receipt["build"])),
+                          ("CFBundleShortVersionString", receipt["target"]),
+                          ("HexReleaseVersion", receipt["version"]),
+                          ("HexReleaseChannel", receipt["channel"]),
+                          ("HexSourceRevision", receipt["source"])):
+        if info.get(key) != expected:
+            raise DeliveryError("distribution metadata differs from sealed receipt")
+    for filename, key in (("notes.json", "notes_sha256"), ("snapshot.json", "snapshot_sha256"),
+                          ("TESTING.md", "checklist_sha256"), ("local-ci-summary.json", "ci_report_sha256"),
+                          ("manual/documentation.json", "documentation_sha256")):
+        if sha(resources / filename) != receipt.get(key):
+            raise DeliveryError("distribution resource differs from sealed receipt")
+    documentation = json.loads((resources / "manual/documentation.json").read_bytes())
+    if (documentation.get("schema") != 1 or documentation.get("version") != receipt["version"]
+            or documentation.get("source") != receipt["source"]
+            or set(documentation.get("outputs", {})) != {"hex-manual.html", "hex-manual.pdf"}):
+        raise DeliveryError("distribution manual provenance differs")
+    if any(sha(resources / "manual" / name) != digest for name, digest in documentation["outputs"].items()):
+        raise DeliveryError("distribution manual bytes differ")
+    if not os.access(app / "Contents/MacOS/hex", os.X_OK):
+        raise DeliveryError("distribution executable is not executable")
     verify_native_executable(app / "Contents/MacOS/hex")
     return receipt
 
@@ -426,6 +641,11 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
         expected_steps = [(step.step_id, list(step.argv)) for step in ci.planned_steps(plan)]
+        # Full Rust scope can use reduced Python coverage for ordinary merges.
+        # Qualified delivery still requires the complete freshly resolved audit.
+        if not allow_dev_profile and expected_steps != [
+                (step.step_id, list(step.argv)) for step in ci.FULL_STEPS]:
+            raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
         allowed_mode = evidence.get("mode") == plan["profile"]
     if evidence.get("schema_version") == 2:
         required = ci.planned_steps(plan or {"scope": "full"})
@@ -555,7 +775,13 @@ def build(args) -> dict:
         if replacement is not None:
             recovery = {"expected_recreated_target_identity": replacement,
                         "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
-        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
+        instance_receipt = getattr(args, "vst3_instance_receipt", None)
+        if instance_receipt is not None:
+            validate_instance_input(instance_receipt, args.candidate)
+        discovery_receipt = getattr(args, "vst3_discovery_receipt", None)
+        if discovery_receipt is not None:
+            validate_discovery_input(discovery_receipt, args.candidate)
+        with optimized_artifact(runner, **({"discovery": True} if discovery_receipt else {}), adopt=getattr(args, "adopt_release_target", False),
                                 expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
                                 verification_check=revalidate,
                                 **recovery) as (binary, release_ownership):
@@ -571,6 +797,13 @@ def build(args) -> dict:
             (contents / "MacOS").mkdir(parents=True)
             (contents / "Resources/licenses").mkdir(parents=True)
             shutil.copy2(binary, contents / "MacOS/hex")
+            instance_evidence = None
+            if instance_receipt is not None:
+                instance_evidence = stage_instance(stage, instance_receipt, args.candidate, signing)
+            discovery_evidence = None
+            if discovery_receipt is not None:
+                discovery_evidence = stage_discovery(
+                    stage, discovery_receipt, args.candidate, release_ownership["discovery_scanner"], signing)
             for source, name in ((ROOT / "assets/fonts/ioskeley-mono/OFL.txt", "ioskeley-mono-OFL.txt"),
                                  (ROOT / "third_party/gpui/LICENSE-APACHE", "gpui-LICENSE-APACHE")):
                 shutil.copy2(source, contents / "Resources/licenses" / name)
@@ -601,6 +834,8 @@ def build(args) -> dict:
                        "ci_report_sha256": None if build_only else sha(args.ci_report),
                        "verification": {"mode": "source-only" if build_only else "scoped-dev-ci" if getattr(args, "dev_profile", False) else "full-ci",
                                         "tests": "not_run" if build_only else "passed"},
+                       "vst3_discovery": discovery_evidence,
+                       "vst3_instance": instance_evidence,
                        "included": included, "changelog": changelog_identity, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "Developer ID sealed local test bundle; not notarized",
@@ -633,6 +868,10 @@ def main() -> int:
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+    parser.add_argument("--vst3-instance-receipt", type=Path,
+                        help="include exact-source minimal native instance helper")
+    parser.add_argument("--vst3-discovery-receipt", type=Path,
+                        help="include exact-source minimal native discovery helper and optimized scanner")
     parser.add_argument("--expected-release-owner-sha256",
                         help="require this exact previously inspected owner under the release mutation lock")
     parser.add_argument("--expected-recreated-target-device", type=int,

@@ -1,4 +1,5 @@
-//! Optional controller selection; no hardware notes, recording, sustain or MPE.
+//! Optional controller selection and physical-note capture for step entry.
+//! Expression uses the existing host lease; capture does not monitor, record or sustain notes.
 use super::EditorView;
 use crate::theme;
 use gpui::{
@@ -19,6 +20,16 @@ pub(super) struct ControllerInput {
     channel: u8,
     target: Option<(u64, hex_project::TrackId, hex_project::DeviceId)>,
     input: Option<Arc<LiveExpressionInput>>,
+    held_notes: Option<Arc<hex_midi::HeldNoteInput>>,
+    step_owner: Option<(u64, hex_project::TrackId, hex_project::ClipId)>,
+    live_owner: Option<(u64, hex_project::TrackId, hex_project::ClipId)>,
+    live_floor: u64,
+    live_computer_floor: u64,
+    live_floor_pending: bool,
+    displayed_notes: Option<hex_midi::HeldNotes>,
+    step_floor: u64,
+    step_floor_pending: bool,
+    step_faulted: bool,
     connected: bool,
     activation: u64,
     discovery: u64,
@@ -42,14 +53,43 @@ impl ControllerInput {
             }
             Err(error) => {
                 self.cancel();
+                self.step_faulted = true;
                 self.selected_port = None;
                 Some(error)
             }
         }
     }
+    fn discard_step_prefix(&mut self) {
+        self.step_floor_pending = true;
+        if let Some(notes) = &self.held_notes
+            && let hex_midi::HeldNotesRead::Snapshot(notes) = notes.read()
+        {
+            self.step_floor = notes.through();
+            self.step_floor_pending = false;
+        }
+    }
+    fn discard_live_prefix(&mut self) {
+        self.live_floor_pending = true;
+        if let Some(input) = &self.held_notes
+            && let hex_midi::HeldNotesRead::Snapshot(notes) = input.read()
+        {
+            self.live_floor = notes.through();
+            self.live_floor_pending = false;
+        }
+    }
     fn cancel(&mut self) {
+        self.step_owner = None;
+        self.live_owner = None;
+        self.live_floor = 0;
+        self.live_floor_pending = false;
+        self.displayed_notes = None;
+        self.step_floor = 0;
+        self.step_floor_pending = false;
         if let Some(input) = self.input.take() {
             input.cancel();
+        }
+        if let Some(notes) = self.held_notes.take() {
+            notes.cancel();
         }
         self.target = None;
         // Exhaustion forbids another activation; stale results remain ignored.
@@ -70,6 +110,131 @@ impl Drop for ControllerInput {
     }
 }
 impl EditorView {
+    fn controller_target(&self) -> Option<(u64, hex_project::TrackId, hex_project::DeviceId)> {
+        let state = self.state.as_ref()?;
+        let track = self.selected_track?;
+        let instrument = state
+            .project
+            .track(track)?
+            .instrument()
+            .filter(|instrument| !instrument.bypassed())?;
+        Some((self.project_generation, track, instrument.id()))
+    }
+    /// Called for every rendered focus/clip context. Both leaving and entering
+    /// establish a floor, excluding keys pressed while the editor was unfocused.
+    pub(super) fn sync_hardware_step_context(&mut self, window: &Window) {
+        let live_owner = (window.is_window_active()
+            && self.midi_focus.is_focused(window)
+            && self.clip_view_open)
+            .then(|| {
+                self.selected_track
+                    .zip(self.detail_clip_id())
+                    .map(|(track, clip)| (self.project_generation, track, clip))
+            })
+            .flatten();
+        if live_owner != self.controller_input.live_owner {
+            self.controller_input.live_owner = live_owner;
+            self.controller_input.live_computer_floor = self.computer_keyboard.physical_through();
+            self.controller_input.discard_live_prefix();
+        }
+        if self.controller_input.live_floor_pending {
+            self.controller_input.discard_live_prefix();
+        }
+        let owner = live_owner.filter(|_| self.midi_step.enabled);
+        if owner != self.controller_input.step_owner {
+            self.controller_input.step_owner = owner;
+            self.controller_input.discard_step_prefix();
+        }
+        if self.controller_input.step_floor_pending {
+            self.controller_input.discard_step_prefix();
+        }
+    }
+    pub(super) fn invalidate_hardware_step(&mut self) {
+        self.controller_input.discard_step_prefix();
+        self.controller_input.discard_live_prefix();
+        self.controller_input.live_computer_floor = self.computer_keyboard.physical_through();
+    }
+
+    pub(super) fn live_computer_floor(&self) -> u64 {
+        self.controller_input.live_computer_floor
+    }
+
+    pub(super) fn live_midi_context(&self) -> bool {
+        self.controller_input.live_owner.is_some()
+            && self.controller_input.live_owner
+                == self
+                    .selected_track
+                    .zip(self.detail_clip_id())
+                    .map(|(track, clip)| (self.project_generation, track, clip))
+    }
+
+    pub(super) fn hardware_live_notes(&self) -> Option<(hex_midi::HeldNotes, u64, u8)> {
+        if !self.live_midi_context()
+            || self.controller_input.live_floor_pending
+            || self.controller_input.step_faulted
+            || self.controller_input.target != self.controller_target()
+        {
+            return None;
+        }
+        match self.controller_input.held_notes.as_ref()?.read() {
+            hex_midi::HeldNotesRead::Snapshot(notes) => Some((
+                notes,
+                self.controller_input.live_floor,
+                self.controller_input.channel,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Poll the existing bounded capture endpoint so NoteOff and reset repaint
+    /// even when expression and project state have not changed. No audio writes.
+    pub(super) fn tick_midi_pitch_feedback(&mut self) -> bool {
+        let next = self.hardware_live_notes().map(|(notes, _, _)| notes);
+        let changed = next != self.controller_input.displayed_notes;
+        self.controller_input.displayed_notes = next;
+        changed
+    }
+
+    /// Busy/invalid endpoints refuse the whole step, including a false rest.
+    pub(super) fn hardware_step_notes(
+        &self,
+    ) -> Result<Option<(hex_midi::HeldNotes, u64, u8)>, &'static str> {
+        if self.controller_input.step_faulted {
+            return Err(
+                "controller note input stopped · choose a port or turn controller input off",
+            );
+        }
+        let Some(input) = &self.controller_input.held_notes else {
+            return Ok(None);
+        };
+        // Refuse an old instrument lease even before the worker's next port tick.
+        if self.controller_input.target != self.controller_target() {
+            return Err("controller target changed · retry after input reconnects");
+        }
+        if self.controller_input.step_owner
+            != self
+                .selected_track
+                .zip(self.detail_clip_id())
+                .map(|(track, clip)| (self.project_generation, track, clip))
+            || self.controller_input.step_floor_pending
+        {
+            return Err("controller step input is waiting for a fresh focused context");
+        }
+        match input.read() {
+            hex_midi::HeldNotesRead::Snapshot(notes) => Ok(Some((
+                notes,
+                self.controller_input.step_floor,
+                self.controller_input.channel,
+            ))),
+            hex_midi::HeldNotesRead::Busy => {
+                Err("controller note snapshot is busy · retry the step")
+            }
+            hex_midi::HeldNotesRead::Cancelled | hex_midi::HeldNotesRead::Fault(_) => {
+                Err("controller note input is unavailable · reconnect the port")
+            }
+        }
+    }
+
     fn refresh_controller_inputs(&mut self, cx: &mut Context<Self>) {
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error =
@@ -99,6 +264,7 @@ impl EditorView {
     }
     fn select_controller_port(&mut self, index: usize, cx: &mut Context<Self>) {
         self.controller_input.cancel();
+        self.controller_input.step_faulted = false;
         self.controller_input.selected_port = index
             .checked_sub(1)
             .and_then(|index| self.controller_input.ports.get(index))
@@ -109,6 +275,7 @@ impl EditorView {
     fn install_controller_selectors(&mut self, ports: Vec<hex_midi::Port>, cx: &mut Context<Self>) {
         self.controller_input.cancel();
         self.controller_input.selected_port = None;
+        self.controller_input.step_faulted = false;
         self.controller_input.ports = ports;
         self.controller_input.subscriptions.clear();
         let choices = std::iter::once(theme::text("off")).chain(
@@ -117,17 +284,13 @@ impl EditorView {
                 .iter()
                 .map(|port| theme::text(&port.name)),
         );
-        let port_config = SelectorConfig::new(
-            "controller-input-port",
-            choices,
-            0,
-            super::device_panel::control_style(),
-        );
+        let port_config =
+            SelectorConfig::new("controller-input-port", choices, 0, theme::control_style());
         let channel_config = SelectorConfig::new(
             "controller-input-channel",
             (1..=16).map(|channel| theme::text(format!("channel {channel}"))),
             usize::from(self.controller_input.channel),
-            super::device_panel::control_style(),
+            theme::control_style(),
         );
         let (Ok(port_config), Ok(channel_config)) = (port_config, channel_config) else {
             self.error = Some("controller input options exceed supported limits".into());
@@ -141,6 +304,7 @@ impl EditorView {
         let channel_subscription =
             cx.subscribe(&channel, |view, _, event: &SelectorChanged, cx| {
                 view.controller_input.cancel();
+                view.controller_input.step_faulted = false;
                 view.controller_input.channel = event.index as u8;
                 view.tick_controller_input(cx);
                 cx.notify();
@@ -205,6 +369,19 @@ impl EditorView {
         }
         if self
             .controller_input
+            .held_notes
+            .as_ref()
+            .is_some_and(|notes| notes.is_cancelled())
+        {
+            self.error = Some("controller note input stopped · reconnect the port".into());
+            self.controller_input.cancel();
+            self.controller_input.step_faulted = true;
+            self.controller_input.selected_port = None;
+            self.reset_controller_selector(cx);
+            return true;
+        }
+        if self
+            .controller_input
             .input
             .as_ref()
             .is_some_and(|input| input.is_cancelled())
@@ -218,15 +395,7 @@ impl EditorView {
             self.reset_controller_selector(cx);
             return changed;
         };
-        let target = self.state.as_ref().and_then(|state| {
-            let track = self.selected_track?;
-            let instrument = state
-                .project
-                .track(track)?
-                .instrument()
-                .filter(|instrument| !instrument.bypassed())?;
-            Some((self.project_generation, track, instrument.id()))
-        });
+        let target = self.controller_target();
         if target != self.controller_input.target {
             self.controller_input.cancel();
             let Some((generation, track, instrument)) = target else {
@@ -237,12 +406,14 @@ impl EditorView {
                 return true;
             }
             let input = Arc::new(LiveExpressionInput::new(generation, track, instrument));
+            self.controller_input.held_notes = Some(Arc::new(hex_midi::HeldNoteInput::default()));
             let revision = self.state.as_ref().map_or(0, |state| state.revision);
             if !self.enqueue(hex_session::service::Request::PrepareLiveExpression {
                 input: Arc::clone(&input),
                 revision,
             }) {
                 input.cancel();
+                self.controller_input.cancel();
                 self.controller_input.selected_port = None;
                 self.reset_controller_selector(cx);
                 return true;
@@ -257,15 +428,7 @@ impl EditorView {
         changed
     }
     pub(super) fn controller_input_matches(&self, input: &Arc<LiveExpressionInput>) -> bool {
-        let current_target = self.state.as_ref().and_then(|state| {
-            let track = self.selected_track?;
-            let instrument = state
-                .project
-                .track(track)?
-                .instrument()
-                .filter(|instrument| !instrument.bypassed())?;
-            Some((self.project_generation, track, instrument.id()))
-        });
+        let current_target = self.controller_target();
         self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self
                 .controller_input
@@ -291,10 +454,16 @@ impl EditorView {
         let Some(handle) = &self.controller_input.handle else {
             return;
         };
+        let Some(notes) = self.controller_input.held_notes.as_ref() else {
+            return;
+        };
+        let notes_cancel = Arc::clone(notes);
+        let notes_cancelled = Arc::clone(notes);
         let writer = Arc::clone(input);
         let cancel = Arc::clone(input);
         let cancelled = Arc::clone(input);
         let sink = hex_midi::Sink {
+            notes: Arc::clone(notes),
             publish: Box::new(move |value| {
                 writer.publish(hex_engine::live_expression::Snapshot {
                     pressure: value.pressure,
@@ -302,8 +471,13 @@ impl EditorView {
                     wheel: value.wheel,
                 })
             }),
-            cancel: Box::new(move || cancel.cancel()),
-            is_cancelled: Box::new(move || cancelled.is_cancelled()),
+            cancel: Box::new(move || {
+                cancel.cancel();
+                notes_cancel.cancel();
+            }),
+            is_cancelled: Box::new(move || {
+                cancelled.is_cancelled() || notes_cancelled.is_cancelled()
+            }),
         };
         if let Err(error) = handle.send(hex_midi::Command::Connect {
             activation: self.controller_input.activation,
@@ -337,6 +511,7 @@ impl EditorView {
             self.close_controller_input_menu(window, cx);
             return;
         }
+        self.invalidate_hardware_step();
         self.controller_input.previous_focus = window.focused(cx);
         let focus = cx.focus_handle();
         window.focus(&focus);
@@ -358,7 +533,7 @@ impl EditorView {
             "off"
         };
         let description = theme::text(format!(
-            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · hardware notes, sustain, recording and mpe are not included"
+            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · held hardware notes support piano-roll step entry · live note monitoring, sustain, recording and mpe are not included"
         ));
         div().w(px(46.0)).flex_shrink_0().children([div()
             .id("controller-input-menu")
@@ -502,11 +677,14 @@ mod tests {
         let mut state = ControllerInput::default();
         state.activation = 2;
         state.input = Some(Arc::clone(&input));
+        let notes = Arc::new(hex_midi::HeldNoteInput::default());
+        state.held_notes = Some(Arc::clone(&notes));
         assert_eq!(
             state.connection_event(1, Err("delayed a failure".into())),
             None
         );
         assert!(!input.is_cancelled());
+        assert!(!notes.is_cancelled());
         assert_eq!(state.connection_event(1, Ok(true)), None);
         assert!(!state.connected);
         state.connection_event(2, Ok(true));
@@ -519,6 +697,8 @@ mod tests {
             Some("b disconnected".into())
         );
         assert!(input.is_cancelled());
+        assert!(notes.is_cancelled());
+        assert!(state.step_faulted);
         assert!(!state.connected);
     }
 }
@@ -764,3 +944,355 @@ fn controller_input_streaming_guard_cancels_without_discovery_or_retry(
         );
     });
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let input = Arc::new(hex_midi::HeldNoteInput::default());
+    editor.update(&mut visual, |view, cx| {
+        view.midi_step.enabled = true;
+        view.controller_input.channel = 2;
+        view.controller_input.held_notes = Some(Arc::clone(&input));
+        view.controller_input.target = view.controller_target();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let mut decoder = hex_midi::Decoder::default();
+    let mut send = |bytes: &[u8]| {
+        hex_midi::deliver_packets(
+            &mut decoder,
+            2,
+            hex_midi::Controllers::default(),
+            [bytes],
+            &input,
+            &|_| {},
+        );
+    };
+    send(&[0x92, 60, 37, 64, 93]);
+    for step in 0..2 {
+        editor.update(&mut visual, |view, _| {
+            view.tick_computer_keyboard();
+        });
+        visual.simulate_keystrokes("right");
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.midi_marker,
+                Some(step * hex_project::BeatTime::ONE.raw() / 4)
+            )
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let source = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap();
+            assert_eq!(source.notes().len(), (step as usize + 1) * 2);
+            let latest = &source.notes()[step as usize * 2..];
+            assert_eq!(
+                latest
+                    .iter()
+                    .map(|n| (n.pitch(), n.velocity(), n.channel()))
+                    .collect::<Vec<_>>(),
+                [(60, 37, 2), (64, 93, 2)]
+            );
+            assert_eq!(
+                view.midi_marker,
+                Some((step + 1) * hex_project::BeatTime::ONE.raw() / 4)
+            );
+        });
+    }
+    send(&[0x82, 60, 0, 64, 0]);
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.midi_marker,
+            Some(3 * hex_project::BeatTime::ONE.raw() / 4)
+        );
+        assert!(!view.edit_pending());
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .len(),
+            2
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo))
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .len(),
+            4
+        )
+    });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let input = Arc::new(hex_midi::HeldNoteInput::default());
+    editor.update(&mut visual, |view, cx| {
+        view.midi_step.enabled = true;
+        view.controller_input.held_notes = Some(Arc::clone(&input));
+        view.controller_input.target = view.controller_target();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let mut decoder = hex_midi::Decoder::default();
+    let mut send = |bytes: &[u8]| {
+        hex_midi::deliver_packets(
+            &mut decoder,
+            0,
+            hex_midi::Controllers::default(),
+            [bytes],
+            &input,
+            &|_| {},
+        );
+    };
+    send(&[0x90, 60, 37]);
+    editor.update(&mut visual, |view, _| view.stop_computer_keyboard());
+    send(&[64, 93]);
+    visual.simulate_keystrokes("right");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let source = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap();
+        assert_eq!(
+            source.notes().iter().map(|n| n.pitch()).collect::<Vec<_>>(),
+            [64]
+        );
+    });
+    // A key pressed while unfocused cannot become a step after refocusing.
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.run_until_parked();
+    send(&[67, 70]);
+    visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
+    visual.run_until_parked();
+    send(&[69, 80]);
+    visual.simulate_keystrokes("right");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let source = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap();
+        assert_eq!(
+            source.notes().iter().map(|n| n.pitch()).collect::<Vec<_>>(),
+            [64, 69]
+        );
+    });
+    let marker = editor.read_with(&visual, |view, _| view.midi_marker);
+    input.cancel();
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.midi_marker, marker);
+        assert!(!view.edit_pending());
+        assert!(view.error.is_some());
+    });
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.tick_controller_input(cx))
+    });
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.midi_marker, marker,
+            "retiring the failed endpoint must not turn its chord into a rest"
+        );
+        assert!(!view.edit_pending());
+    });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn hardware_step_full_pitch_bank_combines_computer_priority_and_grows_once(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    use gpui::{KeyDownEvent, Keystroke};
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let input = Arc::new(hex_midi::HeldNoteInput::default());
+    editor.update(&mut visual, |view, cx| {
+        view.midi_step.enabled = true;
+        view.controller_input.channel = 2;
+        view.controller_input.held_notes = Some(Arc::clone(&input));
+        view.controller_input.target = view.controller_target();
+        view.midi_marker = Some(8 * hex_project::BeatTime::ONE.raw());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("m");
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("a").unwrap(),
+        is_held: false,
+    });
+    let bytes: Vec<_> = (0..128_u8).flat_map(|pitch| [0x92, pitch, 93]).collect();
+    hex_midi::deliver_packets(
+        &mut hex_midi::Decoder::default(),
+        2,
+        hex_midi::Controllers::default(),
+        [bytes.as_slice()],
+        &input,
+        &|_| {},
+    );
+    visual.simulate_keystrokes("right");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let source = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap();
+        assert_eq!(source.notes().len(), 128);
+        for note in source.notes() {
+            assert_eq!(note.start().raw(), 8 * hex_project::BeatTime::ONE.raw());
+            assert_eq!(
+                (note.velocity(), note.channel()),
+                if note.pitch() == 60 {
+                    (100, 0)
+                } else {
+                    (93, 2)
+                }
+            );
+        }
+        assert_eq!(
+            source.source_length().raw(),
+            8 * hex_project::BeatTime::ONE.raw() + hex_project::BeatTime::ONE.raw() / 4
+        );
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo))
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .len(),
+            128
+        )
+    });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui::TestAppContext) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap(),
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, cx| {
+        view.midi_step.enabled = true;
+        view.controller_input.held_notes = Some(Arc::default());
+        view.controller_input.target = view.controller_target();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.hardware_step_notes().is_ok());
+        let device = view.controller_input.target.unwrap().2;
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::SetDeviceBypass {
+                device,
+                bypassed: true
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.hardware_step_notes().is_err(),
+            "a stale device lease cannot supply even an empty rest snapshot"
+        );
+    });
+    let marker = editor.read_with(&visual, |view, _| view.midi_marker);
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.midi_marker, marker);
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        );
+    });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pitch_feedback_ui_tests.rs"]
+mod pitch_feedback_tests;

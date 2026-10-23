@@ -109,6 +109,7 @@ fn browser_drag_fixture_with_tracks(
                     comparison_audio: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -610,6 +611,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -669,6 +671,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -822,6 +825,7 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -2177,6 +2181,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             comparison_audio: None,
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -3265,6 +3270,21 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
                 ));
                 assert!(view.browser.preview_in_flight.is_none());
                 assert!(view.browser.preview_pending.is_none());
+                let source = super::super::overview_waveform::Source::Browser(Arc::clone(
+                    &slot.metadata.borrow().as_ref().unwrap().waveform,
+                ));
+                let expected = super::super::waveform::waveform_column_count(
+                    f32::from(waveform.size.width),
+                    2.0,
+                );
+                assert!(expected > 48, "browser paint must use detailed columns");
+                assert_eq!(
+                    view.overview_waveform_cache
+                        .borrow()
+                        .prepared_columns(&source, waveform, 2.0),
+                    Some(expected),
+                    "actual browser canvas must populate its geometry cache at rendered bounds"
+                );
                 assert_eq!(view.browser.playback_generation, 0, "hover cannot audition");
                 assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
                 assert!(view.pending_audio_commands.is_empty());
@@ -3276,6 +3296,38 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
                 waveform
             );
         }
+    }
+    // Actual GPUI TestWindow is fixed at 2x; 1x geometry has a separate oracle,
+    // while native 1x visual acceptance remains a distinct check.
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(scale, 2.0);
+    for width in [960.0, 1280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.0)));
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("browser-audition-waveform").unwrap();
+        editor.read_with(&visual, |view, _| {
+            let key = view.browser.preview_selected.as_ref().unwrap();
+            let slot = &view.browser.preview_cache[key];
+            let metadata = slot.metadata.borrow();
+            let source = super::super::overview_waveform::Source::Browser(Arc::clone(
+                &metadata.as_ref().unwrap().waveform,
+            ));
+            let expected = super::super::waveform::waveform_column_count(
+                f32::from(waveform.size.width),
+                scale,
+            );
+            assert_eq!(
+                view.overview_waveform_cache
+                    .borrow()
+                    .prepared_columns(&source, waveform, scale),
+                Some(expected),
+                "browser resize must repaint the detailed waveform at its actual new bounds"
+            );
+            assert_eq!(
+                view.browser.playback_generation, 0,
+                "resize cannot audition"
+            );
+        });
     }
 }
 
@@ -4336,6 +4388,7 @@ fn place_icon_preferences_window(
                         directory.0.join("icon-theme.json"),
                         directory.0.join("project-directory.json"),
                     ),
+                    None,
                     crate::editor::test_environment::Inputs {
                         home: Some(home),
                         ..Default::default()
@@ -5128,3 +5181,135 @@ mod divider_paint;
 
 #[path = "browser_instrument_enter_ui_test.rs"]
 mod instrument_enter;
+
+#[gpui::test]
+fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_load(
+    cx: &mut TestAppContext,
+) {
+    use super::super::context_menu::EditorContextAction;
+    let (handle, editor, tracks, _directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["target", "other"]);
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let mut model = Editor::new((*state.project).clone(), 4).unwrap();
+            model
+                .execute(Command::InsertInstrument {
+                    track: tracks[0],
+                    state: hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Instrument,
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+            let Created::Clip(clip) = model
+                .execute(Command::PlaceMidiClip {
+                    track: tracks[0],
+                    start: hex_project::BeatTime::ZERO,
+                    length: hex_project::BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            model
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: hex_project::BeatTime::ZERO,
+                    duration: hex_project::BeatTime::ONE,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
+                comparison_audio: None,
+                project: Arc::new(model.project().clone()),
+                waveforms: Default::default(),
+                source_overviews: Default::default(),
+                audio_clip_waveforms: Default::default(),
+                midi_preview: Arc::default(),
+                gain_preview: state.gain_preview.clone(),
+                timeline_frames: state.timeline_frames,
+                can_undo: state.can_undo,
+                can_redo: state.can_redo,
+                revision: state.revision,
+                unsaved: state.unsaved,
+                document_path: state.document_path.clone(),
+            }));
+            view.selected_track = Some(tracks[0]);
+            view.open_first_sampler_menu(path, point(px(20.0), px(100.0)), window, cx);
+            let EditorContextAction::LoadFirstSampler(target) =
+                view.context_menu.as_ref().unwrap().items[0].action.clone()
+            else {
+                panic!("sampler menu action")
+            };
+            assert_eq!(
+                view.context_menu.as_ref().unwrap().items[0].label,
+                "load into sampler"
+            );
+            assert!(
+                target
+                    .replacement
+                    .as_ref()
+                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+            );
+            assert!(
+                !view.first_sampler_current(),
+                "an empty sampler has no loaded audio requirement"
+            );
+            let generation = view.project_generation;
+            let pending = view.worker_requests_pending;
+            view.project_generation += 1;
+            view.load_first_sampler(target.clone(), cx);
+            assert_eq!(
+                view.worker_requests_pending, pending,
+                "stale menu must not enqueue"
+            );
+            assert!(!view.first_sampler_pending_matches(1));
+            view.project_generation = generation;
+            view.load_first_sampler(target.clone(), cx);
+            assert!(view.first_sampler_pending_matches(1));
+            let pending = view.worker_requests_pending;
+            view.selected_track = Some(tracks[1]);
+            view.load_first_sampler(target, cx);
+            assert_eq!(
+                view.worker_requests_pending, pending,
+                "double action must not enqueue"
+            );
+            view.cancel_first_sampler_load(Some(1));
+            view.first_sampler_load_complete(
+                Some(hex_session::service::SamplerLoadCompletion {
+                    request_id: 2,
+                    project_generation: generation,
+                    track: tracks[0],
+                }),
+                false,
+            );
+            assert!(
+                view.first_sampler_pending_matches(1),
+                "unrelated completion cannot clear intent"
+            );
+            view.first_sampler_load_complete(
+                Some(hex_session::service::SamplerLoadCompletion {
+                    request_id: 1,
+                    project_generation: generation,
+                    track: tracks[0],
+                }),
+                false,
+            );
+            assert!(!view.first_sampler_pending_matches(1));
+            assert_eq!(view.status, "sampler load cancelled");
+            assert_eq!(view.selected_track, Some(tracks[1]));
+        });
+    })
+    .unwrap();
+}
+
+#[path = "browser_plugin_ui_test.rs"]
+mod plugin_browser;
+
+#[path = "browser_reveal_ui_test.rs"]
+mod reveal;

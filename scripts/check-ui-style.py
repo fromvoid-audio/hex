@@ -12,10 +12,15 @@ widgets = (
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Query clear-slot composition contains a themed action and native input semantics.
+    'self.clear_search_slot(',
+    # Header drop wrapper preserves the existing themed row and only refines drag paint.
+    'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
     'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_fade_layer(', 'self.clip_name_drag_header(', 'clip_name_text(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -25,6 +30,7 @@ widgets = (
     'harmonics::tools(', 'restart)', 'oscillator_velocity)', 'quantize)',
     'row.child(', 'loop_cell)',
     'tools)', 'oscillator_fields)', 'link)', 'enabled)', 'hex_widgets::device_segment(',
+    'hex_widgets::action(',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
@@ -53,11 +59,13 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
-    'self.browser_history_arrow(',
+    'self.browser_history_arrow(', 'self.browser_reveal_button(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
-    'self.browser_audition_row(', 'mini_waveform(',
+    'self.browser_audition_row(',
+    # Shared sampler/browser waveform canvas contains no text.
+    'super::super::overview_waveform::render(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
@@ -75,7 +83,7 @@ widgets = (
     'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
     'super::waveform::timeline_waveform_view_cached(',
-    'source_adjust_button(', 'gain_adjust_button(',
+    'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',
@@ -121,6 +129,8 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Fit/back controls delegate labels to the existing themed waveform button.
+    'self.zoom_fit_button(', 'view.zoom_fit_button(',
     # Audio-event editor components keep their text at the themed boundary.
     'super::audio_event_editor::view(', 'waveform::button(',
     'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',

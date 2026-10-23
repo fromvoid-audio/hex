@@ -230,6 +230,7 @@ fn resize_capture_cancels_on_escape_lost_button_window_change_and_stale_revision
                         comparison_audio: None,
                         project: Arc::clone(&state.project),
                         waveforms: state.waveforms.clone(),
+                        source_overviews: state.source_overviews.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                         midi_preview: Arc::clone(&state.midi_preview),
                         gain_preview: state.gain_preview.clone(),
@@ -359,5 +360,39 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     assert!(main.size.width >= px(TRACK_HEADER_WIDTH));
     editor.read_with(&visual, |view, _| {
         assert!(view.last_enqueued_edit.is_none())
+    });
+}
+
+#[gpui::test]
+fn selected_lane_paint_tracks_virtualized_scrolling_and_compact_window(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 40);
+    let first = bounds(&mut visual, "track-name", tracks[0]).center();
+    visual.simulate_click(first, Modifiers::default());
+    visual.run_until_parked();
+    let tint = |track: TrackId| {
+        Box::leak(format!("selected-track-lane-{}", track.value()).into_boxed_str()) as &'static str
+    };
+    assert!(!visual.rendered_filled_quads(tint(tracks[0])).is_empty());
+    editor.update(&mut visual, |v, cx| {
+        v.track_scroll.scroll_to_item(20, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.rendered_filled_quads(tint(tracks[0])).is_empty());
+    let next = bounds(&mut visual, "track-name", tracks[20]).center();
+    visual.simulate_click(next, Modifiers::default());
+    visual.run_until_parked();
+    assert!(!visual.rendered_filled_quads(tint(tracks[20])).is_empty());
+    visual.simulate_resize(size(px(880.0), px(620.0)));
+    visual.run_until_parked();
+    assert!(!visual.rendered_filled_quads(tint(tracks[20])).is_empty());
+    editor.update(&mut visual, |v, cx| {
+        v.track_scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.rendered_filled_quads(tint(tracks[0])).is_empty());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_track_ids(), [tracks[20]])
     });
 }

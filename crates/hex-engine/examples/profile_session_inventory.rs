@@ -70,10 +70,12 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 track,
                 scene,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: clip,
                     name: format!("pattern {index:03}.{scene}"),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 4 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,
@@ -93,6 +95,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         }
     }
     Ok(Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),

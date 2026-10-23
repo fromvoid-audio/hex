@@ -1,7 +1,7 @@
 //! Original linear ADSR law in output-frame units, not measured Live curves.
 use super::{Invalid, finite_range};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Envelope {
     pub attack_seconds: f64,
     pub decay_seconds: f64,
@@ -39,7 +39,7 @@ impl Envelope {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PreparedEnvelope {
     attack: u64,
     decay: u64,

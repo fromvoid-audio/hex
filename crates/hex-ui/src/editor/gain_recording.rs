@@ -53,7 +53,7 @@ impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
         self.busy() || self.mode == Mode::Ready
     }
-    pub(super) fn numeric_editing(&self, cx: &Context<EditorView>) -> bool {
+    pub(super) fn numeric_editing(&self, cx: &gpui::App) -> bool {
         self.binding
             .as_ref()
             .is_some_and(|binding| binding.entity.read(cx).is_editing())
@@ -463,7 +463,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
                 NumericControlKind::HorizontalSlider,
                 spec,
                 f64::from(gain) * 100.0,
-                super::device_panel::control_style(),
+                crate::theme::control_style(),
             )
         });
         let config = match config {
@@ -566,6 +566,7 @@ mod tests {
                         comparison_audio: None,
                         project: Arc::new(model.project().clone()),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),
                         gain_preview: Ok(Arc::default()),

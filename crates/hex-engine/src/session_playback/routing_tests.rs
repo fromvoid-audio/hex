@@ -195,7 +195,11 @@ fn routed_midi_arrangement_session_fanout_stop_relaunch_match_local_pcm_across_p
     let local = fixture(false);
     let revision = prepare(&routed, None);
     assert!(
-        revision.arrangement().signal_graph.is_none(),
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .is_some_and(|graph| !graph.needs_runtime()),
         "logical MIDI routing must retain the zero-latency block renderer"
     );
     let reference = prepare(&local, None);

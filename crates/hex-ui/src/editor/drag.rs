@@ -60,6 +60,16 @@ pub(super) struct ClipDrag {
     pub(super) last_pointer: Rc<Cell<Option<(f32, f32)>>>,
 }
 
+impl ClipDrag {
+    pub(super) fn retire(&self) {
+        self.preview.set(None);
+        self.group.borrow_mut().capture = None;
+        self.destination.set(None);
+        self.insertion_line_y.set(None);
+        self.lane_hovered.set(false);
+    }
+}
+
 /// In-window drag payload for a WAV file from the library browser.
 #[derive(Clone)]
 pub(super) struct BrowserAudioDrag {
@@ -110,7 +120,7 @@ pub(super) enum NativeDeviceDragSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ReturnDeviceDropTarget {
-    pub(super) owner: hex_project::ReturnId,
+    pub(super) owner: super::device_panel::EffectBusOwner,
     pub(super) before: Option<hex_project::DeviceId>,
 }
 
@@ -607,11 +617,10 @@ impl super::EditorView {
             {
                 return false;
             }
-            if self.opening_project
-                || self.close_prompt_open
-                || self.worker_requests_pending != 0
-                || !self.pending_requests.is_empty()
-            {
+            // Source validity follows the installed canonical state. Harmless
+            // worker work does not retire a held gesture; existing-track release
+            // also validates this captured revision on the worker before editing.
+            if self.opening_project || self.close_prompt_open {
                 return false;
             }
             let Some(state) = self.state.as_ref() else {
@@ -778,11 +787,7 @@ impl super::EditorView {
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
-        drag.preview.set(None);
-        drag.group.borrow_mut().capture = None;
-        drag.destination.set(None);
-        drag.insertion_line_y.set(None);
-        drag.lane_hovered.set(false);
+        drag.retire();
         true
     }
 
@@ -948,12 +953,16 @@ impl super::EditorView {
                             && candidate_class == class
                             && candidate.state().type_id() == type_id
                     })
-                }) || state.project.return_tracks().iter().any(|track| {
-                    class == hex_engine::NativeDeviceClass::Effect
-                        && track.devices().iter().any(|candidate| {
-                            candidate.id() == device && candidate.state().type_id() == type_id
-                        })
-                })
+                }) || (class == hex_engine::NativeDeviceClass::Effect
+                    && state.project.main_devices().iter().any(|candidate| {
+                        candidate.id() == device && candidate.state().type_id() == type_id
+                    }))
+                    || state.project.return_tracks().iter().any(|track| {
+                        class == hex_engine::NativeDeviceClass::Effect
+                            && track.devices().iter().any(|candidate| {
+                                candidate.id() == device && candidate.state().type_id() == type_id
+                            })
+                    })
             }
         }
     }
@@ -1296,11 +1305,10 @@ impl super::EditorView {
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
-        if drag.group.borrow().ids.len() > 1
-            && !self
-                .active_clip_drag
-                .as_ref()
-                .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
+        if !self
+            .active_clip_drag
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
         {
             return;
         }
@@ -1309,18 +1317,18 @@ impl super::EditorView {
             clear(self);
             return;
         }
-        if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
-            self.error = Some("clip move canceled · project work pending".into());
-            clear(self);
-            cx.notify();
-            return;
-        }
         let pointer = window.mouse_position();
         let pointer = (f32::from(pointer.x), f32::from(pointer.y));
         if self
             .painted_track_insertion_target(pointer.0, pointer.1)
             .is_some()
         {
+            if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
+                self.error = Some("clip move canceled · project work pending".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
             self.drop_clip_to_new_track(drag, window, cx);
             return;
         }
@@ -1397,15 +1405,31 @@ impl super::EditorView {
             move_command(drag.clip, target_track, preview.position)
         };
         let copy_intent = super::group_copy::Pending::capture(self, &command);
-        clear(self);
+        // Input capture ends here. Keep the frozen destination for moves AND
+        // copies until the shared receipt observes this edit's real terminal.
+        drag.preview.set(Some(preview));
+        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            super::pending_clip_move::Pending::new(
+                drag,
+                command.clone(),
+                std::sync::Arc::clone(&state.project),
+            )
+        });
         let before_pending = self.worker_requests_pending;
-        if self.enqueue(Request::Edit(command)) {
+        if self.enqueue(Request::MoveExistingClips {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            command,
+        }) {
             if let Some(mut intent) = copy_intent {
                 if self.worker_requests_pending > before_pending {
                     intent.submitted(self.worker_requests_pending);
                 }
                 self.pending_group_copy = Some(intent);
             }
+        } else {
+            self.retire_pending_clip_move();
+            clear(self);
         }
         cx.notify();
     }
@@ -2073,4 +2097,4 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "group_drag_ui_test.rs"]
-mod group_drag_ui_test;
+pub(super) mod group_drag_ui_test;

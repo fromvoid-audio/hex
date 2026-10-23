@@ -1,6 +1,7 @@
 //! One pre-publication phase in the already reserved runtime cells. The worker
 //! borrows rooted construction storage; the adapter retains only this token.
 use super::*;
+mod adoption;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioCandidatePreparationToken {
     pub(super) root: u64,
@@ -45,6 +46,20 @@ impl Custody {
         &self,
         reservation: AudioCandidatePreparationReservation,
         domains: Vec<AudioCandidateDomainToken>,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        self.reserve_runtime_preparation_cell(reservation, domains, true)
+    }
+    pub(in crate::candidate_custody) fn reserve_runtime_adoption(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        self.reserve_runtime_preparation_cell(reservation, Vec::new(), false)
+    }
+    fn reserve_runtime_preparation_cell(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+        domains: Vec<AudioCandidateDomainToken>,
+        allocate: bool,
     ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
         let Ok(mut work) = self.work.try_lock() else {
             return Err(AudioCandidatePreparationRefusal {
@@ -201,6 +216,9 @@ impl Custody {
             self.mark_closing(&mut bank);
             return Ok(token);
         };
+        if !allocate {
+            return Ok(token);
+        }
         execution.pending = true;
         match catch_unwind(AssertUnwindSafe(|| {
             hex_engine::AudioCandidatePreparation::try_new_on_control(
@@ -499,6 +517,16 @@ impl Custody {
                 return Err("candidate ledger reservation exceeded");
             }
             let mut ledger = limits.ledger();
+            if let Some(context) = execution
+                .cell
+                .as_ref()
+                .and_then(|c| c.current_sampler_context())
+            {
+                if context.project_generation != header.context_generation {
+                    return Err("current sampler preparation context differs");
+                }
+                ledger.root_rows = 2;
+            }
             ledger.data_rows = pending.storage.allocation_items;
             ledger.handle_rows = pending.handle_rows;
             (ledger, external)

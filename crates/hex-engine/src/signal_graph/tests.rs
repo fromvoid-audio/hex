@@ -1,5 +1,6 @@
 //! Original delayed processors enter through the normal registry/compiler seam.
 use super::*;
+use crate::routed_midi_fixture;
 use crate::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
 };
@@ -320,11 +321,13 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
             track: f.tracks[0],
             points: vec![
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 0.5,
                     outgoing: hex_project::GainInterpolation::Step,
                 },
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat,
                     gain: 1.0,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -480,6 +483,8 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     owner.content = hex_project::TrackContentSnapshot::Hybrid {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: next + 1,
@@ -500,6 +505,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             }],
         }],
     };
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
     f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();
@@ -889,4 +895,228 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
     assert_eq!(stopped.transport_is_running(), Some(false));
     assert_eq!(stopped.performance_frame_at_offset(0), None);
     assert_eq!(stopped.beat_at_offset(0), Some(5 << 32));
+}
+
+#[test]
+fn main_review_serial_latency_reports_final_output_without_moving_pre_main_capture() {
+    let mut f = fixture(&[&[], &[7]], 300);
+    for delay in [3, 5] {
+        f.editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state(delay).unwrap(),
+            })
+            .unwrap();
+    }
+    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let revision = prepare(&f).unwrap();
+    eprintln!(
+        "actual Project layout {} bytes; pre-Main 7 + Main 3 + Main 5 = final 15",
+        size_of::<Project>()
+    );
+    assert_eq!(
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .main_latency(),
+        7,
+        "upstream alignment stays at pre-Main merge"
+    );
+    assert_eq!(
+        revision.arrangement().main_latency_frames(),
+        15,
+        "causal report includes serial Main processing"
+    );
+    let mut expected = vec![[0.0; 2]; 315];
+    expected[15..].copy_from_slice(&f.samples);
+    for partition in [1, 63, 256] {
+        assert_eq!(session(Arc::clone(&revision), 315, partition), expected);
+    }
+    let mut renderer = Renderer::new(revision.arrangement());
+    renderer.play();
+    let mut rendered = vec![[0.0; 2]; 315];
+    renderer.render(&mut rendered).unwrap();
+    assert_eq!(rendered, expected, "Main serial DSP/master executes once");
+    let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let ids: Vec<_> = f
+        .tracks
+        .iter()
+        .copied()
+        .map(crate::OutputCaptureId::Track)
+        .collect();
+    let plan = runtime.output_capture_plan(&ids, 315).unwrap();
+    let mut main = vec![[0.0; 2]; 315];
+    let mut a = main.clone();
+    let mut b = main.clone();
+    let mut views = [&mut a[..], &mut b[..]];
+    let mut capture = crate::OutputCapture::new(&plan, &mut views);
+    runtime
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    assert_eq!(main, expected);
+    for output in 0..2 {
+        for index in 0..315 {
+            assert_eq!(
+                capture.output(output).unwrap()[index],
+                if (7..307).contains(&index) {
+                    f.samples[index - 7]
+                } else {
+                    [0.0; 2]
+                },
+                "Track taps/stems retain pre-Main seven-frame alignment"
+            );
+        }
+    }
+}
+
+#[test]
+fn main_review_unknown_latency_refuses_before_candidate_publication() {
+    let mut f = fixture(&[&[]], 8);
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(u32::MAX).unwrap(),
+        })
+        .unwrap();
+    let before = f.editor.project().clone();
+    assert!(
+        prepare(&f).is_err(),
+        "enabled unknown Main latency must refuse"
+    );
+    assert_eq!(f.editor.project(), &before);
+    let id = before.main_devices()[0].id();
+    f.editor
+        .execute(Command::SetDeviceBypass {
+            device: id,
+            bypassed: true,
+        })
+        .unwrap();
+    let bypassed = prepare(&f).unwrap();
+    assert_eq!(bypassed.arrangement().main_latency_frames(), 0);
+    assert!(
+        bypassed
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .is_some_and(|graph| !graph.needs_runtime())
+    );
+    assert_eq!(session(bypassed, 8, 3), f.samples);
+}
+
+#[test]
+fn main_review_cumulative_latency_limit_includes_upstream_and_serial_main() {
+    let mut f = fixture(&[&[1]], 8);
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(MAX_COMPENSATION_FRAMES).unwrap(),
+        })
+        .unwrap();
+    let before = f.editor.project().clone();
+    assert!(
+        prepare(&f).is_err(),
+        "valid separate paths must refuse when final cumulative arrival exceeds cap"
+    );
+    assert_eq!(f.editor.project(), &before);
+}
+
+#[test]
+fn main_review_main_only_delay_retains_fast_pre_main_path_and_bypass() {
+    let mut f = fixture(&[&[]], 8);
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    assert!(
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .main_latency()
+            == 0,
+        "Main clock history must not add upstream alignment delay"
+    );
+    assert_eq!(revision.arrangement().main_latency_frames(), 3);
+    let mut expected = vec![[0.0; 2]; 11];
+    expected[3..].copy_from_slice(&f.samples);
+    assert_eq!(session(revision, 11, 2), expected);
+    let id = f.editor.project().main_devices()[0].id();
+    f.editor
+        .execute(Command::SetDeviceBypass {
+            device: id,
+            bypassed: true,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    assert_eq!(revision.arrangement().main_latency_frames(), 0);
+    assert_eq!(session(revision, 8, 3), f.samples);
+    assert_eq!(
+        Project::new(48_000, vec![]).unwrap().main_latency_frames(),
+        0
+    );
+}
+
+#[test]
+fn main_review_known_latency_handoff_preserves_history_and_refuses_changed_runtime_layout() {
+    let mut f = fixture(&[&[]], 32);
+    f.editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut oracle = SessionPlayback::new(revision).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 2]).unwrap();
+    oracle.render(&mut [[0.0; 2]; 2]).unwrap();
+    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let revision = prepare(&f).unwrap();
+    assert_eq!(revision.arrangement().main_latency_frames(), 3);
+    let mut candidate = SessionPlayback::new(revision).unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let mut expected = [[0.0; 2]; 6];
+    let mut actual = expected;
+    oracle.render(&mut expected).unwrap();
+    candidate.render(&mut actual).unwrap();
+    assert_eq!(
+        actual,
+        expected.map(|f| [f[0] * 0.5, f[1] * 0.5]),
+        "Main delay history remains warm"
+    );
+    let device = f.editor.project().main_devices()[0].id();
+    f.editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: state(5).unwrap(),
+        })
+        .unwrap();
+    let mut changed = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+    let positions = (
+        candidate.performance_frame(),
+        candidate.arrangement_frame(),
+        candidate.playing(),
+    );
+    assert!(
+        changed.try_inherit_state_from(&mut candidate).is_err(),
+        "existing native history preflight refuses incompatible delay storage"
+    );
+    assert_eq!(
+        (
+            candidate.performance_frame(),
+            candidate.arrangement_frame(),
+            candidate.playing()
+        ),
+        positions,
+        "refused handoff preserves old transport"
+    );
 }

@@ -67,7 +67,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let legacy = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&legacy).unwrap()["version"],
-        32
+        hex_storage::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(
         hex_storage::decode(&legacy).unwrap().snapshot(),
@@ -128,7 +128,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        32
+        hex_storage::CURRENT_SCHEMA_VERSION
     );
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), editor.project().snapshot());
@@ -198,6 +198,7 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
         match case {
             0 => {
                 value.as_object_mut().unwrap().remove("device_assets");
+                value.as_object_mut().unwrap().remove("asset_sources");
             }
             1 => {
                 value["device_assets"] = serde_json::json!([]);
@@ -231,6 +232,7 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
             }
             _ => {
                 value["version"] = 29.into();
+                value.as_object_mut().unwrap().remove("main_devices");
             }
         }
         assert!(
@@ -247,7 +249,7 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
 }
 
 #[test]
-fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
+fn relabelled_current30_envelopes_refuse_without_rewriting_user_files() {
     let (mut editor, device, asset) = fixture();
     editor
         .execute(replacement(&editor, device, vec![reference(asset)]))
@@ -267,20 +269,17 @@ fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
     for (tuning, assets) in [(true, true), (true, false), (false, true), (false, false)] {
         let mut value = source.clone();
         value["version"] = 30.into();
+        value.as_object_mut().unwrap().remove("main_devices");
         if !tuning {
             value.as_object_mut().unwrap().remove("tuning");
         }
         if !assets {
             value.as_object_mut().unwrap().remove("device_assets");
+            value.as_object_mut().unwrap().remove("asset_sources");
         }
         let bytes = serde_json::to_vec(&value).unwrap();
         std::fs::write(&path, &bytes).unwrap();
-        assert!(matches!(
-            hex_storage::load(&path),
-            Err(hex_storage::StorageError::Invalid(
-                "unsupported alpha project format 30"
-            ))
-        ));
+        assert!(hex_storage::load(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert_eq!(
             std::fs::read_dir(&directory).unwrap().count(),

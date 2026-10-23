@@ -12,8 +12,10 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 import signal
@@ -94,6 +96,13 @@ def terminal_progress(label: str, *, announce: bool = True):
 
 @dataclass(frozen=True)
 class Step:
+    """A check with a 1–100 character ASCII ID starting with a letter or digit.
+
+    Remaining characters may be letters, digits, underscores or hyphens.
+    The runner validates the entire plan before executing any command. IDs are
+    used verbatim in numbered log basenames; the index keeps repeated IDs distinct.
+    """
+
     step_id: str
     argv: tuple[str, ...]
     uses_cargo_target: bool = False
@@ -110,13 +119,14 @@ QUICK_STEPS = (
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
 
+# Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
+    *QUICK_STEPS,
     Step(
         "runner-tests",
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
         uses_cargo_target=True,
     ),
-    *QUICK_STEPS,
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
@@ -133,29 +143,156 @@ FULL_STEPS = (
 )
 
 
+def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
+    """Diagnostic wall estimates from Cargo/harness logs, never qualification evidence.
+
+    Cargo's Finished duration includes its build phase, not just compiler CPU.
+    Rounded or nested harness output can overlap; do not invent a negative residual.
+    """
+    build = [3600 * float(h or 0) + 60 * float(m or 0) + float(s)
+             for h, m, s in re.findall(
+                 r"^\s*Finished [^\n]* in (?:(\d+)h )?(?:(\d+)m )?(\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    rust = [float(s) for s in re.findall(r"^test result: [^\n]*finished in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    python = [float(s) for s in re.findall(r"^Ran \d+ tests? in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    result = {name: sum(values) if values and math.isfinite(sum(values)) else None
+              for name, values in (("cargo_build_phase_seconds", build),
+                                   ("rust_harness_seconds", rust), ("python_harness_seconds", python))}
+    known = sum(value for value in result.values() if value is not None)
+    result["unclassified_seconds"] = round(duration - known, 6) if known <= duration else None
+    return result
+
+
+def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
+                   features: str = "", lib: bool = False, test: str | None = None) -> dict:
+    """Validate an explicit edit target; omissions keep Cargo's package-wide behavior."""
+    packages = [item for item in inventory if item["name"] == package]
+    if len(packages) != 1 or not test_filter.strip():
+        raise ValueError("edit feedback requires one known workspace package and a nonempty test filter")
+    owner = packages[0]
+    requested_features = {name for name in features.split(",") if name}
+    if requested_features - owner["features"].keys():
+        raise ValueError("unknown workspace package feature")
+    selection = {"package": package, "filter": test_filter, "features": features}
+    if lib or test is not None:
+        if lib and test is not None:
+            raise ValueError("select either a library or a named integration test")
+        library_kinds = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+        targets = [target for target in owner["targets"]
+                   if (bool(library_kinds.intersection(target["kind"])) if lib else
+                       "test" in target["kind"] and target["name"] == test)]
+        if len(targets) != 1:
+            raise ValueError("unknown or ambiguous edit test target")
+        enabled = requested_features | ({"default"} if "default" in owner["features"] else set())
+        pending = list(enabled)
+        while pending:
+            for feature in owner["features"].get(pending.pop(), []):
+                if feature not in enabled:
+                    enabled.add(feature)
+                    pending.append(feature)
+        if set(targets[0].get("required-features", [])) - enabled:
+            raise ValueError("edit test target requires features that are not enabled")
+        selection["target"] = {"kind": "lib" if lib else "test", "name": targets[0]["name"]}
+    return selection
+
+
+def boundary_steps(plan: dict) -> tuple[Step, ...]:
+    """Compile consumers even when reviewed device behavior tests are narrower."""
+    boundary = plan["boundary"]
+    inventory = plan["cargo_inventory"]
+    names = {p["name"] for p in inventory}
+    affected = boundary["lint_packages"]
+    if not affected or len(set(affected)) != len(affected) or set(affected) - names:
+        raise ValueError("boundary plan requires nonempty known affected packages")
+    if sorted(affected) != sorted(plan["affected_packages"]):
+        raise ValueError("boundary consumers do not match resolved Cargo closure")
+    packages = tuple(arg for p in affected for arg in ("-p", p))
+    steps = [*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
+    if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
+    tests = boundary["tests"]
+    if boundary["kind"] == "packages":
+        if sorted(boundary["test_packages"]) != sorted(affected) or tests:
+            raise ValueError("package boundary must test every affected consumer")
+        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+    elif boundary["kind"] == "compressor":
+        if not tests:
+            raise ValueError("device boundary has no contract targets")
+        for index, test in enumerate(tests):
+            # Reuse the edit target validator, not a second Cargo selector.
+            selected = edit_selection(inventory, package=test["package"],
+                                      test_filter=test["filter"] or "target-validation",
+                                      features=test.get("features", ""), lib=test.get("lib", False),
+                                      test=test.get("test"))
+            target = selected["target"]
+            feature = ("--features", selected["features"]) if selected["features"] else ()
+            selector = ("--lib",) if target["kind"] == "lib" else ("--test", target["name"])
+            steps.append(Step(f"contract-{index}-{selected['package']}",
+                              ("cargo", "test", "-p", selected["package"], *feature, *selector,
+                               "--locked", *([test["filter"]] if test["filter"] else []))))
+    else:
+        raise ValueError("unknown ownership boundary")
+    steps.append(Step("affected-clippy", ("cargo", "clippy", *packages, "--all-targets", "--locked", "--", "-D", "warnings")))
+    # Keep separate default/feature configurations, including feature-gated
+    # examples and allocation probes. Do not deduplicate by overlapping names.
+    covered_features = {"hex-ui": {"ui-test-support"}, "hex-export": {"instrument-test-support"},
+                        "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
+                        "hex-desktop": {"allocation-probe"}}
+    for step in FULL_STEPS:
+        if "--features" not in step.argv:
+            continue
+        owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
+        selected = [p for p in owners if p in affected]
+        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+            continue
+        argv = list(step.argv)
+        for owner in set(owners) - set(selected):
+            index = argv.index(owner)
+            del argv[index - 1:index + 1]
+        steps.append(Step(step.step_id, tuple(argv)))
+    for package in inventory:
+        if package["name"] not in affected or boundary["kind"] == "compressor":
+            continue
+        extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
+        # Preserve each declared configuration; all-features alone can mask
+        # mutually exclusive cfg branches. Feature interaction contracts still
+        # need reviewed configuration rules rather than a guessed power set.
+        for index, feature in enumerate(sorted(extra)):
+            for command in ("test", "clippy"):
+                steps.append(Step(f"feature-{command}-{package['name']}-{index}",
+                                  ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
+                                   *(("--", "-D", "warnings") if command == "clippy" else ()))))
+    if "hex-desktop" in affected:
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
+    return tuple(steps)
+
+
 def planned_steps(plan: dict) -> tuple[Step, ...]:
     """Select complete configurations, never deduplicate by test-name overlap."""
     scope = plan["scope"]
     if plan.get("edit"):
         edit = plan["edit"]
         feature = ("--features", edit["features"]) if edit["features"] else ()
-        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, "--locked", edit["filter"], "--", "--nocapture"),
+        selected = edit.get("target")
+        target = () if selected is None else (("--lib",) if selected["kind"] == "lib" else ("--test", selected["name"]))
+        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, *target, "--locked", edit["filter"], "--", "--nocapture"),
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
-                QUICK_STEPS[-1])
+                next(s for s in QUICK_STEPS if s.step_id == "format"))
     if plan.get("reuse"):
         return (Step("metadata-continuation", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                              "--base", plan["reuse"]["source"], "--source", plan["source"]),
                      uses_cargo_target=True),)
     if scope == "full":
         steps = FULL_STEPS
+    elif scope == "rust":
+        steps = boundary_steps(plan)
     elif scope == "metadata":
         return (Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                   "--base", plan["base"], "--source", plan["source"])),)
     elif scope == "tooling":
-        steps = (FULL_STEPS[0], *QUICK_STEPS)
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"))
     elif scope == "ui":
-        steps = (FULL_STEPS[0], *QUICK_STEPS,
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),
@@ -164,7 +301,10 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                  next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     else:
         raise ValueError("unsupported resolved scope")
-    return tuple(Step(s.step_id, s.argv, s.uses_cargo_target,
+    return tuple(Step(s.step_id,
+                      ci_plan.python_tests.argv(plan["python_tests"])
+                      if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
+                      s.uses_cargo_target,
                       s.argv[:2] == ("cargo", "test") or s.step_id == "runner-tests") for s in steps)
 
 
@@ -354,6 +494,7 @@ class LocalCiRunner:
             "invocation_argv": list(sys.argv),
             "steps": [],
             "plan": plan,
+            "time_to_first_result_seconds": None,
         }
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
@@ -762,8 +903,9 @@ class LocalCiRunner:
                 if cleanup_argv is None:
                     cleanup_argv = self._workspace_clean_argv(target)[:8]
                 for spec in invalidated:
-                    if spec not in cleanup_argv:
-                        cleanup_argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in cleanup_argv:
+                        cleanup_argv.extend(("--package", name))
             if cleanup_argv is not None:
                 current = {p["name"]: p for p in dependency_inputs["packages"]}
                 previous = owner_record.get("dependency_inputs", {}) if owner_record else {}
@@ -773,7 +915,7 @@ class LocalCiRunner:
                 old_by_name = {p["name"]: p for p in (previous or {}).get("packages", [])}
                 for package in dependency_inputs["packages"]:
                     if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
-                        cleanup_argv.extend(("--package", package["spec"]))
+                        cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
 
             self.summary["target_cache"] = {
                 "action": ownership_action,
@@ -829,8 +971,28 @@ class LocalCiRunner:
         for package in packages:
             if not isinstance(package, dict) or not isinstance(package.get("spec"), str):
                 raise TargetCacheError("workspace package metadata is malformed")
-            argv.extend(("--package", package["spec"]))
+            argv.extend(("--package", self._clean_package_name(package["spec"])))
         return argv
+
+    def _clean_package_name(self, spec: str) -> str:
+        """Cargo 1.94 clean matches names, ignoring ID URL/version qualifiers.
+
+        Keep full IDs in provenance, but only clean a name when current complete
+        metadata proves it identifies exactly one workspace or path package.
+        Never use a qualifier to imply a narrower cleanup than Cargo performs.
+        """
+        if not isinstance(self._release_metadata, dict):
+            raise TargetCacheError("complete cleanup package metadata is unavailable")
+        packages = self._release_metadata["packages"]
+        matches = [p for p in packages if p["id"] == spec]
+        if len(matches) != 1:
+            raise TargetCacheError("cleanup package is absent or ambiguous in current metadata")
+        name = matches[0]["name"]
+        if (not isinstance(name, str) or not name
+                or sum(p["name"] == name for p in packages) != 1
+                or matches[0].get("source") is not None):
+            raise TargetCacheError("cleanup requires a unique workspace/path package name")
+        return name
 
     def _release_scope(self) -> list[dict[str, str]]:
         """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
@@ -1243,8 +1405,9 @@ class LocalCiRunner:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
                 for spec in invalidated:
-                    if spec not in argv:
-                        argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in argv:
+                        argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
                 # Keep release and dev cleanup evidence independent.
@@ -1380,6 +1543,9 @@ class LocalCiRunner:
         return True
 
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
+        started = time.monotonic()
+        text = None
+        phase = "opening step log"
         log_path = self.output_dir / f"{index:02d}-{step.step_id}.log"
         entry: dict[str, object] = {
             "step_id": step.step_id,
@@ -1387,6 +1553,9 @@ class LocalCiRunner:
             "status": "running",
             "started_at": utc_now(),
             "ended_at": None,
+            "start_offset_seconds": round(started - self.started_monotonic, 6),
+            "duration_seconds": None,
+            "timing_estimates": None,
             "exit_code": None,
             "log": str(log_path.relative_to(self.root)),
             "error": None,
@@ -1396,9 +1565,13 @@ class LocalCiRunner:
         steps.append(entry)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: running", flush=True)
+        if step.step_id == "runner-tests" and self.summary.get("plan") and "python_tests" in self.summary["plan"]:
+            selection = self.summary["plan"]["python_tests"]
+            print("python self-tests: " + json.dumps(selection, sort_keys=True), flush=True)
         try:
             with log_path.open("w", encoding="utf-8") as log, \
                     terminal_progress(f"checking {step.step_id}", announce=False):
+                phase = "running command"
                 result = subprocess.run(
                     list(step.argv),
                     cwd=self.root,
@@ -1409,6 +1582,7 @@ class LocalCiRunner:
                 )
             entry["exit_code"] = result.returncode
             entry["status"] = "passed" if result.returncode == 0 else "failed"
+            phase = "reading step log"
             text = log_path.read_text(errors="replace")
             rust_counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]
             python_counts = [int(n) for n in re.findall(r"^Ran (\d+) tests? in ", text, re.MULTILINE)]
@@ -1420,24 +1594,122 @@ class LocalCiRunner:
                 entry["error"] = "requested test scope executed no passing tests; zero-match/all-skipped is not qualification"
         except FileNotFoundError as error:
             entry["status"] = "failed"
-            entry["error"] = f"required executable not found: {error.filename}"
-            log_path.write_text(entry["error"] + "\n", encoding="utf-8")
+            entry["error"] = (f"required executable not found: {error.filename}"
+                              if phase == "running command" else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
         except InterruptedRun:
             entry["status"] = "interrupted"
             entry["error"] = "pipeline interrupted"
             entry["exit_code"] = 130
             entry["ended_at"] = utc_now()
-            with log_path.open("a", encoding="utf-8") as log:
-                log.write("\npipeline interrupted\n")
+            self._retain_step_error(log_path, entry)
             raise
         except OSError as error:
             entry["status"] = "failed"
-            entry["error"] = str(error)
-            log_path.write_text(f"command could not run: {error}\n", encoding="utf-8")
-        entry["ended_at"] = utc_now()
+            entry["error"] = (f"command could not run: {error}" if phase == "running command"
+                              else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
+        finally:
+            ended = time.monotonic()
+            duration = ended - started
+            entry["ended_at"] = utc_now()
+            entry["duration_seconds"] = round(duration, 6)
+            if self.summary["time_to_first_result_seconds"] is None:
+                self.summary["time_to_first_result_seconds"] = round(ended - self.started_monotonic, 6)
+            if text is None:
+                try:
+                    text = log_path.read_text(errors="replace")
+                except OSError:
+                    pass  # Missing diagnostics do not change the step's result.
+            if text is not None:
+                entry["timing_estimates"] = log_timing_estimates(text, duration)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: {entry['status']}", flush=True)
         return entry
+
+    @staticmethod
+    def _retain_step_error(log_path: Path, entry: dict[str, object]) -> None:
+        # Never replace captured output or let a second log error hide the actual failure.
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"\n{entry['error']}\n")
+        except OSError as error:
+            entry["log_error"] = str(error)
+
+    def _diagnostic_text(self, text: str) -> str:
+        # Console excerpts are not raw logs. Remove terminal controls and known sensitive
+        # environment values without printing the environment or altering retained evidence.
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        sensitive = r"token|password|passwd|secret|credential|authorization|(?:api|access|private)[_-]?key"
+        for key, value in sorted(self.env.items(), key=lambda item: len(item[1]), reverse=True):
+            if value and re.search(sensitive, key, re.IGNORECASE):
+                text = text.replace(value, "[redacted]")
+        text = re.sub(r"(?im)(\b[\w-]*(?:" + sensitive + r")[\w-]*\s*[:=]\s*)[^\n]+",
+                      r"\1[redacted]", text)
+        text = re.sub(r"(?i)(--[\w-]*(?:" + sensitive + r")[\w-]*\s+)(?:'[^']*'|\"[^\"]*\"|\S+)",
+                      r"\1[redacted]", text)
+        return text
+
+    def _print_failure_details(self) -> None:
+        """Present the settled result; diagnostics never confer qualification or execute retries."""
+        status = self.summary.get("status")
+        if status not in {"failed", "interrupted", "stale", "incomplete"}:
+            return
+        executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
+        step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
+                    executed[-1] if executed else None)
+        category = "preflight refusal"
+        excerpt = ""
+        log_note = "log unavailable; see summary"
+        if step:
+            if step["log"]:
+                path = self.root / step["log"]
+                log_note = str(path)
+                try:
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        log.seek(max(0, log.tell() - 65536))
+                        tail = log.read(65536).decode("utf-8", errors="replace")
+                    lines = self._diagnostic_text(tail).splitlines()
+                    marker = r"^\s*(?:error(?:\[|:)|thread .*panicked at|---- .* stdout ----|FAIL:|ERROR:|Traceback \()"
+                    start = next((i for i, line in enumerate(lines) if re.search(marker, line)), None)
+                    if start is not None:
+                        excerpt = "\n".join(line[:240] for line in lines[start:start + 20])[:4000]
+                except OSError:
+                    log_note += " (unreadable; failure retained in summary)"
+            error = str(step.get("error") or "")
+            category = ("interrupted" if step["status"] == "interrupted" else
+                        "no passing tests" if "no passing tests" in error else
+                        "missing executable" if "required executable not found" in error else
+                        "log I/O failure" if "log I/O failure" in error else
+                        "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
+                        "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
+                        "command failure")
+        result = "stale (source changed; prior results do not qualify)" if status == "stale" else status
+        details = [f"local ci diagnostic: {result}", f"profile: {self.mode}",
+                   f"step: {step['step_id'] if step else 'not started'} ({category})",
+                   f"summary: {self.summary_path}", f"log: {log_note}"]
+        if step:
+            command = self._diagnostic_text(shlex.join(step["argv"]))
+            truncated = len(command) > 2000
+            if truncated:
+                command = command[:2000] + " ... [truncated; exact argv retained in summary]"
+            details.extend((f"command: {command}", f"cwd: {self.root}"))
+            if step.get("error"):
+                details.append(self._diagnostic_text(str(step["error"]))[:2000])
+            if excerpt:
+                details.extend(("failure excerpt (at most 20 lines / 4000 characters from last 64 KiB):", excerpt))
+            else:
+                details.append("no recognized compiler/test excerpt; inspect the retained log")
+            rerun = "use the exact argv retained in the summary" if truncated else command
+            details.append(f"rerun (diagnostic only; partial, not merge qualification): {rerun}")
+        else:
+            details.extend(self._diagnostic_text(str(value))[:2000]
+                           for key, value in self.summary.items() if key.endswith("_error"))
+        if status == "stale":
+            details.append("freeze the intended candidate and rerun its required plan before qualification")
+        print(self._diagnostic_text("\n".join(details)), flush=True)
 
     def run(self) -> int:
         self.output_dir.mkdir(parents=True, exist_ok=False)
@@ -1452,7 +1724,14 @@ class LocalCiRunner:
 
         failed = False
         try:
-            if not self._capture_repository_state("start_tree"):
+            invalid_ids = [step.step_id for step in self.steps
+                           if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", step.step_id) is None]
+            if invalid_ids:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
+                                                  "alphanumeric first, then alphanumeric, underscore or hyphen")
+                print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
@@ -1541,7 +1820,6 @@ class LocalCiRunner:
                         finally:
                             self.target_lock = None
                 self.summary["ended_at"] = utc_now()
-                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 3)
                 if self.summary.get("start_tree") is not None:
                     if self._capture_repository_state("end_tree"):
                         start_tree = self.summary["start_tree"]
@@ -1567,17 +1845,25 @@ class LocalCiRunner:
                                 "status": "not_run",
                                 "started_at": None,
                                 "ended_at": None,
+                                "start_offset_seconds": None,
+                                "duration_seconds": None,
+                                "timing_estimates": None,
                                 "exit_code": None,
                                 "log": None,
                                 "error": "pipeline stopped before this step",
                             }
                         )
+                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 6)
                 self._write_summary()
             finally:
                 # Even an end-snapshot or summary-write exception must restore
                 # the caller's process-wide signal handlers.
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
+        try:
+            self._print_failure_details()
+        except (OSError, ValueError):
+            pass  # Console failure must not replace the recorded result or cleanup.
         return int(self.summary["exit_code"] if self.summary["exit_code"] is not None else 2)
 
 
@@ -1597,6 +1883,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
     parser.add_argument("--test-filter", help="explicit nonempty Rust test filter for partial edit feedback")
     parser.add_argument("--features", default="", help="explicit package features for partial edit feedback")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--lib", action="store_true", help="test only the package library in an explicit edit plan")
+    target.add_argument("--test", metavar="NAME", help="test only this named integration target in an explicit edit plan")
     parser.add_argument(
         "--min-free-gib", type=int,
         help="read-only free-space floor in GiB; default 2 for full and 0 for quick; never deletes files",
@@ -1632,13 +1921,12 @@ def main(argv: list[str] | None = None) -> int:
                                    source=arguments.source, metadata=metadata)
             if arguments.reuse_report:
                 plan = reusable_plan(ROOT, plan, arguments.reuse_report)
-            if arguments.package or arguments.test_filter or arguments.features:
+            if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
                 if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
                     raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")
-                package = next((p for p in plan["cargo_inventory"] if p["name"] == arguments.package), None)
-                if package is None or any(f not in package["features"] for f in arguments.features.split(",") if f):
-                    raise ValueError("unknown workspace package or feature")
-                plan["edit"] = {"package": arguments.package, "filter": arguments.test_filter, "features": arguments.features}
+                plan["edit"] = edit_selection(plan["cargo_inventory"], package=arguments.package,
+                                              test_filter=arguments.test_filter, features=arguments.features,
+                                              lib=arguments.lib, test=arguments.test)
                 plan.pop("plan_sha256")
                 plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
         except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
@@ -1648,7 +1936,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--profile cannot be combined with --quick")
     elif arguments.reuse_report:
         parser.error("--reuse-report requires an explicit merge plan")
-    elif arguments.package or arguments.test_filter or arguments.features:
+    elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
         parser.error("package/filter/features require an explicit edit plan")
     runner = LocalCiRunner(
         mode=mode,
