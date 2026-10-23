@@ -638,7 +638,7 @@ fn section_splices_are_exact_pcm_insertions_removals_and_copies_at_unequal_block
     const SOURCE_END: usize = 48_000;
     const INSERTED: usize = SECTION_END - CUT;
 
-    for processed in [false, true] {
+    for processing in 0..3 {
         let (mut seed, clip, media) = fixture(true);
         seed.execute(Command::TrimClip {
             clip,
@@ -658,12 +658,29 @@ fn section_splices_are_exact_pcm_insertions_removals_and_copies_at_unequal_block
             seed.project().clone()
         );
 
-        if processed {
+        if processing > 0 {
             seed.execute(Command::SetAudioClipPitch { clip, cents: 137 })
                 .unwrap();
             seed.execute(Command::SetAudioClipMusical {
                 clip,
                 enabled: true,
+            })
+            .unwrap();
+        }
+        if processing == 2 {
+            let settings = default_audio_warp(
+                seed.project().clip(clip).unwrap(),
+                seed.project().tempo_map(),
+                WarpMode::Beats {
+                    preserve: hex_project::BeatsPreserve::Transients,
+                    tail: hex_project::BeatsTail::Forward,
+                    decay: 100,
+                },
+            )
+            .unwrap();
+            seed.execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
             })
             .unwrap();
         }
