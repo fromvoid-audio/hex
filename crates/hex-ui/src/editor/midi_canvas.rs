@@ -342,6 +342,27 @@ impl EditorView {
                     };
                     window.set_cursor_style(cursor, &hitbox);
                 }
+                if let Some((first, last)) = draw_time {
+                    let end = beat_start.raw().saturating_add(beat_span.raw());
+                    let first = first.max(beat_start.raw());
+                    let last = last.min(end);
+                    if first < last {
+                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(bounds.origin.x + px(left), bounds.origin.y),
+                                size(px(right - left), bounds.size.height),
+                            ),
+                            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                .opacity(theme::TIME_SELECTION_OPACITY),
+                        ));
+                    }
+                }
                 let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {
                     let left = x.max(0.0);
                     let top = y.max(0.0);
@@ -400,24 +421,6 @@ impl EditorView {
                             theme::color(theme::PaletteRole::Grid)
                         },
                     );
-                }
-                if let Some((first, last)) = draw_time {
-                    let end = beat_start.raw().saturating_add(beat_span.raw());
-                    let first = first.max(beat_start.raw());
-                    let last = last.min(end);
-                    if first < last {
-                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
-                            as f32
-                            * width;
-                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
-                            as f32
-                            * width;
-                        let color = theme::color(theme::PaletteRole::Primary);
-                        quad(left, 0.0, 1.0, height, color);
-                        quad(right - 1.0, 0.0, 1.0, height, color);
-                        quad(left, 0.0, right - left, 2.0, color);
-                        quad(left, height - 2.0, right - left, 2.0, color);
-                    }
                 }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
