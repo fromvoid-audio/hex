@@ -372,6 +372,7 @@ impl Render for EditorView {
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
+        self.reconcile_track_reorder(window);
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
         self.sync_tuning(cx);
@@ -709,9 +710,13 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
-                if view.cancel_trim_gesture(cx) | view.cancel_track_resize(cx) {
+                if view.cancel_trim_gesture(cx)
+                    | view.cancel_track_resize(cx)
+                    | view.cancel_track_reorder()
+                {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.cancel_active_browser_audio_drag() {
@@ -759,6 +764,7 @@ impl Render for EditorView {
                 view.cancel_active_browser_audio_drag();
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
+                view.cancel_track_reorder();
                 view.device_panel.navigation.cancel();
                 view.stop();
                 cx.notify();
@@ -768,6 +774,7 @@ impl Render for EditorView {
                     | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
+                    | view.cancel_track_reorder()
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();

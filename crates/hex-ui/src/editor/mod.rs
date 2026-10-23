@@ -151,6 +151,9 @@ mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
 mod track_name;
+mod track_reorder;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_reorder_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -767,6 +770,7 @@ pub(super) struct EditorView {
     _scrub_focus_lifecycle: gpui::Subscription,
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
+    track_reorder: track_reorder::TrackReorder,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -1210,7 +1214,9 @@ impl EditorView {
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
-                let paint_cancelled = view.cancel_clip_paint() | view.cancel_section_pointer();
+                let paint_cancelled = view.cancel_clip_paint()
+                    | view.cancel_section_pointer()
+                    | view.cancel_track_reorder();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
@@ -1229,6 +1235,7 @@ impl EditorView {
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture()
+                | view.cancel_track_reorder()
                 | view.cancel_scrub()
                 | view.cancel_clip_paint()
                 | view.cancel_section_pointer()
@@ -1386,6 +1393,7 @@ impl EditorView {
             _scrub_focus_lifecycle: scrub_focus_blur,
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
+            track_reorder: track_reorder::TrackReorder::default(),
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),

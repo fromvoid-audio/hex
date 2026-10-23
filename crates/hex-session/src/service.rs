@@ -351,6 +351,14 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Captured ordinary-track row move. Target identities and source revision
+    /// must still match before this becomes a canonical MoveTrackBefore edit.
+    ReorderTrack {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        before: Option<hex_project::TrackId>,
+    },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
     EditArrangementSection {
         project_generation: u64,
@@ -585,6 +593,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
+                | Request::ReorderTrack { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::SamplerEdit(SamplerEdit::Midi(_))
@@ -1895,11 +1904,35 @@ fn run_worker(
         let mut gesture_request = false;
         let mut preview_prepared = None;
         let mut preview_project = None;
-        // Resolve catalog insertions on the worker before any gesture barrier. Invalid identities
+        // Resolve captured row moves and catalog insertions before any gesture barrier. Invalid identities
         // and requests during a live draft cannot commit unrelated gesture history.
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
-        let browser_insert = match &request {
+        let resolved_edit = match &request {
+            Request::ReorderTrack {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                before,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("track reorder canceled · project changed".to_owned())
+                } else if session.project().track(*track).is_none()
+                    || before.is_some_and(|anchor| session.project().track(anchor).is_none())
+                {
+                    Err("track reorder target no longer exists".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before reordering tracks".into())
+                } else {
+                    Ok(Command::MoveTrackBefore {
+                        track: *track,
+                        before: *before,
+                    })
+                },
+            ),
             Request::InsertBrowserInstrumentTrack {
                 project_generation: expected_generation,
                 revision: expected_revision,
@@ -1952,7 +1985,7 @@ fn run_worker(
             ),
             _ => None,
         };
-        let (request, browser_failure) = match browser_insert {
+        let (request, resolution_failure) = match resolved_edit {
             Some(Ok(command)) => (Request::Edit(command), None),
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
@@ -1960,7 +1993,7 @@ fn run_worker(
         let barrier = request.finalizes_parameter_gesture();
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
-        let mut barrier_failure = browser_failure.or_else(|| match &request {
+        let mut barrier_failure = resolution_failure.or_else(|| match &request {
             Request::EditArrangementSection {
                 project_generation: captured,
                 revision: captured_revision,
@@ -2225,6 +2258,7 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
+                    | Request::ReorderTrack { .. }
                     | Request::ImportDeviceAsset { .. }
             );
         let sampler_refusal = private_sampler
@@ -2240,6 +2274,7 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
+                    | Request::ReorderTrack { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
@@ -2635,6 +2670,9 @@ fn run_worker(
                         unsaved = true;
                         replacement_revision = Some(prepared);
                     }
+                }
+                Request::ReorderTrack { .. } => {
+                    error = Some("track reorder target was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
                     error = Some(
@@ -6231,6 +6269,10 @@ fn arrangement_device_command(
 mod browser_instrument_tests;
 
 #[cfg(test)]
+#[path = "service/track_reorder_tests.rs"]
+mod track_reorder_tests;
+
+#[cfg(test)]
 mod service_tests {
     use super::*;
     use crate::arrangement_seek::ArrangementSeekMode;
@@ -6240,7 +6282,7 @@ mod service_tests {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
-    struct TestDir(PathBuf);
+    pub(super) struct TestDir(pub(super) PathBuf);
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -6459,7 +6501,7 @@ mod service_tests {
     }
 
     impl TestDir {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -6480,7 +6522,7 @@ mod service_tests {
         }
     }
 
-    fn wav_mono(samples: &[i16]) -> Vec<u8> {
+    pub(super) fn wav_mono(samples: &[i16]) -> Vec<u8> {
         let data: Vec<u8> = samples
             .iter()
             .flat_map(|sample| sample.to_le_bytes())
@@ -9018,7 +9060,7 @@ mod service_tests {
         assert!(refused.playback.is_none());
     }
 
-    fn next_event(service: &Service) -> Event {
+    pub(super) fn next_event(service: &Service) -> Event {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match service.try_event() {

@@ -146,3 +146,69 @@ fn current_playable_route_inventories_are_required_even_when_empty() {
         assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
     }
 }
+
+#[test]
+fn reordered_track_inventory_roundtrips_complete_content_automation_and_stable_routes() {
+    let mut editor = Editor::new(fixture(), 16).unwrap();
+    let ids: Vec<_> = editor
+        .project()
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    editor
+        .execute(Command::ImportPreparedAudioClip {
+            track: ids[0],
+            start: 0,
+            path: "original.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 48_000,
+            playback_frames: 48_000,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap();
+    editor
+        .execute(Command::PlaceMidiClip {
+            track: ids[1],
+            start: hex_project::BeatTime::from_quarters(4).unwrap(),
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap();
+    editor
+        .execute(Command::ReplaceTrackGainEnvelope {
+            track: ids[0],
+            points: vec![hex_project::GainPoint {
+                beat: hex_project::BeatTime::ZERO,
+                gain: 0.5,
+                incoming_gain: None,
+                outgoing: hex_project::GainInterpolation::Step,
+            }],
+        })
+        .unwrap();
+    let original = editor.project().clone();
+    for (track, before, order) in [
+        (ids[2], Some(ids[0]), vec![ids[2], ids[0], ids[1]]),
+        (ids[0], None, vec![ids[1], ids[2], ids[0]]),
+    ] {
+        let mut editor = Editor::new(original.clone(), 16).unwrap();
+        editor
+            .execute(Command::MoveTrackBefore { track, before })
+            .unwrap();
+        let restored = decode(&encode(editor.project()).unwrap()).unwrap();
+        assert_eq!(restored, *editor.project());
+        assert_eq!(
+            restored
+                .tracks()
+                .iter()
+                .map(|track| track.id())
+                .collect::<Vec<_>>(),
+            order
+        );
+        assert_eq!(restored.return_tracks(), original.return_tracks());
+        assert_eq!(restored.audio_feeds(), original.audio_feeds());
+        assert_eq!(restored.midi_routes(), original.midi_routes());
+        assert_eq!(restored.snapshot().next_id, original.snapshot().next_id);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &original);
+    }
+}
