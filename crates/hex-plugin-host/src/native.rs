@@ -6,6 +6,7 @@ use crate::{
     protocol::{self, Configuration, Facts, PresentationLatency, Ready, Terminal},
 };
 use hex_audio::plugin_transport::{Binding, Block};
+use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_scan::macos::{
     build_identity::InstanceBuild,
     identity::{Bundle, Executable},
@@ -191,10 +192,39 @@ impl Pending {
     ) -> Result<Self> {
         Self::prepare(build, source, preparation, cancellation, |_| {})
     }
+    /// Recreate captured state on a new source-bound instance. This never
+    /// edits the caller's canonical envelope, even if later capture differs.
+    pub fn prepare_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |_| {},
+        )
+    }
     fn prepare(
         build: &InstanceBuild,
         source: Source,
         preparation: Preparation,
+        cancellation: PreparationCancellation,
+        setup: impl FnOnce(&mut Command),
+    ) -> Result<Self> {
+        Self::prepare_with_restore(build, source, preparation, None, cancellation, setup)
+    }
+    fn prepare_with_restore(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        restore: Option<NativeDeviceState>,
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
     ) -> Result<Self> {
@@ -204,6 +234,7 @@ impl Pending {
         let config = Configuration {
             binding: options.binding,
             identity: source.identity,
+            restore,
             sample_rate: options.sample_rate,
             quantum: options.quantum,
             input_channels: options.input_channels,
@@ -271,6 +302,9 @@ impl Pending {
                 .send(&request, until, &mut || token.check())?;
             pending
                 .channel
+                .send(&config.startup_request()?, until, &mut || token.check())?;
+            pending
+                .channel
                 .read(&mut packet, until, &mut || token.check())?;
             if packet.magic() == b"HXVIER01" {
                 return Err(Error::Worker(protocol::error(
@@ -278,7 +312,7 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA01" {
+            if packet.magic() != b"HXVIFA02" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
@@ -368,13 +402,14 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD02" {
+            if self.packet.magic() != b"HXVIRD03" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));
             }
             let ready = Ready::decode(self.packet.body()?, &self.config, presentation)?;
-            if ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
+            if ready.restored != self.facts.restored
+                || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
                 || (ready.presentation == protocol::Presentation::Applied)
                     != self.facts.presentation_available
             {
