@@ -98,6 +98,7 @@ mod midi_cue;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
+mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;

@@ -40,12 +40,15 @@ impl Default for State {
     }
 }
 impl State {
+    pub(super) fn take_marquee(&mut self) -> Option<super::midi_selection::Marquee> {
+        self.marquee.take()
+    }
     pub(super) fn visible_height(&self) -> f32 {
         if self.open { self.height + 3.0 } else { 18.0 }
     }
-    pub(super) fn cancel(&mut self) -> bool {
-        let changed = self.marquee.take().is_some()
-            | self.gesture.take().is_some()
+    /// The editor coordinator owns marquee rollback; this retires value/resize state.
+    pub(super) fn cancel_value_state(&mut self) -> bool {
+        let changed = self.gesture.take().is_some()
             | self.resize.take().is_some()
             | self.hover.take().is_some();
         self.cycle = None;
@@ -103,7 +106,6 @@ impl EditorView {
         let marquee = self.midi_velocity.marquee.as_ref()?;
         let captured = marquee.context();
         (self.midi_velocity.open
-            && !self.edit_pending()
             && self.velocity_marquee_context(captured.bounds) == Some(captured))
         .then(|| marquee.highlighted())
     }
@@ -124,7 +126,8 @@ impl EditorView {
             .as_ref()
             .is_none_or(|scene| scene.key != key)
         {
-            self.midi_velocity.cancel();
+            self.cancel_all_midi_marquees();
+            self.midi_velocity.cancel_value_state();
             self.midi_velocity.cycle = None;
             match Scene::build(key, source.notes()) {
                 Ok(scene) => self.midi_velocity.scene = Some(Arc::new(scene)),
@@ -503,6 +506,7 @@ impl EditorView {
                                     view.cancel_midi_note_gesture();
                                     view.midi_focus.focus(window);
                                     if event.modifiers.shift {
+                                        view.cancel_midi_audition();
                                         view.clear_midi_time_selection();
                                         view.midi_velocity.marquee = view
                                             .velocity_marquee_context(captured.bounds)
@@ -593,7 +597,8 @@ impl EditorView {
                                         view.midi_time_selection.cancel();
                                         cx.notify();
                                     }
-                                    if view.midi_velocity.marquee.take().is_some() {
+                                    if let Some(marquee) = view.midi_velocity.marquee.take() {
+                                        view.cancel_live_midi_marquee(marquee);
                                         cx.notify();
                                     }
                                     let hover = if bounds.contains(&event.position)
@@ -636,25 +641,34 @@ impl EditorView {
                                     return;
                                 }
                                 if let Some(mut marquee) = view.midi_velocity.marquee.take() {
-                                    if event.pressed_button == Some(MouseButton::Left)
-                                        && let Some(context) = view
-                                            .velocity_marquee_context(captured.bounds)
-                                            .filter(|_| !view.edit_pending())
-                                    {
-                                        let last = [
-                                            f32::from(event.position.x - bounds.origin.x),
-                                            f32::from(event.position.y - bounds.origin.y),
-                                        ];
-                                        match marquee.update_with_hits(
-                                            context,
-                                            &view.midi_selection,
-                                            last,
-                                            |first, last| {
-                                                hover_scene.marquee_hits(first, last, width, height)
-                                            },
-                                        ) {
-                                            Ok(_) => view.midi_velocity.marquee = Some(marquee),
-                                            Err(error) => view.error = Some(error.into()),
+                                    let last = [
+                                        f32::from(event.position.x - bounds.origin.x),
+                                        f32::from(event.position.y - bounds.origin.y),
+                                    ];
+                                    let previous = marquee.hits();
+                                    let result = (event.pressed_button == Some(MouseButton::Left))
+                                        .then(|| view.velocity_marquee_context(captured.bounds))
+                                        .flatten()
+                                        .ok_or("velocity marquee context changed")
+                                        .and_then(|context| {
+                                            marquee.update_with_hits(
+                                                context,
+                                                &view.midi_selection,
+                                                last,
+                                                |first, last| {
+                                                    hover_scene
+                                                        .marquee_hits(first, last, width, height)
+                                                },
+                                            )
+                                        })
+                                        .and_then(|_| {
+                                            view.apply_live_midi_marquee(&mut marquee, &previous)
+                                        });
+                                    match result {
+                                        Ok(_) => view.midi_velocity.marquee = Some(marquee),
+                                        Err(error) => {
+                                            view.cancel_live_midi_marquee(marquee);
+                                            view.error = Some(error.into());
                                         }
                                     }
                                     cx.stop_propagation();
@@ -705,16 +719,16 @@ impl EditorView {
                                     return;
                                 }
                                 if let Some(mut marquee) = view.midi_velocity.marquee.take() {
-                                    if let Some(context) = view
+                                    let last = [
+                                        f32::from(event.position.x - bounds.origin.x),
+                                        f32::from(event.position.y - bounds.origin.y),
+                                    ];
+                                    let previous = marquee.hits();
+                                    let result = view
                                         .velocity_marquee_context(captured.bounds)
-                                        .filter(|_| !view.edit_pending())
-                                    {
-                                        let last = [
-                                            f32::from(event.position.x - bounds.origin.x),
-                                            f32::from(event.position.y - bounds.origin.y),
-                                        ];
-                                        let result = marquee
-                                            .update_with_hits(
+                                        .ok_or("velocity marquee context changed")
+                                        .and_then(|context| {
+                                            marquee.update_with_hits(
                                                 context,
                                                 &view.midi_selection,
                                                 last,
@@ -723,13 +737,13 @@ impl EditorView {
                                                         .marquee_hits(first, last, width, height)
                                                 },
                                             )
-                                            .and_then(|_| {
-                                                marquee.finish(context, &mut view.midi_selection)
-                                            });
-                                        match result {
-                                            Ok(_) => view.audition_midi_selection(),
-                                            Err(error) => view.error = Some(error.into()),
-                                        }
+                                        })
+                                        .and_then(|_| {
+                                            view.apply_live_midi_marquee(&mut marquee, &previous)
+                                        });
+                                    if let Err(error) = result {
+                                        view.cancel_live_midi_marquee(marquee);
+                                        view.error = Some(error.into());
                                     }
                                     cx.stop_propagation();
                                     cx.notify();
