@@ -786,13 +786,29 @@ fn actual_absent_optional_interface_accepts_explicit_unavailable_without_fabrica
         output.pcm[0],
         [block.pcm[0][0] * 0.5, block.pcm[0][1] * 0.5]
     );
-    assert!(
-        instance
-            .stop_and_reap_on_control()
-            .unwrap()
-            .status
-            .success()
+    let stopped = instance.quiesce_on_control().unwrap();
+    assert!(!stopped.facts().presentation_available);
+    let previous = stopped.configuration().binding;
+    let instance = stopped
+        .resume_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        instance.ready().presentation,
+        protocol::Presentation::Absent
     );
+    let retired = instance
+        .quiesce_on_control()
+        .unwrap()
+        .retire_on_control()
+        .unwrap();
+    assert!(retired.status.success());
+    assert_eq!(retired.terminal.unwrap().blocks, 1);
 }
 
 #[test]
@@ -1130,3 +1146,6 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
     }
     assert!(other.stop_and_reap_on_control().unwrap().status.success());
 }
+
+#[path = "native_tests/epoch.rs"]
+mod epoch;

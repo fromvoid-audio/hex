@@ -445,6 +445,55 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 8)
                 self.assertEqual(self.observation()[10], 0)
 
+    def test_epoch_control_rejects_bad_prefix_and_resume_before_quiescence(self):
+        base = bytearray(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
+        cases = []
+        for offset in (4, 6, 8, 10, 16, 24, 32, 40, 48, 56):
+            bad = base.copy()
+            bad[offset] ^= 1
+            cases.append(bytes(bad))
+        cases.append(struct.pack("<4sHHHB5x6QII", b"HXVR", 1, 0, 0, 1,
+                                 *BINDING, 3, 5, 77, 91))
+        for packet in cases:
+            with self.subTest(packet=packet.hex()):
+                session = self.session()
+                self.ready(session)
+                session.socket.sendall(packet)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+                self.assertEqual(self.observation()[8], 1)
+
+    def test_quiescent_raw_resume_refuses_stale_binding_flags_and_shape_before_restart(self):
+        base = bytearray(struct.pack("<4sHHHB5x6QII", b"HXVR", 1, 0, 0, 1,
+                                    *BINDING, 3, 5, 77, 91))
+        cases = []
+        for offset in (4, 6, 8, 11, 16, 24, 32, 40):
+            bad = base.copy()
+            bad[offset] ^= 1
+            cases.append(bytes(bad))
+        for graph, epoch in ((2, 5), (3, 4), (3, 0)):
+            bad = base.copy()
+            struct.pack_into("<QQ", bad, 48, graph, epoch)
+            cases.append(bytes(bad))
+        bad = base.copy()
+        bad[10] = 2
+        cases.append(bytes(bad))
+        for packet in cases:
+            with self.subTest(packet=packet.hex()):
+                session = self.session()
+                self.ready(session)
+                session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
+                                                   *BINDING, 0, 0))
+                magic, body = session.message()
+                self.assertEqual(magic, b"HXVIQF01")
+                self.assertEqual(struct.unpack_from("<QQ", body, len(body)-16), (0, 0))
+                session.socket.sendall(packet)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+                self.assertEqual(self.observation()[8:10], (1, 1))
+
     def test_unsupported_configuration_refuses_before_module_entry(self):
         for config in ({"precision": 1}, {"rate": float("nan")}, {"maximum": 257},
                        {"channels": (3, 2)}, {"channels": (2, 0)}, {"cid": bytes(16)}):
