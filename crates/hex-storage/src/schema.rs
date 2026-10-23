@@ -2089,7 +2089,7 @@ impl DocumentV11 {
         if header.version == 33 {
             return Err(StorageError::Invalid("unsupported alpha project format 33"));
         }
-        if header.version == 36 {
+        if header.version == 37 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {

@@ -412,12 +412,12 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let (_, length, _, _) = edit.projected_domain(project.tempo_map())?;
-        let tempo = if edit.musical_start.is_some() {
+        let tempo = if edit.reference_start_raw().is_some() {
             Some(self.shared_tempo(edit.processing_tempo(project.tempo_map()))?)
         } else {
             None
         };
-        let origin = if edit.musical_start.is_some() {
+        let origin = if edit.reference_start_raw().is_some() {
             edit.processing_origin()?
         } else {
             0

@@ -25,12 +25,13 @@ pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS, SectionReorderPreview,
 };
 mod audio_events;
+mod project_tempo;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioProcessingProjection, AudioViewMode, AudioViewOccurrence, AudioViewPlacement,
     AudioViewProjection, AudioViewResize, AudioViewResizeOperation, BeatsPreserve, BeatsTail,
     MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,

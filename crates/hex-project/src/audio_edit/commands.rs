@@ -4,11 +4,11 @@ pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Inva
     let Some(edit) = &clip.edit else {
         return Ok(());
     };
-    if edit.placement.is_some() {
+    if edit.placement.is_some() || matches!(edit.timing, AudioClipTiming::Frozen { .. }) {
         let (start, end) = AudioViewProjection::from_clip(clip, tempo)?.outer_frame_bounds();
         clip.start = start;
         clip.duration = end - start;
-    } else if let Some(start) = edit.musical_start {
+    } else if let Some(start) = edit.live_musical_start() {
         let end = start
             .raw()
             .checked_add(edit.view_end - edit.view_start)
@@ -47,10 +47,10 @@ pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Inva
 pub(crate) fn move_clip(clip: &mut Clip, start: u64, tempo: &TempoMap) -> Result<(), Invalid> {
     let previous_duration = clip.duration;
     if let Some(edit) = clip.edit.as_mut()
-        && edit.musical_start.is_some()
+        && edit.live_musical_start().is_some()
     {
         let edit = Arc::make_mut(edit);
-        edit.musical_start = Some(tempo.frame_to_beat(start)?);
+        edit.timing = AudioClipTiming::Musical(tempo.frame_to_beat(start)?);
         if edit.processing_projection.is_some() {
             edit.retain_frame_bounds(
                 start,
@@ -86,7 +86,8 @@ pub(crate) fn trim_view(
             AudioDomainClock::Frames(_) => u64::try_from(i128::from(frame) - origin_frame)
                 .map_err(|_| Invalid("trim precedes retained audio domain"))?,
             AudioDomainClock::Beats(_) => u64::try_from(
-                i128::from(tempo.frame_to_beat(frame)?.raw()) - edit.projection_origin()?,
+                edit.reference_beat_at_destination(clip, frame, tempo)?
+                    - edit.projection_origin()?,
             )
             .map_err(|_| Invalid("trim precedes retained audio domain"))?,
         }
@@ -96,6 +97,10 @@ pub(crate) fn trim_view(
             "trim exceeds retained audio domain; edit source region or length to create a new root",
         ));
     }
+    let reference_start = edit
+        .reference_start_raw()
+        .map(|_| edit.reference_beat_at_destination(clip, frame, tempo))
+        .transpose()?;
     let mut result = clip.clone();
     let view = result
         .audio_edit_mut()
@@ -103,9 +108,7 @@ pub(crate) fn trim_view(
     match edge {
         TrimEdge::Left if coordinate < view.view_end => {
             view.view_start = coordinate;
-            if view.musical_start.is_some() {
-                view.musical_start = Some(tempo.frame_to_beat(frame)?);
-            }
+            view.set_reference_start_raw(reference_start)?;
             result.start = frame;
         }
         TrimEdge::Right if coordinate > view.view_start => view.view_end = coordinate,
@@ -348,7 +351,7 @@ pub(crate) fn reset_region(
     domain.source_gain = old.domain.source_gain.clone();
     domain.warp = old.domain.warp.clone();
     domain.warp_enabled = old.domain.warp_enabled;
-    if old.musical_start.is_some() {
+    if old.live_musical_start().is_some() {
         edit.anchor(start, project.tempo_map())?;
     }
     clip.edit = Some(Arc::new(edit));
@@ -394,10 +397,10 @@ pub(crate) fn set_clip_fade_envelope(
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
     let edit = Arc::make_mut(&mut owned_edit);
-    let projection = if edit.musical_start.is_some() {
+    let projection = if edit.reference_start_raw().is_some() {
         Some(AudioFadeProjection {
-            tempo: tempo.clone(),
-            origin_beat_raw: edit.projection_origin()? + i128::from(edit.view_start),
+            tempo: edit.processing_tempo(tempo).clone(),
+            origin_beat_raw: edit.processing_origin()? + i128::from(edit.view_start),
             local_start_raw: edit.view_start,
         })
     } else {

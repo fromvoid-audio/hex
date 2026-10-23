@@ -1,7 +1,7 @@
-//! Strict current musical audio metadata, including retained processing context; no DSP or PCM persistence.
+//! Current musical/frozen audio metadata adapter; no DSP or PCM persistence.
 use crate::StorageError;
 use hex_project::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
     BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
     WarpSettings,
@@ -19,7 +19,7 @@ pub(crate) struct AudioEditDto {
     domain: Domain,
     view_start: u64,
     view_end: u64,
-    musical_start_raw: Option<u64>,
+    timing: Timing,
     #[serde(deserialize_with = "required_placement")]
     placement: Option<Placement>,
 }
@@ -36,12 +36,26 @@ struct ProcessingProjection {
     tempo_points: Vec<Point>,
     origin_beat_raw: String,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Timing {
+    Frames,
+    Musical {
+        start_raw: u64,
+    },
+    Frozen {
+        reference_start_raw: String,
+        sample_rate: u32,
+        #[serde(deserialize_with = "bounded_tempo_points")]
+        tempo_points: Vec<Point>,
+    },
+}
 fn bounded_tempo_points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Point>, D::Error> {
     struct Points;
     impl<'de> serde::de::Visitor<'de> for Points {
         type Value = Vec<Point>;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("bounded retained processing tempo points")
+            f.write_str("bounded frozen audio tempo points")
         }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(
             self,
@@ -51,7 +65,7 @@ fn bounded_tempo_points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Po
             while let Some(point) = seq.next_element()? {
                 if points.len() == hex_project::MAX_TEMPO_POINTS {
                     return Err(serde::de::Error::custom(
-                        "retained processing tempo point limit reached",
+                        "frozen audio tempo point limit exceeded",
                     ));
                 }
                 points.push(point);
@@ -283,7 +297,27 @@ impl From<AudioClipEdit> for AudioEditDto {
             },
             view_start: edit.view_start,
             view_end: edit.view_end,
-            musical_start_raw: edit.musical_start.map(BeatTime::raw),
+            timing: match &edit.timing {
+                AudioClipTiming::Frames => Timing::Frames,
+                AudioClipTiming::Musical(start) => Timing::Musical {
+                    start_raw: start.raw(),
+                },
+                AudioClipTiming::Frozen {
+                    reference_start_raw,
+                    tempo,
+                } => Timing::Frozen {
+                    reference_start_raw: reference_start_raw.to_string(),
+                    sample_rate: tempo.sample_rate(),
+                    tempo_points: tempo
+                        .points()
+                        .iter()
+                        .map(|p| Point {
+                            beat_raw: p.beat().raw(),
+                            micro_bpm: p.tempo().micro_bpm(),
+                        })
+                        .collect(),
+                },
+            },
             placement: edit.placement.map(|p| Placement {
                 mode: match p.mode {
                     AudioViewMode::Once => ViewMode::Once,
@@ -447,7 +481,37 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             }),
             view_start: dto.view_start,
             view_end: dto.view_end,
-            musical_start: dto.musical_start_raw.map(BeatTime::from_raw),
+            timing: match dto.timing {
+                Timing::Frames => AudioClipTiming::Frames,
+                Timing::Musical { start_raw } => {
+                    AudioClipTiming::Musical(BeatTime::from_raw(start_raw))
+                }
+                Timing::Frozen {
+                    reference_start_raw,
+                    sample_rate,
+                    tempo_points,
+                } => {
+                    let reference_start_raw = reference_start_raw
+                        .parse::<i128>()
+                        .map_err(|_| StorageError::Invalid("invalid frozen audio reference"))?;
+                    let points = tempo_points
+                        .into_iter()
+                        .map(|p| {
+                            Tempo::new(p.micro_bpm)
+                                .map(|tempo| TempoPoint::new(BeatTime::from_raw(p.beat_raw), tempo))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| StorageError::Invalid(e.0))?;
+                    let tempo = TempoMap::new(sample_rate, points)
+                        .map_err(|e| StorageError::Invalid(e.0))?;
+                    hex_project::audio_projection_frame(&tempo, reference_start_raw)
+                        .map_err(|e| StorageError::Invalid(e.0))?;
+                    AudioClipTiming::Frozen {
+                        reference_start_raw,
+                        tempo: Arc::new(tempo),
+                    }
+                }
+            },
             placement: dto.placement.map(|p| AudioViewPlacement {
                 mode: match p.mode {
                     ViewMode::Once => AudioViewMode::Once,

@@ -96,7 +96,7 @@ fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_an
     let project = fixture();
     let bytes = hex_storage::encode(&project).unwrap();
     let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 36);
+    assert_eq!(doc["version"], 37);
     assert_eq!(doc["arrangement_sections"][0]["name"], "Chorus");
     assert_eq!(doc["arrangement_sections"][0]["color"], "rose");
     assert!(
@@ -165,6 +165,52 @@ fn malformed_missing_overlap_duplicate_ids_and_unbounded_residuals_are_refused()
     wrong_processing["audio_clip_state"][0]["audio_edit"]["processing_projection"]["tempo_points"]
         [0]["micro_bpm"] = json!(240_000_000);
     cases.push(wrong_processing);
+    for doc in cases {
+        assert!(
+            hex_storage::decode(&serde_json::to_vec(&doc).unwrap()).is_err(),
+            "{doc}"
+        );
+    }
+}
+
+#[test]
+fn global_tempo_absorbed_sections_roundtrip_and_reject_competing_processing_clocks() {
+    let mut editor = Editor::new(fixture(), 16).unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let bytes = hex_storage::encode(editor.project()).unwrap();
+    let decoded = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(decoded.snapshot(), editor.project().snapshot());
+    assert!(decoded.tracks()[0].clips().iter().all(|c| {
+        let edit = c.audio_edit().unwrap();
+        matches!(edit.timing, hex_project::AudioClipTiming::Frozen { .. })
+            && edit.processing_projection.is_none()
+    }));
+    let base: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let retained: serde_json::Value =
+        serde_json::from_slice(&hex_storage::encode(&fixture()).unwrap()).unwrap();
+    let mut cases = Vec::new();
+    let mut competing = base.clone();
+    competing["audio_clip_state"][0]["audio_edit"]["processing_projection"] =
+        retained["audio_clip_state"][0]["audio_edit"]["processing_projection"].clone();
+    cases.push(competing);
+    let mut residual = base.clone();
+    residual["audio_clip_state"][0]["audio_edit"]["placement_start_offset"] = json!(1);
+    cases.push(residual);
+    let mut wrong_rate = base.clone();
+    wrong_rate["audio_clip_state"][0]["audio_edit"]["timing"]["sample_rate"] = json!(16000);
+    cases.push(wrong_rate);
+    for field in ["timing", "placement_end_offset"] {
+        let mut missing = base.clone();
+        missing["audio_clip_state"][0]["audio_edit"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        cases.push(missing);
+    }
     for doc in cases {
         assert!(
             hex_storage::decode(&serde_json::to_vec(&doc).unwrap()).is_err(),

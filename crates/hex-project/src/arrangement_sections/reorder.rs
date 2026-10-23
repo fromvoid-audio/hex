@@ -290,7 +290,7 @@ fn audio_fragments(
             .checked_add(pair[1] - pair[0])
             .ok_or(Invalid("audio section destination overflow"))?;
         if let Some(edit) = fragment.audio_edit_mut()
-            && let Some(start) = edit.musical_start
+            && let Some(start) = edit.live_musical_start()
         {
             // The checked frame inverse may lie one raw beat unit before a
             // structural fence. Retain its exact authored fence identity so
@@ -304,7 +304,7 @@ fn audio_fragments(
             } else {
                 start
             };
-            edit.musical_start = Some(preview.map_beat(start)?);
+            edit.timing = crate::AudioClipTiming::Musical(preview.map_beat(start)?);
             edit.retain_frame_bounds(destination, destination_end, new)?;
         }
         fragment.start = destination;

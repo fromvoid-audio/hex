@@ -1903,6 +1903,9 @@ fn derived_pcm_ingress_refusal_keeps_its_actual_reservation_and_buffer() {
     assert_eq!(budget.used(), 0);
 }
 
+#[path = "tests/project_tempo.rs"]
+mod project_tempo;
+
 #[test]
 fn section_reorder_preserves_complete_processed_roots_pcm_across_fractional_tempo_prefixes_and_repeated_moves()
  {

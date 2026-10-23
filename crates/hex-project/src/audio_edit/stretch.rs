@@ -41,7 +41,7 @@ pub(super) fn retime(
             return Err(Invalid("stretched cycle phase exceeds selected interval"));
         }
     }
-    edit.musical_start = Some(tempo.frame_to_beat(start)?);
+    edit.timing = AudioClipTiming::Musical(tempo.frame_to_beat(start)?);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
     domain.fade_start = scale(domain.fade_start, numerator, denominator)?;

@@ -260,6 +260,16 @@ fn resident_sections_reproject_stopped_cursor_and_history_and_refuse_stale_playi
             .load(Acquire),
         applied
     );
+    // Failed admission must leave the original history edge usable and release
+    // the pre-commit gate, rather than merely retain a matching visible snapshot.
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    let recovered = run_callback(&mut h, Request::Undo);
+    assert!(recovered.error.is_none(), "{:?}", recovered.error);
+    let recovered_snapshot = recovered.state.project.snapshot();
+    assert!(recovered_snapshot.next_id >= expected_before.next_id);
+    expected_before.next_id = recovered_snapshot.next_id;
+    assert_eq!(recovered_snapshot, expected_before);
+    h.applied(applied);
 }
 
 #[test]
