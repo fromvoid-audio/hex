@@ -114,6 +114,8 @@ DISCOVERY_ROOT = Path("Contents/Helpers")
 DISCOVERY_RECEIPT = Path("Contents/Resources/vst3-discovery.json")
 DISCOVERY_APP = "hex-vst3-host.app"
 DISCOVERY_SCANNER = "hex-vst3-scan-macos"
+INSTANCE_RECEIPT = Path("Contents/Resources/vst3-instance.json")
+INSTANCE_APP = "hex-vst3-instance.app"
 
 
 def discovery_builder():
@@ -156,7 +158,7 @@ def stage_discovery(stage: Path, source: Path, candidate: str, scanner: dict, si
     builder = discovery_builder()
     builder.macho(scanner_path, 2)
     destination = stage / DISCOVERY_ROOT
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source.parent / DISCOVERY_APP, destination / DISCOVERY_APP)
     shutil.copy2(scanner_path, destination / DISCOVERY_SCANNER)
     if (builder.inventory(destination / DISCOVERY_APP) != data["bundle_files"]
@@ -197,6 +199,54 @@ def verify_discovery_package(app: Path, receipt: dict) -> None:
             raise DeliveryError("discovery package signer/identifier mismatch")
     if data.get("signing", {}).get("certificate_sha1") != receipt["signing"]["certificate_sha1"]:
         raise DeliveryError("discovery native receipt signer mismatch")
+
+
+def validate_instance_input(path: Path, candidate: str, *, packaged=False) -> dict:
+    assert_plain_path(path.absolute())
+    data = discovery_builder().verify(path)
+    if (data.get("scope") != "native-macos-instance"
+            or data.get("source_commit") != candidate or data.get("source_dirty") is not False
+            or data.get("package_layout") != ("hex-app-instance-v1" if packaged else None)):
+        raise DeliveryError("instance helper must be minimal and built from the exact clean candidate")
+    return data
+
+
+def stage_instance(stage: Path, source: Path, candidate: str, signing: dict) -> dict:
+    data = validate_instance_input(source, candidate)
+    builder = discovery_builder()
+    destination = stage / DISCOVERY_ROOT / INSTANCE_APP
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source.parent / INSTANCE_APP, destination)
+    if (builder.inventory(destination) != data["bundle_files"]
+            or validate_instance_input(source, candidate) != data):
+        raise DeliveryError("instance inputs changed during staging")
+    input_receipt_sha256 = sha(source)
+    sign_discovery(destination, "org.portalsurfer.hex.vst3.instance", signing)
+    data["bundle_files"] = builder.inventory(destination)
+    data["signing"] = {"mode": "Developer ID local instance; not notarized; no added entitlements", **signing}
+    data["package_layout"] = "hex-app-instance-v1"
+    packaged_receipt = stage / INSTANCE_RECEIPT
+    write_json(packaged_receipt, data)
+    builder.verify(packaged_receipt)
+    return {"source": candidate, "input_receipt_sha256": input_receipt_sha256,
+            "root": str(DISCOVERY_ROOT), "receipt_sha256": sha(packaged_receipt), "signing": signing}
+
+
+def verify_instance_package(app: Path, receipt: dict) -> None:
+    evidence = receipt["vst3_instance"]
+    if evidence.get("source") != receipt.get("source") or evidence.get("root") != str(DISCOVERY_ROOT):
+        raise DeliveryError("instance package source/location mismatch")
+    packaged_receipt = app / INSTANCE_RECEIPT
+    data = validate_instance_input(packaged_receipt, receipt["source"], packaged=True)
+    if sha(packaged_receipt) != evidence.get("receipt_sha256"):
+        raise DeliveryError("instance package changed")
+    helper = app / DISCOVERY_ROOT / INSTANCE_APP
+    run(["codesign", "--verify", "--strict", str(helper)])
+    actual = native_signature(helper)
+    if (actual["identifier"] != "org.portalsurfer.hex.vst3.instance"
+            or actual["team_identifier"] != receipt["signing"]["team_identifier"]
+            or data.get("signing", {}).get("certificate_sha1") != receipt["signing"]["certificate_sha1"]):
+        raise DeliveryError("instance package signer mismatch")
 
 
 def write_json(path: Path, value: object) -> None:
@@ -336,6 +386,8 @@ def verify(app: Path) -> dict:
     verify_native_executable(app / "Contents/MacOS/hex")
     if receipt.get("vst3_discovery") is not None:
         verify_discovery_package(app, receipt)
+    if receipt.get("vst3_instance") is not None:
+        verify_instance_package(app, receipt)
     return receipt
 
 
@@ -663,6 +715,9 @@ def build(args) -> dict:
         if replacement is not None:
             recovery = {"expected_recreated_target_identity": replacement,
                         "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
+        instance_receipt = getattr(args, "vst3_instance_receipt", None)
+        if instance_receipt is not None:
+            validate_instance_input(instance_receipt, args.candidate)
         discovery_receipt = getattr(args, "vst3_discovery_receipt", None)
         if discovery_receipt is not None:
             validate_discovery_input(discovery_receipt, args.candidate)
@@ -682,6 +737,9 @@ def build(args) -> dict:
             (contents / "MacOS").mkdir(parents=True)
             (contents / "Resources/licenses").mkdir(parents=True)
             shutil.copy2(binary, contents / "MacOS/hex")
+            instance_evidence = None
+            if instance_receipt is not None:
+                instance_evidence = stage_instance(stage, instance_receipt, args.candidate, signing)
             discovery_evidence = None
             if discovery_receipt is not None:
                 discovery_evidence = stage_discovery(
@@ -717,6 +775,7 @@ def build(args) -> dict:
                        "verification": {"mode": "source-only" if build_only else "scoped-dev-ci" if getattr(args, "dev_profile", False) else "full-ci",
                                         "tests": "not_run" if build_only else "passed"},
                        "vst3_discovery": discovery_evidence,
+                       "vst3_instance": instance_evidence,
                        "included": included, "changelog": changelog_identity, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "Developer ID sealed local test bundle; not notarized",
@@ -749,6 +808,8 @@ def main() -> int:
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+    parser.add_argument("--vst3-instance-receipt", type=Path,
+                        help="include exact-source minimal native instance helper")
     parser.add_argument("--vst3-discovery-receipt", type=Path,
                         help="include exact-source minimal native discovery helper and optimized scanner")
     parser.add_argument("--expected-release-owner-sha256",

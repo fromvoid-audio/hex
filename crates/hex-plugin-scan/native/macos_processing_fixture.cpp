@@ -4,30 +4,94 @@
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <stdexcept>
 #include <limits>
 #include <pthread.h>
+#include <cstdio>
+#include <cstdlib>
+#include "pluginterfaces/base/ibstream.h"
+#ifndef HEX_INSTANCE_VARIANT
+#define HEX_INSTANCE_VARIANT 0
+#endif
 
 namespace {
 struct Observation {
     int violations=0, created=0, initialized=0, terminated=0;
     int arrangements=0, setups=0, activations=0, starts=0, stops=0, blocks=0, flushes=0;
 } observed;
-int next_mode=0,next_fault=0;
+int next_mode=0,next_fault=HEX_INSTANCE_VARIANT;
 bool control() { const bool valid=pthread_main_np()!=0; if (!valid) ++observed.violations; return valid; }
 const TUID processing_id={0x48,0x45,0x58,0x50,1,2,3,4,5,6,7,8,9,10,11,12};
 
-class ProcessingProcessor final : public Processor {
+static void trace(int stage,int factory_refs=-1) {
+    const auto* path=std::getenv("HEX_ORIGINAL_INSTANCE_TRACE");
+    if (!path || std::strlen(path)>4096) return;
+    // Only owned SDK test modules implement this opt-in trace, on helper control
+    // before/after processing. Production helper code never reads this variable.
+    auto* output=std::fopen(path,"wb");if (!output) return;
+    const int values[]={stage,observed.violations,observed.created,observed.initialized,observed.terminated,
+        observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
+        observed.blocks,observed.flushes,static_cast<int>(objects.load()),factory_refs};
+    std::fwrite(values,sizeof(int),14,output);std::fclose(output);
+}
+class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int mode=next_mode,fault=next_fault;
     bool initialized=false, arranged=false, setup=false, active=false, processing=false;
     bool input=false,output=false,thread_bound=false;
     int32 inputs=2,outputs=2,maximum=0,block=0,precision=kSample32;
     double sample_rate=0;
     float gain=1;
+    uint32 input_latency=0,output_latency=0;
+    IBStream* retained_stream=nullptr;
     pthread_t worker{};
     bool same_worker() const { return !thread_bound || pthread_equal(worker,pthread_self()); }
 public:
     ProcessingProcessor() { ++observed.created; }
-    ~ProcessingProcessor() { if (initialized || active || processing) ++observed.violations; }
+    ~ProcessingProcessor() {
+        if (initialized || active || processing) ++observed.violations;
+        if (retained_stream && fault!=16) retained_stream->release();
+    }
+    uint32 PLUGIN_API addRef() override { return Processor::addRef(); }
+    uint32 PLUGIN_API release() override { return Processor::release(); }
+    tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
+        if (!out || !iid) return kInvalidArgument;
+        if (same(iid,INLINE_UID_OF(IAudioPresentationLatency))) {
+            *out=static_cast<IAudioPresentationLatency*>(this);addRef();return kResultOk;
+        }
+        return Processor::queryInterface(iid,out);
+    }
+    tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
+        if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
+            (direction==kInput && !inputs) || fault==17) return kResultFalse;
+        (direction==kInput?input_latency:output_latency)=value;return kResultOk;
+    }
+    tresult PLUGIN_API getState(IBStream* stream) override {
+        if (!control() || !active || processing || !stream) return kResultFalse;
+        if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
+        if (fault==15) { std::array<unsigned char,4001> huge{};return stream->write(huge.data(),4001,nullptr); }
+        if (fault==23) {
+            stream->seek(std::numeric_limits<int64>::min(),IBStream::kIBSeekCur,nullptr);
+            stream->seek(std::numeric_limits<int64>::max(),IBStream::kIBSeekSet,nullptr);
+            return kResultOk; // rejected stream operations must not masquerade as captured state
+        }
+        if (fault==24) stream->release(); // original invalid-reference sensitivity control
+        if (fault==16) { stream->addRef();retained_stream=stream; }
+        std::array<unsigned char,32> bytes{};std::memcpy(bytes.data(),"HXPS",4);
+        const uint32 count=static_cast<uint32>(block);std::memcpy(bytes.data()+4,&count,4);
+        std::memcpy(bytes.data()+8,&gain,4);std::memcpy(bytes.data()+12,&sample_rate,8);
+        bytes[20]=static_cast<unsigned char>(inputs);bytes[21]=static_cast<unsigned char>(outputs);
+        std::memcpy(bytes.data()+24,&input_latency,4);std::memcpy(bytes.data()+28,&output_latency,4);
+        ISizeableStream* sized=nullptr;
+        if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
+            return kResultFalse;
+        const bool sized_ok=sized->setStreamSize(32)==kResultOk;sized->release();
+        int32 written=0;
+        const bool ok=sized_ok && stream->seek(4,IBStream::kIBSeekSet,nullptr)==kResultOk &&
+            stream->write(bytes.data()+4,28,&written)==kResultOk && written==28 &&
+            stream->seek(0,IBStream::kIBSeekSet,nullptr)==kResultOk && stream->write(bytes.data(),4,&written)==kResultOk && written==4;
+        trace(4);return ok?kResultOk:kResultFalse;
+    }
     tresult PLUGIN_API initialize(FUnknown* host) override {
         if (!control() || initialized || !host) return kResultFalse;
         const auto result=Processor::initialize(host);
@@ -37,7 +101,7 @@ public:
     tresult PLUGIN_API terminate() override {
         if (!control() || !initialized || active || processing) return kResultFalse;
         const auto result=Processor::terminate();
-        if (result==kResultOk) { initialized=false; ++observed.terminated; }
+        if (result==kResultOk) { initialized=false; ++observed.terminated;trace(5); }
         return result;
     }
     int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
@@ -93,15 +157,19 @@ public:
         (direction==kInput?input:output)=enabled;return kResultOk;
     }
     tresult PLUGIN_API setActive(TBool enabled) override {
+        if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
         active=enabled;return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool enabled) override {
         if (!active || (enabled?processing:(!processing || !same_worker()))) return kResultFalse;
         if (pthread_main_np()) { ++observed.violations;return kResultFalse; }
+        if (enabled && fault==18) return kResultFalse;
         if (enabled) { worker=pthread_self();thread_bound=true;++observed.starts; }
         else ++observed.stops;
-        processing=enabled;return kResultOk;
+        processing=enabled;
+        if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
+        return kResultOk;
     }
     tresult PLUGIN_API process(ProcessData& data) override {
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
@@ -194,8 +262,24 @@ extern "C" __attribute__((visibility("default"))) int HexProcessingObservation(i
         observed.blocks,observed.flushes,static_cast<int>(objects.load()),static_cast<int>(processing_factory.count())};
     std::copy(std::begin(values),std::end(values),out);return 13;
 }
-extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) { return true; }
-extern "C" __attribute__((visibility("default"))) bool bundleExit() { return objects.load()==0 && processing_factory.count()==0; }
+extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) {
+    // Supported fault control belongs only to this original SDK fixture.
+    // The production helper never reads this environment variable.
+    const auto* selected=std::getenv("HEX_ORIGINAL_INSTANCE_VARIANT");
+    if (selected) {
+        const auto length=std::strlen(selected);if (!length || length>2) return false;
+        int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
+        if (value>26) return false;next_fault=value;
+    }
+    trace(1,0);
+    if (next_fault==21) for (int n=0;n<4096;++n) { std::fputs("owned SDK stdout noise\n",stdout);std::fputs("owned SDK stderr noise\n",stderr); }
+    if (next_fault==22 && std::fgetc(stdin)!=EOF) return false;
+    return next_fault!=19;
+}
+extern "C" __attribute__((visibility("default"))) bool bundleExit() {
+    trace(6,static_cast<int>(processing_factory.count()));
+    return next_fault!=20 && objects.load()==0 && processing_factory.count()==0;
+}
 extern "C" __attribute__((visibility("default"))) IPluginFactory* GetPluginFactory() {
     processing_factory.addRef();return &processing_factory;
 }
