@@ -1,16 +1,32 @@
-//! One selected Open intent across confirmation and an optional canonical save.
+//! One captured New/Open destination across preparation, confirmation and a canonical save.
 use super::super::EditorView;
+use crate::theme;
 use gpui::{AppContext, Context, PromptButton, PromptLevel, Window};
 use hex_session::DocumentAudioMode;
 use std::path::PathBuf;
 
 #[derive(Clone)]
+enum Destination {
+    New,
+    Open(PathBuf),
+}
+
+#[derive(Clone)]
 struct Intent {
-    path: PathBuf,
+    destination: Destination,
     mode: DocumentAudioMode,
     generation: u64,
     revision: u64,
     serial: u64,
+}
+
+impl Intent {
+    fn action_label(&self) -> &'static str {
+        match self.destination {
+            Destination::New => "new project",
+            Destination::Open(_) => "open",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -18,6 +34,11 @@ enum Phase {
     #[default]
     Idle,
     Picker {
+        generation: u64,
+        serial: u64,
+    },
+    PreparingNew {
+        mode: DocumentAudioMode,
         generation: u64,
         serial: u64,
     },
@@ -49,7 +70,7 @@ impl EditorView {
         let serial = self.project_open.next();
         if serial.is_none() {
             self.cancel_open_after_save();
-            self.error = Some("open request identity limit reached".into());
+            self.error = Some("project request identity limit reached".into());
         }
         serial
     }
@@ -93,13 +114,46 @@ impl EditorView {
         true
     }
 
+    pub(in crate::editor) fn queue_new_project(&mut self, mode: DocumentAudioMode) {
+        let Some(serial) = self.next_open_serial() else {
+            return;
+        };
+        self.cancel_duplicate_chain();
+        self.project_open.phase = Phase::PreparingNew {
+            mode,
+            generation: self.project_generation,
+            serial,
+        };
+        self.status = "preparing new project".into();
+        self.error = None;
+    }
+
+    /// A refused admitted edit/finalization cannot be followed by a new-document
+    /// prompt that would silently leave that work behind.
+    pub(in crate::editor) fn cancel_new_preparation(&mut self) -> bool {
+        if !matches!(self.project_open.phase, Phase::PreparingNew { .. }) {
+            return false;
+        }
+        self.cancel_open_after_save();
+        self.status = "new project cancelled".into();
+        true
+    }
+
     pub(in crate::editor) fn reconcile_project_open(
         &mut self,
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_open.busy()
-            || self.pending_open_path.is_none()
+        let queued_new = match self.project_open.phase {
+            Phase::PreparingNew {
+                mode,
+                generation,
+                serial,
+            } => Some((mode, generation, serial)),
+            _ => None,
+        };
+        if (self.project_open.busy() && queued_new.is_none())
+            || (queued_new.is_none() && self.pending_open_path.is_none())
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
             || self.device_gesture_pending()
@@ -113,27 +167,49 @@ impl EditorView {
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
             return;
         };
-        let Some(path) = self.pending_open_path.take() else {
-            return;
-        };
-        let Some(serial) = self.next_open_serial() else {
-            cx.notify();
-            return;
-        };
-        let intent = Intent {
-            path,
-            mode: self
-                .pending_open_mode
-                .take()
-                .unwrap_or(DocumentAudioMode::Resident),
-            generation: self.project_generation,
-            revision,
-            serial,
+        let intent = if let Some((mode, generation, serial)) = queued_new {
+            if generation != self.project_generation {
+                self.cancel_open_after_save();
+                self.status = "new project cancelled because project changed".into();
+                return;
+            }
+            Intent {
+                destination: Destination::New,
+                mode,
+                generation,
+                revision,
+                serial,
+            }
+        } else {
+            let Some(path) = self.pending_open_path.take() else {
+                return;
+            };
+            let Some(serial) = self.next_open_serial() else {
+                cx.notify();
+                return;
+            };
+            Intent {
+                destination: Destination::Open(path),
+                mode: self
+                    .pending_open_mode
+                    .take()
+                    .unwrap_or(DocumentAudioMode::Resident),
+                generation: self.project_generation,
+                revision,
+                serial,
+            }
         };
         self.project_open.phase = Phase::Confirming(intent.clone());
         cx.defer_in(window, move |view, window, cx| {
             view.confirm_selected_open(intent, window, cx)
         });
+    }
+
+    fn begin_selected_project(&mut self, intent: Intent) {
+        match intent.destination {
+            Destination::New => self.begin_new_project(intent.mode),
+            Destination::Open(path) => self.begin_open(path, intent.mode),
+        }
     }
 
     fn current_open_intent(&self, intent: &Intent) -> bool {
@@ -157,7 +233,8 @@ impl EditorView {
             .is_none_or(|state| state.revision != intent.revision)
         {
             self.cancel_open_after_save();
-            self.error = Some("project changed · open cancelled".into());
+            self.error =
+                Some(format!("project changed · {} cancelled", intent.action_label()).into());
             cx.notify();
             return;
         }
@@ -165,15 +242,29 @@ impl EditorView {
             || self.tuning.client.snapshot().is_some();
         if !dirty {
             self.project_open.phase = Phase::Idle;
-            self.begin_open(intent.path, intent.mode);
+            self.begin_selected_project(intent);
             cx.notify();
             return;
         }
+        let (title, detail) = match &intent.destination {
+            Destination::New => (
+                "save changes before creating a new project?",
+                "save keeps the current project before creating a new one. don't save discards unsaved changes after the new project is prepared.",
+            ),
+            Destination::Open(_) => (
+                "save changes before opening another project?",
+                "save keeps the current project before opening the selected file. don't save discards unsaved changes only after the selected file loads successfully.",
+            ),
+        };
         let answer = window.prompt(
             PromptLevel::Warning,
-            "save changes before opening another project?",
-            Some("save keeps the current project before opening the selected file. don't save discards unsaved changes only after the selected file loads successfully."),
-            &[PromptButton::new("save"), PromptButton::new("don't save"), PromptButton::cancel("cancel")],
+            &theme::text(title),
+            Some(&theme::text(detail)),
+            &[
+                PromptButton::new(theme::text("save")),
+                PromptButton::new(theme::text("don't save")),
+                PromptButton::cancel(theme::text("cancel")),
+            ],
             cx,
         );
         let handle = window.window_handle();
@@ -193,7 +284,9 @@ impl EditorView {
                         .is_none_or(|state| state.revision != intent.revision)
                     {
                         view.cancel_open_after_save();
-                        view.error = Some("project changed · open cancelled".into());
+                        view.error = Some(
+                            format!("project changed · {} cancelled", intent.action_label()).into(),
+                        );
                     } else {
                         match answer {
                             Some(0) => {
@@ -205,11 +298,11 @@ impl EditorView {
                             }
                             Some(1) => {
                                 view.project_open.phase = Phase::Idle;
-                                view.begin_open(intent.path, intent.mode);
+                                view.begin_selected_project(intent);
                             }
                             _ => {
                                 view.cancel_open_after_save();
-                                view.status = "open cancelled".into();
+                                view.status = format!("{} cancelled", intent.action_label()).into();
                             }
                         }
                     }
@@ -238,9 +331,15 @@ impl EditorView {
         let intent = intent.clone();
         self.cancel_open_after_save();
         if current {
-            self.begin_open(intent.path, intent.mode);
+            self.begin_selected_project(intent);
         } else if succeeded {
-            self.error = Some("project changed after saving · open cancelled".into());
+            self.error = Some(
+                format!(
+                    "project changed after saving · {} cancelled",
+                    intent.action_label()
+                )
+                .into(),
+            );
         }
     }
 }
@@ -293,7 +392,7 @@ mod tests {
                 document_path: Some(PathBuf::from("original.hex")),
             }));
             view.project_open.phase = Phase::Saving(Intent {
-                path: PathBuf::from("selected-next.hex"),
+                destination: Destination::Open(PathBuf::from("selected-next.hex")),
                 mode: DocumentAudioMode::Resident,
                 generation: view.project_generation,
                 revision,
