@@ -42,6 +42,11 @@ pub enum Command {
         section: crate::SectionId,
         before: crate::SectionId,
     },
+    /// One song-wide cut-and-insert permutation after a stable target ID.
+    ReorderSectionAfter {
+        section: crate::SectionId,
+        after: crate::SectionId,
+    },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
@@ -1431,7 +1436,8 @@ impl Project {
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
-            | Command::ReorderSectionBefore { .. }) => {
+            | Command::ReorderSectionBefore { .. }
+            | Command::ReorderSectionAfter { .. }) => {
                 crate::arrangement_sections::apply(self, command)
             }
             Command::SetTuning(tuning) => {

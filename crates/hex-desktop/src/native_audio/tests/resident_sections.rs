@@ -110,9 +110,9 @@ fn resident_sections_reproject_stopped_cursor_and_history_and_refuse_stale_playi
         &mut h,
         section_request(
             before_revision,
-            Command::ReorderSectionBefore {
-                section: chorus,
-                before: intro,
+            Command::ReorderSectionAfter {
+                section: intro,
+                after: chorus,
             },
         ),
     );
