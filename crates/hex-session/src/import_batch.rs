@@ -44,6 +44,8 @@ pub(crate) struct Preparation<'a> {
     pub native: &'a hex_engine::native_device_resources::ResidentDeviceAssets,
     pub table: Arc<hex_engine::SineTable>,
     pub transforms: &'a hex_engine::audio_transform::AudioTransformPreparation,
+    /// Private import-candidate display state, published only after final admission.
+    /// Preparation may replace its map without changing the canonical Session.
     pub waveforms: &'a std::cell::RefCell<
         std::collections::BTreeMap<hex_project::ClipId, crate::service::AudioClipWaveform>,
     >,
@@ -286,10 +288,14 @@ impl Session {
             });
         }
         let mut candidate_media = self.media_bank();
+        // Peak summaries retain their exact PCM owner. Keep all preparation
+        // mutations private until the model/history/media transaction accepts;
+        // a canceled candidate must not leave uncharged PCM in the display map.
+        let candidate_waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
         let sine_table = self.sine_table();
         let native = &self.native_assets;
         let transforms = &self.audio_transforms;
-        let waveforms = &self.audio_clip_waveforms;
+        let waveforms = &candidate_waveforms;
         let legacy = self
             .media
             .values()
@@ -340,6 +346,9 @@ impl Session {
             },
         )?;
         // All fallible work is complete. Created/results correspond one-for-one.
+        // Exclusive control ownership makes this publication an infallible move;
+        // the rejected path drops the private map and its unpublished PCM owners.
+        *self.audio_clip_waveforms.get_mut() = candidate_waveforms.into_inner();
         for (result, resident) in created.iter().zip(residents) {
             if let Created::Imported { asset, .. } = result {
                 self.media.insert(*asset, resident);
