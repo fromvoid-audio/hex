@@ -214,3 +214,61 @@ fn frozen_crop_can_move_and_extend_left_into_negative_reference_then_thaw() {
         AudioClipTiming::Musical(_)
     ));
 }
+
+#[test]
+fn retained_warped_sections_refuse_global_rebase_before_prepare_without_losing_redo() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    audio(&mut editor, 0, Some(true));
+    let mut add = |start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: "part".into(),
+                color: hex_project::ElementColor::Rose,
+                start: BeatTime::from_raw(BeatTime::ONE.raw() * start / 4),
+                end: BeatTime::from_raw(BeatTime::ONE.raw() * end / 4),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let source = add(1, 2);
+    let target = add(3, 4);
+    editor
+        .execute(Command::ReorderSectionBefore {
+            section: source,
+            before: target,
+        })
+        .unwrap();
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let mut prepared = false;
+    let error = editor
+        .execute_prepared::<_, hex_project::Invalid>(
+            Command::SetProjectTempo { tempo: bpm(60) },
+            |_| {
+                prepared = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(error.0.contains("rebase"));
+    assert!(!prepared);
+    assert_eq!(editor.project(), &before);
+    assert!(editor.can_redo());
+    // Redundant equal-tempo cut anchors do not prevent a legal current-format
+    // retained state from having a single-point map. Its exact no-op is allowed.
+    let mut single = before.snapshot();
+    single.tempo_points = vec![hex_project::TempoPoint::new(BeatTime::ZERO, bpm(120))];
+    let mut plain = Editor::new(Project::from_snapshot(single).unwrap(), 16).unwrap();
+    plain.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(plain.undo());
+    let before = plain.project().clone();
+    plain
+        .execute(Command::SetProjectTempo { tempo: bpm(120) })
+        .unwrap();
+    assert_eq!(plain.project(), &before);
+    assert!(plain.can_redo());
+}

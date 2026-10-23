@@ -231,7 +231,7 @@ fn current_format_strict_appearance_validation() {
         })
         .unwrap();
     let value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
-    assert_eq!(value["version"], 36);
+    assert_eq!(value["version"], 37);
     for (field, bad) in [
         ("track_colors", json!([])),
         ("track_colors", json!([{"track":1,"color":"unknown"}])),
