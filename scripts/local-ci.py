@@ -39,6 +39,11 @@ if _INPUT_SPEC is None or _INPUT_SPEC.loader is None:
     raise RuntimeError("Cargo input identity helper unavailable")
 build_inputs = importlib.util.module_from_spec(_INPUT_SPEC)
 _INPUT_SPEC.loader.exec_module(build_inputs)
+_CHECKPOINT_SPEC = importlib.util.spec_from_file_location("hex_ci_checkpoint", Path(__file__).with_name("ci_checkpoint.py"))
+if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
+    raise RuntimeError("CI checkpoint helper unavailable")
+ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
+_CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
@@ -456,6 +461,7 @@ class LocalCiRunner:
         adopt_target: bool = False,
         target_state_dir: Path | None = None,
         plan: dict | None = None,
+        resume_report: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
@@ -468,6 +474,10 @@ class LocalCiRunner:
             raise ValueError("minimum free space must be a bounded nonnegative integer byte count")
         self.mode = mode
         self.plan = plan
+        self.resume_report = resume_report
+        self._resume_evidence = None
+        self._checkpoint_inputs = None
+        self._checkpoint_target = None
         self.adopt_target = adopt_target
         self.target_state_dir = target_state_dir
         self.run_id = run_id or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
@@ -494,6 +504,7 @@ class LocalCiRunner:
             "invocation_argv": list(sys.argv),
             "steps": [],
             "plan": plan,
+            "minimum_free_bytes": self.min_free_bytes,
             "time_to_first_result_seconds": None,
         }
         self.git_identity: dict[str, object] | None = None
@@ -845,6 +856,17 @@ class LocalCiRunner:
             self._path_inputs = dependency_inputs["packages"]
             self._workspace_inputs = build_inputs.workspace_snapshot(self.root, self.env, self._release_metadata)
             self.env["HEX_GUARDED_CARGO_CONFIG_FINGERPRINT"] = dependency_inputs["sha256"]
+            if self._resume_evidence is not None:
+                expected = self._resume_evidence["checkpoint"]["target"]
+                actual = {"owner_sha256": ci_checkpoint.file_digest(owner_path),
+                          "target_identity": target_identity, "cargo_identity": self.cargo_identity,
+                          "dependency_inputs": dependency_inputs}
+                if self.adopt_target or actual != expected or owner_record["workspace_owner"] != current_workspace:
+                    raise TargetCacheError("checkpoint target ownership or guarded inputs changed; start a fresh run")
+                ci_checkpoint.require_no_jobs()
+                if (not self._capture_repository_state("resume_locked_tree")
+                        or self.summary["resume_locked_tree"] != self.summary["start_tree"]):
+                    raise TargetCacheError("checkpoint source changed before target lock")
             ownership_action = "reuse"
             cleanup_argv: list[str] | None = None
             previous_workspace = None
@@ -940,7 +962,7 @@ class LocalCiRunner:
             self._write_target_owner(owner_path, current_workspace)
             self.target_owner_claimed = True
             return True
-        except (TargetCacheError, OSError) as error:
+        except (TargetCacheError, OSError, ValueError) as error:
             self.summary["target_cache_error"] = str(error)
             release_error = lock.release()
             if release_error is not None:
@@ -1519,6 +1541,7 @@ class LocalCiRunner:
             "target_source": "CARGO_TARGET_DIR" if configured else "workspace default",
             "probes": probes,
         }
+        self.summary.setdefault("disk_history", []).append(self.summary["disk_headroom"])
         for label, requested in (("workspace", self.root), ("target", target)):
             probe = requested.absolute()
             while not probe.exists() and probe != probe.parent:
@@ -1559,6 +1582,7 @@ class LocalCiRunner:
             "exit_code": None,
             "log": str(log_path.relative_to(self.root)),
             "error": None,
+            "execution": "executed",
         }
         steps = self.summary["steps"]
         assert isinstance(steps, list)
@@ -1751,10 +1775,36 @@ class LocalCiRunner:
                 self.summary["exit_code"] = 2
                 print(self.summary["disk_error"], file=sys.stderr, flush=True)
             else:
+                if self.mode in {"full", "merge", "release"}:
+                    try:
+                        self._checkpoint_inputs = ci_checkpoint.execution_inputs(self.root, self.env, self.steps)
+                    except (ValueError, OSError) as error:
+                        # Ordinary validation remains available when a checkpoint
+                        # cannot identify every command. No inheritance is allowed.
+                        self.summary["checkpoint_unavailable"] = str(error)
+                if self.resume_report is not None:
+                    try:
+                        if self._checkpoint_inputs is None:
+                            raise ValueError("continuation executable inputs are unavailable")
+                        self._resume_evidence, lineage = ci_checkpoint.load(
+                            self.root, self.resume_report, self.summary, self.steps, self._checkpoint_inputs)
+                        if not self._prepare_target_cache():
+                            raise ValueError(self.summary.get("target_cache_error", "target guard refused"))
+                        self.summary["resume"] = lineage
+                        self.summary["steps"] = ci_checkpoint.inherited_steps(self._resume_evidence, lineage)
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        self.summary["resume_error"] = str(error)
+                        failed = True
                 self._write_summary()
                 for index, step in enumerate(self.steps, start=1):
+                    if failed:
+                        break
+                    if index <= len(self.summary["steps"]):
+                        continue
                     if self.mode in {"full", "merge", "release"} and self._uses_cargo_target(step) and not self._check_disk_headroom():
                         print(self.summary["disk_error"], file=sys.stderr, flush=True)
+                        if all("free_bytes" in p for p in self.summary["disk_headroom"]["probes"]):
+                            self.summary["disk_refusal"] = {"before_step": index - 1}
                         failed = True
                         break
                     if self._uses_cargo_target(step) and self.target_lock is None:
@@ -1774,6 +1824,14 @@ class LocalCiRunner:
                     if result["status"] != "passed":
                         failed = True
                         break
+                if self.summary.get("resume") and not failed:
+                    try:
+                        ci_checkpoint.validate_inheritance(self.root, self.summary)
+                        if self._checkpoint_inputs != ci_checkpoint.execution_inputs(self.root, self.env, self.steps):
+                            raise ValueError("continuation execution inputs changed during checks")
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        self.summary["resume_error"] = str(error)
+                        failed = True
                 partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -1798,6 +1856,13 @@ class LocalCiRunner:
                                     raise TargetCacheError("dependency inputs changed during guarded checks")
                                 self._completed_workspace_inputs()
                                 self._write_target_owner(self.target_owner_path, self.git_identity, checked=self.summary.get("exit_code") == 0)
+                                if self.summary.get("disk_refusal"):
+                                    self._checkpoint_target = {
+                                        "owner_sha256": ci_checkpoint.file_digest(self.target_owner_path),
+                                        "target_identity": self._directory_identity(Path(self.cargo_identity["target_directory"])),
+                                        "cargo_identity": self.cargo_identity,
+                                        "dependency_inputs": self._dependency_inputs,
+                                    }
                             except InterruptedRun:
                                 self.summary.update(status="interrupted", exit_code=130,
                                                     target_owner_update_error="dependency identity interrupted; owner not advanced")
@@ -1854,6 +1919,15 @@ class LocalCiRunner:
                             }
                         )
                 self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 6)
+                if self._checkpoint_inputs is not None and self.summary.get("disk_refusal"):
+                    try:
+                        if self._checkpoint_inputs != ci_checkpoint.execution_inputs(self.root, self.env, self.steps):
+                            raise ValueError("execution inputs changed during original checks")
+                        self.summary["checkpoint"] = ci_checkpoint.seal(
+                            self.root, self.summary, self.steps, self._checkpoint_inputs, self._checkpoint_target)
+                    except (ValueError, OSError, KeyError, TypeError) as error:
+                        if self.summary.get("disk_refusal"):
+                            self.summary["checkpoint_unavailable"] = str(error)
                 self._write_summary()
             finally:
                 # Even an end-snapshot or summary-write exception must restore
@@ -1880,6 +1954,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", help="exact current candidate commit for scoped checks")
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
+    parser.add_argument("--resume-report", type=Path,
+                        help="continue an exact-source plan stopped solely by a pre-step disk refusal")
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
     parser.add_argument("--test-filter", help="explicit nonempty Rust test filter for partial edit feedback")
     parser.add_argument("--features", default="", help="explicit package features for partial edit feedback")
@@ -1900,6 +1976,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--changelog-base", help="explicit first-generation Git baseline")
     parser.add_argument("--changelog-through", default="HEAD", help="immutable generation range end")
     arguments = parser.parse_args(argv)
+    if arguments.resume_report and (arguments.reuse_report or arguments.adopt_target
+                                    or arguments.quick or arguments.profile == "edit"
+                                    or arguments.prepare_changelog):
+        parser.error("--resume-report cannot combine reuse/adoption/quick/edit/changelog preparation")
     if arguments.prepare_changelog:
         command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
                    "--source", arguments.changelog_through]
@@ -1943,6 +2023,7 @@ def main(argv: list[str] | None = None) -> int:
         min_free_bytes=None if arguments.min_free_gib is None else arguments.min_free_gib * GIB,
         adopt_target=arguments.adopt_target,
         plan=plan,
+        resume_report=arguments.resume_report,
     )
     try:
         exit_code = runner.run()

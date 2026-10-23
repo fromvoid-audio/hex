@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import ast
 import hashlib
@@ -360,6 +360,289 @@ class LocalCiRunnerTests(unittest.TestCase):
         for value in (-1, 0.5, True, sys.maxsize + 1):
             with self.assertRaises(ValueError):
                 local_ci.LocalCiRunner(self.repo, min_free_bytes=value)
+
+    def checkpoint_fixture(self, name, *, stop="disk"):
+        """Real runner/owner/log behavior, with only tools and disk capacity faked."""
+        root = self.repo / name
+        root.mkdir()
+        (root / "source.rs").write_text("original source\n")
+        target = root / "cargo-target"
+        target.mkdir()
+        dependency = self.base / (name + "-dependency")
+        dependency.mkdir()
+        (dependency / "Cargo.toml").write_text('[package]\nname="helper"\nversion="1.0.0"\n')
+        (dependency / "lib.rs").write_text("pub fn unchanged() {}\n")
+        metadata = {
+            "target_directory": str(target), "workspace_root": str(root),
+            "workspace_members": ["fixture 0.1.0", "other 0.1.0"],
+            "packages": [
+                {"id": "fixture 0.1.0", "name": "fixture", "version": "0.1.0", "manifest_path": str(root / "Cargo.toml")},
+                {"id": "other 0.1.0", "name": "other", "version": "0.1.0", "manifest_path": str(root / "other/Cargo.toml")},
+                {"id": "helper 1.0.0", "name": "helper", "version": "1.0.0", "source": None, "manifest_path": str(dependency / "Cargo.toml")},
+            ],
+        }
+        script = "\n".join(
+            '    printf \'%s\\n\' "$CHECKPOINT_METADATA"' if line.lstrip().startswith("printf '{\"target_directory\"") else line
+            for line in FAKE_TOOL.splitlines()
+        )
+        script += """
+case "$tool $*" in
+  'cargo test checkpoint-suffix')
+    if [ "$CHECKPOINT_STOP" = interrupted ]; then kill -TERM "$PPID"; exit 0; fi ;;
+esac
+if [ "$tool" = cargo ]; then
+  echo "test result: ok. $CHECKPOINT_TEST_COUNT passed; 0 failed; 0 ignored; finished in 0.01s"
+fi
+"""
+        (self.bin / "cargo").write_text(script)
+        env = {**self.env, "FAKE_TOPLEVEL": str(root), "FAKE_COMMON_DIR": str(root / ".git"),
+               "FAKE_WORKSPACE_ROOT": str(root), "FAKE_METADATA_TARGET": str(target),
+               "FAKE_FILE_LIST": "source.rs", "CHECKPOINT_METADATA": json.dumps(metadata),
+               "CHECKPOINT_STOP": stop or "none", "CHECKPOINT_TEST_COUNT": "0" if stop == "zero" else "2"}
+        if stop == "failed":
+            env["FAIL_MATCH"] = "checkpoint-suffix"
+        steps = tuple(local_ci.Step(name, ("cargo", "test", name), requires_tests=True)
+                      for name in ("checkpoint-prefix", "checkpoint-suffix"))
+        case = SimpleNamespace(root=root, target=target, dependency=dependency, env=env, steps=steps)
+        original = self.checkpoint_runner(case, "stopped")
+        available = SimpleNamespace(total=100 * local_ci.GIB, free=4 * local_ci.GIB)
+        full = SimpleNamespace(total=100 * local_ci.GIB, free=0)
+        usage = [available] * 4 + [full] if stop == "disk" else [available] * 6
+        with patch.object(local_ci.shutil, "disk_usage", side_effect=usage):
+            result = original.run()
+        self.assertEqual(result, {"disk": 2, "failed": 1, "zero": 1, "interrupted": 130, None: 0}[stop])
+        case.path = original.summary_path
+        case.report = json.loads(case.path.read_text())
+        case.owner = original.target_owner_path
+        if stop == "disk":
+            self.assertEqual([row["status"] for row in case.report["steps"]], ["passed", "not_run"])
+            self.assertEqual(case.report["checkpoint"]["passed_count"], 1)
+            self.assertTrue(case.report["checkpoint"]["target"]["target_identity"])
+        return case
+
+    def checkpoint_runner(self, case, run_id, **kwargs):
+        return local_ci.LocalCiRunner(case.root, mode="full", run_id=run_id,
+            env=kwargs.pop("env", case.env), steps=kwargs.pop("steps", case.steps),
+            min_free_bytes=kwargs.pop("min_free_bytes", None), target_state_dir=self.target_state_dir, **kwargs)
+
+    def checkpoint_continue(self, case, **kwargs):
+        resumed = self.checkpoint_runner(case, "continued", resume_report=case.path, **kwargs)
+        with patch.object(local_ci.shutil, "disk_usage", return_value=SimpleNamespace(total=100 * local_ci.GIB, free=4 * local_ci.GIB)):
+            result = resumed.run()
+        return result, resumed
+
+    def test_checkpoint_continuation_runs_only_suffix_after_owned_cache_cleanup(self):
+        case = self.checkpoint_fixture("checkpoint-success")
+        original_bytes = case.path.read_bytes()
+        prefix_log = case.root / case.report["steps"][0]["log"]
+        log_bytes = prefix_log.read_bytes()
+        # Supported cleanup removes only inactive owned artifacts, retaining
+        # the physical target directory and its external ownership receipt.
+        inactive = case.target / "debug"
+        inactive.mkdir()
+        (inactive / "inactive.rlib").write_bytes(b"disposable compiler artifact")
+        shutil.rmtree(inactive)
+        before_calls = self.call_log.read_text()
+        with patch.object(local_ci.ci_checkpoint, "require_no_jobs"):
+            result, resumed = self.checkpoint_continue(case)
+        self.assertEqual(result, 0)
+        calls = self.call_log.read_text()[len(before_calls):]
+        self.assertIn("cargo test checkpoint-suffix", calls)
+        self.assertNotIn("cargo test checkpoint-prefix", calls)
+        # A stopped owner is not a complete cache certificate. The existing
+        # target guard may conservatively clean its owned dev packages; this
+        # does not erase the immutable passed-stage observations.
+        self.assertIn("cargo clean --profile dev --target-dir " + str(case.target), calls)
+        self.assertIn("--package fixture --package other", calls)
+        self.assertEqual(case.path.read_bytes(), original_bytes)
+        self.assertEqual(prefix_log.read_bytes(), log_bytes)
+        report = json.loads(resumed.summary_path.read_text())
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["target_cache"]["cleanup_status"], "passed")
+        self.assertEqual([row["execution"] for row in report["steps"]], ["inherited", "executed"])
+        inherited = report["steps"][0]
+        self.assertIsNone(inherited["duration_seconds"])
+        self.assertIsNone(inherited["started_at"])
+        self.assertEqual(inherited["test_results"], case.report["steps"][0]["test_results"])
+        self.assertEqual(inherited["inherited_from"]["sha256"], hashlib.sha256(original_bytes).hexdigest())
+        self.assertEqual(inherited["inherited_from"]["log"]["sha256"], hashlib.sha256(log_bytes).hexdigest())
+        self.assertFalse((resumed.output_dir / "01-checkpoint-prefix.log").exists())
+        local_ci.ci_checkpoint.validate_inheritance(case.root, report)
+
+        # Exercise the delivery consumer against this small complete fake plan;
+        # no native build or signing is invoked.
+        spec = importlib.util.spec_from_file_location("checkpoint_delivery", SCRIPT.with_name("hex-test-build.py"))
+        delivery = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = delivery
+        spec.loader.exec_module(delivery)
+        with patch.object(delivery.ci, "FULL_STEPS", case.steps):
+            self.assertEqual(delivery.validate_ci(resumed.summary_path, resumed, report["commit"]), report)
+            forged = json.loads(resumed.summary_path.read_text())
+            forged["steps"][0]["test_results"]["rust_passed_by_binary"] = [99]
+            resumed.summary_path.write_text(json.dumps(forged))
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(resumed.summary_path, resumed, report["commit"])
+        self.assertEqual(case.path.read_bytes(), original_bytes)
+
+    def test_checkpoint_continuation_refuses_changed_inputs_before_any_stage_or_cleanup(self):
+        cases = ("source", "plan", "plan-order", "argv", "test-configuration", "toolchain", "environment", "dependency", "floor",
+                 "report", "log", "missing-owner", "changed-owner", "foreign-owner", "recreated-target")
+        for change in cases:
+            with self.subTest(change=change):
+                case = self.checkpoint_fixture("checkpoint-drift-" + change)
+                kwargs = {}
+                rustc_bytes = (self.bin / "rustc").read_bytes()
+                if change == "source":
+                    (case.root / "source.rs").write_text("changed executable source\n")
+                elif change == "plan":
+                    kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
+                elif change == "plan-order":
+                    kwargs["steps"] = tuple(reversed(case.steps))
+                elif change in {"argv", "test-configuration"}:
+                    kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
+                        (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
+                        requires_tests=change != "test-configuration"))
+                elif change == "toolchain":
+                    (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
+                elif change == "environment":
+                    kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
+                elif change == "dependency":
+                    (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
+                elif change == "floor":
+                    kwargs["min_free_bytes"] = 1
+                elif change == "report":
+                    report = json.loads(case.path.read_text())
+                    report["steps"][0]["status"] = "failed"
+                    case.path.write_text(json.dumps(report))
+                elif change == "log":
+                    (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
+                elif change == "missing-owner":
+                    case.owner.unlink()
+                elif change in {"changed-owner", "foreign-owner"}:
+                    owner = json.loads(case.owner.read_text())
+                    if change == "foreign-owner":
+                        owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
+                    else:
+                        owner["recorded_at"] = "changed receipt"
+                    case.owner.write_text(json.dumps(owner))
+                elif change == "recreated-target":
+                    case.target.rename(case.target.with_name("retained-original-target"))
+                    case.target.mkdir()
+                    (case.target / "preserve").write_bytes(b"foreign new target")
+                calls_before = self.call_log.read_text()
+                try:
+                    result, resumed = self.checkpoint_continue(case, **kwargs)
+                finally:
+                    (self.bin / "rustc").write_bytes(rustc_bytes)
+                self.assertNotEqual(result, 0)
+                self.assertIn("resume_error", resumed.summary)
+                calls = self.call_log.read_text()[len(calls_before):]
+                self.assertNotIn("cargo test checkpoint-", calls)
+                self.assertNotIn("cargo clean", calls)
+                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+                if change == "recreated-target":
+                    self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
+
+    def test_checkpoint_malformed_resume_records_refuse_without_traceback_or_owner_changes(self):
+        for malformed in ("tree-list", "tree-null", "target-list", "counts-null", "checkpoint-scalar", "report-scalar"):
+            with self.subTest(malformed=malformed):
+                case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
+                report = json.loads(case.path.read_text())
+                if malformed in {"tree-list", "tree-null"}:
+                    report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
+                elif malformed == "target-list":
+                    report["checkpoint"]["target"] = []
+                elif malformed == "counts-null":
+                    report["steps"][0]["test_results"] = None
+                elif malformed == "checkpoint-scalar":
+                    report["checkpoint"] = 42
+                else:
+                    report = 42
+                case.path.write_text(json.dumps(report))
+                malformed_bytes = case.path.read_bytes()
+                owner_bytes = case.owner.read_bytes()
+                calls_before = self.call_log.read_text()
+                console = io.StringIO()
+                with redirect_stdout(console), redirect_stderr(console):
+                    result, resumed = self.checkpoint_continue(case)
+                self.assertNotEqual(result, 0)
+                self.assertTrue(resumed.summary["resume_error"])
+                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+                self.assertNotIn("Traceback", console.getvalue())
+                calls = self.call_log.read_text()[len(calls_before):]
+                self.assertNotIn("cargo test checkpoint-", calls)
+                self.assertNotIn("cargo clean", calls)
+                self.assertEqual(case.owner.read_bytes(), owner_bytes)
+                self.assertEqual(case.path.read_bytes(), malformed_bytes)
+
+    def test_checkpoint_continuation_rejects_failed_interrupted_zero_match_and_nonresource_runs(self):
+        for stop in ("failed", "interrupted", "zero", None):
+            with self.subTest(stop=stop):
+                case = self.checkpoint_fixture("checkpoint-ineligible-" + str(stop), stop=stop)
+                self.assertNotIn("checkpoint", case.report)
+                original_bytes = case.path.read_bytes()
+                calls_before = self.call_log.read_text()
+                result, resumed = self.checkpoint_continue(case)
+                self.assertNotEqual(result, 0)
+                self.assertIn("resume_error", resumed.summary)
+                self.assertNotIn("cargo test checkpoint-", self.call_log.read_text()[len(calls_before):])
+                self.assertEqual(case.path.read_bytes(), original_bytes)
+
+    def test_checkpoint_consumer_rejects_lost_lineage_changed_original_logs_and_reports(self):
+        case = self.checkpoint_fixture("checkpoint-consumer")
+        with patch.object(local_ci.ci_checkpoint, "require_no_jobs"):
+            result, resumed = self.checkpoint_continue(case)
+        self.assertEqual(result, 0)
+        report = json.loads(resumed.summary_path.read_text())
+        original = case.path.read_bytes()
+        log = case.root / case.report["steps"][0]["log"]
+        log_bytes = log.read_bytes()
+        for change in ("lineage", "original-report", "original-log", "inherited-order"):
+            with self.subTest(change=change):
+                tampered = json.loads(json.dumps(report))
+                if change == "lineage":
+                    tampered.pop("resume")
+                elif change == "original-report":
+                    case.path.write_bytes(original + b"\n")
+                elif change == "original-log":
+                    log.write_bytes(log_bytes + b"changed\n")
+                else:
+                    tampered["steps"].reverse()
+                try:
+                    with self.assertRaises((ValueError, OSError, KeyError, TypeError)):
+                        local_ci.ci_checkpoint.validate_inheritance(case.root, tampered)
+                finally:
+                    case.path.write_bytes(original)
+                    log.write_bytes(log_bytes)
+
+    def test_checkpoint_process_inventory_requires_idle_known_cargo_writers(self):
+        checkpoint = local_ci.ci_checkpoint
+        with patch.object(checkpoint.sys, "platform", "darwin"):
+            for binary in ("cargo", "rustc", "rustdoc", "rustup"):
+                with self.subTest(binary=binary), patch.object(checkpoint.subprocess, "run",
+                        return_value=SimpleNamespace(returncode=0, stdout="1 /sbin/launchd\n42 /tools/" + binary + "\n")):
+                    with self.assertRaisesRegex(ValueError, "active"):
+                        checkpoint.require_no_jobs()
+            for output, status in (("", 0), ("unparseable process", 0), ("1 /sbin/launchd", 1)):
+                with self.subTest(output=output, status=status), patch.object(checkpoint.subprocess, "run",
+                        return_value=SimpleNamespace(returncode=status, stdout=output)):
+                    with self.assertRaises(ValueError):
+                        checkpoint.require_no_jobs()
+            with patch.object(checkpoint.subprocess, "run", side_effect=OSError("process inventory unavailable")):
+                with self.assertRaisesRegex(ValueError, "cannot establish"):
+                    checkpoint.require_no_jobs()
+            with patch.object(checkpoint.subprocess, "run",
+                    return_value=SimpleNamespace(returncode=0, stdout="1 /sbin/launchd\n42 /usr/bin/python3\n")):
+                checkpoint.require_no_jobs()
+        case = self.checkpoint_fixture("checkpoint-active-job")
+        calls_before = self.call_log.read_text()
+        with patch.object(checkpoint, "require_no_jobs", side_effect=ValueError("Cargo/compiler job is active")):
+            result, resumed = self.checkpoint_continue(case)
+        self.assertNotEqual(result, 0)
+        self.assertIn("active", resumed.summary["resume_error"])
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
 
     def test_quick_format_does_not_claim_or_clean_unknown_cargo_target(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])
