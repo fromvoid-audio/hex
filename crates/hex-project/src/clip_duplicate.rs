@@ -2,7 +2,8 @@
 //!
 //! The earliest selected start lands at the latest selected end. MIDI-only
 //! groups translate in exact beats; audio/mixed groups retain the existing
-//! frame-displacement and warped-audio move policy. Gaps do not overwrite.
+//! frame-displacement and warped-audio move policy, rounding the shared end
+//! outward so quantization cannot overwrite a selected original. Gaps do not overwrite.
 use crate::{
     BeatTime, ClipGroupContent, ClipGroupPosition, ClipGroupPreview, ClipId, Created, Invalid,
     MAX_CLIPS, Project,
@@ -66,7 +67,13 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
                         .checked_add(clip.length().raw())
                         .ok_or(Invalid("duplicate midi end overflow"))?,
                 );
-                frame_end = frame_end.max(project.tempo_map().beat_to_frame(end)?);
+                let mut end_frame = project.tempo_map().beat_to_frame(end)?;
+                if project.tempo_map().frame_to_beat(end_frame)? < end {
+                    end_frame = end_frame
+                        .checked_add(1)
+                        .ok_or(Invalid("duplicate midi end frame overflow"))?;
+                }
+                frame_end = frame_end.max(end_frame);
             }
         }
         let span = frame_end
