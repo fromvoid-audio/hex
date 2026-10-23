@@ -410,6 +410,10 @@ fn tempo_meter_and_loop_follow_explicit_song_permutation_policy() {
             old.tempo_map().tempo_at(b(beat)),
             e.project().tempo_map().tempo_at(mapped)
         );
+        assert_eq!(
+            old.meter_map().meter_at(b(beat)),
+            e.project().meter_map().meter_at(mapped)
+        );
     }
     let region = e.project().loop_region().unwrap();
     assert_eq!(
@@ -605,12 +609,14 @@ fn same_signature_midbar_anchors_retain_bar_origins_after_section_reorder() {
     let position = e.project().meter_map().position(marker).unwrap();
     assert_eq!(position.bar_start(), marker);
     assert_eq!(position.beat(), 1);
-    for seam in [b(2), b(5), b(10)] {
-        assert_eq!(
-            e.project().meter_map().position(seam).unwrap().bar_start(),
-            seam
-        );
-    }
+    assert_eq!(
+        e.project().meter_map().points(),
+        &[
+            hex_project::MeterPoint::new(b(0), hex_project::Meter::COMMON_TIME),
+            hex_project::MeterPoint::new(marker, hex_project::Meter::COMMON_TIME),
+        ],
+        "retain the authored bar reset, without synthetic same-meter seams"
+    );
 }
 
 // Intended to append to crates/hex-project/tests/arrangement_sections.rs when
@@ -1153,7 +1159,7 @@ fn section_splices_keep_exact_authored_musical_start_before_the_edit() {
 }
 
 #[test]
-fn empty_prefix_holds_effective_touch_gain_and_starts_a_restored_meter_fragment() {
+fn empty_prefix_holds_effective_touch_gain_without_restarting_unchanged_meter() {
     let (mut e, first, _) = fixture();
     let track = e.project().tracks()[0].id();
     e.execute(Command::SpliceGainTouch {
@@ -1200,7 +1206,7 @@ fn empty_prefix_holds_effective_touch_gain_and_starts_a_restored_meter_fragment(
     assert_eq!(lane.touch_gain_at(b(3)), Some(0.4));
     assert_eq!(
         e.project().meter_map().position(b(3)).unwrap().bar_start(),
-        b(3)
+        b(0)
     );
 }
 
@@ -1476,5 +1482,270 @@ fn isolated_edges_preserve_other_sections_and_clear_only_the_crossed_interval() 
         assert_eq!(undone, before);
         assert!(editor.redo());
         assert_eq!(editor.project().snapshot(), after);
+    }
+}
+
+fn meter_edit_command(operation: usize, a: SectionId, c: SectionId) -> Command {
+    match operation {
+        0 => Command::ReorderSectionBefore {
+            section: c,
+            before: a,
+        },
+        1 => Command::ReorderSectionAfter {
+            section: a,
+            after: c,
+        },
+        2 => Command::ResizeArrangementSection {
+            section: a,
+            edge: hex_project::TrimEdge::Right,
+            length: b(3),
+        },
+        3 => Command::ResizeArrangementSection {
+            section: a,
+            edge: hex_project::TrimEdge::Left,
+            length: b(1),
+        },
+        4 => Command::DeleteArrangementSection(a),
+        5 => Command::DuplicateArrangementSection(a),
+        6 => Command::ResizeArrangementSectionEdge {
+            section: a,
+            edge: hex_project::TrimEdge::Right,
+            boundary: b(5),
+        },
+        7 => Command::ResizeArrangementSectionEdge {
+            section: a,
+            edge: hex_project::TrimEdge::Left,
+            boundary: b(3),
+        },
+        _ => Command::ResizeArrangementSectionBoundary {
+            left: a,
+            right: c,
+            boundary: b(5),
+            marker_only: false,
+        },
+    }
+}
+
+#[test]
+fn equal_meter_section_edits_do_not_create_boundaries_or_restart_bars() {
+    for operation in 0..9 {
+        let (mut e, a, c) = fixture();
+        if operation == 8 {
+            e.execute(Command::SetArrangementSectionRange {
+                section: c,
+                start: b(4),
+                end: b(10),
+            })
+            .unwrap();
+        }
+        let before = e.project().snapshot();
+        let before_meter = e.project().meter_map().clone();
+        let command = meter_edit_command(operation, a, c);
+        e.execute(command).unwrap();
+        assert_eq!(
+            e.project().meter_map(),
+            &before_meter,
+            "operation {operation} added synthetic meter boundaries"
+        );
+        for beat in [1, 2, 3, 4, 5, 7, 10, 12, 17] {
+            assert_eq!(
+                e.project().meter_map().position(b(beat)).unwrap(),
+                before_meter.position(b(beat)).unwrap(),
+                "operation {operation} reset bar numbering"
+            );
+        }
+        let after = e.project().snapshot();
+        assert!(e.undo());
+        let mut restored = e.project().snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        assert!(e.redo());
+        assert_eq!(e.project().snapshot(), after);
+    }
+}
+
+#[test]
+fn reorder_preserves_real_meter_changes_and_explicit_origins_when_beat_zero_moves() {
+    for mixed in [false, true] {
+        for forward in [false, true] {
+            let mut e = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+            let a = section(&mut e, "first", 0, 3);
+            let c = section(&mut e, "second", 3, 8);
+            if mixed {
+                for (beat, meter) in [
+                    (1, hex_project::Meter::new(3, 4).unwrap()),
+                    (4, hex_project::Meter::new(7, 8).unwrap()),
+                    (6, hex_project::Meter::COMMON_TIME),
+                    (7, hex_project::Meter::COMMON_TIME),
+                ] {
+                    e.execute(Command::SetMeterPoint {
+                        beat: b(beat),
+                        meter,
+                    })
+                    .unwrap();
+                }
+            }
+            let old = e.project().clone();
+            let preview = if forward {
+                old.preview_section_reorder_after(a, c)
+            } else {
+                old.preview_section_reorder(c, a)
+            }
+            .unwrap();
+            e.execute(if forward {
+                Command::ReorderSectionAfter {
+                    section: a,
+                    after: c,
+                }
+            } else {
+                Command::ReorderSectionBefore {
+                    section: c,
+                    before: a,
+                }
+            })
+            .unwrap();
+            for eighth in 0..80 {
+                let beat = BeatTime::from_ratio(eighth, 8).unwrap();
+                assert_eq!(
+                    e.project()
+                        .meter_map()
+                        .meter_at(preview.map_beat(beat).unwrap()),
+                    old.meter_map().meter_at(beat),
+                    "mapped beat {beat:?}, mixed={mixed}, forward={forward}"
+                );
+            }
+            for point in old
+                .meter_map()
+                .points()
+                .iter()
+                .filter(|p| p.beat() != BeatTime::ZERO)
+            {
+                let mapped = preview.map_beat(point.beat()).unwrap();
+                assert!(
+                    e.project()
+                        .meter_map()
+                        .points()
+                        .contains(&hex_project::MeterPoint::new(mapped, point.meter())),
+                    "authored point {point:?} must survive"
+                );
+            }
+            if !mixed {
+                assert_eq!(e.project().meter_map(), old.meter_map());
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_equal_meter_reorders_do_not_accumulate_bar_resets() {
+    let (mut e, a, c) = fixture();
+    let original = e.project().meter_map().clone();
+    for _ in 0..8 {
+        e.execute(Command::ReorderSectionBefore {
+            section: c,
+            before: a,
+        })
+        .unwrap();
+        e.execute(Command::ReorderSectionAfter {
+            section: c,
+            after: a,
+        })
+        .unwrap();
+        assert_eq!(e.project().meter_map(), &original);
+    }
+}
+
+#[test]
+fn section_splices_preserve_effective_mixed_meter_on_all_retained_content() {
+    for operation in 0..9 {
+        let (mut e, a, c) = fixture();
+        if operation == 8 {
+            e.execute(Command::SetArrangementSectionRange {
+                section: c,
+                start: b(4),
+                end: b(10),
+            })
+            .unwrap();
+        }
+        for (beat, meter) in [
+            (1, hex_project::Meter::new(3, 4).unwrap()),
+            (3, hex_project::Meter::new(7, 8).unwrap()),
+            (6, hex_project::Meter::COMMON_TIME),
+            (9, hex_project::Meter::COMMON_TIME),
+        ] {
+            e.execute(Command::SetMeterPoint {
+                beat: b(beat),
+                meter,
+            })
+            .unwrap();
+        }
+        let old = e.project().clone();
+        let preview = match operation {
+            0 => Some(old.preview_section_reorder(c, a).unwrap()),
+            1 => Some(old.preview_section_reorder_after(a, c).unwrap()),
+            _ => None,
+        };
+        e.execute(meter_edit_command(operation, a, c)).unwrap();
+        for eighth in 0..112 {
+            let beat = BeatTime::from_ratio(eighth, 8).unwrap();
+            let in_range = |lo, hi| b(lo) <= beat && beat < b(hi);
+            let mapped = match operation {
+                0 | 1 => Some(preview.as_ref().unwrap().map_beat(beat).unwrap()),
+                2 => Some(BeatTime::from_raw(
+                    beat.raw() + if beat >= b(4) { b(1).raw() } else { 0 },
+                )),
+                3 => {
+                    if in_range(2, 3) {
+                        None
+                    } else {
+                        Some(BeatTime::from_raw(
+                            beat.raw() - if beat >= b(3) { b(1).raw() } else { 0 },
+                        ))
+                    }
+                }
+                4 => {
+                    if in_range(2, 4) {
+                        None
+                    } else {
+                        Some(BeatTime::from_raw(
+                            beat.raw() - if beat >= b(4) { b(2).raw() } else { 0 },
+                        ))
+                    }
+                }
+                5 => Some(BeatTime::from_raw(
+                    beat.raw() + if beat >= b(4) { b(2).raw() } else { 0 },
+                )),
+                7 => {
+                    if in_range(2, 3) {
+                        None
+                    } else {
+                        Some(beat)
+                    }
+                }
+                _ => {
+                    if in_range(4, 5) {
+                        None
+                    } else {
+                        Some(beat)
+                    }
+                }
+            };
+            if let Some(mapped) = mapped {
+                assert_eq!(
+                    e.project().meter_map().meter_at(mapped),
+                    old.meter_map().meter_at(beat),
+                    "operation {operation}, retained beat {beat:?}"
+                );
+            }
+            if operation == 5 && in_range(2, 4) {
+                assert_eq!(
+                    e.project()
+                        .meter_map()
+                        .meter_at(BeatTime::from_raw(beat.raw() + b(2).raw())),
+                    old.meter_map().meter_at(beat),
+                    "duplicated meter at {beat:?}"
+                );
+            }
+        }
     }
 }
