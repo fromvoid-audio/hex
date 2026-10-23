@@ -502,6 +502,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
