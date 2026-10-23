@@ -225,3 +225,230 @@ fn global_tempo_warped_region_and_midi_note_edges_follow_new_clock() {
     }
     assert_eq!(render(&revision, 31_999, 1, 1), [[0.0; 2]]);
 }
+
+fn section(editor: &mut Editor, start: u64, end: u64) -> hex_project::SectionId {
+    let Created::ArrangementSection(id) = editor
+        .execute(Command::AddArrangementSection {
+            name: "part".into(),
+            color: hex_project::ElementColor::Rose,
+            start: BeatTime::from_raw(BeatTime::ONE.raw() * start / 4),
+            end: BeatTime::from_raw(BeatTime::ONE.raw() * end / 4),
+        })
+        .unwrap()
+    else {
+        panic!("section")
+    };
+    id
+}
+
+#[test]
+fn section_reorder_preserves_frozen_negative_reference_event_fade_pcm_and_both_caches() {
+    use hex_project::{AudioClipTiming, TrimEdge};
+    let (mut editor, clip, media) = fixture(true);
+    let warp = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split {
+                at: BeatTime::ONE.raw() / 2,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: ClipFade::new(8000, 0, 500, 1000)
+                .unwrap()
+                .with_shape(100, 200, 600, -500)
+                .unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 2000,
+        })
+        .unwrap();
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: None,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 16000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 14000,
+        })
+        .unwrap();
+    assert!(
+        matches!(editor.project().clip(clip).unwrap().audio_edit().unwrap().timing, AudioClipTiming::Frozen { reference_start_raw, .. } if reference_start_raw < 0)
+    );
+    let target = section(&mut editor, 0, 1);
+    let source = section(&mut editor, 4, 5);
+    let context = AudioTransformPreparation::default();
+    let before = render(&prepare(&editor, &media, &context), 0, 48000, 63);
+    assert!(before[14000..22000].iter().any(|f| *f != [0.0; 2]));
+    let expected: Vec<_> = before[16000..20000]
+        .iter()
+        .chain(&before[..16000])
+        .chain(&before[20000..])
+        .copied()
+        .collect();
+    editor
+        .execute(Command::ReorderSectionBefore {
+            section: source,
+            before: target,
+        })
+        .unwrap();
+    for row in editor.project().tracks()[0].clips() {
+        let edit = row.audio_edit().unwrap();
+        assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
+        assert!(edit.processing_projection.is_none());
+    }
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 48000, 257),
+        expected
+    );
+    assert_eq!(
+        render(
+            &prepare(&editor, &media, &AudioTransformPreparation::default()),
+            0,
+            48000,
+            127
+        ),
+        expected
+    );
+}
+
+#[test]
+fn global_tempo_absorbs_section_projection_without_changing_fragment_pcm_or_split_history() {
+    use hex_project::AudioClipTiming;
+    let (mut editor, clip, media) = fixture(true);
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let source = section(&mut editor, 1, 2);
+    let target = section(&mut editor, 3, 4);
+    editor
+        .execute(Command::ReorderSectionBefore {
+            section: source,
+            before: target,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let before = editor.project().clone();
+    let prepared = prepare(&editor, &media, &context);
+    let pieces: Vec<_> = before.tracks()[0]
+        .clips()
+        .iter()
+        .map(|c| {
+            (
+                c.id(),
+                c.start(),
+                render(&prepared, c.start(), c.duration() as usize, 63),
+            )
+        })
+        .collect();
+    assert!(
+        before.tracks()[0].clips().iter().all(|c| c
+            .audio_edit()
+            .unwrap()
+            .processing_projection
+            .is_some())
+    );
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let changed = editor.project().clone();
+    for (id, start, pcm) in &pieces {
+        let c = changed.clip(*id).unwrap();
+        let edit = c.audio_edit().unwrap();
+        assert_eq!(c.start(), start * 2);
+        assert_eq!(c.duration(), pcm.len() as u64);
+        assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
+        assert!(edit.processing_projection.is_none());
+        assert_eq!(
+            (edit.placement_start_offset, edit.placement_end_offset),
+            (0, 0)
+        );
+        assert_eq!(
+            render(
+                &prepare(&editor, &media, &context),
+                c.start(),
+                pcm.len(),
+                257
+            ),
+            *pcm
+        );
+    }
+    let c = editor.project().clip(pieces[0].0).unwrap();
+    let (id, start, length) = (c.id(), c.start(), c.duration());
+    let all_before_split = render(&prepare(&editor, &media, &context), 0, 16000, 63);
+    editor
+        .execute(Command::SplitClip {
+            clip: id,
+            frame: start + length / 2,
+        })
+        .unwrap();
+    assert_eq!(
+        render(
+            &prepare(&editor, &media, &AudioTransformPreparation::default()),
+            0,
+            16000,
+            127
+        ),
+        all_before_split
+    );
+    // IDs allocated by split retain the canonical monotonic high-water mark
+    // through Undo; all authored state and processing coordinates restore.
+    let compare = |actual: &Project, expected: &Project| {
+        let mut restored = actual.snapshot();
+        restored.next_id = expected.snapshot().next_id;
+        assert_eq!(restored, expected.snapshot());
+    };
+    assert!(editor.undo());
+    compare(editor.project(), &changed);
+    assert!(editor.undo());
+    compare(editor.project(), &before);
+    assert!(editor.redo());
+    compare(editor.project(), &changed);
+}

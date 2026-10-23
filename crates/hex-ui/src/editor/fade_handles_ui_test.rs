@@ -5,6 +5,17 @@ use gpui::{
     point, px,
 };
 use std::sync::Arc;
+fn hover_clip(visual: &mut VisualTestContext, clip: ClipId) {
+    visual.run_until_parked();
+    let selector: &'static str =
+        Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let center = visual
+        .debug_bounds(selector)
+        .expect("painted audio clip")
+        .center();
+    visual.simulate_mouse_move(center, None, Modifiers::default());
+    visual.run_until_parked();
+}
 fn key(visual: &mut VisualTestContext, down: bool, key: &str) {
     if down {
         visual.simulate_event(KeyDownEvent {
@@ -94,7 +105,7 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
     assert_eq!(canonical.project().clip(clip).unwrap(), &original);
 }
 #[gpui::test]
-fn authored_fades_show_without_f_and_each_endpoint_and_curve_uses_its_real_handle(
+fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_handle(
     cx: &mut TestAppContext,
 ) {
     let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
@@ -125,9 +136,21 @@ fn authored_fades_show_without_f_and_each_endpoint_and_curve_uses_its_real_handl
         visual.run_until_parked();
         let selector: &'static str =
             Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "resting fades hide controls"
+        );
+        hover_clip(&mut visual, clip);
+        visual.simulate_mouse_move(point(px(5.0), px(5.0)), None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "leaving the clip hides controls"
+        );
+        hover_clip(&mut visual, clip);
         let bounds = visual
             .debug_bounds(selector)
-            .expect("authored fade handle always visible");
+            .expect("hover reveals authored fade handles");
         let header = visual
             .debug_bounds(Box::leak(
                 format!("clip-name-{}", clip.value()).into_boxed_str(),
@@ -360,6 +383,7 @@ fn lower_handles_noop_return_to_origin_and_release_modifier_use_one_trim(cx: &mu
         visual.run_until_parked();
         let selector: &'static str =
             Box::leak(format!("fade-in-bottom-{}", clip.value()).into_boxed_str());
+        hover_clip(&mut visual, clip);
         let target = visual.debug_bounds(selector).unwrap().center();
         visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
         if no_op {
@@ -481,6 +505,7 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 visual.run_until_parked();
                 let selector: &'static str =
                     Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+                hover_clip(&mut visual, clip);
                 let target = visual.debug_bounds(selector).unwrap().center();
                 let direction = if kind == Handle::InBottom { 1.0 } else { -1.0 };
                 // Clicking without moving remains a no-op even with snap opt-in.
@@ -628,6 +653,7 @@ fn lower_source_limits_are_noops_with_and_without_command(cx: &mut TestAppContex
                 visual.run_until_parked();
                 let selector: &'static str =
                     Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+                hover_clip(&mut visual, clip);
                 let target = visual.debug_bounds(selector).unwrap().center();
                 let modifiers = Modifiers {
                     platform,

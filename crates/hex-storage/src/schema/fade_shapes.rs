@@ -86,7 +86,7 @@ fn apply_shapes(project: Project, shapes: Vec<FadeShape>) -> Result<Project, Sto
 impl<'a> DocumentV29<'a> {
     pub(super) fn for_current_envelope(project: &'a Project) -> Result<Self, StorageError> {
         let mut document = Self::base(project)?;
-        document.base.base.version = 36;
+        document.base.base.version = 37;
         Ok(document)
     }
     fn base(project: &'a Project) -> Result<Self, StorageError> {

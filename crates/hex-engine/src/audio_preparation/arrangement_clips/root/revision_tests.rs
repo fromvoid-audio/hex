@@ -597,6 +597,7 @@ fn new_touch_and_transformed_graphs_refuse_before_source_moves() {
                     track,
                     expected_epoch: epoch,
                     span: hex_project::GainTouchSpan {
+                        source_start: hex_project::BeatTime::ZERO,
                         start: hex_project::BeatTime::ZERO,
                         end: hex_project::BeatTime::from_quarters(1).unwrap(),
                         context: hex_project::GainTouchContext {

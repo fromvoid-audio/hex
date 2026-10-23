@@ -68,6 +68,15 @@ impl WorkerAudioSink for ResidentSink {
             }
         });
     }
+    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
+        self.inner.begin_section_edit(context)
+    }
+    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+        self.inner.section_edit_ready()
+    }
+    fn cancel_section_edit(&mut self) {
+        self.inner.cancel_section_edit();
+    }
     fn restart_audio(&mut self, generation: u64, request_id: u64) -> Result<(), String> {
         self.inner.restart_audio(generation, request_id)
     }
