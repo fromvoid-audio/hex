@@ -1164,7 +1164,7 @@ fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
             6 => view.opening_project = true,
             7 => view.device_panel.owner = None,
             8 | 9 => {
-                let state = Arc::make_mut(view.state.as_mut().unwrap());
+                let state = view.state.as_ref().unwrap();
                 let mut changed = Editor::new((*state.project).clone(), 8).unwrap();
                 let command = if refusal == 8 {
                     Command::RemoveDevice(device)
@@ -1175,7 +1175,22 @@ fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
                     }
                 };
                 changed.execute(command).unwrap();
-                state.project = Arc::new(changed.project().clone());
+                view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
+                    comparison_audio: None,
+                    project: Arc::new(changed.project().clone()),
+                    waveforms: state.waveforms.clone(),
+                    source_overviews: state.source_overviews.clone(),
+                    audio_clip_waveforms: state.audio_clip_waveforms.clone(),
+                    midi_preview: state.midi_preview.clone(),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    timeline_frames: state.timeline_frames,
+                    can_undo: state.can_undo,
+                    can_redo: state.can_redo,
+                    revision: state.revision + 1,
+                    unsaved: true,
+                    document_path: state.document_path.clone(),
+                }));
             }
             _ => unreachable!(),
         });
