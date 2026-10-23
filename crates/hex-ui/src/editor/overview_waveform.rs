@@ -78,6 +78,12 @@ impl Key {
 }
 struct Geometry {
     paths: [Path<Pixels>; 2],
+    // Filled envelopes have no area at DC/silence. These separate physical-pixel
+    // strokes keep those regions visible at their actual level, without widening
+    // the stored extrema or drawing a false signal through nonzero-range bins.
+    zero_range_paths: [Option<Path<Pixels>>; 2],
+    #[cfg(test)]
+    zero_range_spans: [Vec<(gpui::Point<Pixels>, gpui::Point<Pixels>)>; 2],
     #[cfg(test)]
     columns: usize,
     #[cfg(test)]
@@ -157,6 +163,9 @@ fn prepare(
         sampled.push(peaks(start, end)?);
     }
     let mut paths = Vec::with_capacity(2);
+    let mut zero_range_paths = Vec::with_capacity(2);
+    #[cfg(test)]
+    let mut zero_range_spans = Vec::with_capacity(2);
     #[cfg(test)]
     let mut outlines = Vec::with_capacity(2);
     for channel in 0..2 {
@@ -209,12 +218,48 @@ fn prepare(
             }
             builder.close();
         }
+        let mut trace = PathBuilder::stroke(px(1.0 / scale));
+        let mut has_trace = false;
+        #[cfg(test)]
+        let mut spans = Vec::new();
+        if area {
+            for column in 0..columns {
+                let top = upper.get(column + 1)?;
+                let bottom = lower.get(column + 1)?;
+                if top.y != bottom.y {
+                    continue;
+                }
+                let left = point(
+                    bounds.left() + px(column as f32 * width / columns as f32),
+                    top.y,
+                );
+                let right = point(
+                    bounds.left() + px((column + 1) as f32 * width / columns as f32),
+                    top.y,
+                );
+                trace.move_to(left);
+                trace.line_to(right);
+                has_trace = true;
+                #[cfg(test)]
+                spans.push((left, right));
+            }
+        }
+        zero_range_paths.push(if has_trace {
+            Some(trace.build().ok()?)
+        } else {
+            None
+        });
+        #[cfg(test)]
+        zero_range_spans.push(spans);
         paths.push(builder.build().ok()?);
         #[cfg(test)]
         outlines.push(upper.into_iter().chain(lower).collect());
     }
     Some(Geometry {
         paths: paths.try_into().ok()?,
+        zero_range_paths: zero_range_paths.try_into().ok()?,
+        #[cfg(test)]
+        zero_range_spans: zero_range_spans.try_into().ok()?,
         #[cfg(test)]
         columns,
         #[cfg(test)]
@@ -249,7 +294,11 @@ pub(super) fn render(source: Source, cache: Rc<RefCell<Cache>>, active: Option<(
                         size(px((right - left) as f32 * width), bounds.size.height),
                     );
                     window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                        for path in &geometry.paths {
+                        for path in geometry
+                            .paths
+                            .iter()
+                            .chain(geometry.zero_range_paths.iter().flatten())
+                        {
                             window.paint_path(path.clone(), rgb(theme::color(role)));
                         }
                     });
@@ -346,6 +395,7 @@ mod tests {
                 )
             })
             .unwrap();
+            assert!(geometry.zero_range_paths.iter().all(Option::is_none));
             for (channel, outline) in geometry.outlines.iter().enumerate() {
                 let expected = 23.5 + 25.0 + channel as f32 * 50.0 - sample * 24.5;
                 assert!(
@@ -360,6 +410,96 @@ mod tests {
         }
         assert!(prepare(0, bounds(20.0), 2.0, |_, _| None).is_none());
     }
+    #[test]
+    fn mixed_transients_dc_and_silence_keep_true_extrema_and_zero_range_hairlines() {
+        for scale in [1.0, 2.0] {
+            let width = 120.0;
+            let columns = waveform_column_count(width, scale);
+            let query = |start: u64, _: u64| {
+                let section = start / 100;
+                Some(match section {
+                    0 => [
+                        CachedPeak {
+                            min: -0.9,
+                            max: 0.8,
+                        },
+                        CachedPeak {
+                            min: -0.8,
+                            max: 0.9,
+                        },
+                    ],
+                    1 => [
+                        CachedPeak { min: 0.5, max: 0.5 },
+                        CachedPeak {
+                            min: -0.5,
+                            max: -0.5,
+                        },
+                    ],
+                    _ => [CachedPeak { min: 0.0, max: 0.0 }; 2],
+                })
+            };
+            let geometry = prepare(300, bounds(width), scale, query).unwrap();
+            for channel in 0..2 {
+                assert!(geometry.zero_range_paths[channel].is_some());
+                assert_eq!(geometry.zero_range_spans[channel].len(), columns * 2 / 3);
+                let center = 23.5 + 25.0 + channel as f32 * 50.0;
+                let amplitude = 25.0 - 1.0 / scale;
+                let dc = if channel == 0 { 0.5 } else { -0.5 };
+                for (index, (left, right)) in geometry.zero_range_spans[channel].iter().enumerate()
+                {
+                    let expected_x = 17.25 + width / 3.0 + index as f32 * width / columns as f32;
+                    let expected_y = if index < columns / 3 {
+                        center - dc * amplitude
+                    } else {
+                        center
+                    };
+                    assert!((f32::from(left.x) - expected_x).abs() < 0.001);
+                    assert!((f32::from(right.x - left.x) - 1.0 / scale).abs() < 0.001);
+                    assert!((f32::from(left.y) - expected_y).abs() < 0.001);
+                    assert_eq!(left.y, right.y);
+                }
+                let transient = &geometry.outlines[channel][1];
+                let expected_peak = if channel == 0 { 0.8 } else { 0.9 };
+                assert!(
+                    (f32::from(transient.y) - (center - expected_peak * amplitude)).abs() < 0.001,
+                    "hairlines must not change true transient peak positions"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn post_clamp_collapsed_overrange_peaks_remain_visible_inside_their_channel() {
+        for scale in [1.0, 2.0] {
+            let geometry = prepare(300, bounds(120.0), scale, |_, _| {
+                Some([
+                    CachedPeak { min: 2.0, max: 3.0 },
+                    CachedPeak {
+                        min: -3.0,
+                        max: -2.0,
+                    },
+                ])
+            })
+            .unwrap();
+            for channel in 0..2 {
+                assert!(geometry.zero_range_paths[channel].is_some());
+                assert_eq!(geometry.zero_range_spans[channel].len(), geometry.columns);
+                let band_top = 23.5 + channel as f32 * 50.0;
+                let expected_y = if channel == 0 {
+                    band_top + 1.0 / scale
+                } else {
+                    band_top + 50.0 - 1.0 / scale
+                };
+                for (left, right) in &geometry.zero_range_spans[channel] {
+                    assert!((f32::from(left.y) - expected_y).abs() < 0.001);
+                    assert_eq!(left.y, right.y);
+                    assert!(f32::from(left.y) - 0.5 / scale >= band_top);
+                    assert!(f32::from(left.y) + 0.5 / scale <= band_top + 50.0);
+                }
+            }
+        }
+    }
+
     #[test]
     fn cached_paths_reuse_only_exact_source_geometry_and_device_scale() {
         let mut cache = Cache::default();
