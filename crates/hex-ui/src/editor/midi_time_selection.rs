@@ -1,6 +1,7 @@
 //! Source-local time selection shares ruler geometry and the existing edit-reply
 //! selection owner. Drag selection does not seek or reflect Arrangement state;
-//! stationary blank clicks delegate playback cueing to the existing cue owner.
+//! stationary ruler clicks delegate playback cueing to the existing cue owner,
+//! while stationary grid clicks only move the insertion cursor.
 use super::*;
 use hex_project::BeatTime;
 
@@ -12,17 +13,18 @@ struct Selection {
     end: u64,
 }
 #[derive(Clone, Copy)]
-pub(super) struct Capture {
+pub(in crate::editor) struct Capture {
     context: Context,
     note_epoch: u64,
     down_x: f32,
     last_x: f32,
     invert: bool,
+    cue_on_click: bool,
 }
 #[derive(Default)]
 pub(in crate::editor) struct State {
     selection: Option<Selection>,
-    pub(super) gesture: Option<Capture>,
+    pub(in crate::editor) gesture: Option<Capture>,
     epoch: u64,
 }
 impl State {
@@ -178,10 +180,35 @@ impl EditorView {
             down_x: x,
             last_x: x,
             invert,
+            cue_on_click: true,
         });
         true
     }
-    pub(super) fn update_midi_time_selection(
+    /// The grid shares range capture with the ruler, but a stationary grid click
+    /// moves only the insertion cursor; it must never cue playback.
+    pub(in crate::editor) fn midi_grid_time_selection_active(&self) -> bool {
+        self.midi_time_selection
+            .gesture
+            .is_some_and(|capture| !capture.cue_on_click)
+    }
+    pub(in crate::editor) fn begin_midi_grid_time_selection(
+        &mut self,
+        bounds: CanvasBounds,
+        x: f32,
+        invert: bool,
+    ) -> bool {
+        let Some(context) = self.midi_ruler_context(bounds) else {
+            return false;
+        };
+        if !self.begin_midi_time_selection(context, x, invert) {
+            return false;
+        }
+        if let Some(capture) = self.midi_time_selection.gesture.as_mut() {
+            capture.cue_on_click = false;
+        }
+        true
+    }
+    pub(in crate::editor) fn update_midi_time_selection(
         &mut self,
         bounds: CanvasBounds,
         x: f32,
@@ -202,7 +229,7 @@ impl EditorView {
         self.midi_time_selection.gesture = Some(next);
         true
     }
-    pub(super) fn finish_midi_time_selection(
+    pub(in crate::editor) fn finish_midi_time_selection(
         &mut self,
         bounds: CanvasBounds,
         x: f32,
@@ -218,7 +245,13 @@ impl EditorView {
             if (capture.last_x - capture.down_x).abs() < 3.0
                 && let Some(beat) = beat_at(capture.context, capture.last_x, capture.invert)
             {
-                self.request_midi_source_cue(capture.context.clip, beat);
+                if capture.cue_on_click {
+                    self.request_midi_source_cue(capture.context.clip, beat);
+                } else {
+                    self.clear_midi_time_selection();
+                    self.midi_selection.clear();
+                    self.midi_marker = Some(beat);
+                }
             }
             return;
         };
