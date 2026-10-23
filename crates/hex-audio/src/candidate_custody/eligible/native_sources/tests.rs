@@ -10,22 +10,31 @@ use std::{
 fn root() -> Custody {
     super::super::tests::configured(8 * 1024 * 1024)
 }
+mod completion;
+
 fn input() -> (InstanceBuild, native::Source, native::Preparation) {
+    input_for(
+        "processing",
+        [
+            0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ],
+    )
+}
+fn input_for(
+    fixture: &str,
+    class: [u8; 16],
+) -> (InstanceBuild, native::Source, native::Preparation) {
     let build = InstanceBuild::inspect(&PathBuf::from(
         std::env::var_os("HEX_VST3_INSTANCE_RECEIPT").unwrap(),
     ))
     .unwrap();
     let fixtures = PathBuf::from(std::env::var_os("HEX_VST3_MACOS_RECEIPT").unwrap());
     let source = native::Source::inspect_on_control(
-        &fixtures
-            .parent()
-            .unwrap()
-            .join("hex-vst3-host.app/Contents/Resources/fixtures/processing.vst3"),
+        &fixtures.parent().unwrap().join(format!(
+            "hex-vst3-host.app/Contents/Resources/fixtures/{fixture}.vst3"
+        )),
         "Contents/MacOS/fixture",
-        ClassId::new([
-            0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-        ])
-        .unwrap(),
+        ClassId::new(class).unwrap(),
     )
     .unwrap();
     (
@@ -329,6 +338,37 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
     assert!(returned.error.is_some());
 
+    let (build, source, preparation) = input();
+    let abandoned = retained
+        .begin_native_source_preparation(
+            identity(),
+            12,
+            &build,
+            source,
+            preparation,
+            None,
+            native::PreparationCancellation::new_on_control().unwrap(),
+            native::TrustUserCode::Acknowledged,
+        )
+        .unwrap();
+    retained
+        .complete_native_source_preparation(abandoned, None)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while retained.native_source_preparation_progress(abandoned)
+        != Some(NativeSourcePreparationProgress::Complete)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "lifecycle must dispose completion refusal"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let returned = retained
+        .recover_native_source_preparation(abandoned)
+        .unwrap();
+    assert!(returned.error.unwrap().contains("presentation"));
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
     let (build, source, preparation) = input();
     let abandoned = retained
         .begin_native_source_preparation(

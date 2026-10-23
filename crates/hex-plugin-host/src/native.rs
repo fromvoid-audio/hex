@@ -535,6 +535,12 @@ impl Pending {
 }
 
 impl Prepared {
+    /// Cancel an instance still held by control during host preparation and
+    /// retain its actual lease for independent, nonblocking disposal observation.
+    /// This neither returns any callback endpoint nor grants graph admission.
+    pub fn cancel_retained_on_control(self) -> PreparationFailure {
+        PreparationFailure::native(Error::Cancelled, self.lease, self.limits.retirement)
+    }
     /// Off-callback preparation. The caller must not independently reap these
     /// children or change their signal disposition while they are owned here.
     pub fn prepare_on_control(

@@ -1,8 +1,9 @@
 //! Actual native preparation custody in the existing Root, before endpoint
 //! admission. Fixed cells reserve control metadata before helper start. Their
 //! variable native/provenance resources remain explicitly UNSEALED: occupied
-//! cells cannot close a graph/publication resource witness. No callback loan,
-//! source reload, native processing, or canonical acceptance occurs here.
+//! cells cannot close a graph/publication resource witness. Final completion
+//! performs native startup/capture in the helper, but no PCM exchange, callback
+//! loan, source reload or canonical acceptance occurs here.
 use super::*;
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
@@ -10,6 +11,8 @@ use hex_plugin_host::native::{
     self, Cancellation, Pending, PreparationDisposal, PreparationFailure,
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
+
+mod completion;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
@@ -21,6 +24,11 @@ pub(super) fn empty_cancellations() -> Cancellations {
 pub enum NativeSourcePreparationProgress {
     Preparing,
     Facts(hex_plugin_host::protocol::Facts),
+    /// Final native ACK retained by Root; endpoints/resources remain unsealed.
+    Prepared {
+        facts: hex_plugin_host::protocol::Facts,
+        presentation: hex_plugin_host::protocol::Presentation,
+    },
     Retiring,
     /// Source-owner disposal finished; the original return awaits recovery.
     /// This is never prepared-instance or graph acceptance.
@@ -43,6 +51,7 @@ struct Slot {
     starting: bool,
     retiring: bool,
     facts: Option<hex_plugin_host::protocol::Facts>,
+    presentation: Option<hex_plugin_host::protocol::Presentation>,
     cancellation: Option<Cancellation>,
 }
 impl Slot {
@@ -54,6 +63,7 @@ impl Slot {
             starting: false,
             retiring: false,
             facts: None,
+            presentation: None,
             cancellation: None,
         }
     }
@@ -94,6 +104,7 @@ impl Bank {
 #[allow(clippy::large_enum_variant)] // Reserve the entire pending packet in each Root cell before SDK start.
 enum Owner {
     Pending(Pending),
+    Prepared(native::Prepared),
     Refused(PreparationFailure),
 }
 #[derive(Default)]
@@ -301,6 +312,11 @@ impl Custody {
             Phase::Failed => NativeSourcePreparationProgress::Failed,
             Phase::Complete => NativeSourcePreparationProgress::Complete,
             _ if slot.retiring => NativeSourcePreparationProgress::Retiring,
+            _ if slot.starting => NativeSourcePreparationProgress::Preparing,
+            _ if slot.presentation.is_some() => NativeSourcePreparationProgress::Prepared {
+                facts: slot.facts?,
+                presentation: slot.presentation?,
+            },
             Phase::Reserved => NativeSourcePreparationProgress::Preparing,
             _ => NativeSourcePreparationProgress::Facts(slot.facts?),
         })
@@ -354,6 +370,11 @@ impl Custody {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     if let Some(Owner::Pending(_)) = cell.owner.as_ref()
                         && let Some(Owner::Pending(owner)) = cell.owner.take()
+                    {
+                        cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
+                    }
+                    if let Some(Owner::Prepared(_)) = cell.owner.as_ref()
+                        && let Some(Owner::Prepared(owner)) = cell.owner.take()
                     {
                         cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
                     }

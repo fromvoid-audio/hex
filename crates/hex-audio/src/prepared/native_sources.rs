@@ -57,6 +57,26 @@ impl PublicationControl {
             trust,
         )
     }
+    /// Supply actual graph/device presentation contributions, or None when
+    /// unavailable. The exact Pending becomes a Root-held Prepared or retained
+    /// refusal. Ok acknowledges custody only; inspect progress/error separately.
+    /// Run on the existing control worker. This does not publish a graph.
+    pub fn complete_native_source_preparation(
+        &mut self,
+        binding: Binding,
+        presentation: Option<hex_plugin_host::protocol::PresentationLatency>,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native preparation output is closing");
+        }
+        self.candidate_root
+            .complete_native_source_preparation(binding, presentation)
+    }
+    /// Copy the original restored envelope, or actual initial capture for a
+    /// fresh source. Read-only state is never Root/graph admission authority.
+    pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {
+        self.candidate_root.native_source_prepared_state(binding)
+    }
     pub fn native_source_preparation_progress(
         &self,
         binding: Binding,
