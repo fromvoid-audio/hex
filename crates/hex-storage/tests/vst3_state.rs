@@ -1,4 +1,4 @@
-//! Real generic schema35/files/history consumers; no foreign plug-in or fake DSP.
+//! Real generic current-format/files/history consumers; no foreign plug-in or fake DSP.
 use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_state::{
     BinaryIdentity, ClassId, Error, Identity, MAX_OPAQUE_BYTES, State, TYPE_ID, available, decode,

@@ -5,6 +5,11 @@ use super::*;
 /// complete old processing clock (including event/fade/loop projections), while
 /// `Clip::start` owns its destination. These maps are control-owned and shared
 /// across clips/history; they never introduce a callback clock or PCM owner.
+/// Only `Musical` may also carry a section `processing_projection` and its
+/// bounded placement residuals. `Frozen` is the sole processing clock, requires
+/// warp off, and carries neither override nor residuals. Its destination
+/// displacement is separate from its immutable reference/source coordinates.
+/// `Frames` carries neither override nor residuals.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AudioClipTiming {
     Frames,

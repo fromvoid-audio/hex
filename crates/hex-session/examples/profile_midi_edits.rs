@@ -60,6 +60,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         });
     }
     Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         audio_feeds: Vec::new(),

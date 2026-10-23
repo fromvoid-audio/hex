@@ -460,7 +460,13 @@ impl Command {
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
             | Self::MoveClipsWithOverwrite { .. } => ClipCommandScope::Explicit,
-            Self::SetTuning(..)
+            Self::AddArrangementSection { .. }
+            | Self::SetArrangementSectionRange { .. }
+            | Self::RenameArrangementSection { .. }
+            | Self::SetArrangementSectionColor { .. }
+            | Self::RemoveArrangementSection(..)
+            | Self::ReorderSectionBefore { .. }
+            | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
             | Self::SpliceGainTouch { .. }

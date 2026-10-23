@@ -14,6 +14,7 @@ mod arrangement_device_drop;
 mod arrangement_device_drop_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
+mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
@@ -656,6 +657,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
+    sections: arrangement_sections::Sections,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -802,6 +804,7 @@ pub(super) struct EditorView {
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
+    hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
@@ -1169,7 +1172,7 @@ impl EditorView {
             if view.cancel_loop_rail_gesture() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
-            if view.cancel_scrub() | view.cancel_clip_paint() {
+            if view.cancel_scrub() | view.cancel_clip_paint() | view.cancel_section_pointer() {
                 cx.notify();
             }
         });
@@ -1208,7 +1211,7 @@ impl EditorView {
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
-                let paint_cancelled = view.cancel_clip_paint();
+                let paint_cancelled = view.cancel_clip_paint() | view.cancel_section_pointer();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
@@ -1226,7 +1229,11 @@ impl EditorView {
             }
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
-            if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
+            if view.cancel_midi_note_gesture()
+                | view.cancel_scrub()
+                | view.cancel_clip_paint()
+                | view.cancel_section_pointer()
+            {
                 cx.notify();
             }
         });
@@ -1272,6 +1279,7 @@ impl EditorView {
             selected_clip: None,
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
+            sections: arrangement_sections::Sections::default(),
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -1416,6 +1424,7 @@ impl EditorView {
             pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
+            hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
@@ -1531,6 +1540,10 @@ impl EditorView {
     }
 
     pub(super) fn toggle_play(&mut self) {
+        if self.section_install_pending() {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
         if self.recovery.generation().is_some() {
             self.error = Some("audio recovery pending · playback is not ready".into());
             return;
