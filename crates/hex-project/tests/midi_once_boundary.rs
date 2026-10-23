@@ -251,6 +251,79 @@ fn once_boundary_materialized_volume_holds_the_selected_endpoint() {
 }
 
 #[test]
+fn section_edge_and_shared_seam_edits_keep_loop_end_silence_and_history() {
+    for shared in [false, true] {
+        let (project, clip, _) = fixture(Boundary::LoopEnd, false);
+        let mut e = Editor::new(project, 32).unwrap();
+        let mut sections = Vec::new();
+        for (start, end) in [(0, 4), (4, 8)] {
+            let Created::ArrangementSection(section) = e
+                .execute(Command::AddArrangementSection {
+                    name: "edge".into(),
+                    color: hex_project::ElementColor::Cyan,
+                    start: b(start),
+                    end: b(end),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            sections.push(section);
+        }
+        let before = e.project().clone();
+        e.execute(if shared {
+            Command::ResizeArrangementSectionBoundary {
+                left: sections[0],
+                right: sections[1],
+                boundary: b(3),
+                marker_only: false,
+            }
+        } else {
+            Command::ResizeArrangementSectionEdge {
+                section: sections[0],
+                edge: hex_project::TrimEdge::Right,
+                boundary: b(2),
+            }
+        })
+        .unwrap();
+        // The original prefix retains the complete authored source, including
+        // its inaudible late note; finite suffixes carry only audible gates.
+        assert_eq!(
+            e.project().midi_clip(clip).unwrap().source(),
+            before.midi_clip(clip).unwrap().source()
+        );
+        let mut events = Vec::new();
+        for clip in e.project().tracks().iter().flat_map(|t| t.midi_clips()) {
+            for note in clip.notes() {
+                for occurrence in clip
+                    .source_playback()
+                    .unwrap()
+                    .note_occurrences(note.start(), note.duration())
+                    .unwrap()
+                    .iter()
+                {
+                    events.push((
+                        clip.start().raw() + occurrence.timeline_start().raw(),
+                        occurrence.gate_duration().raw(),
+                        note.pitch(),
+                    ));
+                }
+            }
+        }
+        assert_eq!(events, vec![(b(4).raw(), b(1).raw(), 60)]);
+        let after = e.project().clone();
+        assert!(e.undo());
+        let mut restored = e.project().snapshot();
+        let before = before.snapshot();
+        assert!(restored.next_id >= before.next_id);
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        assert!(e.redo());
+        assert_eq!(e.project(), &after);
+    }
+}
+
+#[test]
 fn once_boundary_projection_refuses_invalid_selected_ends() {
     use hex_project::MidiSourcePlayback;
     for end in [b(0), b(2), b(9)] {
