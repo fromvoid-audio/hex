@@ -14,6 +14,8 @@ widgets = (
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Query clear-slot composition contains a themed action and native input semantics.
     'self.clear_search_slot(',
+    # Header drop wrapper preserves the existing themed row and only refines drag paint.
+    'self.device_drop_header(',
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.

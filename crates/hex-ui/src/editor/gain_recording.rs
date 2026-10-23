@@ -53,7 +53,7 @@ impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
         self.busy() || self.mode == Mode::Ready
     }
-    pub(super) fn numeric_editing(&self, cx: &Context<EditorView>) -> bool {
+    pub(super) fn numeric_editing(&self, cx: &gpui::App) -> bool {
         self.binding
             .as_ref()
             .is_some_and(|binding| binding.entity.read(cx).is_editing())

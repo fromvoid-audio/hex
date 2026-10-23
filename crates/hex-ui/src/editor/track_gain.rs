@@ -22,6 +22,20 @@ pub(super) struct Controls {
     mixer: BTreeMap<MixerKey, Binding>,
 }
 
+impl Controls {
+    /// Read-only admission check; drafts remain with their numeric owners.
+    /// Unlike finalization, it does not collect bindings or commit values.
+    pub(super) fn has_pending_draft(&self, cx: &gpui::App) -> bool {
+        self.bindings
+            .values()
+            .chain(self.mixer.values())
+            .any(|binding| {
+                let control = binding.entity.read(cx);
+                control.is_interacting() || control.is_editing()
+            })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MixerKey {
     Balance(TrackId),
