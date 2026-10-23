@@ -200,6 +200,26 @@ def markdown(snapshot, version):
     return "\n".join(lines).encode()
 
 
+def prepare_notes(store, through, *, base=None, max_changes=512, timeout=300):
+    """Retry only typed inference timeouts; retain each failed attempt's evidence."""
+    for attempt in range(3):
+        try:
+            return notes.prepare(ROOT, store, through, base=base, max_changes=max_changes, timeout=timeout)
+        except notes.Refusal as error:
+            cause = error
+            timed_out = False
+            for _ in range(8):
+                if isinstance(cause, subprocess.TimeoutExpired):
+                    timed_out = True
+                    break
+                cause = cause.__cause__
+                if cause is None:
+                    break
+            if not timed_out or attempt == 2:
+                raise
+            print(f"notes inference timed out; completed work retained; retry {attempt + 2}/3", file=sys.stderr, flush=True)
+
+
 def cut(args, store):
     through = source()
     version = args.version or delivery.changelog.workspace_version((ROOT / "Cargo.toml").read_text()).split("-")[0]
@@ -220,7 +240,7 @@ def cut(args, store):
             raise Refusal("nightly source unchanged; previous immutable snapshot remains current")
     # Generation precedes version reservation and all build/check inputs. Ordinary
     # merges never call this; failure retains the separate recoverable ledger.
-    notes.prepare(ROOT, store / "unreleased", through, base=base, max_changes=args.max_changes,
+    prepare_notes(store / "unreleased", through, base=base, max_changes=args.max_changes,
                   timeout=args.generation_timeout)
     snapshot = notes.snapshot(ROOT, store / "unreleased", through, base=base)
     with locked(store):
@@ -610,7 +630,7 @@ def main(argv=None):
             result = [{"manifest": str(p), "version": v["version"], "channel": v["channel"],
                        "build": v["build"], "source": v["source"]} for p, v in ready_releases(store)]
         elif args.operation == "notes":
-            result = notes.prepare(ROOT, store / "unreleased", source(), base=args.base,
+            result = prepare_notes(store / "unreleased", source(), base=args.base,
                                    max_changes=args.max_changes, timeout=args.generation_timeout)
         elif args.operation == "verify":
             result = verify_release(args.path.resolve())

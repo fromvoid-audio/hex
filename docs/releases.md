@@ -26,6 +26,9 @@ without those notes, specify `--base FULL_SHA`; no historical release is guessed
 The recoverable ledger discovers actual first-parent changes, including missed
 collection events. Notes are prepared through the configured Codex CLI; there is
 no API-billed fallback. Ordinary merges and app startup never invoke generation.
+Inference timeouts receive at most two automatic retries, with completed records
+and failed-attempt diagnostics preserved. Invalid output and other failures stop
+without retry. `--generation-timeout` sets the per-input deadline (1–600 seconds).
 
 ```sh
 ./release notes --max-changes 20 # bounded catchup; retry preserves completed work

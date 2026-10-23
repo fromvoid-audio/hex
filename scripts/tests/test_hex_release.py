@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -109,6 +110,21 @@ class ReleaseTests(unittest.TestCase):
                 self.cut()
         self.assertEqual((first / "plan.json").read_bytes(), before)
         self.assertEqual(len(list((self.store / "versions").glob("*.json"))), 1)
+
+    def test_only_inference_timeouts_retry_and_retries_are_bounded(self):
+        failure = release.notes.Refusal("generation failed with retained diagnostics")
+        failure.__cause__ = subprocess.TimeoutExpired("configured codex", 300)
+        with patch.object(release.notes, "prepare", side_effect=[failure, {"complete": True}]) as prepare:
+            self.assertEqual(release.prepare_notes(self.store, "a" * 40), {"complete": True})
+            self.assertEqual(prepare.call_count, 2)
+        with patch.object(release.notes, "prepare", side_effect=failure) as prepare:
+            with self.assertRaises(release.notes.Refusal):
+                release.prepare_notes(self.store, "a" * 40)
+            self.assertEqual(prepare.call_count, 3)
+        with patch.object(release.notes, "prepare", side_effect=release.notes.Refusal("invalid model output")) as prepare:
+            with self.assertRaises(release.notes.Refusal):
+                release.prepare_notes(self.store, "a" * 40)
+            self.assertEqual(prepare.call_count, 1)
 
     def test_immutable_retry_and_concurrent_reservation_do_not_overwrite(self):
         path = self.root / "snapshot.json"
