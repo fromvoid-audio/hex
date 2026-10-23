@@ -61,6 +61,7 @@ struct Gesture {
     snap: SnapGrid,
     layout: [f32; 4],
     anchor: BeatTime,
+    anchor_x: f32,
     original: Option<Marker>,
     mode: Mode,
     display: Display,
@@ -207,15 +208,16 @@ impl EditorView {
         .inset_0()
     }
     pub(super) fn section_install_pending(&self) -> bool {
-        self.sections
-            .pending
+        self.sections.pending.as_ref().is_some_and(|pending| {
+            matches!(
+                &pending.command,
+                Command::ReorderSectionBefore { .. } | Command::ReorderSectionAfter { .. }
+            )
+        }) || self
+            .audio
             .as_ref()
-            .is_some_and(|pending| matches!(&pending.command, Command::ReorderSectionBefore { .. }))
-            || self
-                .audio
-                .as_ref()
-                .and_then(|audio| audio.control.status())
-                .is_some_and(|status| status.stopped_edit_pending())
+            .and_then(|audio| audio.control.status())
+            .is_some_and(|status| status.stopped_edit_pending())
     }
     fn select_section_metadata(&mut self, id: Option<SectionId>) {
         self.advance_selection_intent();
@@ -335,7 +337,7 @@ impl EditorView {
         x: f32,
         y: f32,
         double: bool,
-        alt: bool,
+        _alt: bool,
         free: bool,
         cx: &Context<Self>,
     ) -> bool {
@@ -369,7 +371,7 @@ impl EditorView {
         let Some(layout) = self.section_layout() else {
             return false;
         };
-        let original = id
+        let mut original = id
             .and_then(|id| state.project.arrangement_section(id))
             .map(Marker::from);
         let mode = if let (Some(marker), Some(id)) = (&original, id) {
@@ -384,7 +386,7 @@ impl EditorView {
                 Mode::Start(id)
             } else if position(marker.end).is_some_and(|p| (p - x).abs() <= 5.0) {
                 Mode::End(id)
-            } else if alt {
+            } else if free {
                 Mode::Move(id)
             } else {
                 if self
@@ -402,6 +404,16 @@ impl EditorView {
         } else {
             Mode::Paint
         };
+        if matches!(mode, Mode::Paint) {
+            let (name, color) = new_marker_appearance(&state.project);
+            original = Some(Marker {
+                id: None,
+                name,
+                color,
+                start: anchor,
+                end: anchor,
+            });
+        }
         let display = Display {
             markers: state
                 .project
@@ -419,6 +431,7 @@ impl EditorView {
             snap: self.snap_grid,
             layout,
             anchor,
+            anchor_x: x,
             original,
             mode,
             display,
@@ -426,7 +439,7 @@ impl EditorView {
         });
         self.select_section_metadata(id);
         self.status = if matches!(mode, Mode::Reorder(_)) {
-            "section drag · drop before another section to move song content"
+            "section drag · insert before or after a section to move song content"
         } else {
             "section marker edit · musical content stays in place"
         }
@@ -462,8 +475,18 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
-                if let Some(target) = self.section_hit(x, y).filter(|target| *target != id) {
-                    match state.project.preview_section_reorder(id, target) {
+                // Structural destinations are fixed edges, independent of grid snap.
+                // A click must never move music, even when it snaps outside its marker.
+                let raw_beat = self.section_pointer(x, y, true).unwrap_or(beat);
+                if (x - g.anchor_x).abs() >= 4.0
+                    && let Some((target, after)) = insertion_target(&state.project, id, raw_beat)
+                {
+                    let preview = if after {
+                        state.project.preview_section_reorder_after(id, target)
+                    } else {
+                        state.project.preview_section_reorder(id, target)
+                    };
+                    match preview {
                         Ok(preview) if !preview.is_noop() => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
@@ -473,9 +496,16 @@ impl EditorView {
                                 .tempo_map()
                                 .beat_to_frame(preview.insertion_beat())
                                 .ok();
-                            g.command = Some(Command::ReorderSectionBefore {
-                                section: id,
-                                before: target,
+                            g.command = Some(if after {
+                                Command::ReorderSectionAfter {
+                                    section: id,
+                                    after: target,
+                                }
+                            } else {
+                                Command::ReorderSectionBefore {
+                                    section: id,
+                                    before: target,
+                                }
                             });
                         }
                         Ok(_) => {}
@@ -553,16 +583,19 @@ impl EditorView {
                             });
                         }
                     } else {
+                        let Some(appearance) = g.original.as_ref() else {
+                            return true;
+                        };
                         g.display.markers.push(Marker {
                             id: None,
-                            name: "section".into(),
-                            color: ElementColor::Blue,
+                            name: appearance.name.clone(),
+                            color: appearance.color,
                             start,
                             end,
                         });
                         g.command = Some(Command::AddArrangementSection {
-                            name: "section".into(),
-                            color: ElementColor::Blue,
+                            name: appearance.name.clone(),
+                            color: appearance.color,
                             start,
                             end,
                         });
@@ -1003,19 +1036,27 @@ impl EditorView {
                 .absolute()
                 .top(px(3.0))
                 .bottom(px(3.0))
-                .left(relative((start - viewport.start) as f32 / viewport.length as f32))
+                .left(relative(
+                    (start - viewport.start) as f32 / viewport.length as f32,
+                ))
                 .w(relative((end - start) as f32 / viewport.length as f32))
                 .cursor(gpui::CursorStyle::OpenHand)
                 .overflow_hidden()
                 .border_1()
                 .border_color(rgb(border))
-                .bg(rgb(theme::clip_fill(m.color, hex_project::ClipFlavor::Accent, false)))
+                .bg(rgb(theme::clip_fill(
+                    m.color,
+                    hex_project::ClipFlavor::Accent,
+                    false,
+                )))
                 .text_xs()
                 .px_1()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip {
-                        name: "drag before a section: move the song · option-drag or resize: markers only".into(),
-                    }).into()
+                        name: "drag: reorder song · command-drag: marker only · drag edges: resize"
+                            .into(),
+                    })
+                    .into()
                 });
             if let Some(id) = m.id {
                 element = element.on_mouse_down(
@@ -1053,17 +1094,53 @@ impl EditorView {
                     .debug_selector(|| "section-insertion-preview".into())
                     .absolute()
                     .top_0()
-                    .bottom_0()
                     .left(relative(
                         (frame - viewport.start) as f32 / viewport.length as f32,
                     ))
-                    .w(px(2.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .child(theme::text("▾"))
                     .into_any_element(),
             );
         }
         elements
     }
+}
+fn insertion_target(
+    project: &hex_project::Project,
+    source: SectionId,
+    beat: BeatTime,
+) -> Option<(SectionId, bool)> {
+    if project
+        .arrangement_section(source)
+        .is_some_and(|s| s.start() <= beat && beat < s.end())
+    {
+        return None;
+    }
+    project
+        .arrangement_sections()
+        .iter()
+        .filter(|s| s.id() != source)
+        .flat_map(|s| [(s.id(), false, s.start()), (s.id(), true, s.end())])
+        .min_by_key(|(_, _, at)| at.raw().abs_diff(beat.raw()))
+        .map(|(id, after, _)| (id, after))
+}
+fn new_marker_appearance(project: &hex_project::Project) -> (String, ElementColor) {
+    use std::hash::BuildHasher;
+    // Pick once at capture; preview/release and saved history retain that choice.
+    let ticket = std::collections::hash_map::RandomState::new()
+        .hash_one(project.arrangement_sections().len());
+    let color =
+        ElementColor::TRACK_CHOICES[(ticket % ElementColor::TRACK_CHOICES.len() as u64) as usize];
+    let number = (1..=hex_project::MAX_ARRANGEMENT_SECTIONS + 1)
+        .find(|n| {
+            let name = format!("section {n}");
+            !project
+                .arrangement_sections()
+                .iter()
+                .any(|s| s.name() == name)
+        })
+        .unwrap_or(hex_project::MAX_ARRANGEMENT_SECTIONS + 1);
+    (format!("section {number}"), color)
 }
 fn same_command(a: &Command, b: &Command) -> bool {
     match (a, b) {
@@ -1123,6 +1200,16 @@ fn same_command(a: &Command, b: &Command) -> bool {
                 color: bc,
             },
         ) => (a, ac) == (b, bc),
+        (
+            Command::ReorderSectionAfter {
+                section: a,
+                after: at,
+            },
+            Command::ReorderSectionAfter {
+                section: b,
+                after: bt,
+            },
+        ) => (a, at) == (b, bt),
         (Command::RemoveArrangementSection(a), Command::RemoveArrangementSection(b)) => a == b,
         _ => false,
     }
@@ -1293,7 +1380,7 @@ mod tests {
         editor.update(cx, |v, _| v.snap_grid = SnapGrid::Quarter);
         let (anchor, destination) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
         let alt = Modifiers {
-            alt: true,
+            platform: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(anchor, MouseButton::Left, alt);
@@ -1309,6 +1396,120 @@ mod tests {
         });
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         visual.simulate_keystrokes("escape");
+    }
+    #[test]
+    fn section_insertion_uses_edges_and_does_not_move_a_clicked_source() {
+        let mut e = hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
+        let mut ids = Vec::new();
+        for (start, end) in [(0, 4), (8, 12)] {
+            let Created::ArrangementSection(id) = e
+                .execute(Command::AddArrangementSection {
+                    name: format!("section {}", ids.len() + 1),
+                    color: ElementColor::Cyan,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    end: BeatTime::from_quarters(end).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            ids.push(id);
+        }
+        let p = e.project();
+        assert_eq!(
+            insertion_target(p, ids[0], BeatTime::from_quarters(2).unwrap()),
+            None
+        );
+        assert_eq!(
+            insertion_target(p, ids[0], BeatTime::from_quarters(9).unwrap()),
+            Some((ids[1], false))
+        );
+        assert_eq!(
+            insertion_target(p, ids[0], BeatTime::from_quarters(13).unwrap()),
+            Some((ids[1], true))
+        );
+        let (name, color) = new_marker_appearance(p);
+        assert_eq!(name, "section 3");
+        assert!(ElementColor::TRACK_CHOICES.contains(&color));
+    }
+    #[gpui::test]
+    fn first_section_can_be_inserted_after_last(cx: &mut TestAppContext) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            assert!(
+                v.sections.gesture.as_ref().unwrap().command.is_some(),
+                "after-last drop must move the song"
+            );
+        });
+        assert!(visual.debug_bounds("section-insertion-preview").is_some());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            let sections = v.state.as_ref().unwrap().project.arrangement_sections();
+            assert_eq!(sections[0].name(), "Chorus");
+            assert_eq!(sections[1].name(), "Intro");
+            assert_eq!(sections[1].end(), BeatTime::from_quarters(12).unwrap());
+        });
+    }
+    #[gpui::test]
+    fn stationary_click_near_snapped_end_does_not_move_song(cx: &mut TestAppContext) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let a = bounds(&mut visual, 0);
+        let down = point(a.origin.x + a.size.width - px(7.0), a.origin.y + px(12.0));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.pending.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
+        });
+    }
+    #[gpui::test]
+    fn command_move_changes_canonical_marker_without_moving_music(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let tracks = editor.read_with(cx, |v, _| {
+            v.state.as_ref().unwrap().project.tracks().to_vec()
+        });
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
+        let modifiers = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.tracks(), tracks);
+            assert!(p.arrangement_section(ids[0]).unwrap().start() > BeatTime::ZERO);
+            assert_eq!(
+                p.arrangement_section(ids[0]).unwrap().end().raw()
+                    - p.arrangement_section(ids[0]).unwrap().start().raw(),
+                BeatTime::from_quarters(4).unwrap().raw()
+            );
+        });
     }
     #[gpui::test]
     fn reorder_pending_keeps_completed_frames_until_its_exact_terminal(cx: &mut TestAppContext) {

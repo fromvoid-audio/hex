@@ -15,6 +15,11 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Apply one clip-wide value to a frozen Arrangement selection atomically.
+    EditClips {
+        clips: Vec<ClipId>,
+        edit: crate::ClipEdit,
+    },
     /// Paint a structural Main-lane marker; no musical content is created.
     AddArrangementSection {
         name: String,
@@ -41,6 +46,11 @@ pub enum Command {
     ReorderSectionBefore {
         section: crate::SectionId,
         before: crate::SectionId,
+    },
+    /// One song-wide cut-and-insert permutation after a stable target ID.
+    ReorderSectionAfter {
+        section: crate::SectionId,
+        after: crate::SectionId,
     },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
@@ -1439,7 +1449,8 @@ impl Project {
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
-            | Command::ReorderSectionBefore { .. }) => {
+            | Command::ReorderSectionBefore { .. }
+            | Command::ReorderSectionAfter { .. }) => {
                 crate::arrangement_sections::apply(self, command)
             }
             Command::SetTuning(tuning) => {
@@ -2030,6 +2041,9 @@ impl Project {
                     .retain(|r| r.source() != id && r.destination() != id);
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
+            }
+            Command::EditClips { clips, edit } => {
+                crate::clip_selection_edit::apply(self, clips, edit)
             }
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {

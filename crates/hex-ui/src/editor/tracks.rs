@@ -6,7 +6,8 @@ use super::time_move_preview::{
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{
-    ClipTooltip, button, fade_envelope_samples, waveform_source_segment_view, waveform_summary_view,
+    ClipTooltip, button, button_with_style, fade_envelope_samples, waveform_source_segment_view,
+    waveform_summary_view,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -1094,7 +1095,7 @@ impl EditorView {
                         cx.notify();
                     })),
                 );
-            let activator = button(
+            let activator = button_with_style(
                 "",
                 if track.muted() {
                     "activate track"
@@ -1102,28 +1103,26 @@ impl EditorView {
                     "deactivate track"
                 },
                 ("track-mute", track_id.value()),
+                theme::action_style().with_state_colors(active_background, active_text),
             )
             .debug_selector(move || format!("track-mute-{}", track_id.value()))
             .flex_1()
             .min_w_0()
             .h(px(18.0))
-            .bg(rgb(active_background))
-            .text_color(rgb(active_text))
             .child(theme::text((track_index + 1).to_string()))
             .on_click(cx.listener(move |view, _, _, cx| {
                 view.toggle_mute(track_id);
                 cx.notify();
             }));
-            let solo = button(
+            let solo = button_with_style(
                 "s",
                 "solo track · s · cmd+click additive",
                 ("track-solo", track_id.value()),
+                theme::action_style().with_state_colors(solo_background, solo_text),
             )
             .debug_selector(move || format!("track-solo-{}", track_id.value()))
             .w(px(28.0))
             .h(px(18.0))
-            .bg(rgb(solo_background))
-            .text_color(rgb(solo_text))
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
                 view.toggle_solo(track_id, !event.modifiers().platform);
                 cx.notify();
