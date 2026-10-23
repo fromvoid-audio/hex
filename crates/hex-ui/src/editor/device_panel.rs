@@ -1595,6 +1595,7 @@ fn render_effect(
             )
         }
     };
+    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2188,6 +2189,7 @@ fn render_instrument(
             }
         }
     };
+    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (

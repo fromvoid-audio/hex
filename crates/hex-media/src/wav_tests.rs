@@ -84,6 +84,114 @@ fn assert_readers(bytes: &[u8], expected: &[[f32; 2]]) {
     std::fs::remove_file(path).expect("remove fixture");
 }
 
+fn set_riff_overrun(bytes: &mut [u8], overrun: u32) {
+    let declared_size = u32::try_from(bytes.len() - 8).expect("small fixture") + overrun;
+    bytes[4..8].copy_from_slice(&declared_size.to_le_bytes());
+}
+
+fn pcm16_with_odd_list() -> Vec<u8> {
+    let data: Vec<u8> = [-32768_i16, 32767, 16384, -8192, 0, 0, 256, -256]
+        .into_iter()
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    let mut bytes = wave(&format(1, 2, 16), &data, None);
+    // LIST contents are opaque to the WAV reader; its top-level odd padding is not.
+    chunk(&mut bytes, b"LIST", b"INFOsynthetic");
+    set_riff_overrun(&mut bytes, 0);
+    bytes
+}
+
+fn reader_errors(bytes: &[u8], max_header_count: usize) -> [Option<ImportError>; 3] {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "hex-riff-boundary-{}-{}.wav",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&path, bytes).expect("write fixture");
+    let limits = WavReaderLimits::new(bytes.len() as u64, 1024, max_header_count, 1024);
+    let errors = [
+        decode_wav(bytes, Limits::new(bytes.len(), 1024)).err(),
+        WavFrameReader::open(&path, limits).err(),
+        VerifiedWavReader::open(&path, VerifiedWavReaderLimits::new(limits, 32)).err(),
+    ];
+    std::fs::remove_file(path).expect("remove fixture");
+    errors
+}
+
+fn assert_invalid_readers(bytes: &[u8], reason: &'static str) {
+    for (reader, error) in ["resident", "plain", "verified"]
+        .into_iter()
+        .zip(reader_errors(bytes, 8))
+    {
+        assert!(
+            matches!(error, Some(ImportError::Invalid(actual)) if actual == reason),
+            "{reader}: expected {reason:?}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn exact_four_byte_riff_overrun_preserves_pcm_and_odd_metadata_in_all_readers() {
+    let expected = [
+        [-1.0, 32767.0 / 32768.0],
+        [0.5, -0.25],
+        [0.0, 0.0],
+        [1.0 / 128.0, -1.0 / 128.0],
+    ];
+    let mut bytes = pcm16_with_odd_list();
+    assert_readers(&bytes, &expected);
+    set_riff_overrun(&mut bytes, 4);
+    assert_readers(&bytes, &expected);
+}
+
+#[test]
+fn riff_overrun_compatibility_rejects_other_sizes_in_all_readers() {
+    let mut bytes = pcm16_with_odd_list();
+    for overrun in [1, 2, 3, 5, 8] {
+        set_riff_overrun(&mut bytes, overrun);
+        assert_invalid_readers(&bytes, "RIFF boundary exceeds input");
+    }
+}
+
+#[test]
+fn exact_four_byte_riff_overrun_still_requires_complete_chunks_and_padding() {
+    // Keep data last so its declared payload crosses physical EOF after truncation.
+    let mut truncated_data = wave(&format(1, 2, 16), &[0; 16], None);
+    truncated_data.truncate(truncated_data.len() - 4);
+    set_riff_overrun(&mut truncated_data, 4);
+    assert_invalid_readers(&truncated_data, "chunk exceeds RIFF boundary");
+
+    let mut truncated_metadata = pcm16_with_odd_list();
+    truncated_metadata.truncate(truncated_metadata.len() - 4);
+    set_riff_overrun(&mut truncated_metadata, 4);
+    assert_invalid_readers(&truncated_metadata, "chunk exceeds RIFF boundary");
+
+    let mut incomplete_header = pcm16_with_odd_list();
+    incomplete_header.extend_from_slice(b"LIST\x01\x00\x00");
+    set_riff_overrun(&mut incomplete_header, 4);
+    assert_invalid_readers(&incomplete_header, "truncated chunk header");
+
+    let mut missing_padding = pcm16_with_odd_list();
+    missing_padding.pop();
+    set_riff_overrun(&mut missing_padding, 4);
+    assert_invalid_readers(&missing_padding, "missing odd-chunk padding byte");
+}
+
+#[test]
+fn exact_four_byte_riff_overrun_preserves_seekable_header_count_limits() {
+    let mut bytes = pcm16_with_odd_list();
+    set_riff_overrun(&mut bytes, 4);
+    let [resident, plain, verified] = reader_errors(&bytes, 2);
+    assert!(resident.is_none(), "resident decode: {resident:?}");
+    for (reader, error) in [("plain", plain), ("verified", verified)] {
+        assert!(
+            matches!(error, Some(ImportError::LimitExceeded("chunk headers"))),
+            "{reader}: expected the two-header ceiling, got {error:?}"
+        );
+    }
+}
+
 #[test]
 fn pcm8_float64_and_extensible_match_all_readers() {
     let pcm8 = [0, 128, 255];

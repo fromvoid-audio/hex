@@ -90,6 +90,8 @@ mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
 mod midi_source_range;
+mod midi_stretch;
+pub use midi_stretch::MidiClipStretch;
 mod midi_volume;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
