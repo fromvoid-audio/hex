@@ -395,6 +395,9 @@ where
 #[cfg(test)]
 mod plugin_transport_tests;
 
+#[cfg(test)]
+mod handoff_profile;
+
 // Preserve the existing rounding (including subnormals) when the sum fits.
 // A same-sign overflowing sum still has a representable mean: halving each
 // operand first cannot overflow. Source finiteness is checked by the caller.
