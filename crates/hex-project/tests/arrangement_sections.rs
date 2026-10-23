@@ -1485,6 +1485,154 @@ fn isolated_edges_preserve_other_sections_and_clear_only_the_crossed_interval() 
     }
 }
 
+#[test]
+fn marker_split_preserves_music_and_left_identity_with_one_history_step() {
+    let (mut editor, id, other) = fixture();
+    let before = editor.project().snapshot();
+    let command = Command::SplitArrangementSection {
+        section: id,
+        at: b(3),
+    };
+    assert!(!command.requires_stopped_section_edit());
+    let preview = editor
+        .project()
+        .preview_arrangement_section_edit(&command)
+        .unwrap();
+    let Created::ArrangementSection(right) = editor.execute(command).unwrap() else {
+        panic!("split result")
+    };
+    assert_ne!(right, id);
+    assert_ne!(right, other);
+    let markers = editor.project().arrangement_sections();
+    assert_eq!(
+        (markers[0].id(), markers[0].start(), markers[0].end()),
+        (id, b(2), b(3))
+    );
+    assert_eq!(
+        (markers[1].id(), markers[1].start(), markers[1].end()),
+        (right, b(3), b(4))
+    );
+    assert_eq!(
+        (markers[0].name(), markers[0].color()),
+        (markers[1].name(), markers[1].color())
+    );
+    for (actual, projected) in markers.iter().zip(preview.sections()) {
+        assert_eq!(
+            (actual.start(), actual.end(), actual.name(), actual.color()),
+            (
+                projected.start(),
+                projected.end(),
+                projected.name(),
+                projected.color()
+            )
+        );
+    }
+    let after = editor.project().snapshot();
+    let mut unchanged = after.clone();
+    unchanged.arrangement_sections = before.arrangement_sections.clone();
+    unchanged.next_id = before.next_id;
+    assert_eq!(unchanged, before, "split changed musical/project state");
+    assert!(editor.undo());
+    let mut undone = editor.project().snapshot();
+    undone.next_id = before.next_id;
+    assert_eq!(undone, before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn marker_split_refusals_preserve_source_ids_and_redo() {
+    let (mut editor, id, _) = fixture();
+    editor
+        .execute(Command::RenameArrangementSection {
+            section: id,
+            name: "renamed".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    for at in [b(0), b(2), b(4), b(5), BeatTime::from_raw(u64::MAX)] {
+        let command = Command::SplitArrangementSection { section: id, at };
+        assert!(
+            editor
+                .project()
+                .preview_arrangement_section_edit(&command)
+                .is_err()
+        );
+        assert!(editor.execute(command).is_err());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.can_redo());
+    }
+    let command = Command::SplitArrangementSection {
+        section: id,
+        at: b(3),
+    };
+    let result: Result<(_, ()), hex_project::Invalid> = editor
+        .execute_prepared(command.clone(), |_| {
+            Err(hex_project::Invalid("injected split preparation refusal"))
+        });
+    assert!(result.is_err());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.can_redo());
+    editor
+        .execute(Command::RemoveArrangementSection(id))
+        .unwrap();
+    let removed = editor.project().snapshot();
+    assert!(editor.execute(command).is_err());
+    assert_eq!(editor.project().snapshot(), removed);
+
+    let mut exhausted = before.clone();
+    exhausted.next_id = u64::MAX;
+    let mut exhausted = Editor::new(Project::from_snapshot(exhausted).unwrap(), 8).unwrap();
+    let before = exhausted.project().snapshot();
+    assert!(
+        exhausted
+            .execute(Command::SplitArrangementSection {
+                section: id,
+                at: b(3)
+            })
+            .is_err()
+    );
+    assert_eq!(exhausted.project().snapshot(), before);
+    assert!(!exhausted.can_undo());
+}
+
+#[test]
+fn marker_split_at_section_capacity_refuses_without_history_or_id_changes() {
+    let (editor, id, _) = fixture();
+    let mut snapshot = editor.project().snapshot();
+    let source = snapshot
+        .arrangement_sections
+        .iter()
+        .find(|s| s.id == id.value())
+        .unwrap()
+        .clone();
+    snapshot.arrangement_sections = (0..hex_project::MAX_ARRANGEMENT_SECTIONS)
+        .map(|index| {
+            let mut marker = source.clone();
+            if index > 0 {
+                marker.id = 10_000 + index as u64;
+            }
+            marker.start = b(2 + index as u64 * 2);
+            marker.end = b(4 + index as u64 * 2);
+            marker
+        })
+        .collect();
+    snapshot.next_id = 20_000;
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    let before = editor.project().snapshot();
+    assert!(
+        editor
+            .execute(Command::SplitArrangementSection {
+                section: id,
+                at: b(3)
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+}
+
 fn meter_edit_command(operation: usize, a: SectionId, c: SectionId) -> Command {
     match operation {
         0 => Command::ReorderSectionBefore {

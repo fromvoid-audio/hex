@@ -1171,8 +1171,10 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SplitClip, _, cx| {
-                view.split_at_edit_cursor();
+            .on_action(cx.listener(|view, _: &SplitClip, window, cx| {
+                if !view.split_section_at_cursor(window) {
+                    view.split_at_edit_cursor();
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ExportProject, window, cx| {
