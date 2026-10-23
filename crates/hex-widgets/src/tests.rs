@@ -632,7 +632,7 @@ fn rendered_drag_captures_outside_release_and_emits_one_complete_gesture(cx: &mu
     );
     let outside = point(
         slider.origin.x + slider.size.width + px(70.0),
-        start.y + px(30.0),
+        start.y - px(30.0),
     );
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
@@ -706,7 +706,7 @@ fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext)
         slider.origin.x + px(10.0),
         slider.origin.y + slider.size.height / 2.0,
     );
-    let normal_position = point(start.x + px(30.0), start.y);
+    let normal_position = point(start.x, start.y - px(30.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
         normal_position,
@@ -734,7 +734,7 @@ fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext)
         );
     });
 
-    let fine_position = point(normal_position.x + px(12.0), normal_position.y);
+    let fine_position = point(normal_position.x, normal_position.y - px(12.0));
     visual.simulate_mouse_move(
         fine_position,
         Some(MouseButton::Left),
@@ -942,7 +942,7 @@ fn disabling_an_active_drag_emits_cancel_and_releases_capture(cx: &mut TestAppCo
         slider.origin.x + px(10.0),
         slider.origin.y + slider.size.height / 2.0,
     );
-    let moved = point(start.x + px(36.0), start.y);
+    let moved = point(start.x, start.y - px(36.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
