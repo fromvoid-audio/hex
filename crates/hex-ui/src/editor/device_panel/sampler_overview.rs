@@ -1,19 +1,17 @@
 //! Read-only, peak-only original-source overview. No PCM or filesystem access.
 use super::*;
-use gpui::{canvas, fill, point, size};
+use gpui::{canvas, fill, point, relative, size};
 
-const WIDTH: f32 = 180.0;
-const WAVE_HEIGHT: f32 = 96.0;
+const RULER_HEIGHT: f32 = 14.0;
 
 pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str) -> Div {
     let shell = div()
-        .w(px(WIDTH))
-        .flex_shrink_0()
-        .h_full()
+        .w_full()
+        .min_w_0()
+        .flex_1()
         .min_h_0()
         .flex()
         .flex_col()
-        .gap(px(4.0))
         .overflow_hidden()
         .debug_selector(|| "sampler-source-overview".into());
     let Some(state) = view.state.as_ref() else {
@@ -51,16 +49,30 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
     if !(start >= 0.0 && start < end && end <= frames as f64) {
         return shell.child(theme::text("source region exceeds overview"));
     }
-    let facts = format!("{frames} frames · {} hz", overview.sample_rate());
+    let facts = format!(
+        "{frames} frames · {} hz · {:.3} s",
+        overview.sample_rate(),
+        frames as f64 / f64::from(overview.sample_rate())
+    );
     let table = state.source_overviews.clone();
     let asset_id = asset.id();
     let waveform = div()
         .relative()
-        .w(px(WIDTH))
-        .h(px(WAVE_HEIGHT))
-        .flex_shrink_0()
+        .w_full()
+        .flex_1()
+        .min_h_0()
         .bg(rgb(theme::color(theme::PaletteRole::WaveBackground)))
         .debug_selector(|| "sampler-source-waveform".into())
+        .child(
+            div()
+                .absolute()
+                .left(relative((start / frames as f64) as f32))
+                .w(relative(((end - start) / frames as f64) as f32))
+                .top_0()
+                .bottom(px(RULER_HEIGHT))
+                .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+                .debug_selector(|| "sampler-source-active-region".into()),
+        )
         .child(
             canvas(
                 |_, _, _| (),
@@ -74,6 +86,8 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
                         return;
                     };
                     let extent = overview.source_frames() as f64;
+                    let active_left = (start / extent) as f32 * width;
+                    let active_right = (end / extent) as f32 * width;
                     for (index, peaks) in overview.peaks().enumerate() {
                         let Some(range) = overview.bin_range(index) else {
                             return;
@@ -85,22 +99,42 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
                             let center = half + channel as f32 * height * 0.5;
                             let top = center - peak.max.clamp(-1.0, 1.0) * (half - 1.0).max(0.0);
                             let bottom = center - peak.min.clamp(-1.0, 1.0) * (half - 1.0).max(0.0);
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    bounds.origin + point(px(left), px(top)),
-                                    size(
-                                        px((right - left).max(1.0).min((width - left).max(0.0))),
-                                        px((bottom - top).max(1.0).min((height - top).max(0.0))),
-                                    ),
+                            // Split bins at the true original-frame boundaries;
+                            // peak-bin edges never become editable sample bounds.
+                            for (a, b, role) in [
+                                (left, right.min(active_left), theme::PaletteRole::Muted),
+                                (
+                                    left.max(active_left),
+                                    right.min(active_right),
+                                    theme::PaletteRole::Waveform,
                                 ),
-                                rgb(theme::color(theme::PaletteRole::Waveform)),
-                            ));
+                                (left.max(active_right), right, theme::PaletteRole::Muted),
+                            ] {
+                                if b <= a {
+                                    continue;
+                                }
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        bounds.origin + point(px(a), px(top)),
+                                        size(
+                                            px((b - a).min((width - a).max(0.0))),
+                                            px((bottom - top)
+                                                .max(1.0)
+                                                .min((height - top).max(0.0))),
+                                        ),
+                                    ),
+                                    rgb(theme::color(role)),
+                                ));
+                            }
                         }
                     }
                 },
             )
             .absolute()
-            .inset_0(),
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom(px(RULER_HEIGHT)),
         )
         .child(source_marker(
             "sampler-source-start",
@@ -140,19 +174,40 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
     } else {
         waveform
     };
-    shell
-        .child(waveform)
-        .child(theme::text(name))
-        .child(theme::text(facts))
-        .child(theme::text("source overview · read only"))
+    let waveform = waveform.child(
+        div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .h(px(RULER_HEIGHT))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(3.0))
+            .text_size(px(9.0))
+            .line_height(px(RULER_HEIGHT))
+            .bg(rgb(theme::color(theme::PaletteRole::WaveBackground)))
+            .child(theme::text("0 s"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_ellipsis()
+                    .child(theme::text(name)),
+            )
+            .child(theme::text(facts)),
+    );
+    shell.child(waveform)
 }
 fn source_marker(selector: &'static str, fraction: f64, color: theme::PaletteRole) -> Div {
     div()
         .absolute()
-        .left(px(1.0 + (WIDTH - 3.0) * fraction.clamp(0.0, 1.0) as f32))
+        .left(relative(fraction.clamp(0.0, 1.0) as f32))
+        .ml(px(-fraction.clamp(0.0, 1.0) as f32))
         .top_0()
         .w(px(1.0))
-        .h(px(WAVE_HEIGHT))
+        .bottom(px(RULER_HEIGHT))
         .bg(rgb(theme::color(color)))
         .debug_selector(move || selector.into())
 }

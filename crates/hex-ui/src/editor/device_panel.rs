@@ -2041,7 +2041,7 @@ fn render_instrument(
             cx,
         );
         let mut fields = vec![gain, pitch, start, end];
-        match hex_engine::sampler_parameter_value_on_control(
+        let loop_error = match hex_engine::sampler_parameter_value_on_control(
             hex_engine::SamplerParameter::LoopEnabled,
             device.state(),
         ) {
@@ -2053,13 +2053,10 @@ fn render_instrument(
                 ] {
                     fields.push(view.sampler_parameter_control(track, device, parameter, cx));
                 }
+                None
             }
-            Err(error) => fields.push(
-                div()
-                    .child(theme::text(error.to_string()))
-                    .into_any_element(),
-            ),
-        }
+            Err(error) => Some(error.to_string()),
+        };
         for parameter in [
             hex_engine::SamplerParameter::AttackMs,
             hex_engine::SamplerParameter::DecayMs,
@@ -2070,35 +2067,32 @@ fn render_instrument(
         }
         let controls = div()
             .grid()
-            .grid_cols(3)
-            .gap(px(4.0))
+            .grid_cols(if loop_error.is_none() { 11 } else { 8 })
+            .gap(px(2.0))
+            .w_full()
             .flex_shrink_0()
             .debug_selector(|| "sampler-controls".into())
             .children(fields);
         let details = div()
-            .flex_1()
-            .min_h_0()
+            .w_full()
+            .flex_shrink_0()
+            .text_size(px(9.0))
+            .line_height(px(12.0))
             .overflow_hidden()
             .child(theme::text(format!(
-                "{name} · {readiness} · * release inactive in trigger mode"
+                "{readiness} · * release inactive in trigger mode{}",
+                loop_error.map_or_else(String::new, |error| format!(" · {error}"))
             )));
         let overview = sampler_overview::render(view, device, &name);
         let body = crate::device_composition::body()
             .flex()
-            .gap(px(8.0))
-            .p(px(5.0))
+            .flex_col()
+            .gap(px(2.0))
+            .p(px(4.0))
             .text_xs()
             .child(overview)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(controls)
-                    .child(details),
-            );
+            .child(controls)
+            .child(details);
         device_frame(
             device_drag_title(
                 view,

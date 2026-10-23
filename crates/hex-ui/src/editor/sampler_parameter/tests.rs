@@ -42,6 +42,19 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
     else {
         panic!("device")
     };
+    let Created::Device(neighbor) = authored
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("neighbor")
+    };
     let original = authored.project().clone();
     let facts = hex_project::OriginalSourceFacts::new(1, [7; 32]).unwrap();
     let wrong = hex_project::OriginalSourceFacts::new(1, [8; 32]).unwrap();
@@ -55,7 +68,28 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
         if case != 0 {
             snapshot.assets[0].original_source = Some(if case == 2 { wrong } else { facts });
         }
-        let project = Project::from_snapshot(snapshot).unwrap();
+        let mut project = Project::from_snapshot(snapshot).unwrap();
+        if case == 0 {
+            let mut state =
+                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                    4, asset, 0.001,
+                )
+                .unwrap();
+            for (parameter, value) in [
+                (SamplerParameter::LoopStartFrame, 1.0),
+                (SamplerParameter::LoopEndFrame, 3.0),
+                (SamplerParameter::StartFrame, 1.0),
+                (SamplerParameter::EndFrame, 3.0),
+            ] {
+                state = hex_engine::patch_sampler_parameter_on_control(parameter, &state, value)
+                    .unwrap();
+            }
+            let mut editor = Editor::new(project, 16).unwrap();
+            editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+            project = editor.project().clone();
+        }
         let pcm: &[[f32; 2]] = if case == 4 {
             &[[0.5, -0.25]; 3]
         } else {
@@ -151,6 +185,63 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                     "loaded sampler retains the ordinary {prefix} action without an audio output"
                 );
             }
+            for width in [1600.0, 900.0] {
+                visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.0)));
+                visual.run_until_parked();
+                let waveform = visual.debug_bounds("sampler-source-waveform").unwrap();
+                let controls = visual.debug_bounds("sampler-controls").unwrap();
+                let panel = visual.debug_bounds("device-panel").unwrap();
+                assert!(
+                    waveform.size.width >= gpui::px(900.0),
+                    "source must dominate the wide sampler, not remain a thumbnail: {waveform:?}"
+                );
+                assert!(
+                    waveform.size.height >= gpui::px(96.0),
+                    "waveform must retain useful vertical detail: {waveform:?}"
+                );
+                assert!(
+                    waveform.bottom() <= controls.top(),
+                    "controls belong below the sample"
+                );
+                assert!(
+                    controls.size.height <= gpui::px(30.0),
+                    "compact controls must preserve sample space: {controls:?}"
+                );
+                assert_eq!(
+                    panel.size.height,
+                    gpui::px(213.0),
+                    "device panel remains fixed height"
+                );
+                let region = visual.debug_bounds("sampler-source-active-region").unwrap();
+                let start = visual.debug_bounds("sampler-source-start").unwrap();
+                let end = visual.debug_bounds("sampler-source-end").unwrap();
+                assert!(
+                    (f32::from(region.left() - waveform.left()) / f32::from(waveform.size.width)
+                        - 0.25)
+                        .abs()
+                        < 0.002
+                );
+                assert!(
+                    (f32::from(region.size.width) / f32::from(waveform.size.width) - 0.5).abs()
+                        < 0.002
+                );
+                assert!((f32::from(start.left() - region.left())).abs() <= 1.0);
+                assert!((f32::from(end.left() - region.right())).abs() <= 1.0);
+            }
+            let rail = visual.debug_bounds("device-chain-scroll").unwrap();
+            visual.simulate_event(gpui::ScrollWheelEvent {
+                position: rail.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(-10_000.0), gpui::px(0.0))),
+                ..Default::default()
+            });
+            visual.run_until_parked();
+            let neighbor_selector =
+                Box::leak(format!("effect-device-{}", neighbor.value()).into_boxed_str());
+            let neighbor = visual.debug_bounds(neighbor_selector).unwrap();
+            assert!(
+                neighbor.left() >= rail.left() && neighbor.right() <= rail.right(),
+                "neighbor remains reachable by horizontal scrolling: {neighbor:?} within {rail:?}"
+            );
         }
         assert_eq!(
             visual.debug_bounds("sampler-source-waveform").is_some(),
