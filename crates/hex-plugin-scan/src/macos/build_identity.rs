@@ -330,9 +330,16 @@ impl Build {
     }
 
     pub fn unchanged(&self) -> Result<(), String> {
-        if hash(&read_file(&self.path, MAX_BINARY)?) != self.receipt_sha256
-            || inventory(&self.root, self.role.app())? != self.files
-        {
+        // One file-data buffer at a time during revalidation (<= MAX_BINARY).
+        // The bounded path/hash inventory metadata is a separate retained cost.
+        let receipt = {
+            let bytes = read_file(&self.path, MAX_BINARY)?;
+            hash(&bytes)
+        };
+        if receipt != self.receipt_sha256 {
+            return Err("helper or build receipt changed during operation".into());
+        }
+        if inventory(&self.root, self.role.app())? != self.files {
             return Err("helper or build receipt changed during operation".into());
         }
         Ok(())
