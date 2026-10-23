@@ -208,6 +208,18 @@ public:
     // SDK optional UI-thread & Activated interface. The graph/control owner
     // supplies actual per-direction origin/compensation/device contributions;
     // zero is never invented here as evidence that unknown latency is measured.
+    // Query only; never apply placeholder contributions during graph planning.
+    std::optional<bool> presentation_latency_available_on_control() const {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load())
+            return std::nullopt;
+        IAudioPresentationLatency* view=nullptr;
+        const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
+        if (queried==kNoInterface && !view) return false;
+        const bool valid=queried==kResultOk && view;
+        if (view) view->release();
+        if (!valid) return std::nullopt;
+        return true;
+    }
     PresentationResult set_presentation_latency(uint32 input,uint32 output) {
         if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load())
             return PresentationResult::InvalidState;
