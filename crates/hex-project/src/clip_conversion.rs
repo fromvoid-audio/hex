@@ -1,64 +1,12 @@
 //! Identity-preserving source-kind replacements. Rendering belongs to control workers.
 use crate::{
-    BeatTime, Clip, ClipFade, ClipGain, ClipId, Created, Invalid, MidiClip, MidiSource, Project,
-    SessionAudioClip, SessionCellContent, SessionMidiClip,
+    BeatTime, Clip, ClipFade, ClipGain, ClipId, Created, Invalid, Project, SessionAudioClip,
+    SessionCellContent,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
-pub(crate) fn audio_to_midi(project: &mut Project, id: ClipId) -> Result<Created, Invalid> {
-    if let Some((track, index)) = project.tracks.iter().enumerate().find_map(|(track, item)| {
-        item.clips()
-            .iter()
-            .position(|clip| clip.id == id)
-            .map(|index| (track, index))
-    }) {
-        let clip = &project.tracks[track].content.audio_clips[index];
-        let start = project.tempo_map().frame_to_beat(clip.start)?;
-        let end = project.tempo_map().frame_to_beat(
-            clip.start
-                .checked_add(clip.duration)
-                .ok_or(Invalid("clip end overflow"))?,
-        )?;
-        let length = beat_length(start, end)?;
-        let name = clip.name.clone();
-        let flavor = clip.flavor;
-        project.tracks[track].content.audio_clips.remove(index);
-        project.tracks[track].content.midi_clips.push(MidiClip {
-            name,
-            flavor,
-            id,
-            start,
-            length,
-            volume: crate::MidiClipVolume::default(),
-            source: Arc::new(MidiSource::defaults(length)),
-        });
-        return Ok(Created::Clip(id));
-    }
-    let cell = project
-        .session
-        .cells
-        .iter()
-        .position(|cell| {
-            matches!(&cell.content,
-        SessionCellContent::Audio(clip) if clip.id == id)
-        })
-        .ok_or(Invalid("audio clip no longer exists"))?;
-    let SessionCellContent::Audio(clip) = &project.session.cells[cell].content else {
-        return Err(Invalid("audio clip no longer exists"));
-    };
-    let length = project
-        .tempo_map()
-        .frame_to_beat(clip.source_end - clip.source_start)?;
-    let length = beat_length(BeatTime::ZERO, length)?;
-    project.session.cells[cell].content = SessionCellContent::Midi(SessionMidiClip {
-        flavor: clip.flavor,
-        id,
-        name: clip.name.clone(),
-        volume: crate::MidiClipVolume::default(),
-        source: Arc::new(MidiSource::defaults(length)),
-    });
-    Ok(Created::SessionClip(id))
-}
+/// Audio transcription is unsupported; requests must preserve the original clip.
+pub const AUDIO_TO_MIDI_UNSUPPORTED: &str = "audio-to-midi conversion is unavailable";
 
 fn beat_length(start: BeatTime, end: BeatTime) -> Result<BeatTime, Invalid> {
     end.raw()

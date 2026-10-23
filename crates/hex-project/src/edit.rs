@@ -111,7 +111,7 @@ pub enum Command {
         clip: ClipId,
         flavor: crate::ClipFlavor,
     },
-    /// Replace audio with an empty editable MIDI source, retaining clip identity.
+    /// Unsupported transcription request; refuses without changing content or history.
     ConvertAudioClipToMidi(ClipId),
     /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
     ConvertMidiClipToAudio {
@@ -1529,9 +1529,7 @@ impl Project {
                 crate::audio_events::apply(self, clip, operation)?;
                 Ok(Created::None)
             }
-            Command::ConvertAudioClipToMidi(clip) => {
-                crate::clip_conversion::audio_to_midi(self, clip)
-            }
+            Command::ConvertAudioClipToMidi(_) => Err(Invalid(crate::AUDIO_TO_MIDI_UNSUPPORTED)),
             Command::ConvertMidiClipToAudio { clip, path, frames } => {
                 crate::clip_conversion::midi_to_audio(self, clip, path, frames)
             }
