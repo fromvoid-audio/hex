@@ -442,7 +442,7 @@ impl Render for CompactSectionFixture {
                         background: 0x123456,
                         text: 0xffffff,
                         hover_background: 0xabcdef,
-                        hover_text: 0x000000,
+                        hover_text: Some(0x000000),
                     },
                 )
                 .id("shared-action")
@@ -542,7 +542,7 @@ impl Render for SharedActionFixture {
             background: 0x123456,
             text: 0xffffff,
             hover_background: 0xabcdef,
-            hover_text: 0,
+            hover_text: Some(0),
         };
         let clicks = self.clicks.clone();
         div()
@@ -560,6 +560,12 @@ impl Render for SharedActionFixture {
                     .w(px(25.0))
                     .h(px(22.0))
                     .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+            )
+            .child(
+                action("solo".into(), style.with_state_colors(0x123456, 0xffffff))
+                    .id("state-action")
+                    .debug_selector(|| "state-action".into())
+                    .size(px(18.0)),
             )
     }
 }
@@ -582,6 +588,7 @@ fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppC
             DEVICE_HEADER_ACTION_SIZE,
         ),
         ("workspace-action", 25.0, 22.0),
+        ("state-action", 18.0, 18.0),
     ] {
         let bounds = visual.debug_bounds(name).unwrap();
         assert_eq!(bounds.size, size(px(width), px(height)));
@@ -597,7 +604,11 @@ fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppC
         visual.run_until_parked();
         assert_eq!(
             visual.rendered_background(name),
-            Some(gpui::Background::from(rgb(0xabcdef)))
+            Some(gpui::Background::from(rgb(if name == "state-action" {
+                0x123456
+            } else {
+                0xabcdef
+            })))
         );
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());

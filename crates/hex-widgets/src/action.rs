@@ -16,9 +16,12 @@ pub fn action(label: SharedString, style: ActionStyle) -> Div {
         .bg(rgb(style.background))
         .text_color(rgb(style.text))
         .hover(move |hover| {
-            hover
-                .bg(rgb(style.hover_background))
-                .text_color(rgb(style.hover_text))
+            let hover = hover.bg(rgb(style.hover_background));
+            if let Some(text) = style.hover_text {
+                hover.text_color(rgb(text))
+            } else {
+                hover
+            }
         })
         .child(label)
 }

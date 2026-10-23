@@ -298,7 +298,6 @@ fn source_adjust_button(
         } else {
             theme::color(theme::PaletteRole::Secondary)
         }))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
         .tooltip(move |_, cx| {
             let description = tooltip.clone();
             cx.new(|_| super::transport::MiniTooltip {

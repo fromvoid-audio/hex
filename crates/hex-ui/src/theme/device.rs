@@ -155,7 +155,7 @@ pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole)
         background,
         text: readable_text(background, preferred),
         hover_background,
-        hover_text: readable_text(hover_background, preferred),
+        hover_text: Some(readable_text(hover_background, preferred)),
     }
 }
 
@@ -170,7 +170,7 @@ pub(crate) fn device_segment_style(selected: bool) -> ActionStyle {
         background,
         text: readable_text(background, color(PaletteRole::Text)),
         hover_background,
-        hover_text: readable_text(hover_background, color(PaletteRole::Text)),
+        hover_text: Some(readable_text(hover_background, color(PaletteRole::Text))),
     }
 }
 
@@ -214,8 +214,10 @@ mod action_tests {
             let workspace = super::super::action_style();
             assert!(super::super::contrast_ratio(workspace.background, workspace.text) >= 4.5);
             assert!(
-                super::super::contrast_ratio(workspace.hover_background, workspace.hover_text)
-                    >= 4.5
+                super::super::contrast_ratio(
+                    workspace.hover_background,
+                    workspace.hover_text.unwrap_or(workspace.text)
+                ) >= 4.5
             );
             for selected in [false, true] {
                 for role in [
@@ -226,15 +228,19 @@ mod action_tests {
                     let style = device_header_action_style(selected, role);
                     assert!(super::super::contrast_ratio(style.background, style.text) >= 4.5);
                     assert!(
-                        super::super::contrast_ratio(style.hover_background, style.hover_text)
-                            >= 4.5
+                        super::super::contrast_ratio(
+                            style.hover_background,
+                            style.hover_text.unwrap_or(style.text)
+                        ) >= 4.5
                     );
                 }
                 let segment = device_segment_style(selected);
                 assert!(super::super::contrast_ratio(segment.background, segment.text) >= 4.5);
                 assert!(
-                    super::super::contrast_ratio(segment.hover_background, segment.hover_text)
-                        >= 4.5
+                    super::super::contrast_ratio(
+                        segment.hover_background,
+                        segment.hover_text.unwrap_or(segment.text)
+                    ) >= 4.5
                 );
             }
         }

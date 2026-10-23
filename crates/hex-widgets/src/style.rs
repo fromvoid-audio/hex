@@ -83,5 +83,18 @@ pub struct ActionStyle {
     pub background: u32,
     pub text: u32,
     pub hover_background: u32,
-    pub hover_text: u32,
+    /// Override the foreground on hover when a contrast change is required.
+    /// None preserves the caller's semantic foreground (for example active loop).
+    pub hover_text: Option<u32>,
+}
+
+impl ActionStyle {
+    /// Preserve a state indicator on hover instead of replacing its active colors.
+    pub fn with_state_colors(mut self, background: u32, text: u32) -> Self {
+        self.background = background;
+        self.text = text;
+        self.hover_background = background;
+        self.hover_text = Some(text);
+        self
+    }
 }

@@ -612,12 +612,22 @@ pub(super) fn button(
     tooltip: &'static str,
     id: (&'static str, u64),
 ) -> gpui::Stateful<Div> {
-    hex_widgets::action(theme::text(label), theme::action_style())
+    button_with_style(label, tooltip, id, theme::action_style())
+}
+
+/// Tooltip/identity adapter; stateful callers resolve their hover colors before
+/// the shared widget is built, rather than installing a second GPUI hover style.
+pub(super) fn button_with_style(
+    label: &'static str,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+    style: hex_widgets::ActionStyle,
+) -> gpui::Stateful<Div> {
+    hex_widgets::action(theme::text(label), style)
         .id(id)
         .w(px(19.0))
         .h(px(21.0))
         .text_xs()
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
                 name: tooltip.to_string(),

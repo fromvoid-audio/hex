@@ -6,7 +6,7 @@ pub(super) use density::AdaptiveGridDensity;
 
 use super::viewport::Viewport;
 use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, px};
 use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
 use hex_session::service::Request;
 
