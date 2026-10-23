@@ -22,6 +22,11 @@ pub(super) struct State {
     error: Option<String>,
 }
 impl State {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn is_loading(&self) -> bool {
+        self.loading
+    }
+
     pub(super) fn new(path: PathBuf) -> Self {
         Self {
             path,
