@@ -13,6 +13,7 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
             | Command::ReorderSectionBefore { .. }
+            | Command::ReorderSectionAfter { .. }
     )
 }
 fn stopped_frame(
@@ -51,13 +52,22 @@ pub(super) fn command(
     resident: &mut Option<resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
-    let reorder = matches!(&command, Command::ReorderSectionBefore { .. });
-    if let Command::ReorderSectionBefore { section, before } = &command
-        && session
+    let reorder = matches!(
+        &command,
+        Command::ReorderSectionBefore { .. } | Command::ReorderSectionAfter { .. }
+    );
+    let no_op = match &command {
+        Command::ReorderSectionBefore { section, before } => session
             .project()
             .preview_section_reorder(*section, *before)?
-            .is_noop()
-    {
+            .is_noop(),
+        Command::ReorderSectionAfter { section, after } => session
+            .project()
+            .preview_section_reorder_after(*section, *after)?
+            .is_noop(),
+        _ => false,
+    };
+    if no_op {
         return session.command_prepared_revision(command, previous);
     }
     if !reorder {

@@ -269,6 +269,82 @@ fn unequal_gapped_both_direction_reorders_move_all_audio_midi_crossings_with_one
         assert_eq!(e.project().snapshot(), after);
     }
 }
+
+#[test]
+fn first_section_can_move_after_last_across_unequal_gapped_sections_with_history() {
+    let (mut e, first, last) = fixture();
+    let before = e.project().snapshot();
+    let original_events = events(e.project());
+    let audio = e.project().tracks()[0].clips()[0].clone();
+    let preview = e
+        .project()
+        .preview_section_reorder_after(first, last)
+        .unwrap();
+    assert_eq!(preview.insertion_beat(), b(10));
+    assert_eq!(preview.destination_start(), b(8));
+
+    let cuts = [
+        preview.source_start().raw(),
+        preview.source_end().raw(),
+        preview.insertion_beat().raw(),
+    ];
+    let mut expected = Vec::new();
+    for (start, length, pitch) in original_events {
+        let end = start + length;
+        let mut boundaries = vec![start, end];
+        boundaries.extend(cuts.into_iter().filter(|cut| start < *cut && *cut < end));
+        boundaries.sort();
+        boundaries.dedup();
+        for pair in boundaries.windows(2) {
+            expected.push((
+                preview.map_beat(BeatTime::from_raw(pair[0])).unwrap().raw(),
+                pair[1] - pair[0],
+                pitch,
+            ));
+        }
+    }
+    expected.sort();
+    e.execute(Command::ReorderSectionAfter {
+        section: first,
+        after: last,
+    })
+    .unwrap();
+
+    let sections = e.project().arrangement_sections();
+    assert_eq!(
+        sections.iter().map(|s| s.id()).collect::<Vec<_>>(),
+        [last, first]
+    );
+    assert_eq!(
+        e.project().arrangement_section(first).unwrap().start(),
+        b(8)
+    );
+    assert_eq!(e.project().arrangement_section(first).unwrap().end(), b(10));
+    assert_eq!(events(e.project()), expected);
+    let moved_audio = e.project().tracks()[0]
+        .clips()
+        .iter()
+        .find(|clip| clip.start() == e.project().tempo_map().beat_to_frame(b(8)).unwrap())
+        .unwrap();
+    assert_eq!(moved_audio.asset(), audio.asset());
+    assert_eq!(
+        moved_audio.audio_edit().map(|edit| &edit.domain),
+        audio.audio_edit().map(|edit| &edit.domain)
+    );
+
+    let after = e.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap().snapshot(),
+        after
+    );
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
 #[test]
 fn prepare_failure_and_noop_preserve_all_ids_history_and_redo() {
     let (mut e, a, c) = fixture();
