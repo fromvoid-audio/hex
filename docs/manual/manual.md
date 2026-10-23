@@ -91,6 +91,10 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+right-click a clip to switch its visual flavor. **use accent flavor** gives the
+track's color a saturated fill; **use muted flavor** uses a pale tint. selection
+keeps its own outline in either flavor.
+
 the lower detail area follows the selected clip or device. selecting another
 track can change the available controls. a pending edit or load may need to
 finish before another document operation is available; check the displayed status
