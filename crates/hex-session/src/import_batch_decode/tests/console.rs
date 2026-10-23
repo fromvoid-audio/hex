@@ -279,3 +279,38 @@ fn console_insert_scene_stale_anchor_refuses_and_add_scene_still_appends() {
     );
     assert_eq!(s.project(), &before);
 }
+
+#[test]
+fn enabled_auto_warp_on_verified_backend_refuses_before_media_or_partial_commit() {
+    let files = Files::new();
+    let missing = files.0.join("must-not-be-opened.wav");
+    let (mut session, _, _) = fixture(DocumentAudioMode::VerifiedStreaming);
+    let before = session.project().clone();
+    let control = Arc::new(AudioBatchControl::new(1).unwrap());
+    let op = AudioBatchImport::capture_with_control(
+        vec![missing.clone()],
+        AudioBatchDestination::NewTracks {
+            before_track: None,
+            start: 0,
+        },
+        &session,
+        context(),
+        control.clone(),
+        crate::import_batch::AudioImportOptions {
+            warp: hex_project::AudioImportWarp::Beats,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let error = op.run(&mut session, None, context).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unavailable for this audio backend")
+    );
+    assert_eq!(session.project(), &before);
+    assert!(session.media.is_empty());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(!missing.exists());
+    assert_eq!(control.progress().phase, AudioBatchPhase::Failed);
+}

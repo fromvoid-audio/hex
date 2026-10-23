@@ -11,6 +11,15 @@ pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
 pub const SOURCE_GAIN_UNITY: u32 = 65_536;
 pub const MAX_SOURCE_GAIN: u32 = SOURCE_GAIN_UNITY * 4;
 
+/// Captured Arrangement import policy. Beats uses source-local default markers
+/// at the current project tempo; it does not claim tempo or transient detection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioImportWarp {
+    #[default]
+    Off,
+    Beats,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceGainPoint {
     /// Absolute project-rate frame in the original decoded source.

@@ -17,6 +17,14 @@ const V35: &[u8] = include_bytes!("fixtures/migrations/schema35-8d2e61ab.json");
 const V36_TEMPO: &[u8] = include_bytes!("fixtures/migrations/schema36-aea1275c.json");
 // 97e885eb322e6c75c88a10dbf3d35ce994746099 (sections branch)
 const V36_SECTIONS: &[u8] = include_bytes!("fixtures/migrations/schema36-97e885eb.json");
+// Same original encoders, with their own persistence/section fixture builders:
+// edited/looped audio, automation and retained section processing contexts.
+const AUDIO_FIXTURES: [&[u8]; 4] = [
+    include_bytes!("fixtures/migrations/schema34-audio-85e6dfe2.json"),
+    include_bytes!("fixtures/migrations/schema35-audio-8d2e61ab.json"),
+    include_bytes!("fixtures/migrations/schema36-audio-aea1275c.json"),
+    include_bytes!("fixtures/migrations/schema36-audio-97e885eb.json"),
+];
 const FIXTURES: [&[u8]; 4] = [V34, V35, V36_TEMPO, V36_SECTIONS];
 fn value(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap()
@@ -195,4 +203,118 @@ fn open_and_save_as_preserve_original_and_migration_token_custody() {
     assert!(load_with_token(&original).is_err());
     assert_eq!(std::fs::read(&original).unwrap(), b"external edit");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn historical_edited_audio_and_automation_keep_every_value() {
+    for fixture in AUDIO_FIXTURES {
+        let mut expected = value(fixture);
+        let sections = expected.get("arrangement_sections").is_some();
+        for row in expected["audio_clip_state"].as_array_mut().unwrap() {
+            let edit = &mut row["audio_edit"];
+            if edit.is_null() {
+                continue;
+            }
+            let edit = edit.as_object_mut().unwrap();
+            if let Some(start) = edit.remove("musical_start_raw") {
+                edit.insert(
+                    "timing".into(),
+                    if start.is_null() {
+                        json!({"kind":"frames"})
+                    } else {
+                        json!({"kind":"musical","start_raw":start})
+                    },
+                );
+            }
+            if !sections {
+                edit.insert("processing_projection".into(), Value::Null);
+                edit.insert("placement_start_offset".into(), 0.into());
+                edit.insert("placement_end_offset".into(), 0.into());
+            }
+        }
+        if !sections {
+            expected["arrangement_sections"] = json!([]);
+            for track in expected["tracks"].as_array_mut().unwrap() {
+                for point in track["gain_envelope"].as_array_mut().unwrap() {
+                    point["incoming_gain"] = Value::Null;
+                }
+                for span in track["gain_touch_spans"].as_array_mut().unwrap() {
+                    span["source_start_raw"] = span["start_raw"].clone();
+                }
+            }
+        }
+        if expected.get("midi_clip_volumes").is_none() {
+            expected["midi_clip_volumes"] = json!({"clips":[]});
+        }
+        expected["version"] = CURRENT_SCHEMA_VERSION.into();
+        let project = decode(fixture).unwrap();
+        assert_eq!(value(&encode(&project).unwrap()), expected);
+        assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
+        let mut editor = Editor::new(project.clone(), 8).unwrap();
+        editor.execute(Command::MasterGain { gain: 0.25 }).unwrap();
+        assert!(editor.undo());
+        assert_eq!(*editor.project(), project);
+        assert!(editor.redo());
+        assert_eq!(
+            decode(&encode(editor.project()).unwrap()).unwrap(),
+            *editor.project()
+        );
+    }
+}
+
+#[test]
+fn historical_nested_fields_refuse_missing_unknown_or_mixed_layouts() {
+    for fixture in AUDIO_FIXTURES {
+        let original = value(fixture);
+        let edit_index = original["audio_clip_state"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|row| !row["audio_edit"].is_null())
+            .unwrap();
+        let fields: Vec<_> = original["audio_clip_state"][edit_index]["audio_edit"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for field in fields {
+            let mut bad = original.clone();
+            bad["audio_clip_state"][edit_index]["audio_edit"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&field);
+            assert!(
+                decode(&bytes(&bad)).is_err(),
+                "missing historical edit {field}"
+            );
+        }
+        for pointer in [
+            format!("/audio_clip_state/{edit_index}/audio_edit"),
+            "/tracks/0/gain_envelope/0".into(),
+            "/tracks/0/gain_touch_spans/0".into(),
+        ] {
+            let mut bad = original.clone();
+            bad.pointer_mut(&pointer).unwrap()["unrecognized"] = json!(42);
+            assert!(decode(&bytes(&bad)).is_err(), "unknown field at {pointer}");
+        }
+        let mut bad = original.clone();
+        let edit = &mut bad["audio_clip_state"][edit_index]["audio_edit"];
+        if edit.get("timing").is_some() {
+            edit["musical_start_raw"] = Value::Null;
+        } else {
+            edit["timing"] = json!({"kind":"frames"});
+        }
+        assert!(decode(&bytes(&bad)).is_err(), "mixed timing schemas");
+        let mut bad = original.clone();
+        bad["tracks"][0]["gain_touch_spans"][0]["steps"][0]["gain"] = json!(-1);
+        assert!(decode(&bytes(&bad)).is_err());
+        let duplicate = std::str::from_utf8(fixture).unwrap().replacen(
+            "\"gain_envelope\":",
+            "\"gain_envelope\":[],\"gain_envelope\":",
+            1,
+        );
+        assert_ne!(duplicate.as_bytes(), fixture);
+        assert!(decode(duplicate.as_bytes()).is_err());
+    }
 }

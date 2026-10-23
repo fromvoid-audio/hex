@@ -244,7 +244,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// original sample-exact rational laws.
 /// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
 /// Schema36 had independent tempo and sections branches, selected by presence of
-/// the section inventory; all other fields remain strict. No tempo-map collapse,
+/// the section inventory. Historical audio timing, projection/offset and gain
+/// seam/source metadata migrate by those exact branch contracts; other fields
+/// remain strict. No tempo-map collapse,
 /// overlap repair or opaque device-state conversion is performed. Older projects
 /// violating current model invariants refuse rather than lose musical data.
 /// Schemas1–33 are not yet supported by this public migration path; retained
