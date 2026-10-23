@@ -11,6 +11,14 @@ pub(in crate::editor) enum AdaptiveGridDensity {
 impl AdaptiveGridDensity {
     pub(in crate::editor) const ALL: [Self; 3] = [Self::Fine, Self::Medium, Self::Coarse];
 
+    pub(in crate::editor) const fn stepped(self, coarser: bool) -> Self {
+        match (self, coarser) {
+            (Self::Fine, true) | (Self::Coarse, false) => Self::Medium,
+            (Self::Medium | Self::Coarse, true) => Self::Coarse,
+            (Self::Fine | Self::Medium, false) => Self::Fine,
+        }
+    }
+
     pub(in crate::editor) const fn minimum_spacing(self) -> f32 {
         match self {
             Self::Fine => 9.0,

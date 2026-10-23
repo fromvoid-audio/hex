@@ -27,6 +27,7 @@ pub use arrangement_sections::{
 };
 mod audio_events;
 mod project_tempo;
+mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
 mod clip_fade_trim;
@@ -45,8 +46,10 @@ pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod clip_clipboard;
 mod clip_copy;
+mod clip_duplicate;
 mod clip_group;
 mod clip_group_preview;
 pub use clip_clipboard::ClipClipboard;
@@ -117,7 +120,10 @@ pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
-pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi::{
+    MidiClip, MidiClipTrim, MidiNote, MidiOneShotBoundary, MidiSource, MidiSourceIdentity,
+    TrackContent,
+};
 pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,

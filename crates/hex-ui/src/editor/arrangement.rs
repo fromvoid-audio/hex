@@ -274,6 +274,7 @@ impl EditorView {
             );
         }
         content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
@@ -326,6 +327,7 @@ impl EditorView {
                             height: f32::from(bounds.size.height),
                         });
                         view.arrangement_bounds_epoch = view.drag_layout_generation;
+                        view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -439,14 +441,16 @@ impl EditorView {
                                 return (false, false);
                             }
                             if event.click_count == 2
+                                && !event.modifiers.shift
                                 && view.begin_clip_paint(x, y, event.modifiers.platform)
                             {
                                 view.focus.focus(window);
                                 cx.notify();
                                 return (true, false);
                             }
-                            let move_started = view.begin_main_time_range_move_gesture(x, y)
-                                || view.begin_time_range_move_gesture(x, y);
+                            let move_started = !event.modifiers.shift
+                                && (view.begin_main_time_range_move_gesture(x, y)
+                                    || view.begin_time_range_move_gesture(x, y));
                             let started = if move_started {
                                 view.update_time_range_copy_modifier(event.modifiers.alt);
                                 true
@@ -455,10 +459,12 @@ impl EditorView {
                                     x,
                                     y,
                                     event.modifiers.platform,
+                                    event.modifiers.shift,
                                 ) || view.begin_time_selection_gesture(
                                     x,
                                     y,
                                     event.modifiers.platform,
+                                    event.modifiers.shift,
                                 )
                             };
                             if started {
@@ -631,6 +637,7 @@ impl EditorView {
             .child(returns)
             .child(main)
             .child(self.track_resize_events(cx))
+            .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
                 let Some(payload) = event
                     .dragged_item()

@@ -85,7 +85,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -102,8 +102,20 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(in crate::editor) fn fixture(
     cx: &mut TestAppContext,
+) -> (
+    Arc<Environment>,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    Vec<ClipId>,
+) {
+    fixture_with_service(cx, Service::new(48_000, 32, 8_000_000).unwrap())
+}
+
+pub(in crate::editor) fn fixture_with_service(
+    cx: &mut TestAppContext,
+    service: Service,
 ) -> (
     Arc<Environment>,
     gpui::AnyWindowHandle,
@@ -116,7 +128,6 @@ fn fixture(
     let wav = fixture_wav(&files);
     let directory = files.root();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
@@ -173,7 +184,7 @@ fn fixture(
         .unwrap();
     (files, handle, editor, clips)
 }
-fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
+pub(in crate::editor) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let center = visual.debug_bounds(selector).unwrap().center();
@@ -340,6 +351,11 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             editor.update(&mut visual, |v, cx| {
                 v.receive(event);
+                assert!(v.pending_clip_move.is_some());
+                let refused = next_with_error(&v.service);
+                assert!(refused.error.as_ref().unwrap().contains("project changed"));
+                v.receive(refused);
+                assert!(v.pending_clip_move.is_none());
                 cx.notify();
             });
         } else {
@@ -361,10 +377,12 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
                 assert_eq!(current.name(), "independent rename");
             }
             assert_eq!(project.clip(clips[0]).unwrap().name(), "independent rename");
-            assert!(
-                matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"),
-                "no movement command after pending/stale refusal"
-            );
+            if hold_ack {
+                assert!(matches!(&v.last_enqueued_edit, Some(Command::MoveClipsWithOverwrite { clips: selected, .. }) if selected == &clips));
+                assert!(v.error.as_ref().unwrap().contains("project changed"));
+            } else {
+                assert!(matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"));
+            }
         });
     }
 }

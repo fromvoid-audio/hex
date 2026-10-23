@@ -1001,3 +1001,159 @@ fn header_pan_vertical_drag_direction_fine_bounds_and_atomic_history(cx: &mut Te
         }
     }
 }
+
+#[gpui::test]
+fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
+    cx: &mut TestAppContext,
+) {
+    for mode in [
+        hex_session::DocumentAudioMode::Resident,
+        hex_session::DocumentAudioMode::VerifiedStreaming,
+    ] {
+        let (_browser, mut visual, editor, [first, second]) = actor_fixture(cx);
+        editor.update(&mut visual, |view, cx| {
+            view.document_audio_mode = mode;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let lower_gap = |visual: &mut VisualTestContext, track: TrackId| {
+            let a = Box::leak(format!("gain-lane-show-{}", track.value()).into_boxed_str());
+            let next = if mode == hex_session::DocumentAudioMode::Resident {
+                "track-return-sends"
+            } else {
+                "track-gain-up"
+            };
+            let b = Box::leak(format!("{next}-{}", track.value()).into_boxed_str());
+            let left = visual.debug_bounds(a).unwrap();
+            let right = visual.debug_bounds(b).unwrap();
+            assert!(
+                left.right() < right.left(),
+                "use actual unused space between controls"
+            );
+            point((left.right() + right.left()) / 2.0, left.center().y)
+        };
+        let first_gap = lower_gap(&mut visual, first);
+        let second_gap = lower_gap(&mut visual, second);
+        visual.simulate_click(first_gap, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.selected_track_ids(),
+                [first],
+                "lower background in {mode:?}"
+            );
+            assert_eq!(view.selected_track, Some(first));
+        });
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| assert!(view.track_header_focused(window)))
+        });
+        visual.simulate_click(
+            second_gap,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), [first, second])
+        });
+        visual.simulate_click(
+            first_gap,
+            Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), [second]);
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "background selection is view state only"
+            );
+            assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+        });
+        if mode == hex_session::DocumentAudioMode::Resident {
+            let mute = bounds(&mut visual, "track-mute", first);
+            let solo = bounds(&mut visual, "track-solo", first);
+            assert!(mute.right() < solo.left());
+            let gap = point((mute.right() + solo.left()) / 2.0, mute.center().y);
+            visual.simulate_click(gap, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.selected_track_ids(),
+                    [first],
+                    "mixer gutter selects too"
+                )
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn lower_header_controls_keep_their_actions_without_selecting_background_track(
+    cx: &mut TestAppContext,
+) {
+    for mode in [
+        hex_session::DocumentAudioMode::Resident,
+        hex_session::DocumentAudioMode::VerifiedStreaming,
+    ] {
+        let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+        editor.update(&mut visual, |view, cx| {
+            view.document_audio_mode = mode;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let name = bounds(&mut visual, "track-name", other).center();
+        visual.simulate_click(name, Modifiers::default());
+        visual.run_until_parked();
+        for prefix in ["track-mute", "track-solo"] {
+            let hit = bounds(&mut visual, prefix, track).center();
+            visual.simulate_click(hit, Modifiers::default());
+            pump(&editor, cx, |view| view.worker_requests_pending == 0);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_track_ids(), [other])
+            });
+        }
+        editor.read_with(&visual, |view, _| {
+            let track = view.state.as_ref().unwrap().project.track(track).unwrap();
+            assert!(track.muted() && track.soloed());
+        });
+        let sends = bounds(&mut visual, "track-return-sends", track).center();
+        visual.simulate_click(sends, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.send_menu_track, Some(track));
+            assert_eq!(view.selected_track_ids(), [other]);
+        });
+        visual.simulate_click(sends, Modifiers::default());
+        if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            let gain = bounds(&mut visual, "track-gain-up", track).center();
+            visual.simulate_click(gain, Modifiers::default());
+            pump(&editor, cx, |view| view.worker_requests_pending == 0);
+            editor.read_with(&visual, |view, _| {
+                assert!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(track)
+                        .unwrap()
+                        .gain()
+                        > 0.5
+                );
+                assert_eq!(view.selected_track_ids(), [other]);
+            });
+        }
+        // Automation deliberately selects its owner; retain that existing action.
+        let automation = bounds(&mut visual, "gain-lane-show", track).center();
+        visual.simulate_click(automation, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.gain_lane.track, Some(track));
+            assert_eq!(view.selected_track, Some(track));
+        });
+    }
+}

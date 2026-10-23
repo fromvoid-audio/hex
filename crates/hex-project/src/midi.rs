@@ -9,7 +9,9 @@
 //! polyphonic. Current-format loading refuses overlapping authored notes without
 //! rewriting files; loop occurrences and DSP releases retain their separate semantics.
 //! Channel, pitch, velocity and positive duration are validated before mutation.
-//! Source shrink refuses notes it would invalidate.
+//! Source shrink refuses notes it would invalidate. Nonrepeating sources select their
+//! exclusive audible end independently from retained note/source extent; repeating
+//! playback always follows the existing loop interval. Source edits preserve that policy.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
@@ -21,6 +23,15 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// Exclusive audible end of a nonrepeating source; later authored notes remain retained.
+/// Repeating sources always use their loop interval, independently of this policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MidiOneShotBoundary {
+    #[default]
+    SourceEnd,
+    LoopEnd,
+}
+
 /// Independently-owned MIDI event source shared by Arrangement and Session clips.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSource {
@@ -29,6 +40,7 @@ pub struct MidiSource {
     pub(crate) loop_start: BeatTime,
     pub(crate) loop_end: BeatTime,
     pub(crate) looping: bool,
+    pub(crate) one_shot_boundary: MidiOneShotBoundary,
     pub(crate) notes: Vec<MidiNote>,
 }
 
@@ -90,6 +102,35 @@ impl MidiSource {
     pub fn notes(&self) -> &[MidiNote] {
         &self.notes
     }
+    pub fn one_shot_boundary(&self) -> MidiOneShotBoundary {
+        self.one_shot_boundary
+    }
+    /// Exclusive end of the initial pass. Notes outside it stay in the authored source.
+    pub fn effective_end(&self) -> BeatTime {
+        if self.looping || self.one_shot_boundary == MidiOneShotBoundary::LoopEnd {
+            self.loop_end
+        } else {
+            self.source_length
+        }
+    }
+    /// Shared finite projection for Arrangement and Session preparation.
+    pub fn playback_for_duration(&self, duration: BeatTime) -> Result<MidiSourcePlayback, Invalid> {
+        validate_source_boundary(
+            self.source_length,
+            self.source_start,
+            self.loop_start,
+            self.loop_end,
+            self.looping,
+            self.one_shot_boundary,
+        )?;
+        MidiSourcePlayback::new_with_initial_end(
+            self.source_length,
+            self.source_start,
+            self.looping.then_some((self.loop_start, self.loop_end)),
+            duration,
+            self.effective_end(),
+        )
+    }
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
             source_length: length,
@@ -97,6 +138,7 @@ impl MidiSource {
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
+            one_shot_boundary: MidiOneShotBoundary::SourceEnd,
             notes: Vec::new(),
         }
     }
@@ -188,7 +230,7 @@ impl MidiClip {
                 let max_start = if self.looping() {
                     end - 1
                 } else {
-                    let remaining = self.source_length().raw() - source_start - 1;
+                    let remaining = self.source.effective_end().raw() - source_start - 1;
                     start
                         .checked_add(remaining.min(self.length.raw() - 1))
                         .ok_or(Invalid("midi timeline overflow"))?
@@ -237,12 +279,13 @@ impl MidiClip {
             source_prefix: BeatTime::from_raw(prefix),
         };
         validate_clip(preview.start, preview.length)?;
-        validate_source(
+        validate_source_boundary(
             shifted(self.source_length())?,
             preview.source_start,
             shifted(self.loop_start())?,
             shifted(self.loop_end())?,
             self.looping(),
+            self.source.one_shot_boundary,
         )?;
         Ok(preview)
     }
@@ -286,14 +329,7 @@ impl MidiClip {
 
     /// Return the validated finite source mapping used by playback compilers.
     pub fn source_playback(&self) -> Result<MidiSourcePlayback, Invalid> {
-        MidiSourcePlayback::new(
-            self.source.source_length,
-            self.source.source_start,
-            self.source
-                .looping
-                .then_some((self.source.loop_start, self.source.loop_end)),
-            self.length,
-        )
+        self.source.playback_for_duration(self.length)
     }
 }
 impl std::ops::Deref for MidiClip {
@@ -383,6 +419,23 @@ pub(crate) fn validate_source(
     }
     if !looping && source_start >= source_length {
         return Err(Invalid("midi source start must be inside its source"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_source_boundary(
+    source_length: BeatTime,
+    source_start: BeatTime,
+    loop_start: BeatTime,
+    loop_end: BeatTime,
+    looping: bool,
+    boundary: MidiOneShotBoundary,
+) -> Result<(), Invalid> {
+    validate_source(source_length, source_start, loop_start, loop_end, looping)?;
+    if boundary == MidiOneShotBoundary::LoopEnd && source_start >= loop_end {
+        return Err(Invalid(
+            "bounded midi source start must precede its selected end",
+        ));
     }
     Ok(())
 }
@@ -632,6 +685,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 length: right_length,
                 volume: right_volume,
                 source: Arc::new(MidiSource {
+                    one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                     source_length: right_length,
                     source_start: BeatTime::ZERO,
                     loop_start: BeatTime::ZERO,
@@ -657,7 +711,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let target = project
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
-            validate_source(source_length, source_start, loop_start, loop_end, looping)?;
+            validate_source_boundary(
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                target.one_shot_boundary(),
+            )?;
             target.volume.validate_source_length(source_length)?;
             validate_clip(target.start, length)?;
             for note in &target.notes {
@@ -1057,6 +1118,7 @@ pub(crate) fn materialize_overwrite_ranges(
                 ),
             )?,
             source: Arc::new(MidiSource {
+                one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                 source_length: length,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,

@@ -417,6 +417,10 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.track_row_builds = self.track_row_builds.saturating_add(1);
+        }
         let ClipViewTimeline {
             viewport,
             grid,
@@ -449,6 +453,19 @@ impl EditorView {
                     }
                 }),
             );
+        let track_selected = self.track_selection.contains(track_id);
+        if track_selected {
+            clip_area = clip_area.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .debug_selector(move || format!("selected-track-lane-{}", track_id.value()))
+                    .bg(
+                        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .alpha(theme::TRACK_SELECTION_OPACITY),
+                    ),
+            );
+        }
         let lane_entity = cx.entity();
         clip_area = clip_area.children([canvas(
             move |bounds, _, cx| {
@@ -497,6 +514,38 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        if track_selected {
+            // Paint beneath clip content so every outer selection stroke stays
+            // intact, including where vertical clip edges cross these accents.
+            let edge = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .alpha(theme::TRACK_SELECTION_EDGE_OPACITY);
+            let stroke = 1.0 / scale_factor.max(1.0);
+            clip_area = clip_area
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-top-{}", track_id.value())
+                        })
+                        .bg(edge),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-bottom-{}", track_id.value())
+                        })
+                        .bg(edge),
+                );
+        }
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
@@ -1012,6 +1061,14 @@ impl EditorView {
         let track_name = track.name().to_owned();
         let track_name_view = div()
             .id(("track-name", track_id.value()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.click_count == 1 {
+                        view.begin_track_reorder(track_id, event.position, window, cx);
+                    }
+                }),
+            )
             .relative()
             .children(self.track_selection.contains(track_id).then(|| {
                 div()
@@ -1030,7 +1087,11 @@ impl EditorView {
             .truncate()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(self.track_name_label(track, cx))
+            .child(self.track_name_label(
+                super::track_name::Target::Track(track.id()),
+                track.name(),
+                cx,
+            ))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: track_name.clone(),
@@ -1038,13 +1099,15 @@ impl EditorView {
                 .into()
             });
         let live_volume = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        // Empty header gutters bubble to the shared selection/focus owner.
+        // Only actual control hit regions stop clicks; row-wide stops make the
+        // lower header background unreachable for ordinary/modifier selection.
         let header_content = if live_volume {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
             let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
-                .on_click(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .gap(px(2.0))
                 .child(
@@ -1056,6 +1119,7 @@ impl EditorView {
                     .h(px(18.0))
                     .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, window, cx| {
+                        cx.stop_propagation();
                         view.show_gain_lane(track_id, window, cx)
                     })),
                 )
@@ -1068,6 +1132,7 @@ impl EditorView {
                     .h(px(18.0))
                     .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
                         let next = if view.send_menu_track == Some(track_id) {
                             None
                         } else {
@@ -1099,6 +1164,7 @@ impl EditorView {
             .h(px(18.0))
             .child(theme::text((track_index + 1).to_string()))
             .on_click(cx.listener(move |view, _, _, cx| {
+                cx.stop_propagation();
                 view.toggle_mute(track_id);
                 cx.notify();
             }));
@@ -1112,6 +1178,7 @@ impl EditorView {
             .w(px(28.0))
             .h(px(18.0))
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+                cx.stop_propagation();
                 view.toggle_solo(track_id, !event.modifiers().platform);
                 cx.notify();
             }));
@@ -1156,7 +1223,6 @@ impl EditorView {
                 .child(
                     div()
                         .id(("track-header-mixer", track_id.value()))
-                        .on_click(|_, _, cx| cx.stop_propagation())
                         .w(px(122.0))
                         .flex_shrink_0()
                         .flex()
@@ -1176,15 +1242,22 @@ impl EditorView {
                                 .w_full()
                                 .flex()
                                 .gap(px(2.0))
-                                .child(self.track_volume(track, cx))
-                                .child(self.track_pan(track, cx)),
+                                .child(
+                                    self.track_volume(track, cx)
+                                        .id(("track-volume-hit", track_id.value()))
+                                        .on_click(|_, _, cx| cx.stop_propagation()),
+                                )
+                                .child(
+                                    self.track_pan(track, cx)
+                                        .id(("track-pan-hit", track_id.value()))
+                                        .on_click(|_, _, cx| cx.stop_propagation()),
+                                ),
                         ),
                 )
         } else {
             let track_controls = div()
                 .id(("arrangement-track-controls", track_id.value()))
                 .debug_selector(move || format!("track-controls-{}", track_id.value()))
-                .on_click(|_, _, cx| cx.stop_propagation())
                 .flex()
                 .items_center()
                 .gap_1()
@@ -1197,6 +1270,7 @@ impl EditorView {
                     )
                     .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
                     .on_click(cx.listener(move |view, _, window, cx| {
+                        cx.stop_propagation();
                         view.show_gain_lane(track_id, window, cx);
                     })),
                 )
@@ -1208,6 +1282,7 @@ impl EditorView {
                         button("+", "increase track gain", ("gain-up", track_id.value()))
                             .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
                             .on_click(cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
                                 if view
                                     .state
                                     .as_ref()
@@ -1227,6 +1302,7 @@ impl EditorView {
                         button("−", "decrease track gain", ("gain-down", track_id.value()))
                             .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
                             .on_click(cx.listener(move |view, _, window, cx| {
+                                cx.stop_propagation();
                                 if view
                                     .state
                                     .as_ref()
@@ -1275,6 +1351,7 @@ impl EditorView {
                         theme::color(theme::PaletteRole::Muted)
                     }))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
                         view.toggle_mute(track_id);
                         cx.notify();
                     })),
@@ -1293,6 +1370,7 @@ impl EditorView {
                     }))
                     .on_click(cx.listener(
                         move |view, event: &gpui::ClickEvent, _, cx| {
+                            cx.stop_propagation();
                             view.toggle_solo(track_id, !event.modifiers().platform);
                             cx.notify();
                         },
@@ -1313,6 +1391,7 @@ impl EditorView {
                         },
                     )))
                     .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
                         let next = if view.send_menu_track == Some(track_id) {
                             None
                         } else {
@@ -2066,6 +2145,7 @@ impl EditorView {
 
     pub(super) fn drag_available(&self) -> bool {
         !self.track_resize_active()
+            && !self.track_reorder_active()
             && self.clip_name_edit.is_none()
             && !self.opening_project
             && !self.close_prompt_open

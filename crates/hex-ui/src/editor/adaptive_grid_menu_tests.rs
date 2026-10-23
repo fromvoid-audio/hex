@@ -404,3 +404,181 @@ fn grid_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(cx: &mu
         "grid fixture SAME Environment/WAV/fourprefs/database, actual held save, view+caller retired, cleanup verified"
     );
 }
+
+#[gpui::test]
+fn plus_minus_adjust_adaptive_density_with_clamped_limits_and_visible_snap_landmarks(
+    cx: &mut TestAppContext,
+) {
+    use super::super::super::viewport::Viewport;
+    cx.update(super::super::super::bind_editor_keys);
+    for length in [96_000, 1_152_000] {
+        let (project, track, _, clip) = audio_project();
+        let original = project.snapshot();
+        let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.selected_track = Some(track);
+                view.selected_clip = Some(clip);
+                view.viewport = Some(Viewport::fit(length));
+                view.focus.focus(window);
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        for (key, density) in [
+            ("+", AdaptiveGridDensity::Coarse),
+            ("+", AdaptiveGridDensity::Coarse),
+            ("-", AdaptiveGridDensity::Medium),
+            ("-", AdaptiveGridDensity::Fine),
+            ("-", AdaptiveGridDensity::Fine),
+            ("+", AdaptiveGridDensity::Medium),
+        ] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            let next = editor.read_with(&visual, |view, _| {
+                assert_eq!(view.snap_grid.density(), density);
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
+                assert_eq!(view.viewport, Some(Viewport::fit(length)));
+                assert!(view.last_enqueued_edit.is_none());
+                let (grid, viewport, width) = view.nudge_grid_context(false).unwrap();
+                let project = &view.state.as_ref().unwrap().project;
+                let next = grid
+                    .adjacent_frame(project, 0, viewport, width, true)
+                    .unwrap();
+                assert!(
+                    grid_lines(project, viewport, width, grid)
+                        .iter()
+                        .any(|line| line.frame == next)
+                );
+                assert_eq!(grid.snap_frame(project, next, viewport, width), Some(next));
+                next
+            });
+            let selector = Box::leak(format!("arrangement-grid-line-{next}").into_boxed_str());
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "new snap interval is rendered"
+            );
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_snap_grid();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("+");
+        editor.read_with(&visual, |view, _| {
+            assert!(view.snap_grid.is_off());
+            assert_eq!(view.snap_grid.density(), AdaptiveGridDensity::Coarse);
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.toggle_snap_grid();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let next = editor.read_with(&visual, |view, _| {
+            let (grid, viewport, width) = view.nudge_grid_context(false).unwrap();
+            grid.adjacent_frame(
+                &view.state.as_ref().unwrap().project,
+                0,
+                viewport,
+                width,
+                true,
+            )
+            .unwrap()
+        });
+        visual.simulate_keystrokes("right");
+        editor.read_with(&visual, |view, _| {
+            assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::MoveClip { start, .. }) if start == next));
+        });
+    }
+}
+
+#[gpui::test]
+fn plus_minus_preserve_text_numeric_piano_and_session_input_and_command_zoom(
+    cx: &mut TestAppContext,
+) {
+    use super::super::super::{EditorMode, clip_drag_ui_test, viewport::Viewport};
+    cx.update(super::super::super::bind_editor_keys);
+    for target in 0..5 {
+        let (project, track, _, clip) = if target == 3 {
+            clip_drag_ui_test::midi_project()
+        } else {
+            audio_project()
+        };
+        let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.selected_track = Some(track);
+                view.selected_clip = Some(clip);
+                view.clip_view_open = true;
+                match target {
+                    0 => view.browser.search.read(cx).focus(window),
+                    1 => view.begin_clip_name(window, cx),
+                    3 => view.midi_focus.focus(window),
+                    4 => {
+                        view.mode = EditorMode::Session;
+                        view.focus.focus(window);
+                    }
+                    _ => view.focus.focus(window),
+                }
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        if target == 2 {
+            let numeric = visual.debug_bounds("project-tempo-value").unwrap();
+            visual.simulate_click(numeric.center(), Modifiers::default());
+            visual.run_until_parked();
+            editor.update(&mut visual, |view, cx| {
+                assert!(view.project_tempo_editing(cx))
+            });
+        }
+        let piano_grid = editor.read_with(&visual, |view, _| view.midi_snap_grid);
+        visual.simulate_keystrokes("+ -");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert_eq!(view.snap_grid, SnapGrid::Adaptive, "input target {target}");
+            assert_eq!(view.midi_snap_grid, piano_grid);
+            assert!(view.last_enqueued_edit.is_none());
+            if target == 0 {
+                assert_eq!(view.browser.search.read(cx).content, "+-");
+            }
+        });
+        if target == 1 {
+            visual.simulate_keystrokes("enter");
+            editor.read_with(&visual, |view, _| {
+                assert!(matches!(&view.last_enqueued_edit, Some(hex_project::Command::RenameClip { name, .. }) if name == "+-"));
+            });
+        } else if target == 2 {
+            editor.update(&mut visual, |view, cx| {
+                assert!(view.project_tempo_editing(cx))
+            });
+        }
+    }
+    let (project, _, _, _) = audio_project();
+    let (handle, editor, _directory) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.viewport = Some(Viewport::fit(384_000));
+            view.focus.focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| view.viewport);
+    visual.simulate_keystrokes("cmd-+");
+    visual.run_until_parked();
+    let zoomed = editor.read_with(&visual, |view, _| {
+        assert_eq!(view.snap_grid, SnapGrid::Adaptive);
+        assert_ne!(view.viewport, before);
+        view.viewport
+    });
+    visual.simulate_keystrokes("cmd--");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.snap_grid, SnapGrid::Adaptive);
+        assert_ne!(view.viewport, zoomed);
+    });
+}

@@ -15,7 +15,8 @@ namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
 enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Presentation=5,Capture=6,
-    Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13 };
+    Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
+    Quiescence=15,Resume=16 };
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
 struct Module {
     CFBundleRef bundle=nullptr;IPluginFactory* factory=nullptr;
@@ -124,12 +125,23 @@ wire::Bytes state_payload(const wire::Config& config,const hex_instance::Capture
     wire::number(out,state.component_bytes,4);wire::number(out,state.controller_bytes,4);
     out.insert(out.end(),state.bytes.begin(),state.bytes.begin()+state.component_bytes+state.controller_bytes);return out;
 }
+wire::Bytes facts_body(const wire::Config& config,uint32 latency,bool presentation_available,const wire::Startup& startup) {
+    wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
+    out.insert(out.end(),config.executable_hash.begin(),config.executable_hash.end());
+    out.insert(out.end(),config.info_hash.begin(),config.info_hash.end());
+    uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
+    wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
+    wire::number(out,latency,4);wire::number(out,presentation_available?1:0,1);startup.acknowledge(out);return out;
+}
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
-    uint32 latency,hex_instance::Instance::PresentationResult presentation) {
+    uint32 latency,hex_instance::Instance::PresentationResult presentation,const std::optional<wire::Presentation>& supplied,bool restored) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
     wire::number(out,latency,4);wire::number(out,static_cast<uint32>(presentation),1);
+    wire::number(out,supplied?1:0,1);
+    if(supplied) { wire::number(out,supplied->input,4);wire::number(out,supplied->output,4); }
+    wire::number(out,restored?1:0,1);
     // State existence is not availability or an application/graph ACK.
     wire::number(out,state.component?1:0,1);auto payload=state_payload(config,state);
     wire::number(out,payload.size(),2);out.insert(out.end(),payload.begin(),payload.end());
@@ -154,28 +166,53 @@ int main(int argc,char** argv) {
         uint64_t blocks=0,frames=0;
         try {
             auto request=wire::configuration(channel);config.emplace(request);
+            const auto restoration=wire::startup(channel,*config);
             failure=Admission;module.open(*config);
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
             if(!instance.open(module.factory,cid)) throw Refusal{};
+            if(restoration.restored()) {
+                failure=Restore;if(!instance.restore_initial_state_on_control(restoration.state)) throw Refusal{};
+            }
             failure=Setup;hex_instance::ProcessingConfiguration setup{};
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
             if(instance.configure(setup)!=hex_instance::ConfigurationResult::Prepared) throw Refusal{};
+            failure=HostControl;instance.dispatch_host_callbacks();
+            if(instance.host_refusals()) throw Refusal{};
+            auto latency=instance.reported_latency_on_control();
+            auto available=instance.presentation_latency_available_on_control();
+            if(!latency || !available) throw Refusal{};
+            failure=ProtocolFailure;
+            if(!wire::send(channel,"HXVIFA02",facts_body(*config,*latency,*available,restoration))) throw Refusal{};
+            std::optional<wire::Presentation> supplied;
+            if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
-            const auto presentation=instance.set_presentation_latency(config->input_latency,config->output_latency);
-            if(presentation!=hex_instance::Instance::PresentationResult::Applied &&
-                presentation!=hex_instance::Instance::PresentationResult::Absent) throw Refusal{};
+            auto presentation=hex_instance::Instance::PresentationResult::Absent;
+            if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
+            else if(*available) throw Refusal{}; // unknown is never substituted with zero
+            if((presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
+                (presentation!=hex_instance::Instance::PresentationResult::Applied &&
+                 presentation!=hex_instance::Instance::PresentationResult::Absent)) throw Refusal{};
             failure=Capture;hex_instance::CapturedState state{};
             if(!instance.capture_initial_state_on_control(state)) throw Refusal{};
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
-            auto latency=instance.reported_latency_on_control();if(!latency) throw Refusal{};
-            const auto hello=ready_body(*config,state,*latency,presentation);
+            const auto final_latency=instance.reported_latency_on_control();
+            failure=Presentation;
+            if(!final_latency || *final_latency!=*latency) throw Refusal{}; // caller's plan became stale
+            const auto hello=ready_body(*config,state,*latency,presentation,supplied,restoration.restored());
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
+            // One serialized epoch mailbox, never a second request reader. The
+            // processing lane is stopped and waiting at every main-lane SDK
+            // step. Mutex/condition waits live only in this isolated helper.
+            enum EpochStage { Idle,FactsRequested,FactsSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
+            EpochStage epoch_stage=Idle;
+            uint64_t next_graph=0,next_epoch=0;
+            std::optional<wire::Presentation> next_presentation;
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -194,6 +231,37 @@ int main(int argc,char** argv) {
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(received==2) { normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
+                        if(received==3) {
+                            phase.store(3,std::memory_order_release);
+                            if(!instance.stop_processing()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                            started=false;
+                            {
+                                std::unique_lock<std::mutex> lock(startup_mutex);
+                                epoch_stage=FactsRequested;startup_changed.notify_all();
+                                startup_changed.wait(lock,[&]{return epoch_stage==FactsSent;});
+                            }
+                            phase.store(1,std::memory_order_release);
+                            const auto resumed=packet.read(channel,*config,blocks,frames);
+                            if(resumed==2) { normal_stop=true;break; }
+                            if(resumed==0) std::_Exit(Cancelled);
+                            if(resumed!=4) { worker_failure.store(ProtocolFailure);break; }
+                            {
+                                std::unique_lock<std::mutex> lock(startup_mutex);
+                                next_graph=packet.next_graph;next_epoch=packet.next_epoch;
+                                next_presentation=packet.resumed_presentation;
+                                epoch_stage=ResumeRequested;startup_changed.notify_all();
+                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeConfigured;});
+                            }
+                            phase.store(2,std::memory_order_release);
+                            started=instance.start_processing();
+                            if(!started) { worker_failure.store(Resume);break; }
+                            {
+                                std::unique_lock<std::mutex> lock(startup_mutex);
+                                epoch_stage=Restarted;startup_changed.notify_all();
+                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeSent;});
+                            }
+                            continue;
+                        }
                         if(received!=1) { worker_failure.store(ProtocolFailure);break; }
                         bool valid=true;output_right.fill(0);input.silenceFlags=0;output.silenceFlags=0;
                         for(size_t n=0;n<packet.frames;++n) {
@@ -229,7 +297,7 @@ int main(int argc,char** argv) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
-            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD01",hello);
+            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD03",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             // Pump the helper main lane, never the Hex callback. Unsupported
@@ -238,6 +306,45 @@ int main(int argc,char** argv) {
                 try {
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                    EpochStage stage;
+                    { std::lock_guard<std::mutex> lock(startup_mutex);stage=epoch_stage; }
+                    if(stage==FactsRequested) {
+                        latency=instance.reported_latency_on_control();
+                        available=instance.presentation_latency_available_on_control();
+                        if(!latency || !available) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                        auto body=facts_body(*config,*latency,*available,restoration);
+                        wire::number(body,blocks,8);wire::number(body,frames,8);
+                        if(!wire::send(channel,"HXVIQF01",body)) std::_Exit(Cancelled);
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=FactsSent;startup_changed.notify_all();
+                    } else if(stage==ResumeRequested) {
+                        supplied=next_presentation;
+                        presentation=hex_instance::Instance::PresentationResult::Absent;
+                        if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
+                        else if(*available) { error(channel,&*config,Presentation);std::_Exit(Presentation); }
+                        const auto current_latency=instance.reported_latency_on_control();
+                        if(!current_latency || *current_latency!=*latency || instance.host_refusals() ||
+                            (presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
+                            (presentation!=hex_instance::Instance::PresentationResult::Applied &&
+                             presentation!=hex_instance::Instance::PresentationResult::Absent)) {
+                            error(channel,&*config,Presentation);std::_Exit(Presentation);
+                        }
+                        // The old input/reply sequence is quiescent. Only this
+                        // acknowledged transition changes its wire binding;
+                        // no old queued request is accepted under the new one.
+                        config->binding[2]=next_graph;config->binding[3]=next_epoch;
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=ResumeConfigured;startup_changed.notify_all();
+                    } else if(stage==Restarted) {
+                        auto body=facts_body(*config,*latency,*available,restoration);
+                        wire::number(body,blocks,8);wire::number(body,frames,8);
+                        wire::number(body,static_cast<uint32>(presentation),1);
+                        wire::number(body,supplied?1:0,1);
+                        if(supplied) { wire::number(body,supplied->input,4);wire::number(body,supplied->output,4); }
+                        if(!wire::send(channel,"HXVIRR01",body)) std::_Exit(Cancelled);
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=ResumeSent;startup_changed.notify_all();
+                    }
                     uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
                     if(peer==0 && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire)) {
                         // EOF is cancellation, not the graceful HXVE terminal.

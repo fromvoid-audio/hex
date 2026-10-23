@@ -78,6 +78,17 @@ fn fixture(
     }
     // The historical schema36 tempo lineage has this same envelope without sections.
     let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // This empty schema36 fixture predates horizontal fade coordinates.
+    assert_eq!(
+        old.as_object_mut()
+            .unwrap()
+            .remove("midi_one_shot_boundaries"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("fade_curve_positions"),
+        Some(serde_json::json!([]))
+    );
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();
