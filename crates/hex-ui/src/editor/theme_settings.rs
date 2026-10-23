@@ -1160,6 +1160,20 @@ mod tests {
                 editor
             })
             .expect("editor window");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if editor.read_with(cx, |view, _| {
+                !view.theme_settings.loading && !view.audio_import_settings.is_loading()
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "settings did not load"
+            );
+            std::thread::yield_now();
+        }
         (handle, editor)
     }
 
