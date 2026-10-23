@@ -35,7 +35,7 @@ class UiBuildIdentityTests(unittest.TestCase):
             (package / "Cargo.toml").write_text('[package]\nname="identity-fixture"\nversion="0.1.0"\nedition="2024"\n')
             script = (ROOT / "crates/hex-ui/build.rs").read_text()
             (package / "build.rs").write_text(script)
-            (package / "src/main.rs").write_text('fn main(){if std::env::args().nth(1).as_deref()==Some("--font"){println!("{}",String::from_utf8_lossy(include_bytes!("../../../assets/fonts/fixture-font.data")));}else{println!("{}|{}", env!("HEX_BUILD_IDENTITY"), String::from_utf8_lossy(include_bytes!(concat!(env!("OUT_DIR"),"/changelog.json"))));}}\n')
+            (package / "src/main.rs").write_text('fn main(){if std::env::args().nth(1).as_deref()==Some("--font"){println!("{}",String::from_utf8_lossy(include_bytes!("../../../assets/fonts/fixture-font.data")));}else if std::env::args().nth(1).as_deref()==Some("--version"){println!("{}",env!("HEX_DISPLAY_VERSION"));}else{println!("{}|{}", env!("HEX_BUILD_IDENTITY"), String::from_utf8_lossy(include_bytes!(concat!(env!("OUT_DIR"),"/changelog.json"))));}}\n')
             def command(*args):
                 return subprocess.check_output(args, cwd=root).decode().strip()
             command("git", "init", "-q")
@@ -44,14 +44,17 @@ class UiBuildIdentityTests(unittest.TestCase):
             # Lockfile resolution does not compile or use a Cargo target.
             env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
             env.pop("HEX_GUARDED_BUILD_SOURCE", None)
+            env.pop("HEX_RELEASE_CHANGELOG", None)
+            env.pop("HEX_RELEASE_LABEL", None)
             subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=root, env=env, check=True, capture_output=True)
             command("git", "add", ".")
             command("git", "commit", "-qm", "fixture")
             count = 0
             cleanup = None
             release_owner = None
+            display_version = None
             def build(*, raw=False, optimized=False):
-                nonlocal count, cleanup, release_owner
+                nonlocal count, cleanup, release_owner, display_version
                 count += 1
                 argv = ("cargo", "build", "--offline", "--locked", "--message-format=json")
                 if raw:
@@ -72,6 +75,7 @@ class UiBuildIdentityTests(unittest.TestCase):
                     cleanup = runner.summary["target_cache"]["cleanup_status"]
                 events = [json.loads(line) for line in text.splitlines() if line.startswith("{")]
                 artifact = next(e for e in events if e.get("reason") == "compiler-artifact" and e.get("executable"))
+                display_version = command(artifact["executable"], "--version")
                 self.assertEqual(command(artifact["executable"], "--font"), font.read_text())
                 return artifact["fresh"], command(artifact["executable"])
             def assert_dirty_optimized_refused():
@@ -137,6 +141,25 @@ class UiBuildIdentityTests(unittest.TestCase):
             command("git", "commit", "-qm", "notes changed with retained mtime")
             self.assertTrue(build(optimized=True)[1].endswith('|{"batches": []}'))
             self.assertEqual(cleanup, "not_needed")
+            # A frozen external release projection is an actual compiler input,
+            # including same-path byte mutation with a restored timestamp.
+            frozen = root / "artifacts/release-notes.json"
+            frozen.parent.mkdir(exist_ok=True)
+            frozen.write_text('{"format":1,"batches":[]}')
+            env["HEX_RELEASE_CHANGELOG"] = str(frozen)
+            env["HEX_RELEASE_LABEL"] = "0.1.0-beta.1"
+            fresh, output = build(optimized=True)
+            self.assertFalse(fresh)
+            self.assertEqual(display_version, "0.1.0-beta.1")
+            self.assertTrue(output.startswith(command("git", "rev-parse", "--short=8", "HEAD")))
+            self.assertTrue(output.endswith('|{"format":1,"batches":[]}'))
+            stamp = frozen.stat()
+            frozen.write_text('{"format":1, "batches":[]}')
+            os.utime(frozen, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            self.assertFalse(build(optimized=True)[0])
+            self.assertTrue(build(optimized=True)[1].endswith('|{"format":1, "batches":[]}'))
+            env.pop("HEX_RELEASE_CHANGELOG")
+            env.pop("HEX_RELEASE_LABEL")
             print("ACTUAL_UNOWNED_INPUTS dev_same_head_dirty_current=True optimized_clean_commits_current=True dirty_optimized_refused_owner_artifacts_unchanged=True cleanup_not_needed=True")
             # Raw Cargo still refreshes truthfully, including untracked dirt.
             (root / "another-input").write_text("dirty")

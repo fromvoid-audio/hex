@@ -30,7 +30,11 @@ impl EditorView {
             cx.notify();
             return false;
         }
-        if self.close_prompt_open || self.project_open.busy() || self.pending_open_path.is_some() {
+        if self.close_prompt_open
+            || self.save_dialog_open
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+        {
             return false;
         }
         if !self.prepare_theme_window_close(window, cx) {
@@ -57,7 +61,11 @@ impl EditorView {
             cx.notify();
             return;
         }
-        if self.close_prompt_open || self.project_open.busy() || self.pending_open_path.is_some() {
+        if self.close_prompt_open
+            || self.save_dialog_open
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+        {
             return;
         }
         if !self.prepare_theme_window_close(window, cx) {

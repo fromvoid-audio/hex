@@ -1,0 +1,388 @@
+{
+  "fixtures": [
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema30-tuning-ac29a1ad.json",
+      "version": 30,
+      "branch": "tuning",
+      "source_sha": "ac29a1add5a036c220e0ea0059cd37288ff6462b",
+      "sha256": "b6e6408745f1204f3202ad3bb8303d0ea03a9e3d1732c9a86917299b45aa0be9",
+      "harness_sha256": "6e6083b5c44177a50157c0502bf8eda38210a7a209791b7a6dedd83dbcda378e",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 117,
+      "original_rs_aggregate_sha256": "5926037ce790fb90589f56d538744ea9e7502f481aa80f802dccb418390d6271"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema30-device-assets-d34e5a13.json",
+      "version": 30,
+      "branch": "device-assets",
+      "source_sha": "d34e5a136a18ea16a04c040f1a80bdff9ef29598",
+      "sha256": "d2f76c8df17bd7a8d18f7b49be7ecf02c1906579dcd75d4c64578006a3998d2e",
+      "harness_sha256": "f93b9e5fa3dc0162d9c56981ea3092e571b9840596b1166be1e12922945cea39",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 115,
+      "original_rs_aggregate_sha256": "a16e0a0b7b16ccf2a754fa1e9f7f20a0a6c78ddebd2ccd9f389cd44ccb0c969e"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema31-combined-20cd1de3.json",
+      "version": 31,
+      "branch": "combined",
+      "source_sha": "20cd1de33117acf9918f2b66c6e6e50b24968772",
+      "sha256": "4a724f1aeecc83d46771f4407dcf8ffed0571da2ea8d18402a6e203eb8b25df1",
+      "harness_sha256": "cadb6036f4e66bb701a74f4fb0d6ba78dd0c45fe48dbcdaa422469e6ab2ce13f",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 124,
+      "original_rs_aggregate_sha256": "025f499b0528172b1070eca5466c33b06c5871d0893a9ca366602e5786f7b64b"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema32-comparison-5165e305.json",
+      "version": 32,
+      "branch": "comparison",
+      "source_sha": "5165e305344714baa97b173714f41e038d72620a",
+      "sha256": "134682b4fc420c124c66521abcec4101a6a27b31165334ca3704e0e5a4814a62",
+      "harness_sha256": "a191d0d5183aef535c0266223f246685f9a7b9f23609b948bd470be227cd051d",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 140,
+      "original_rs_aggregate_sha256": "dc6c1b7fe881df7d94244b5804c1fe48cb11ded61aa9e86c8cb940ed34e734ab"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema33-main-7b647514.json",
+      "version": 33,
+      "branch": "main",
+      "source_sha": "7b647514aec03c531cea749bbf70a6db6119002c",
+      "sha256": "c0b926a97081e97a9a90c7134f1be120a254f6ffb0219a94cf60e662302e24ac",
+      "harness_sha256": "c2d2807952da78303794b341b4c16ad259012fdf94879253f9ea5b4f90a76a63",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 152,
+      "original_rs_aggregate_sha256": "73df2c06cf359783c097ad6d4e8bb45da1a8207d1355edab227d7c22611d2a78"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema30-assets-bpm-a0cedd1d.json",
+      "version": 30,
+      "branch": "assets-bpm",
+      "source_sha": "a0cedd1d4ef457d431108c26de956c732b9c06e8",
+      "sha256": "afdf21e330b83cad0b16360f6ad89ccd1b584ce44b73fa5a265deee2f3cdc87a",
+      "harness_sha256": "15c98ecd7ef691ffa7105219ac6048ceaa3e4ab2941e72c5b3ee8a78e9c6117c",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 121,
+      "original_rs_aggregate_sha256": "32b01f54c6ddefe1d0fec1babdc1b94a03a6802d538c15ea37fc03b012cd6860"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema31-combined-bpm-1bab7b84.json",
+      "version": 31,
+      "branch": "combined-bpm",
+      "source_sha": "1bab7b8473f3725128028bf377e523ad3aff929e",
+      "sha256": "83053018ecb9156a9d620be77a23c0fb75111cb4804063c1c23a3e99d1638229",
+      "harness_sha256": "563286d61aaebd4ee461f86b76c6a066a7f55ec8823991dca70491d343c6ad83",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 130,
+      "original_rs_aggregate_sha256": "bb84006ebf35045107d24fbff4ffe6625cf84a9cd331ec37ce54ca705cbfc65c"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema31-midi-source-5d6c5f73.json",
+      "version": 31,
+      "branch": "midi-source",
+      "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+      "sha256": "9d974d5573aca0a69d58e4ff690aeccbceccc37f62907425dc179ac676145869",
+      "harness_sha256": "563286d61aaebd4ee461f86b76c6a066a7f55ec8823991dca70491d343c6ad83",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 139,
+      "original_rs_aggregate_sha256": "09e0fb3476e86416c34ee86123661921fc0b80b1540679c0b0d80f23d42c6af4"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema31-midi-loop-5d6c5f73.json",
+      "version": 31,
+      "branch": "midi-loop",
+      "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+      "sha256": "25a2d283f57df8a34efc4e37ab87664b4753d0f4a8f769169d783f2f5bfa10f3",
+      "harness_sha256": "09dd4332c5dc3b5fff75c2b6138b8f25df969eda29e8afb74cf43401243e764f",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 139,
+      "original_rs_aggregate_sha256": "09e0fb3476e86416c34ee86123661921fc0b80b1540679c0b0d80f23d42c6af4"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema31-placement-midi-4043b1fa.json",
+      "version": 31,
+      "branch": "placement-midi",
+      "source_sha": "4043b1faa78ab6b5ff807ab5e5bd5399783527f7",
+      "sha256": "06ccca699374ee622192df480aaead864bfc1efb9ffd52388f29e983dc90c6a6",
+      "harness_sha256": "84ad63b1840466e2461f984e7df23d56fb3a67630cd039074cb76a5edd5ba0fb",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 142,
+      "original_rs_aggregate_sha256": "d226cc0b8ec1360f8aa917dffc85446f83a5e702cb0fba2249ef4a0c93c88135"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema32-placement-a9278234.json",
+      "version": 32,
+      "branch": "placement",
+      "source_sha": "a9278234a03e90de0a59ebc43d81a0b008b4b03e",
+      "sha256": "56b7793abebed8cec94457030b3357b1e7b387b540502e4649dc92491888d934",
+      "harness_sha256": "84ad63b1840466e2461f984e7df23d56fb3a67630cd039074cb76a5edd5ba0fb",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 140,
+      "original_rs_aggregate_sha256": "157087f658a58a8d5d25ec247147e6ea70363937651b4f3d798727d53295066a"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema32-integrated-e09aa1ac.json",
+      "version": 32,
+      "branch": "integrated",
+      "source_sha": "e09aa1ac2c8425c7d59f7a97265f9b5c56528490",
+      "sha256": "ee88783e5116c16bb250d9ad02f85fd560194ecb6814363acf5ba2df7e1a84db",
+      "harness_sha256": "d9b94464b469d7826503108aaae7ce2e616ac0dec3778d0a9f0c041d52b3fdef",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 149,
+      "original_rs_aggregate_sha256": "09d6fb3c3cae75ef1c1ba6951274caa700585b77772e537bf0c1353678d40fe6"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/earlier/schema32-wide-origin-13bd9fa3.json",
+      "version": 32,
+      "branch": "wide-origin",
+      "source_sha": "13bd9fa3b3ba852a2f80cc9f2356f99bf8e9d4b1",
+      "sha256": "af3fbef76a5b017e9f4fbd347f3a71a680dfca7628b6947f006afcaccc1e59a6",
+      "harness_sha256": "e39db6f77f7408870fda6233e2f88c4476866483744ab794d9b79a45ce50bff0",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "migration_fixture"
+      ],
+      "original_roundtrip_assertions": "snapshot equality and byte-identical encode/decode/encode; no current reader involved",
+      "original_rs_files": 140,
+      "original_rs_aggregate_sha256": "db55d598523fe9a5065f7df0e5c7fa6e3dc6d24f78e5b37fdfcd1efb100e7247"
+    }
+  ],
+  "explicit_midi_writers": {
+    "sources": [
+      {
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "original_rs_files": 140,
+        "original_rs_aggregate_sha256": "2d617f8b35c21cb38f4de7026bfea3ecbda895dc9e6fb9367701c46bde4e8642",
+        "post_build_all_original_rs_unchanged": true
+      },
+      {
+        "source_sha": "4043b1faa78ab6b5ff807ab5e5bd5399783527f7",
+        "original_rs_files": 143,
+        "original_rs_aggregate_sha256": "df30b3c68f7f9516a790e6cc8d181b9988b811e5c0d654344e861c8f085e7f3c",
+        "post_build_all_original_rs_unchanged": true
+      }
+    ],
+    "harness": "artifacts/earlier-migration-evidence/explicit_midi_fixture.rs",
+    "harness_sha256": "4d512377695a9e7500b30120aa5f062b89f5d28013d415a6af775b19cdc6866b",
+    "generator": "artifacts/earlier-migration-evidence/generate_explicit_midi.py",
+    "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+    "fixture_construction": "5d6c5f73:crates/hex-storage/tests/midi_once.rs::fixture; typed snapshot changes both Arrangement and Session boundaries",
+    "validation": "complete snapshot equality; byte-identical explicit writer reencode; exact retained note/source data and SourceEnd1 versus LoopEnd0 playback occurrences in both owners",
+    "fixtures": [
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema20-midi-source-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 20,
+        "policy": "source",
+        "sha256": "cdad1c49f193fc48c722416e1bcfb2fe69c7cf9a5d022793061db20f75536465",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "20",
+          "source"
+        ]
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema20-midi-loop-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 20,
+        "policy": "loop",
+        "sha256": "205cf79285948570a4425aa365e1ddf984d2f79b3ffc16575e461651f2fa5380",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "20",
+          "loop"
+        ]
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema22-midi-source-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 22,
+        "policy": "source",
+        "sha256": "1bc38d2352d8c7afcfae678434d97e7220787223b253599451be9fd4d65515da",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "22",
+          "source"
+        ]
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema22-midi-loop-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 22,
+        "policy": "loop",
+        "sha256": "833fcf04c0764488832bee982dd616e0c126b94872d439043e32bc5ead693556",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "22",
+          "loop"
+        ]
+      }
+    ],
+    "audit4043": {
+      "all_four_original_reader_and_explicit_writer_roundtrips_passed": true,
+      "all_four_outputs_byte_identical_to_5d6": true,
+      "owning_storage_rs_difference": "none: lib.rs, schema.rs, return_feeds.rs, gain_envelopes.rs, gain_touch.rs",
+      "wire": "required one_shot_boundary in Arrangement MIDI clip and Session MIDI source; Both host trim DTO; schema20 no gain fields, schema22 complete legacy gain fields without incoming_gain/source_start_raw"
+    }
+  }
+}

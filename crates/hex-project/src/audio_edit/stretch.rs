@@ -41,7 +41,7 @@ pub(super) fn retime(
             return Err(Invalid("stretched cycle phase exceeds selected interval"));
         }
     }
-    edit.musical_start = Some(tempo.frame_to_beat(start)?);
+    edit.timing = AudioClipTiming::Musical(tempo.frame_to_beat(start)?);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
     domain.fade_start = scale(domain.fade_start, numerator, denominator)?;
@@ -76,7 +76,8 @@ pub(super) fn retime(
         fade_scale(old_fade.out_end_offset())?,
         old_fade.in_curve(),
         old_fade.out_curve(),
-    )?;
+    )?
+    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?;
     domain.fade_projection = Some(AudioFadeProjection {
         tempo: tempo.clone(),
         origin_beat_raw: origin + i128::from(domain.fade_start),

@@ -8,6 +8,8 @@
 //! # Does not own
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
+mod action;
+pub use action::action;
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
 mod color_picker;
@@ -69,7 +71,7 @@ pub use response_graph::{
     ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
-    CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,
+    ActionStyle, CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle,
 };
 
 #[cfg(test)]

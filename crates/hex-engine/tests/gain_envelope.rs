@@ -36,6 +36,7 @@ fn fixture(frames: usize) -> Fixture {
 }
 fn point(beat: BeatTime, gain: f32, outgoing: GainInterpolation) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat,
         gain,
         outgoing,
