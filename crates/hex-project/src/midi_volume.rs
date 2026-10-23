@@ -134,7 +134,8 @@ impl MidiClipVolume {
     }
     /// Materialize a finite elapsed interval into a new one-shot source. This
     /// control-side projection preserves loop seam jumps and bounds generated
-    /// points before allocating/enumerating repeated source boundaries.
+    /// points before allocating/enumerating repeated source boundaries. Authored
+    /// points remain editable metadata even when their gains are equal.
     pub fn materialized(
         &self,
         playback: MidiSourcePlayback,
@@ -150,15 +151,8 @@ impl MidiClipVolume {
         if end > playback.arrangement_duration() {
             return Err(Invalid("clip volume interval exceeds finite playback"));
         }
-        if let Some(gain) = self.constant_gain() {
-            return if gain == MidiClipGain::UNITY {
-                Ok(Self::default())
-            } else {
-                Self::new(
-                    vec![MidiClipVolumePoint::linear(BeatTime::ZERO, gain)],
-                    BeatTime::from_raw(length),
-                )
-            };
+        if self.points().is_empty() {
+            return Ok(Self::default());
         }
         let mut boundaries = Vec::new();
         boundaries
@@ -267,15 +261,6 @@ impl MidiClipVolume {
             Some(phase) => self.gain_at(phase),
             None => self.gain_at(playback.source_length()),
         }
-    }
-    fn constant_gain(&self) -> Option<MidiClipGain> {
-        let Some(first) = self.points().first() else {
-            return Some(MidiClipGain::UNITY);
-        };
-        self.points()
-            .iter()
-            .all(|point| point.incoming == first.value && point.value == first.value)
-            .then_some(first.value)
     }
     /// Copy a source-local half-open interval immediately after itself, keeping
     /// the original curve on both sides of the overwritten destination. Boundary
@@ -477,6 +462,46 @@ mod tests {
         );
         assert!(!curve.same_revision(&shifted));
         assert_eq!(curve.points()[0].beat.raw(), 2);
+    }
+    #[test]
+    fn materialized_constant_curve_retains_authored_points_including_unity() {
+        let length = BeatTime::from_raw(6);
+        let playback = MidiSourcePlayback::new(length, BeatTime::ZERO, None, length).unwrap();
+        for gain in [0.5, 1.0] {
+            let curve = MidiClipVolume::new(
+                vec![
+                    point(1, gain, gain),
+                    point(3, gain, gain),
+                    point(5, gain, gain),
+                ],
+                length,
+            )
+            .unwrap();
+            let retained = curve
+                .materialized(playback, BeatTime::from_raw(1), BeatTime::from_raw(5))
+                .unwrap();
+            assert_eq!(
+                retained.points(),
+                &[
+                    point(0, gain, gain),
+                    point(2, gain, gain),
+                    point(4, gain, gain)
+                ]
+            );
+            let repeated = MidiSourcePlayback::new(
+                length,
+                BeatTime::ZERO,
+                Some((BeatTime::ZERO, length)),
+                BeatTime::from_raw(4096),
+            )
+            .unwrap();
+            assert!(
+                curve
+                    .materialized(repeated, BeatTime::ZERO, BeatTime::from_raw(4096))
+                    .is_err()
+            );
+            assert_eq!(curve.points().len(), 3);
+        }
     }
     #[test]
     fn materialized_loop_interval_preserves_ramps_seams_and_late_range_without_prefix_walk() {
