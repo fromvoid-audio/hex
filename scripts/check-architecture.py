@@ -14,6 +14,7 @@ ALLOWED = {
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
     'hex-plugin-catalog': {'hex-plugin-scan'},
+    'hex-plugin-state': {'hex-lattice-contract'},
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract', 'hex-tuning'},
@@ -41,6 +42,8 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Real generic project/file/history round trips, never runtime state I/O.
+    'hex-plugin-state': {'hex-project', 'hex-storage'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     # Verified-mode source limits for real worker/key-handler failure fixtures only.

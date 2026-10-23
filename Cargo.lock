@@ -2729,6 +2729,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-plugin-state"
+version = "0.1.0"
+dependencies = [
+ "hex-lattice-contract",
+ "hex-project",
+ "hex-storage",
+]
+
+[[package]]
 name = "hex-preferences"
 version = "0.1.0"
 dependencies = [
