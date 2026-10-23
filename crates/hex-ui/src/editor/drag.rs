@@ -1406,17 +1406,16 @@ impl super::EditorView {
             move_command(drag.clip, target_track, preview.position)
         };
         let copy_intent = super::group_copy::Pending::capture(self, &command);
-        if !drag.copy_modifier.get() {
-            // Freeze the release-time projection before transferring display
-            // custody. Retiring the held capture would also erase group content.
-            drag.preview.set(Some(preview));
-            self.pending_clip_move = self
-                .active_clip_drag
-                .take()
-                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone()));
-        } else {
-            clear(self);
-        }
+        // Input capture ends here. Keep the frozen destination for moves AND
+        // copies until the shared receipt observes this edit's real terminal.
+        drag.preview.set(Some(preview));
+        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            super::pending_clip_move::Pending::new(
+                drag,
+                command.clone(),
+                std::sync::Arc::clone(&state.project),
+            )
+        });
         let before_pending = self.worker_requests_pending;
         if self.enqueue(Request::Edit(command)) {
             if let Some(mut intent) = copy_intent {

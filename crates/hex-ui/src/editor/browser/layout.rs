@@ -422,7 +422,7 @@ impl EditorView {
         sidebar = sidebar
             .child(picker_group_heading("collections pending", compact))
             .child(picker_group_heading("library", compact));
-        for index in [3, 0, 1, 2] {
+        for index in [3, 0, 1, 2, 4] {
             let (section, name) = SECTIONS[index].clone();
             if !self.browser.layout.visible[index] {
                 continue;
