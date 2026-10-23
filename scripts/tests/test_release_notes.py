@@ -264,6 +264,56 @@ class ReleaseLedgerTests(unittest.TestCase):
         self.assertEqual(view_item['generator'], 'injected model')
         self.assertEqual(len(release.snapshot(self.root, self.store, source, self.base, allow_injected=True)['batches'][-1]['result']['entries']), 1)
 
+    def test_large_packet_bounds_only_context_and_retains_full_history(self):
+        def history_model(directory, timeout):
+            packet = json.loads((directory / 'input.json').read_bytes())
+            commit = packet['commits'][0]['commit']
+            return {'entries': [{'category': 'features',
+                    'text': f'change {index} for {commit[:8]} ' + 'x' * 275,
+                    'commits': [commit]} for index in range(32)],
+                    'reason': 'fixture history'}
+
+        first = self.add_track_change('first history item', 'first history item')
+        second = self.add_track_change('second history item', 'second history item')
+        release.prepare(self.root, self.store, first, self.base, model=history_model)
+        release.prepare(self.root, self.store, second, self.base, model=history_model)
+        self.write('large.txt', 'x' * (492 * 1024) + '\n')
+        large = self.commit('large user-visible source change')
+        collected = release.collect(self.root, self.store, large, self.base)
+        record = next(item for item in collected['records'] if item['source'] == large)
+        packet = json.loads(release._get_object(self.store, record['input_object']))
+        full_previous = []
+        for prior in collected['records']:
+            if prior['source'] == large:
+                break
+            item = next(item for view in collected['views'].values() for item in view['items']
+                        if item['record_id'] == prior['id'] and item['state'] == 'ready')
+            result = json.loads(release._get_object(self.store, item['result_object']))
+            full_previous.extend(entry['text'] for entry in result['entries'])
+        self.assertGreater(len(release.changelog.prompt(packet, full_previous).encode()), release.changelog.MAX_INPUT)
+        small_packet = release.changelog.input_packet(self.root, self.base, first)
+        self.assertEqual(release.generation_prompt(small_packet, full_previous[:1]),
+                         release.changelog.prompt(small_packet, full_previous[:1]))
+
+        def large_model(directory, timeout):
+            prompt = (directory / 'prompt.txt').read_bytes()
+            self.assertLessEqual(len(prompt), release.changelog.MAX_INPUT)
+            context = json.loads(prompt.split(b'\n', 1)[1])['previous_context']
+            self.assertEqual(context['total'], len(full_previous))
+            self.assertGreater(context['omitted_count'], 0)
+            self.assertEqual(context['included_recent'], full_previous[-len(context['included_recent']):])
+            self.assertEqual(context['full_previous_sha256'], release._sha(release._json(full_previous)))
+            self.assertEqual((directory / 'input.json').read_bytes(), release._json(packet))
+            commit = packet['commits'][0]['commit']
+            return {'entries': [{'category': 'features', 'text': 'large source update is available.',
+                                 'commits': [commit]}], 'reason': 'fixture large change'}
+
+        release.prepare(self.root, self.store, large, self.base, model=large_model)
+        snapshot = release.snapshot(self.root, self.store, large, self.base, allow_injected=True)
+        entries = [entry for batch in snapshot['batches'] for entry in batch['result']['entries']]
+        self.assertEqual(len(entries), 65)
+        self.assertTrue(any(entry['text'] == 'large source update is available.' for entry in entries))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -2,9 +2,17 @@
 use crate::theme;
 use gpui::{Div, Stateful, div, prelude::*, px, rgb};
 
-pub(crate) const LABEL: &str =
-    concat!(env!("CARGO_PKG_VERSION"), " · ", env!("HEX_BUILD_IDENTITY"));
-pub(crate) const HEADER_INSET: f32 = 232.0;
+pub(crate) const LABEL: &str = concat!(
+    env!("HEX_DISPLAY_VERSION"),
+    " · ",
+    env!("HEX_BUILD_IDENTITY")
+);
+// Ten-pixel Ioskeley Mono is approximately six pixels per character. Keep the
+// existing compact minimum and reserve the additional space for dated nightlies.
+pub(crate) const HEADER_INSET: f32 = {
+    let width = 84.0 + LABEL.len() as f32 * 6.0;
+    if width > 232.0 { width } else { 232.0 }
+};
 
 pub(crate) fn label() -> Stateful<Div> {
     div()
