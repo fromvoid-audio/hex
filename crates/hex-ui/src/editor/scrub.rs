@@ -64,6 +64,7 @@ impl EditorView {
             && !self.close_prompt_open
             && !self.save_dialog_open
             && !self.export_dialog_open
+            && !self.theme_settings.open
             && self.recovery.generation().is_none()
             && self
                 .audio

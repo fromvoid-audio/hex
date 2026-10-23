@@ -1160,6 +1160,20 @@ mod tests {
                 editor
             })
             .expect("editor window");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if editor.read_with(cx, |view, _| {
+                !view.theme_settings.loading && !view.audio_import_settings.is_loading()
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "settings did not load"
+            );
+            std::thread::yield_now();
+        }
         (handle, editor)
     }
 
@@ -1304,8 +1318,26 @@ mod tests {
             );
         }
 
+        let role_center = visual
+            .debug_bounds("theme-role-secondary")
+            .unwrap()
+            .center();
+        assert!(
+            visual
+                .debug_bounds("timeline-ruler")
+                .unwrap()
+                .contains(&role_center)
+        );
+        let cursor = editor.read_with(cx, |view, _| view.offline_cursor);
         click_bounds(&mut visual, "theme-role-secondary");
         visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                !view.scrub_active(),
+                "settings click started a hidden scrub"
+            );
+            assert_eq!(view.offline_cursor, cursor);
+        });
         assert_eq!(
             editor.read_with(cx, |view, _| view.theme_settings.selected_role),
             ThemeRole::Secondary
