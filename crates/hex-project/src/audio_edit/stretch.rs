@@ -76,7 +76,8 @@ pub(super) fn retime(
         fade_scale(old_fade.out_end_offset())?,
         old_fade.in_curve(),
         old_fade.out_curve(),
-    )?;
+    )?
+    .with_curve_positions(old_fade.in_position(), old_fade.out_position())?;
     domain.fade_projection = Some(AudioFadeProjection {
         tempo: tempo.clone(),
         origin_beat_raw: origin + i128::from(domain.fade_start),

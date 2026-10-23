@@ -194,6 +194,37 @@ impl EditorView {
         true
     }
 
+    /// Existing Main range handle has priority over an empty-lane point click.
+    /// Capture and section-lane arbitration share this exact geometry query.
+    pub(super) fn main_time_range_grab(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(hex_project::TimeRange, u64)> {
+        if !self.time_selection_project_scope {
+            return None;
+        }
+        let range = self.normalized_time_selection()?;
+        let state = self.state.as_ref()?;
+        let lane = self.main_track_lane_bounds.filter(|lane| {
+            self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
+        })?;
+        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+            return None;
+        }
+        let frame = super::seek::pointer_to_frame(
+            x,
+            lane.left,
+            lane.width,
+            self.visible_viewport(state.timeline_frames),
+        )?;
+        if frame < range.start() || frame >= range.end() {
+            return None;
+        }
+        let offset = frame.checked_sub(range.start())?;
+        Some((range, offset))
+    }
+
     pub(super) fn begin_main_time_range_move_gesture(&mut self, x: f32, y: f32) -> bool {
         self.suppress_cursor_click = false;
         if !self.time_selection_project_scope
@@ -216,28 +247,10 @@ impl EditorView {
         {
             return false;
         }
-        let Some(range) = self.normalized_time_selection() else {
+        let Some((range, grab_frame_offset)) = self.main_time_range_grab(x, y) else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let Some(lane) = self.main_track_lane_bounds.filter(|lane| {
-            self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
-        }) else {
-            return false;
-        };
-        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
-            return false;
-        }
-        let viewport = self.visible_viewport(state.timeline_frames);
-        let Some(frame) = super::seek::pointer_to_frame(x, lane.left, lane.width, viewport) else {
-            return false;
-        };
-        if frame < range.start() || frame >= range.end() {
-            return false;
-        }
-        let Some(grab_frame_offset) = frame.checked_sub(range.start()) else {
             return false;
         };
         self.time_range_move_gesture = Some(TimeRangeMoveGesture {
