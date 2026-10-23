@@ -1,5 +1,39 @@
 use crate::{Clip, Invalid};
 
+/// Retain only a positive placed prefix, keeping the original fade/processing
+/// domain and media available. Unlike an edge extension or a two-sided split,
+/// this also permits ending in a one-shot's existing silent tail; no right-hand
+/// fragment or new identity is created. Work remains on the control side.
+pub(crate) fn preview_prefix_crop_with_tempo(
+    original: &Clip,
+    end: u64,
+    tempo: &crate::TempoMap,
+) -> Result<Clip, Invalid> {
+    let original_end = original
+        .start()
+        .checked_add(original.duration())
+        .ok_or(Invalid("audio prefix end overflow"))?;
+    if end <= original.start() || end > original_end {
+        return Err(Invalid(
+            "audio prefix must retain a positive contained interval",
+        ));
+    }
+    if end == original_end {
+        return Ok(original.clone());
+    }
+    if original.audio_edit().is_some() {
+        return crate::audio_edit::trim_view(original, crate::TrimEdge::Right, end, tempo);
+    }
+    let mut prefix = original.clone();
+    prefix.duration = end - original.start();
+    if !prefix.looping {
+        prefix.source_length = prefix.source_length.min(prefix.duration);
+    }
+    // Retain the fade's original domain/offset, as for the left side of a split:
+    // cropping must not rescale the audible prefix or move its fade-out earlier.
+    Ok(prefix)
+}
+
 /// Preview an audio fragment moved to another timeline position without
 /// changing its source mapping or fade domain. The fragment must be wholly
 /// contained by the original clip and the destination end must be representable.

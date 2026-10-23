@@ -91,6 +91,11 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+changing the project bpm keeps clips at their musical start positions. audio with
+warp off keeps its natural playback speed. if a faster bpm makes an audio tail
+reach the next clip on that track, hex crops that tail at the next start. original
+media remains available, and undo restores the previous tempo and clip extents.
+
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
