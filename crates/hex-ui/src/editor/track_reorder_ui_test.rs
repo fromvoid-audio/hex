@@ -620,3 +620,65 @@ fn track_reorder_full_ui_latency(cx: &mut TestAppContext) {
         );
     }
 }
+
+#[gpui::test]
+fn scrolled_variable_height_drop_commits_the_visible_gap_and_retains_sizes(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, ids) = live_tracks(cx, 12, false);
+    editor.update(&mut visual, |v, cx| {
+        v.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 6,
+            offset_in_item: px(11.0),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let handle = visual
+        .debug_bounds(Box::leak(
+            format!("track-height-resize-{}", ids[8].value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(handle.x, handle.y + px(47.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(handle.x, handle.y + px(47.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let height = editor.read_with(&visual, |v, _| v.track_height(ids[8]));
+    let from = bounds(&mut visual, ids[7]).center();
+    let target = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[9].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let to = point(from.x, target.origin.y + px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        (visual
+            .debug_bounds("track-insertion-line")
+            .unwrap()
+            .origin
+            .y
+            - target.origin.y)
+            .abs()
+            <= px(1.0)
+    );
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        let tracks = v.state.as_ref().unwrap().project.tracks();
+        assert_eq!(tracks[7].id(), ids[8]);
+        assert_eq!(tracks[8].id(), ids[7]);
+        assert_eq!(v.track_height(ids[8]), height);
+    });
+}

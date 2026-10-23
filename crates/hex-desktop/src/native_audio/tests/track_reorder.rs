@@ -280,7 +280,7 @@ fn reorder_track_latency_100_tracks() {
     let ids = order(&event);
     let pcm = resident_pcm(&event);
     fs::remove_file(path).unwrap();
-    // Prepare/cache warm-up is excluded. Alternate real first/last moves.
+    // Prepare/cache warm-up is excluded. Rotate the first row to the end each time.
     for _ in 0..2 {
         let track = event.state.project.tracks()[0].id();
         let request = reorder(&event, track, None);
