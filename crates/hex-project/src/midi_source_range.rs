@@ -79,6 +79,10 @@ pub(crate) fn duplicate(
         .midi_source(clip)
         .ok_or(Invalid("midi clip no longer exists"))?;
     let range = Range::capture(source, start, end)?;
+    let volume = project
+        .midi_clip_volume(clip)
+        .ok_or(Invalid("midi clip no longer exists"))?
+        .duplicated_range(start, end, range.source_length)?;
     let mut insert = Vec::new();
     insert
         .try_reserve_exact(range.count)
@@ -88,5 +92,7 @@ pub(crate) fn duplicate(
             insert.push(note);
         }
     }
-    crate::midi_batch::edit_range(project, clip, insert, range.source_length)
+    let created = crate::midi_batch::edit_range(project, clip, insert, range.source_length)?;
+    project.replace_midi_clip_volume(clip, volume)?;
+    Ok(created)
 }
