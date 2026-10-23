@@ -103,8 +103,9 @@ impl EditorView {
             return;
         }
         let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
-        self.enqueue(Request::Edit(Command::AddMidiTrack {
+        self.enqueue(Request::Edit(Command::InsertTrack {
             name: format!("track {}", count + 1),
+            before_track: self.new_track_insertion_anchor(),
         }));
     }
 

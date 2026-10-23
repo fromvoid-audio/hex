@@ -275,3 +275,99 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
         Err(Error::State(hex_plugin_state::Error::MissingComponent))
     ));
 }
+
+#[test]
+fn epoch_requests_match_independent_headers_and_refuse_stale_or_changed_owners() {
+    let config = config();
+    // Independent Python struct.pack fixtures, not this encoder's output.
+    assert_eq!(
+        quiesce(&config, 3).unwrap().as_slice(),
+        hex(
+            "48585651010000000000000000000000010000000000000002000000000000000300000000000000040000000000000003000000000000001800000000000000"
+        )
+    );
+    let next = Binding {
+        graph: 7,
+        epoch: 6,
+        ..config.binding
+    };
+    assert_eq!(
+        resume_request(&config, next, known()).unwrap(),
+        hex(
+            "485856520100000000000100000000000100000000000000020000000000000003000000000000000400000000000000070000000000000006000000000000004d0000005b000000"
+        )
+    );
+    assert_eq!(resume_request(&config, next, None).unwrap().len(), 64);
+    for bad in [
+        config.binding,
+        Binding { root: 9, ..next },
+        Binding {
+            instance: 9,
+            ..next
+        },
+        Binding { graph: 2, ..next },
+        Binding { epoch: 0, ..next },
+        Binding { epoch: 3, ..next },
+    ] {
+        assert!(resume_request(&config, bad, known()).is_err());
+    }
+    assert!(quiesce(&config, u64::MAX).is_err());
+}
+fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(config.identity.class.bytes());
+    body.extend(config.identity.binary.executable_sha256);
+    body.extend(config.identity.binary.info_sha256);
+    body.extend(config.sample_rate.to_le_bytes());
+    body.extend(config.quantum.to_le_bytes());
+    body.extend([config.input_channels, config.output_channels]);
+    body.extend(3_u32.to_le_bytes());
+    body.push(1);
+    body.extend(&config.startup_request().unwrap()[46..]);
+    body.extend(sequence.to_le_bytes());
+    body.extend((sequence * u64::from(config.quantum)).to_le_bytes());
+    body
+}
+#[test]
+fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
+    let mut config = config();
+    let body = epoch_body(&config, 3);
+    let facts = quiescent_facts(&body, &config, 3).unwrap();
+    assert_eq!(facts.algorithmic_latency_frames, 3);
+    for at in [2, 34, 50, 82, 114, 122, 130, 131, 134, 142] {
+        let mut bad = body.clone();
+        bad[at] ^= 0x80;
+        assert!(quiescent_facts(&bad, &config, 3).is_err());
+    }
+    assert!(quiescent_facts(&body, &config, 2).is_err());
+    config.binding.epoch += 1;
+    assert!(quiescent_facts(&body, &config, 3).is_err());
+    let mut ready = epoch_body(&config, 3);
+    ready.extend([1, 1]);
+    ready.extend(77_u32.to_le_bytes());
+    ready.extend(91_u32.to_le_bytes());
+    assert_eq!(
+        resumed(&ready, &config, 3, facts, known()).unwrap(),
+        Presentation::Applied
+    );
+    assert!(resumed(&ready, &config, 3, facts, None).is_err());
+    assert!(
+        resumed(
+            &ready,
+            &config,
+            3,
+            Facts {
+                algorithmic_latency_frames: 4,
+                ..facts
+            },
+            known()
+        )
+        .is_err()
+    );
+    let mut unknown = epoch_body(&config, 3);
+    unknown.extend([1, 0]); // applied cannot acknowledge unknown contributions
+    assert!(resumed(&unknown, &config, 3, facts, None).is_err());
+    ready.push(0);
+    assert!(resumed(&ready, &config, 3, facts, known()).is_err());
+}

@@ -9,6 +9,10 @@
 //! Facts precede presentation/final state capture/processing finalization. The
 //! pending type cannot exchange PCM or grant graph/canonical acceptance.
 //! Configuration, prepared state and PCM are copied and strictly bounded.
+//! A serialized quiescent owner can retain the same loaded component/controller
+//! through a newer epoch. Actual stop/facts/restart acknowledgements fence that
+//! transition; original startup capture stays historical. Old copied queues and
+//! graph/callback custody remain the audio owner's separate responsibility.
 //!
 //! # Dependencies
 //! Uses hex-plugin-scan's fresh source/helper provenance, hex-plugin-state's

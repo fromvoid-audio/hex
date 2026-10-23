@@ -1,5 +1,8 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod epoch;
+pub use epoch::Quiescent;
+
 use crate::transport::{Binding, Block};
 use crate::{
     Error, Result,
@@ -292,6 +295,8 @@ impl Pending {
             child: ChildCustody::Owned(child),
             channel,
             cancellation,
+            #[cfg(test)]
+            reap_probe: None,
         };
         let until = end_after(options.limits.startup)?;
         let mut packet = Packet::new();
@@ -605,6 +610,8 @@ struct Lease {
     child: ChildCustody,
     channel: Channel,
     cancellation: Cancellation,
+    #[cfg(test)]
+    reap_probe: Option<Arc<std::sync::atomic::AtomicI32>>,
 }
 // The process handle is consumed exactly once. Lost custody is terminal: even
 // cleanup/Drop must not retry a numeric wait against a potentially reused PID.
@@ -680,7 +687,16 @@ fn wait(
 impl Drop for Lease {
     fn drop(&mut self) {
         self.cancel_native();
-        let _ = self.child.reap(); // joining control/worker only; lost custody never retries
+        let reaped = self.child.reap(); // joining control/worker only; lost custody never retries
+        #[cfg(test)]
+        if let Some(probe) = &self.reap_probe {
+            let code = match &reaped {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -2,
+            };
+            probe.store(code, Ordering::Release);
+        }
+        let _ = reaped;
     }
 }
 

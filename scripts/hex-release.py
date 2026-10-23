@@ -429,7 +429,7 @@ def notarize(candidate, app, plan):
     return submission["id"]
 
 
-def package(candidate):
+def package(candidate, *, adopt_release_target=False):
     with locked(candidate):
         plan = validate_plan(candidate)
         if (candidate / "release.json").exists():
@@ -459,7 +459,7 @@ def package(candidate):
                 delivery.validate_ci(ci_report, runner, plan["source"])
 
             revalidate()
-            with delivery.optimized_artifact(runner, verification_check=revalidate) as (binary, ownership):
+            with delivery.optimized_artifact(runner, adopt=adopt_release_target, verification_check=revalidate) as (binary, ownership):
                 stage = candidate / "bundle.pending.app"
                 discard_generated_stage(candidate, "bundle.pending.app")
                 resources = stage / "Contents/Resources"
@@ -615,9 +615,14 @@ def main(argv=None):
         sub.add_argument("--max-changes", type=int, default=512)
         sub.add_argument("--generation-timeout", type=int, default=300, help="seconds per bounded notes input, 1..600")
         sub.add_argument("--accept-source", help="explicit native-accepted full source SHA for stable")
+        sub.add_argument("--adopt-release-target", action="store_true",
+                         help="explicitly adopt an inspected Cargo cache for first release/recovery")
     for operation in ("resume", "verify", "install"):
         sub = commands.add_parser(operation)
         sub.add_argument("path", type=Path, help="candidate directory for resume; release.json for verify/install")
+        if operation == "resume":
+            sub.add_argument("--adopt-release-target", action="store_true",
+                             help="explicitly adopt an inspected Cargo cache for first release/recovery")
     sub = commands.add_parser("notes", help="recover/prepare rolling notes without cutting a version")
     sub.add_argument("--base")
     sub.add_argument("--max-changes", type=int, default=20)
@@ -638,8 +643,9 @@ def main(argv=None):
             result = install(args.path.resolve())
         else:
             candidate = args.path.resolve() if args.operation == "resume" else cut(args, store)
-            print(f"frozen release: {candidate}\nresume: ./release resume {candidate}", flush=True)
-            result = package(candidate)
+            adoption = " --adopt-release-target" if args.adopt_release_target else ""
+            print(f"frozen release: {candidate}\nresume: ./release resume {candidate}{adoption}", flush=True)
+            result = package(candidate, adopt_release_target=args.adopt_release_target)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (Refusal, notes.Refusal, ci.TargetCacheError, OSError, ValueError, KeyError, TypeError,

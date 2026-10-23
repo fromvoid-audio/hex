@@ -2423,6 +2423,12 @@ impl EditorView {
                 self.select_copied_group(first, last, intent.count);
             }
         } else if let Some(hex_project::Created::Track(track)) = event.created {
+            self.focused_return = None;
+            self.device_panel.main_selected = None;
+            if let Some(state) = &self.state {
+                self.track_selection
+                    .select(&state.project, track, false, false);
+            }
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);

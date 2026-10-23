@@ -557,7 +557,7 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
-    /// Convert against the exact selected canonical clip; delayed stale actions refuse.
+    /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
     ConvertClip {
         project_generation: u64,
         revision: u64,
@@ -4439,42 +4439,14 @@ fn run_worker(
                             )
                         })
                     } else {
-                        resident_audio::execute_command(
-                            &mut session,
-                            Command::ConvertAudioClipToMidi(clip),
-                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            hex_engine::AudioSourceContext {
-                                project_generation,
-                                editor_revision: revision.saturating_add(1),
-                            },
-                            &mut events,
-                            &mut resident_snapshot,
-                            export_lane.admission_with_resident_owners(
-                                compiled.as_ref().map(|(_, prepared)| {
-                                    hex_engine::native_device_resources::ControlSamplerSelection {
-                                        sources: current_sources.as_ref(),
-                                        prepared: Some(prepared),
-                                    }
-                                }),
-                                resident_seek.as_ref(),
-                                resident_preview.as_ref(),
-                            ),
-                        )
-                        .map_err(|e| e.to_string())
+                        Err(hex_project::AUDIO_TO_MIDI_UNSUPPORTED.to_owned())
                     };
                     match result {
                         Ok((result, prepared)) => {
                             unsaved = true;
                             replacement_revision = Some(prepared);
                             created = Some(result);
-                            status = Some(
-                                if to_audio {
-                                    "clip bounced to audio"
-                                } else {
-                                    "clip converted to empty midi"
-                                }
-                                .into(),
-                            );
+                            status = Some("clip bounced to audio".into());
                         }
                         Err(reason) => error = Some(reason),
                     }

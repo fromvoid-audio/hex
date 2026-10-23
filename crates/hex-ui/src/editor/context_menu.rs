@@ -319,8 +319,7 @@ impl EditorView {
                 density,
             } => {
                 if generation == self.project_generation {
-                    self.snap_grid = self.snap_grid.with_density(density);
-                    self.status = format!("arranger · {}", density.label());
+                    self.set_adaptive_grid_density(density);
                     cx.notify();
                 }
             }
