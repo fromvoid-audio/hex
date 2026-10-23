@@ -201,7 +201,10 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
     let error = session
         .command(Command::ConvertAudioClipToMidi(clip))
         .unwrap_err();
-    assert_eq!(error.to_string(), hex_project::AUDIO_TO_MIDI_UNSUPPORTED);
+    assert!(matches!(
+        error,
+        SessionError::Project(hex_project::Invalid(hex_project::AUDIO_TO_MIDI_UNSUPPORTED))
+    ));
     assert_eq!(session.project(), &bounced_project);
     assert_eq!(fs::read(&media_path).unwrap(), bytes);
     assert!(session.undo());
@@ -310,13 +313,12 @@ fn session_conversion_retains_cell_name_identity_and_source_window() {
     );
     assert!(session.project().midi_clip(arrangement).is_some());
     let bounced_project = session.project().clone();
-    assert_eq!(
-        session
-            .command(Command::ConvertAudioClipToMidi(clip))
-            .unwrap_err()
-            .to_string(),
-        hex_project::AUDIO_TO_MIDI_UNSUPPORTED
-    );
+    assert!(matches!(
+        session.command(Command::ConvertAudioClipToMidi(clip)),
+        Err(SessionError::Project(hex_project::Invalid(
+            hex_project::AUDIO_TO_MIDI_UNSUPPORTED
+        )))
+    ));
     assert_eq!(session.project(), &bounced_project);
     assert!(session.undo());
     let mut restored = session.project().snapshot();

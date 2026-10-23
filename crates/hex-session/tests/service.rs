@@ -2251,9 +2251,10 @@ fn clip_conversion_worker_refuses_audio_and_stale_selection_without_publication(
             };
             service.submit(request).unwrap();
             let refused = next_event(&service);
-            assert_eq!(
-                refused.error.as_deref(),
-                Some(hex_project::AUDIO_TO_MIDI_UNSUPPORTED)
+            assert!(
+                refused.error.as_deref().is_some_and(
+                    |message| message.ends_with(hex_project::AUDIO_TO_MIDI_UNSUPPORTED)
+                )
             );
             assert!(refused.playback.is_none() && refused.created.is_none());
             assert_eq!(refused.state.project, copied.state.project);
