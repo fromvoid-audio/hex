@@ -31,6 +31,23 @@ cargo run -p hex-desktop --locked
 cargo run -p hex-desktop --locked -- --demo
 ```
 
+## Native widget sandbox
+
+```sh
+cargo run --release -p hex-ui --locked --example layout_review
+```
+
+One disposable native window catalogs the shared controls, appearance variants,
+chrome, layouts and device compositions. Select a named entry; edit its local
+values, switch theme, disable supported controls, reset it or narrow the preview.
+Plots use editable fixture values; they do not process audio. No project, audio,
+file or preferences I/O occurs. The former `knob_review` app is included here.
+Headless catalog/input checks use:
+
+```sh
+cargo test -p hex-ui --features ui-test-support --locked --example layout_review
+```
+
 ## Check
 
 ```sh

@@ -278,7 +278,8 @@ impl EditorView {
                     local.out_end_offset(),
                     local.in_curve(),
                     local.out_curve(),
-                )
+                )?
+                .with_curve_positions(local.in_position(), local.out_position())
             }) else {
                 return;
             };
