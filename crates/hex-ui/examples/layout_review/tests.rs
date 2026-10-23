@@ -380,3 +380,55 @@ fn vector_section_focus_is_independent_and_invalid_drafts_refuse_tab_without_res
         .rail)))
     );
 }
+
+#[gpui::test]
+fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without_audio(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let window = cx.add_window(|_, cx| {
+        let mut view = Gallery::new(cx);
+        view.entry = Entry::Eq;
+        view.ensure_fixture(cx);
+        view
+    });
+    let handle = *window;
+    let view = window.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [760.0, 1040.0, 1320.0] {
+        visual.simulate_resize(size(px(width), px(720.0)));
+        visual.run_until_parked();
+        let body = visual.debug_bounds("fixture-body").unwrap();
+        let graph = visual.debug_bounds("fixture-eq-graph").unwrap();
+        assert!(
+            graph.size.width >= body.size.width * 0.7
+                && graph.size.height >= body.size.height * 0.9
+        );
+    }
+    let before = view.read_with(cx, |view, cx| {
+        eq::model(&view.fixtures[&Entry::Eq], cx).unwrap()
+    });
+    before.validate().unwrap();
+    assert!(before.analyzer.is_none() && before.input_analyzer.is_none());
+    let field = visual.debug_bounds("fixture-eq-numeric-2-value").unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("-12");
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    let after = view.read_with(cx, |view, cx| {
+        eq::model(&view.fixtures[&Entry::Eq], cx).unwrap()
+    });
+    after.validate().unwrap();
+    assert_ne!(
+        after.primary, before.primary,
+        "real registered response follows the shared numeric control"
+    );
+    let choice = visual.debug_bounds("fixture-eq-selector-1").unwrap();
+    visual.simulate_click(choice.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("fixture-eq-selector-1-popup").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("fixture-eq-selector-1-popup").is_none());
+}

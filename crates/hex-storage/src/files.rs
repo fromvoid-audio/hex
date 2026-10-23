@@ -18,7 +18,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
 /// Opaque bounded exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
-pub struct FileToken(pub(super) Arc<[u8]>);
+pub struct FileToken(pub(super) Arc<[u8]>, bool);
 
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,6 +29,24 @@ impl std::fmt::Debug for FileToken {
 }
 
 impl FileToken {
+    /// True when saving would replace an older schema with the current format.
+    /// Tokens are constructed only after validated decoding or current encoding;
+    /// an unexpected header conservatively requires confirmation too.
+    pub fn requires_format_upgrade(&self) -> bool {
+        self.1
+    }
+
+    pub(super) fn from_validated_bytes(bytes: Arc<[u8]>) -> Self {
+        #[derive(serde::Deserialize)]
+        struct Header {
+            version: u32,
+        }
+        let upgrade = serde_json::from_slice::<Header>(&bytes).map_or(true, |header| {
+            header.version != crate::CURRENT_SCHEMA_VERSION
+        });
+        Self(bytes, upgrade)
+    }
+
     /// Compare the current document with the captured bytes without modifying it.
     /// Byte-identical replacement is accepted. A later noncooperating write can
     /// still race any future publication; this method is not a compare-and-swap.
@@ -44,12 +62,12 @@ impl FileToken {
     }
 }
 
-/// Decode and capture the same single bounded read, preserving original bytes
-/// including formatting and legacy schema rather than re-encoding a migration.
+/// Decode and capture the same single bounded read, preserving original saved-format
+/// bytes including whitespace rather than re-encoding the decoded project.
 pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), StorageError> {
     let bytes = read_document(path.as_ref())?;
     let project = decode(&bytes)?;
-    Ok((project, FileToken(bytes.into())))
+    Ok((project, FileToken::from_validated_bytes(bytes.into())))
 }
 
 pub(super) fn read_document(path: &Path) -> Result<Vec<u8>, StorageError> {
@@ -145,7 +163,7 @@ fn save_with_finish(
             source,
         }
     })?;
-    Ok(FileToken(Arc::from(bytes)))
+    Ok(FileToken::from_validated_bytes(Arc::from(bytes)))
 }
 
 fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
@@ -255,6 +273,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.saturator"), 1, payload)
@@ -296,19 +315,21 @@ mod tests {
         };
         let mut snapshot = editor.project().snapshot();
         let device_id = snapshot.next_id;
-        let mut payload = Vec::with_capacity(24);
-        for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0] {
+        let mut payload = Vec::with_capacity(32);
+        for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0, 0.375] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        payload.extend_from_slice(&1_u32.to_le_bytes());
         let track_snapshot = snapshot
             .tracks
             .iter_mut()
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 1, payload)
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 3, payload)
                 .expect("bounded opaque native state"),
         });
         snapshot.next_id = device_id + 1;
@@ -324,7 +345,9 @@ mod tests {
             .and_then(|candidate| candidate.devices().first())
             .expect("saved Compressor");
         assert_eq!(device.state().type_id().as_str(), Ok("hex.compressor"));
-        assert_eq!(device.state().state_version(), 1);
+        assert_eq!(device.state().state_version(), 3);
+        assert_eq!(&device.state().payload()[28..32], &1_u32.to_le_bytes());
+        assert_eq!(&device.state().payload()[24..28], &0.375_f32.to_le_bytes());
         assert_eq!(
             device.state().payload(),
             project.tracks()[0].devices()[0].state().payload()
@@ -360,6 +383,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.gate"), 1, payload)
@@ -404,19 +428,21 @@ mod tests {
         };
         let mut snapshot = editor.project().snapshot();
         let device_id = snapshot.next_id;
-        let mut payload = Vec::with_capacity(12);
+        let mut payload = Vec::with_capacity(16);
         for value in [0.75_f32, 3.5, 270.0] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        payload.extend_from_slice(&3_u32.to_le_bytes());
         let track_snapshot = snapshot
             .tracks
             .iter_mut()
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 1, payload)
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 2, payload)
                 .expect("bounded opaque native state"),
         });
         snapshot.next_id = device_id + 1;
@@ -432,7 +458,8 @@ mod tests {
             .and_then(|candidate| candidate.devices().first())
             .expect("saved Auto Pan");
         assert_eq!(device.state().type_id().as_str(), Ok("hex.auto-pan"));
-        assert_eq!(device.state().state_version(), 1);
+        assert_eq!(device.state().state_version(), 2);
+        assert_eq!(&device.state().payload()[12..16], &3_u32.to_le_bytes());
         assert_eq!(
             device.state().payload(),
             project.tracks()[0].devices()[0].state().payload()
@@ -440,15 +467,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_token_checks_original_schema_bytes_instead_of_migrated_encoding() {
+    fn token_checks_original_current_bytes_instead_of_reencoded_formatting() {
         let dir = TestDir::new();
-        let path = dir.0.join("legacy.hex");
-        let legacy = br#"{"format":"hex-project","version":1,"sample_rate":48000,"next_id":1,"assets":[],"tracks":[]}"#;
-        fs::write(&path, legacy).expect("legacy fixture");
-        let (project, token) = load_with_token(&path).expect("migrated project and original token");
-        token.check_unchanged(&path).expect("legacy untouched");
-        assert_ne!(encode(&project).expect("current schema"), legacy);
-        fs::write(&path, encode(&project).expect("migration bytes")).expect("external migration");
+        let path = dir.0.join("formatted.hex");
+        let project = Project::new(48_000).unwrap();
+        let encoded = encode(&project).unwrap();
+        let formatted = serde_json::to_vec_pretty(
+            &serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(encoded, formatted);
+        fs::write(&path, &formatted).expect("formatted fixture");
+        let (loaded, token) = load_with_token(&path).expect("project and original token");
+        assert_eq!(loaded, project);
+        token.check_unchanged(&path).expect("original untouched");
+        fs::write(&path, &encoded).expect("external formatting change");
         assert!(matches!(
             token.check_unchanged(&path),
             Err(StorageError::Conflict { .. })

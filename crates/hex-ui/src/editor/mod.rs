@@ -1,3 +1,12 @@
+//! Native canonical editor view and bounded UI intent coordination.
+//!
+//! Session owns the editable project and prepare-before-commit workers; this module owns
+//! display/selection/focus and captured typed requests. Render cached summaries and visible
+//! content, never decode or perform filesystem/audio setup in painting. Pending requests preserve
+//! captured generation/revision/target identity. Canonical commit and native applied-source
+//! acknowledgment are separate states; do not claim current playback from a submitted revision
+//! alone. Native keyboard/pointer delivery uses the pinned excluded GPUI dependency boundary, with
+//! no unsafe workspace bridge.
 mod arrangement;
 mod arrangement_audio_panel;
 mod arrangement_device_drop;
@@ -5,11 +14,13 @@ mod arrangement_device_drop;
 mod arrangement_device_drop_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
+mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
 mod browser;
 mod browser_input;
+mod clip_action_scope;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_border_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -19,7 +30,23 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod delete_ui_tests;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod project_recovery_ui_test;
+mod workspace_view;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod workspace_view_ui_test;
 
+mod group_copy;
+mod midi_pending_drag;
+mod pending_clip_move;
+mod pending_edit;
+#[cfg(test)]
+mod test_environment;
+
+mod audio_import_settings;
+pub(crate) mod changelog;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -28,9 +55,11 @@ mod clip_view;
 mod clip_view_ui_test;
 mod close;
 mod computer_keyboard;
+mod console_drop;
 mod context_menu;
 mod controller;
 mod controller_input;
+mod device_comparison;
 mod device_gesture;
 mod device_panel;
 mod device_preset;
@@ -55,24 +84,40 @@ mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
 mod loop_region;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod loop_selection_ui_test;
 mod menus;
 mod midi;
+mod midi_audition;
 mod midi_canvas;
+mod midi_created_selection;
+mod midi_creation;
+mod midi_cue;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
+mod midi_note_copy;
+mod midi_note_overwrite;
+mod midi_pan;
+mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
 mod midi_source_controls;
+mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
+mod midi_velocity;
+mod midi_velocity_randomize;
+mod midi_velocity_ui;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod output_meter_ui_test;
 mod overview;
+mod overview_waveform;
 mod play_intent;
+mod project_directory;
 mod project_recovery;
 mod project_spectrum;
 mod recent_projects;
@@ -82,6 +127,8 @@ mod refresh;
 mod render;
 mod return_tracks;
 mod routing_controls;
+mod sampler_load;
+mod sampler_parameter;
 mod save;
 mod scrub;
 mod seek;
@@ -103,11 +150,17 @@ mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod track_creation_ui_tests;
+mod track_gain;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
 mod track_name;
+mod track_reorder;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_reorder_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -118,6 +171,7 @@ mod viewport;
 mod waveform;
 mod waveform_geometry;
 mod waveform_stretch;
+mod zoom_fit;
 
 use crate::theme;
 use audio_admission::AudioAdmissionStatus;
@@ -220,6 +274,8 @@ struct PendingEditorPublicationObservation {
 
 #[derive(Clone)]
 struct PlaybackCandidate {
+    worker_requires_preroll: Option<bool>,
+    observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,
@@ -243,11 +299,14 @@ actions!(
         ToggleBrowser,
         SearchBrowser,
         ToggleSnapGrid,
+        CoarserGrid,
+        FinerGrid,
         ThemeSettingsEscape,
         BrowserPrevious,
         BrowserNext,
         BrowserActivate,
         BrowserPreviewSelected,
+        BrowserCollapseFolder,
         BrowserEscape,
         ToggleSolo,
         AdditiveSolo,
@@ -282,6 +341,8 @@ actions!(
         TrimLeft,
         TrimRight,
         DeleteClip,
+        DeleteSectionMarker,
+        MergeSections,
         RenameClip,
         RenameTrack,
         CommitTrackName,
@@ -295,10 +356,13 @@ actions!(
         DuplicateClip,
         SplitClip,
         SetLoopFromClip,
+        LoopSelection,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
         FitTimeline,
+        ZoomToFit,
+        ZoomBack,
         PanTimelineLeft,
         PanTimelineRight,
         AddTrack,
@@ -324,6 +388,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
     menus::install(cx, &[]);
+    dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();
@@ -337,8 +402,10 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
+    device_panel::bind_keyboard_keys(cx);
     clip_name::bind_keys(cx);
     tuning::library::bind_keys(cx);
     track_name::bind_keys(cx);
@@ -360,6 +427,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),
         KeyBinding::new("right", BrowserPreviewSelected, Some("hex_browser")),
+        KeyBinding::new("left", BrowserCollapseFolder, Some("hex_browser")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser")),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser_search")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
@@ -443,6 +511,9 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
+        KeyBinding::new("alt-backspace", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("alt-delete", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("g", MergeSections, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
@@ -453,11 +524,23 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
+        KeyBinding::new(
+            "+",
+            CoarserGrid,
+            Some("hex_editor && !hex_text_editing && !hex_midi"),
+        ),
+        KeyBinding::new(
+            "-",
+            FinerGrid,
+            Some("hex_editor && !hex_text_editing && !hex_midi"),
+        ),
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
         KeyBinding::new("cmd-0", FitTimeline, Some("hex_editor")),
+        KeyBinding::new("z", ZoomToFit, Some("hex_editor && !hex_text_editing")),
+        KeyBinding::new("x", ZoomBack, Some("hex_editor && !hex_text_editing")),
         KeyBinding::new("alt-left", PanTimelineLeft, Some("hex_editor")),
         KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor")),
         KeyBinding::new("cmd-q", Quit, None),
@@ -508,6 +591,60 @@ pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Resul
     Ok(())
 }
 
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_load_fixture(
+    cx: &mut gpui::TestAppContext,
+    backend: crate::EditorBackend,
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) -> Result<gpui::AnyWindowHandle, String> {
+    if !root.is_absolute()
+        || !root.starts_with(std::env::temp_dir())
+        || !directory.starts_with(&root)
+    {
+        return Err("sampler fixture requires an owned temporary root".into());
+    }
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join("Music")).map_err(|e| e.to_string())?;
+    let preferences = root.join("browser.json");
+    let places =
+        hex_preferences::BrowserPlaces::new(vec![directory.clone()]).map_err(|e| e.to_string())?;
+    hex_preferences::save(&preferences, &places).map_err(|e| e.to_string())?;
+    cx.update(move |cx| {
+        // GPUI's headless TestPlatform uses NoopTextSystem, which cannot
+        // register fonts. This fixture exercises input/render contracts only;
+        // production startup still requires verified bundled fonts.
+        bind_editor_keys(cx);
+        menus::install(cx, &[]);
+        dialogs::install_project_actions(cx);
+        let window = cx
+            .open_window(editor_window_options(cx), move |window, cx| {
+                cx.new(|cx| {
+                    let mut view = EditorView::new_with_browser_paths(
+                        window,
+                        cx,
+                        backend.service,
+                        Err("preparing audio output".into()),
+                        (
+                            preferences,
+                            root.join("recent.json"),
+                            root.join("theme.json"),
+                            root.join("project-directory.json"),
+                        ),
+                        Some(sampler_load::FixturePaths { home, directory }),
+                        #[cfg(test)]
+                        test_environment::Inputs::default(),
+                    );
+                    view.audio_events = backend.audio_events;
+                    view.source_reservation = Some(backend.source_reservation);
+                    view
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(window.into())
+    })
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct EnqueuedNativeDeviceDrop {
@@ -539,12 +676,14 @@ pub(super) struct EditorView {
     gain_lane: gain_lane::GainLane,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
+    track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
+    sections: arrangement_sections::Sections,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -556,23 +695,45 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_selection: midi_selection::MidiSelection,
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
+    pending_midi_drag: Option<midi_pending_drag::Pending>,
+    pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
+    /// Source-relative insertion beat; reset with the existing piano_view_clip owner.
+    /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
-    pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
+    midi_step: midi_step::StepEntry,
+    midi_velocity: midi_velocity_ui::State,
+    midi_velocity_randomize: midi_velocity_randomize::State,
+    midi_pan: midi_pan::State,
+    midi_ruler: midi_ruler::State,
+    midi_time_selection: midi_ruler::TimeSelection,
+    midi_audition: midi_audition::MidiAudition,
+    pending_created_note_selection: Option<midi_created_selection::Pending>,
+    pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    // Only suppresses redundant pointer invalidations; paint resolves current geometry.
+    pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
+    piano_view_clip: Option<(u64, ClipId)>,
+    piano_zoom_wheel_accum: f32,
+    piano_pitch_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
+    piano_pitch_rows: u8,
+    piano_pitch_zoom: Option<(f32, u8, u8)>,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
     device_gesture_barriers: VecDeque<Request>,
+    effect_bus_barrier: device_gesture::EffectBusBarrierState,
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     worker_requests_pending: usize,
+    sampler_load: sampler_load::State,
+    sampler_parameter: sampler_parameter::State,
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
@@ -582,11 +743,16 @@ pub(super) struct EditorView {
     pending_metronome_ticket: Option<u64>,
     pending_session_ticket: Option<(u64, u64)>,
     viewport: Option<Viewport>,
+    zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    // One existing read-only view per transient protocol, never a prepared graph/resource set.
+    resident_device_preview: Option<hex_session::service::DevicePreview>,
+    resident_tuning_preview: Option<hex_session::service::TuningPreview>,
     audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
     prepared_seek: Option<arrangement_seek::PendingSeek>,
+    seek_request_serial: u64,
     latched_seek_intent: Option<arrangement_seek::SeekIntent>,
     retired_seek_result: Option<hex_session::arrangement_seek::ArrangementSeekResult>,
     applied_project_revision: Option<u64>,
@@ -596,12 +762,14 @@ pub(super) struct EditorView {
     session_capability_message: Option<String>,
     play_intent: play_intent::Tracker,
     opening_project: bool,
+    project_open: dialogs::project_open::State,
     pending_open_path: Option<std::path::PathBuf>,
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
-    pending_new_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
+    pending_group_copy: Option<group_copy::Pending>,
+    pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -609,9 +777,13 @@ pub(super) struct EditorView {
     export_dialog_open: bool,
     saving_project: bool,
     save_dialog_open: bool,
+    document_format_upgrade_required: bool,
+    format_upgrade_prompt: Option<save::FormatUpgradeIntent>,
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
+    recovery_failure: Option<Arc<hex_session::service::RecoveryFailure>>,
+    recovery_prompt_open: bool,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
@@ -624,6 +796,9 @@ pub(super) struct EditorView {
     _scrub_focus_lifecycle: gpui::Subscription,
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
+    track_reorder: track_reorder::TrackReorder,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    track_row_builds: usize,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -633,7 +808,9 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
+    pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
@@ -648,6 +825,7 @@ pub(super) struct EditorView {
     zoom_wheel_accum: f32,
     overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
     audio_point_page: usize,
+    overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
@@ -655,8 +833,11 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
+    pending_fade: Option<fade_handles::PendingFade>,
+    hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
@@ -693,15 +874,21 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
+    #[cfg(test)]
+    test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
+    project_directory: project_directory::State,
+    changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
+    audio_import_settings: audio_import_settings::State,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
     time_selection_project_scope: bool,
+    selection_intent_epoch: Option<u64>,
     time_selection_gesture: Option<time_selection::TimeSelectionGesture>,
     time_range_move_gesture: Option<time_selection::TimeRangeMoveGesture>,
     pending_time_range_move: Option<time_selection::PendingTimeRangeMove>,
@@ -732,15 +919,39 @@ impl EditorView {
         service: Service,
         output: Result<crate::EditorAudio, String>,
     ) -> Self {
-        Self::new_with_browser_preferences_path(
-            window,
-            cx,
-            service,
-            output,
-            browser::default_preferences_path(),
-            recent_projects::default_preferences_path(),
-            theme_settings::default_preferences_path(),
-        )
+        #[cfg(not(test))]
+        {
+            Self::new_with_browser_preferences_path(
+                window,
+                cx,
+                service,
+                output,
+                browser::default_preferences_path(),
+                recent_projects::default_preferences_path(),
+                theme_settings::default_preferences_path(),
+            )
+        }
+        #[cfg(test)]
+        {
+            Self::new_with_browser_paths(
+                window,
+                cx,
+                service,
+                output,
+                (
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                    std::path::PathBuf::new(),
+                ),
+                #[cfg(feature = "ui-test-support")]
+                None,
+                test_environment::Inputs {
+                    defaults: [true; 4],
+                    ..Default::default()
+                },
+            )
+        }
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -752,14 +963,23 @@ impl EditorView {
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
     ) -> Self {
-        Self::new_with_browser_preferences_path(
+        Self::new_with_browser_paths(
             window,
             cx,
             service,
             output,
-            preferences_path,
-            recent_projects_path,
-            theme_settings::default_preferences_path(),
+            (
+                preferences_path,
+                recent_projects_path,
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+            ),
+            #[cfg(feature = "ui-test-support")]
+            None,
+            test_environment::Inputs {
+                defaults: [false, false, true, true],
+                ..Default::default()
+            },
         )
     }
 
@@ -784,13 +1004,30 @@ impl EditorView {
         )
     }
 
-    /// Bound discovery before any browser worker starts; never change process settings.
+    /// Bound all filesystem discovery before any worker starts.
     #[cfg(all(test, feature = "ui-test-support"))]
     fn new_for_test_with_browser_directory(
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
         directory: &std::path::Path,
+    ) -> Self {
+        Self::new_for_test_with_project_preferences(
+            window,
+            cx,
+            service,
+            directory,
+            directory.join("project-directory.json"),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_project_preferences(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        directory: &std::path::Path,
+        project_preferences: std::path::PathBuf,
     ) -> Self {
         Self::new_with_browser_paths(
             window,
@@ -801,8 +1038,45 @@ impl EditorView {
                 directory.join("browser.json"),
                 directory.join("recent-projects.json"),
                 directory.join("theme.json"),
+                project_preferences,
             ),
-            Some(directory.join("samples")),
+            #[cfg(feature = "ui-test-support")]
+            None,
+            test_environment::Inputs {
+                directory: Some(directory.join("samples")),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Reuse the fixture's actual path owner before any startup work escapes.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    fn new_for_test_with_environment(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        service: Service,
+        environment: Arc<test_environment::Environment>,
+    ) -> Self {
+        let directory = environment.root().join("samples");
+        Self::new_with_browser_paths(
+            window,
+            cx,
+            service,
+            Err("offline ui test".into()),
+            (
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+            ),
+            #[cfg(feature = "ui-test-support")]
+            None,
+            test_environment::Inputs {
+                existing_environment: Some(environment),
+                directory: Some(directory),
+                defaults: [true; 4],
+                ..Default::default()
+            },
         )
     }
 
@@ -824,9 +1098,15 @@ impl EditorView {
                 preferences_path,
                 recent_projects_path,
                 theme_preferences_path,
+                project_directory::default_preferences_path(),
             ),
-            #[cfg(all(test, feature = "ui-test-support"))]
+            #[cfg(feature = "ui-test-support")]
             None,
+            #[cfg(test)]
+            test_environment::Inputs {
+                defaults: [false, false, false, true],
+                ..Default::default()
+            },
         )
     }
 
@@ -835,12 +1115,29 @@ impl EditorView {
         cx: &mut Context<Self>,
         service: Service,
         output: Result<crate::EditorAudio, String>,
-        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
-        #[cfg(all(test, feature = "ui-test-support"))] test_browser_directory: Option<
+        paths: (
             std::path::PathBuf,
-        >,
+            std::path::PathBuf,
+            std::path::PathBuf,
+            std::path::PathBuf,
+        ),
+        #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
+        #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
-        let (preferences_path, recent_projects_path, theme_preferences_path) = paths;
+        #[cfg(test)]
+        let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
+            test_environment::Environment::new()
+                .expect("could not create private editor test environment; no ambient fallback")
+        });
+        #[cfg(test)]
+        let paths = test_environment.resolve_paths(paths, test_paths.defaults);
+
+        let (
+            preferences_path,
+            recent_projects_path,
+            theme_preferences_path,
+            project_directory_path,
+        ) = paths;
         let (audio, status) = match output {
             Ok(audio) => (Some(audio), "loading project · audio ready".into()),
             Err(error) => (
@@ -895,12 +1192,21 @@ impl EditorView {
                 view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
+                    // Blur runs after paint in GPUI's focus phase. Notify again
+                    // through the normal effect queue so the canceled overlay
+                    // is removed in the next frame, without another input.
+                    cx.defer_in(window, |_, _, cx| cx.notify());
                 }
                 view.cancel_track_resize(cx);
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
-            if view.cancel_scrub() | view.cancel_clip_paint() {
+            view.midi_step.cancel_pending();
+            view.invalidate_hardware_step();
+            if view.cancel_loop_rail_gesture() {
+                cx.defer_in(window, |_, _, cx| cx.notify());
+            }
+            if view.cancel_scrub() | view.cancel_clip_paint() | view.cancel_section_pointer() {
                 cx.notify();
             }
         });
@@ -910,16 +1216,21 @@ impl EditorView {
             cx.notify();
         });
         let midi_focus = cx.focus_handle();
-        let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
+        let focus_blur = cx.on_blur(&midi_focus, window, |view, window, cx| {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
+            view.invalidate_hardware_step();
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
-                cx.notify();
+                // Focus listeners run after frame swap; invalidate once the
+                // normal effect queue resumes so stationary previews disappear.
+                cx.defer_in(window, |_, _, cx| cx.notify());
             }
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                let browser_cancelled = view.cancel_active_browser_audio_drag();
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
@@ -929,15 +1240,19 @@ impl EditorView {
                 view.cancel_track_resize(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
+                view.midi_step.cancel_pending();
+                view.invalidate_hardware_step();
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
-                let paint_cancelled = view.cancel_clip_paint();
+                let paint_cancelled = view.cancel_clip_paint()
+                    | view.cancel_section_pointer()
+                    | view.cancel_track_reorder();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
-                if midi_cancelled || scrub_cancelled || paint_cancelled {
+                if browser_cancelled || midi_cancelled || scrub_cancelled || paint_cancelled {
                     cx.notify();
                 }
             }
@@ -950,13 +1265,31 @@ impl EditorView {
             }
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
-            if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
+            if view.cancel_midi_note_gesture()
+                | view.cancel_track_reorder()
+                | view.cancel_scrub()
+                | view.cancel_clip_paint()
+                | view.cancel_section_pointer()
+            {
                 cx.notify();
             }
         });
         focus.focus(window);
-        let browser = browser::BrowserState::new(cx, preferences_path);
+        let browser = browser::BrowserState::new(
+            cx,
+            preferences_path,
+            #[cfg(test)]
+            Some(
+                test_paths
+                    .home
+                    .unwrap_or_else(|| test_environment.home.clone()),
+            ),
+        );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
+        let project_directory = project_directory::State::new(project_directory_path);
+        let audio_import_settings = audio_import_settings::State::new(
+            theme_preferences_path.with_file_name("audio-import.json"),
+        );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -979,12 +1312,14 @@ impl EditorView {
             gain_lane: gain_lane::GainLane::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
+            track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
+            sections: arrangement_sections::Sections::default(),
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -996,24 +1331,43 @@ impl EditorView {
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
+            pending_midi_drag: None,
+            midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
             midi_marker: None,
+            midi_step: midi_step::StepEntry::default(),
+            midi_velocity: midi_velocity_ui::State::default(),
+            midi_velocity_randomize: midi_velocity_randomize::State::default(),
+            midi_pan: midi_pan::State::default(),
+            midi_ruler: midi_ruler::State::default(),
+            midi_time_selection: midi_ruler::TimeSelection::default(),
+            midi_audition: midi_audition::MidiAudition::default(),
+            pending_created_note_selection: None,
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            midi_hover: None,
+            piano_view_clip: None,
+            piano_zoom_wheel_accum: 0.0,
+            piano_pitch_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
             piano_pitch_low: 48,
+            piano_pitch_rows: 24,
+            piano_pitch_zoom: None,
             midi_snap_grid: midi_drag::MidiGrid::default(),
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
             device_gesture_barriers: VecDeque::new(),
+            effect_bus_barrier: Default::default(),
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             worker_requests_pending: 0,
+            sampler_load: Default::default(),
+            sampler_parameter: Default::default(),
             audio_batch: None,
             audio_batch_progress: None,
             pending_playback: None,
@@ -1023,11 +1377,15 @@ impl EditorView {
             pending_metronome_ticket: None,
             pending_session_ticket: None,
             viewport: None,
+            zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            resident_device_preview: None,
+            resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
             prepared_seek: None,
+            seek_request_serial: 0,
             latched_seek_intent: None,
             retired_seek_result: None,
             applied_project_revision: None,
@@ -1037,12 +1395,14 @@ impl EditorView {
             session_capability_message: None,
             play_intent: play_intent::Tracker::default(),
             opening_project: false,
+            project_open: dialogs::project_open::State::default(),
             pending_open_path: None,
             pending_open_mode: None,
             requested_audio_mode: None,
-            pending_new_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
+            pending_group_copy: None,
+            pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
@@ -1050,9 +1410,13 @@ impl EditorView {
             export_dialog_open: false,
             saving_project: false,
             save_dialog_open: false,
+            document_format_upgrade_required: false,
+            format_upgrade_prompt: None,
             preset_dialog_open: false,
             status,
             error: None,
+            recovery_failure: None,
+            recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
             controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
@@ -1065,6 +1429,9 @@ impl EditorView {
             _scrub_focus_lifecycle: scrub_focus_blur,
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
+            track_reorder: track_reorder::TrackReorder::default(),
+            #[cfg(all(test, feature = "ui-test-support"))]
+            track_row_builds: 0,
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
@@ -1074,7 +1441,9 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            retained_clip_detail: None,
             loop_rail_gesture: None,
+            pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),
@@ -1089,6 +1458,9 @@ impl EditorView {
             zoom_wheel_accum: 0.0,
             overview_cache: std::cell::RefCell::new(None),
             audio_point_page: 0,
+            overview_waveform_cache: Rc::new(std::cell::RefCell::new(
+                overview_waveform::Cache::default(),
+            )),
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
@@ -1097,8 +1469,11 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
+            pending_fade: None,
+            hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
@@ -1126,28 +1501,41 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
+            #[cfg(test)]
+            test_environment,
             browser,
             recent_projects,
+            project_directory,
+            changelog: changelog::State::new(cx),
             theme_settings,
+            audio_import_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
             clip_paint_gesture: None,
             time_selection: None,
             time_selection_project_scope: false,
+            selection_intent_epoch: Some(0),
             time_selection_gesture: None,
             time_range_move_gesture: None,
             pending_time_range_move: None,
             suppress_cursor_click: false,
         };
-        #[cfg(all(test, feature = "ui-test-support"))]
-        if let Some(directory) = test_browser_directory {
+        #[cfg(test)]
+        if let Some(directory) = test_paths.directory {
             view.browser.directory = directory.clone();
             view.browser.places = vec![directory];
         }
+        #[cfg(feature = "ui-test-support")]
+        if let Some(paths) = fixture_paths {
+            view.browser
+                .set_native_sampler_fixture_paths(paths.home, paths.directory);
+        }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
+        view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
+        view.start_audio_import_preferences_load(cx);
         view
     }
 
@@ -1183,6 +1571,7 @@ impl EditorView {
     }
 
     pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
+        self.advance_selection_intent();
         let header_focused = self.track_header_focused(window);
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
@@ -1202,6 +1591,10 @@ impl EditorView {
     }
 
     pub(super) fn toggle_play(&mut self) {
+        if self.section_install_pending() {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
         if self.recovery.generation().is_some() {
             self.error = Some("audio recovery pending · playback is not ready".into());
             return;
@@ -1295,13 +1688,32 @@ impl EditorView {
         self.enqueue(Request::Edit(Command::GainBy { track, amount }));
     }
 
+    /// Ordinary creation follows the selected row; Return/Main and an absent or
+    /// stale ordinary selection append within the ordinary-track section. Drops
+    /// and context menus retain their explicitly captured insertion anchors.
+    fn new_track_insertion_anchor(&self) -> Option<TrackId> {
+        if self.focused_return.is_some() {
+            return None;
+        }
+        let selected = self.selected_track?;
+        self.state
+            .as_ref()?
+            .project
+            .tracks()
+            .iter()
+            .skip_while(|track| track.id() != selected)
+            .nth(1)
+            .map(|track| track.id())
+    }
+
     pub(super) fn add_track(&mut self) {
         let count = self
             .state
             .as_ref()
             .map_or(0, |state| state.project.tracks().len());
-        self.enqueue(Request::Edit(Command::AddTrack {
+        self.enqueue(Request::Edit(Command::InsertTrack {
             name: format!("audio {}", count + 1),
+            before_track: self.new_track_insertion_anchor(),
         }));
     }
 
@@ -1327,7 +1739,7 @@ impl EditorView {
         self.audio.as_ref().and_then(|audio| audio.status())
     }
 
-    fn visible_viewport(&self, horizon: u64) -> Viewport {
+    fn viewport_horizon(&self, horizon: u64) -> u64 {
         // Display all authored points while this editor is open. Canonical content/export
         // extent stays unchanged; a held gain endpoint is not an audible source duration.
         let gain_end = self.state.as_ref().and_then(|state| {
@@ -1346,6 +1758,12 @@ impl EditorView {
                 .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
+        // Only a current resize owner may extend the transient display extent.
+        horizon.max(self.trim_display_end().unwrap_or(0))
+    }
+
+    fn visible_viewport(&self, horizon: u64) -> Viewport {
+        let horizon = self.viewport_horizon(horizon);
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)
@@ -1369,8 +1787,14 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
+        self.retained_clip_detail = None;
+        self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.piano_view_clip = None;
+            self.zoom_fit.clear_clip();
+            self.audio_event_editor.clear_fit_back();
+            self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();
@@ -1417,6 +1841,68 @@ pub(super) struct ArrangementPan {
     last_x: f32,
     last_y: f32,
     timeline_width: f32,
+}
+
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_source_fixture_view(
+    window: gpui::AnyWindowHandle,
+    track: hex_project::TrackId,
+    cx: &gpui::App,
+) -> Result<Option<crate::SamplerSourceTestView>, String> {
+    window
+        .read(cx, |view: gpui::Entity<EditorView>, cx| {
+            let view = view.read(cx);
+            let state = view.state.as_ref()?;
+            let device = state.project.track(track)?.instrument()?;
+            let reference = device.state().asset_references().first()?;
+            let asset = state
+                .project
+                .assets()
+                .find(|a| a.id().value() == reference.asset.value())?;
+            Some(crate::SamplerSourceTestView {
+                device: device.id(),
+                asset: asset.id(),
+                generation: view.project_generation,
+                revision: state.revision,
+                source_frames: asset.source_frames(),
+                playback_frames: asset.playback_frames(),
+                original_source: asset.original_source(),
+                overviews: state.source_overviews.clone(),
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_keyboard_fixture_status(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<String, String> {
+    window.read(cx, |view: gpui::Entity<EditorView>, cx| {
+        let view = view.read(cx);
+        format!("enabled={} suspended={} target={:?} request={} input={} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={} physical={} callback_refused={}",
+            view.computer_keyboard.enabled, view.computer_keyboard.suspended,
+            view.computer_keyboard.target,
+            view.computer_keyboard.request_id,
+            view.computer_keyboard.input.is_some(),
+            view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
+            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.edit_pending(), view.error, view.selected_clip,view.midi_draw_mode,view.midi_stroke.is_some(),view.selected_clip.and_then(|id|view.state.as_ref()?.project.midi_source(id).map(|s|s.notes().len())),view.midi_selection.len(),view.worker_requests_pending,view.computer_keyboard.physical_notes().count(),view.computer_keyboard.input.as_ref().is_some_and(|input|input.rejected()))
+    }).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_midi_fixture_ready(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<bool, String> {
+    window
+        .read(cx, |view: gpui::Entity<EditorView>, cx| {
+            let view = view.read(cx);
+            view.first_sampler_current()
+                && !view.edit_pending()
+                && view.stopped_playback_restore.is_none()
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

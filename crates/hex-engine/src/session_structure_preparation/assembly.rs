@@ -60,12 +60,15 @@ impl SessionStructureConstruction {
         Ok(self.cells.iter().map(|row| PreparedSessionCell {
             track: row.track,
             scene: row.scene,
-            content: row
-                .audio
-                .as_ref()
-                .map_or(PreparedSessionCellContent::Stop, |binding| {
-                    PreparedSessionCellContent::Audio(binding.clip_id())
-                }),
+            content: row.audio.as_ref().map_or_else(
+                || {
+                    row.midi.map_or(
+                        PreparedSessionCellContent::Stop,
+                        PreparedSessionCellContent::Midi,
+                    )
+                },
+                |binding| PreparedSessionCellContent::Audio(binding.clip_id()),
+            ),
         }))
     }
     pub(crate) fn assembly_indices(&self) -> &[usize] {

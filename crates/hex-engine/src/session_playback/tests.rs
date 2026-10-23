@@ -1,4 +1,7 @@
 use super::*;
+use crate::routed_midi_fixture;
+mod authored_history;
+mod cue;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -936,6 +939,7 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
                 .checked_add(1)
                 .ok_or(hex_project::Invalid("fixture id capacity"))?;
             track.instrument = Some(DeviceSnapshot {
+                comparison: None,
                 id,
                 bypassed: false,
                 state: state.clone(),
@@ -952,6 +956,8 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -961,6 +967,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         next_id: 7,
         assets: vec![
             AssetSnapshot {
+                original_source: None,
                 id: 4,
                 path: "shared.wav".into(),
                 source_sample_rate: 48_000,
@@ -969,6 +976,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             },
             AssetSnapshot {
+                original_source: None,
                 id: 5,
                 path: "replacement.wav".into(),
                 source_sample_rate: 48_000,
@@ -1060,6 +1068,8 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: 8,
@@ -1086,10 +1096,12 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         track: 6,
         scene: 2,
         content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+            volume: hex_project::MidiClipVolume::default(),
             flavor: hex_project::ClipFlavor::default(),
             id: 10,
             name: "empty midi".into(),
             source: MidiSourceSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 source_length_raw: 4 << 32,
                 source_start_raw: 0,
                 loop_start_raw: 0,
@@ -1168,6 +1180,8 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -1191,6 +1205,8 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: 2,
@@ -1221,10 +1237,12 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                 track: 1,
                 scene: 4,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: 5,
                     name: "clip".into(),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 32 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,
@@ -1264,6 +1282,7 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         )
         .unwrap();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            comparison: None,
             id: 7,
             bypassed: false,
             state,
@@ -1382,6 +1401,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
             gain: 1.0,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: 80,
                 bypassed,
                 state: eq8.clone(),
@@ -1508,6 +1528,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: 9,
         bypassed: false,
         state,
@@ -1555,6 +1576,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: 9,
         bypassed: false,
         state,
@@ -1615,11 +1637,13 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            comparison: None,
             id: 9,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            comparison: None,
             id: 10,
             bypassed: false,
             state: suffix,
@@ -1681,11 +1705,13 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            comparison: None,
             id: 9,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            comparison: None,
             id: 10,
             bypassed: false,
             state: suffix,
@@ -1739,11 +1765,13 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
             state,
@@ -1805,11 +1833,13 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
             state: dc_state,
@@ -2014,6 +2044,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
             state = crate::patch_native_device_parameter(&state, parameter, value).unwrap();
         }
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            comparison: None,
             id: 7,
             bypassed: false,
             state: state.clone(),
@@ -2180,6 +2211,7 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
                 .unwrap();
         }
         let device = DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: state.clone(),
@@ -2289,11 +2321,13 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         )
         .unwrap();
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        comparison: None,
         id: instrument_id,
         bypassed: false,
         state: instrument_state,
     });
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        comparison: None,
         id: device_id,
         bypassed: false,
         state: dc_state,
@@ -2378,11 +2412,13 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: state.clone(),
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
             state,
@@ -2630,6 +2666,7 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
         let id = snapshot.next_id;
         snapshot.next_id += 1;
         devices.push(hex_project::DeviceSnapshot {
+            comparison: None,
             id,
             bypassed: false,
             state: state.clone(),
@@ -2706,7 +2743,7 @@ fn with_instrument_bypassed(project: &Project, bypassed: bool) -> Project {
         .as_mut()
         .expect("MIDI fixture has a canonical instrument slot");
     instrument.bypassed = bypassed;
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn session_only_project(project: &Project) -> Project {
@@ -2828,7 +2865,7 @@ fn with_test_instrument(
         .expect("MIDI fixture has an instrument slot");
     instrument.state =
         hex_lattice_contract::NativeDeviceState::new(type_id, 1, vec![state_value]).unwrap();
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
@@ -2850,6 +2887,188 @@ fn revision_with_instrument_registry(
         )
         .unwrap(),
     )
+}
+
+// Exercise the actual ordinary compiler policy with an empty resource set. No descriptor is
+// fabricated and the closed/headless preparation path remains independently conservative.
+fn ordinary_mutable_playback(
+    project: &Project,
+    registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+) -> SessionPlayback {
+    let cancel = AtomicBool::new(false);
+    let resources = crate::native_device_resources::PreparedDeviceResources::prepare_on_control(
+        &crate::native_device_resources::ResidentDeviceAssets::default(),
+        project,
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let preparation =
+        crate::native_device_resources::CompilerDeviceResources::new(&resources, 0, &cancel);
+    let effects = hex_devices::native_registry().unwrap();
+    let revision = PreparedRevision::prepare_with_registries_and_sampler_sources(
+        project,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &effects,
+        registry,
+        &crate::audio_transform::AudioTransformPreparation::default(),
+        Some(&preparation),
+    )
+    .unwrap();
+    assert!(revision.device_handoff_metadata_bytes().unwrap() > 0);
+    SessionPlayback::new_with_device_resources(Arc::new(revision), &resources).unwrap()
+}
+
+#[test]
+fn ordinary_fresh_mutable_install_suppresses_precut_gates_with_atomic_capacity_refusal() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.fresh-install"),
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let enabled = with_test_instrument(
+        &with_second_arrangement_note(&project(1.0, 0, 8 << 32)),
+        definition.metadata.id,
+        0,
+    );
+    let track = enabled.tracks()[0].id();
+    let device = enabled.tracks()[0].instrument().unwrap().id();
+    let mut editor = Editor::new(enabled.clone(), 8).unwrap();
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let disabled = editor.project().clone();
+    for session in [false, true] {
+        let mut old = ordinary_mutable_playback(&disabled, &registry);
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        if session {
+            old.apply(SessionPlaybackCommand::LaunchClip {
+                clip: old.revision.session().midi_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        }
+        old.render(&mut [[0.0; 2]; 64]).unwrap();
+        let old_owner = old.owner(track);
+        let mut candidate = ordinary_mutable_playback(&enabled, &registry);
+        candidate.release_capacity = 0;
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::ReleaseBankFull)
+        );
+        assert_eq!(old.performance_frame(), 64);
+        assert_eq!(old.owner(track), old_owner);
+        assert!(old.suppressions.is_empty());
+        assert_eq!(candidate.performance_frame(), 0);
+        assert!(candidate.suppressions.is_empty());
+        candidate.release_capacity = SESSION_RELEASE_CAPACITY;
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(candidate.suppressions.len(), 1);
+        let mut silent = [[1.0; 2]; 64];
+        candidate.render(&mut silent).unwrap();
+        assert_eq!(silent, [[0.0; 2]; 64]);
+        // The one-shot exception is no longer present on an unchanged edit, but its exact
+        // suppression remains until the original occurrence ends.
+        let mut successor = ordinary_mutable_playback(&enabled, &registry);
+        successor.try_inherit_state_from(&mut candidate).unwrap();
+        successor.render(&mut silent).unwrap();
+        assert_eq!(silent, [[0.0; 2]; 64]);
+        if !session {
+            let mut until_next = vec![[0.0; 2]; 24_000 - 192];
+            successor.render(&mut until_next).unwrap();
+            assert!(until_next.iter().all(|frame| *frame == [0.0; 2]));
+            successor.render(&mut silent[..1]).unwrap();
+            assert!(silent[0][0] > 0.0, "exact future onset is dispatched");
+        }
+    }
+    // Complete old evidence also distinguishes a genuinely new canonical track from an
+    // unobserved predecessor. Its pre-cut gate is suppressed without altering old sources.
+    let mut new_track_editor = Editor::new(disabled.clone(), 8).unwrap();
+    let Created::Track(new_track) = new_track_editor
+        .execute(Command::AddMidiTrack { name: "new".into() })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    new_track_editor
+        .execute(Command::InsertInstrument {
+            track: new_track,
+            state: hex_lattice_contract::NativeDeviceState::new(definition.metadata.id, 1, vec![0])
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(new_clip) = new_track_editor
+        .execute(Command::PlaceMidiClip {
+            track: new_track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    new_track_editor
+        .execute(Command::AddMidiNote {
+            clip: new_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut old = ordinary_mutable_playback(&disabled, &registry);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut new_track_candidate = ordinary_mutable_playback(new_track_editor.project(), &registry);
+    new_track_candidate
+        .try_inherit_state_from(&mut old)
+        .unwrap();
+    let mut silent = [[1.0; 2]; 64];
+    new_track_candidate.render(&mut silent).unwrap();
+    assert_eq!(silent, [[0.0; 2]; 64]);
+
+    // A changed active MIDI signature is not an installation proof, even alongside a real
+    // authored device discontinuity. Missing legacy evidence also cannot authorize suppression.
+    let mut old = ordinary_mutable_playback(&disabled, &registry);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut changed = Editor::new(enabled.clone(), 8).unwrap();
+    changed
+        .execute(Command::TrimMidiClipEdge {
+            clip: enabled.tracks()[0].midi_clips()[0].id(),
+            edge: hex_project::TrimEdge::Right,
+            beat: BeatTime::from_raw(2 << 32),
+        })
+        .unwrap();
+    let mut missing_source_proof = ordinary_mutable_playback(changed.project(), &registry);
+    assert_eq!(
+        missing_source_proof.try_inherit_state_from(&mut old),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(old.performance_frame(), 64);
+    let mut legacy = SessionPlayback::new(revision_with_instrument_registry(
+        &disabled,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    ))
+    .unwrap();
+    legacy.apply(SessionPlaybackCommand::Play).unwrap();
+    legacy.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        ordinary_mutable_playback(&enabled, &registry).try_inherit_state_from(&mut legacy),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
 }
 
 fn mutable_hundred_track_preroll_revision() -> Arc<PreparedRevision> {
@@ -3084,8 +3303,11 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
     for index in 0..hex_project::MAX_TRACKS {
         let track = match editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: format!("context {index}"),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         {
@@ -3240,6 +3462,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
         let mut devices = Vec::new();
         for _ in 0..devices_in_chain {
             devices.push(DeviceSnapshot {
+                comparison: None,
                 id: next_id,
                 bypassed: false,
                 state: filter_state.clone(),
@@ -3452,8 +3675,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "short source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3461,8 +3687,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
         _ => panic!("expected first MIDI track"),
     };
     let second_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "held source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3627,8 +3856,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "removed mutable track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3636,8 +3868,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
         _ => panic!("expected first MIDI track"),
     };
     let retained_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "retained mutable track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3826,6 +4061,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     let effect = 22;
     snapshot.next_id = 23;
     snapshot.assets.push(AssetSnapshot {
+        original_source: None,
         id: asset,
         path: "mutable-hybrid.wav".into(),
         source_sample_rate: 48_000,
@@ -3863,12 +4099,14 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         )
         .unwrap();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        comparison: None,
         id: effect,
         bypassed: false,
         state: gain_state,
     }];
     snapshot.tracks[0].instrument_position = Some(0);
-    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
+    let project = Project::from_snapshot(snapshot).unwrap();
     let asset_id = project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -3940,6 +4178,7 @@ fn mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger() {
         frame: 8,
         beat: BeatTime::ZERO,
         target: RouteTarget::Silence,
+        current_reservation: None,
     });
     playback.apply(SessionPlaybackCommand::Play).unwrap();
 
@@ -4594,6 +4833,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let eq8_id = source_snapshot.next_id;
     source_snapshot.next_id += 1;
     source_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: eq8_id,
         bypassed: false,
         state: eq8_state,
@@ -4977,11 +5217,13 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let first_id = source.next_id;
     source.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id + 1,
             bypassed: false,
             state: dc_remove,
@@ -5000,6 +5242,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let audio_clip = asset + 1;
     source.next_id += 2;
     source.assets.push(AssetSnapshot {
+        original_source: None,
         id: asset,
         path: "mutable-tail-input.wav".into(),
         source_sample_rate: 48_000,
@@ -5026,7 +5269,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         midi_clips,
     };
     source.tracks[0].instrument_position = Some(1);
-    let old_project = legacy_project_from_snapshot(source).unwrap();
+    routed_midi_fixture::separate_midi(&mut source, 0);
+    let old_project = Project::from_snapshot(source).unwrap();
     let asset_id = old_project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5082,8 +5326,11 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         audio_clips.clear();
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut tail_snapshot.tracks[1].content {
+        midi_clips.clear();
+    }
     tail_snapshot.session.cells.clear();
-    let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
+    let tail_project = Project::from_snapshot(tail_snapshot).unwrap();
     let mut tail_candidate =
         SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
     tail_candidate
@@ -5096,8 +5343,13 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     {
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut candidate_snapshot.tracks[1].content
+    {
+        midi_clips.clear();
+    }
     candidate_snapshot.session.cells.clear();
-    let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let candidate_source = Project::from_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(empty_revision).unwrap();
@@ -5167,11 +5419,13 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     let first_id = old_snapshot.next_id;
     old_snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id + 1,
             bypassed: false,
             state: dc_remove,
@@ -6482,6 +6736,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: hex_lattice_contract::NativeDeviceState::new(
@@ -6493,6 +6748,8 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: arrangement_clip,
@@ -6518,10 +6775,12 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             track,
             scene: snapshot.session.scenes[0].id,
             content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                volume: hex_project::MidiClipVolume::default(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: session_clip,
                 name: "new mutable clip".into(),
                 source: MidiSourceSnapshot {
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                     source_length_raw: 32 << 32,
                     source_start_raw: 0,
                     loop_start_raw: 0,
@@ -6898,8 +7157,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "first".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -6907,8 +7169,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
         _ => panic!("first MIDI track"),
     };
     let second = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -7148,6 +7413,7 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state,
@@ -7300,8 +7566,8 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     assert!(before_cut.iter().any(|frame| frame[0] != 0.0));
 
     let mut old_spans = MidiSpanBuffer::default();
-    let launch = match old.routes[0].owner {
-        RouteOwner::Session { launch, .. } => launch,
+    let origin = match old.routes[0].owner {
+        RouteOwner::Session { origin, .. } => origin,
         _ => panic!("Session source is selected"),
     };
     old.revision
@@ -7309,7 +7575,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
         .midi_clip(clip)
         .unwrap()
         .instrument_template()
-        .query(launch, &old.timing_view(), 100_000, 100_001, &mut old_spans)
+        .query_with_origin(origin, &old.timing_view(), 100_000, 100_001, &mut old_spans)
         .unwrap();
     let repeated = old_spans
         .spans()
@@ -7583,7 +7849,7 @@ fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
         Some(SessionPlaybackOwner::Session { clip })
     );
     assert!(
-        matches!(candidate.routes[0].owner, RouteOwner::Session { launch, .. } if launch == BeatTime::ZERO)
+        matches!(candidate.routes[0].owner, RouteOwner::Session { origin, .. } if origin == SessionMidiOrigin::launch(BeatTime::ZERO))
     );
 }
 
@@ -8088,10 +8354,10 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         candidate.owner(track),
         Some(SessionPlaybackOwner::Session { clip })
     );
-    let RouteOwner::Session { launch, .. } = candidate.routes[0].owner else {
+    let RouteOwner::Session { origin, .. } = candidate.routes[0].owner else {
         panic!("due launch selects the Session clip");
     };
-    assert_eq!(launch, effective_cut);
+    assert_eq!(origin, SessionMidiOrigin::launch(effective_cut));
     let mut spans = MidiSpanBuffer::default();
     candidate
         .revision
@@ -8099,7 +8365,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         .midi_clip(clip)
         .unwrap()
         .instrument_template()
-        .query(launch, &candidate.timing_view(), 96_000, 96_001, &mut spans)
+        .query_with_origin(origin, &candidate.timing_view(), 96_000, 96_001, &mut spans)
         .unwrap();
     assert!(spans.spans().any(|span| span.start_frame == 96_000));
 }
@@ -8156,6 +8422,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
         frame: 257,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
+        current_reservation: None,
     });
 
     let mut prefix_probe = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
@@ -8370,6 +8637,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         frame: 256,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
+        current_reservation: None,
     });
 
     #[derive(Default)]
@@ -8471,6 +8739,8 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
@@ -8857,7 +9127,7 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     let route = playback.route_status(0).unwrap();
     assert_eq!(route.track, track);
     assert_eq!(route.owner, SessionPlaybackOwner::Arrangement);
-    assert_eq!(route.active_launch, None);
+    assert_eq!(route.active_origin, None);
     assert_eq!(route.pending, None);
 
     playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -8872,7 +9142,10 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     assert_eq!(launched, initial.wrapping_add(1));
     let route = playback.route_status(0).unwrap();
     assert_eq!(route.owner, SessionPlaybackOwner::Session { clip });
-    assert_eq!(route.active_launch, Some(BeatTime::ZERO));
+    assert_eq!(
+        route.active_origin,
+        Some(SessionMidiOrigin::launch(BeatTime::ZERO))
+    );
 
     let mut advance = [[0.0; 2]; 64];
     playback.render(&mut advance).unwrap();
@@ -8925,8 +9198,8 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     );
     assert_eq!(playback.performance_frame(), 0);
     assert_eq!(
-        playback.route_status(0).unwrap().active_launch,
-        Some(BeatTime::ZERO)
+        playback.route_status(0).unwrap().active_origin,
+        Some(SessionMidiOrigin::launch(BeatTime::ZERO))
     );
 }
 
@@ -9892,6 +10165,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
         .unwrap();
     let mut track_snapshot = project(1.0, 0, 8 << 32).snapshot();
     track_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: track_snapshot.next_id,
         bypassed: false,
         state: filter_state.clone(),
@@ -9921,6 +10195,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: return_device_id,
                 bypassed: false,
                 state: filter_state,
@@ -10153,7 +10428,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 60,
+                pitch: 61,
                 channel: 0,
                 velocity: 100,
             });
@@ -10169,7 +10444,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10314,7 +10589,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10327,7 +10602,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10468,6 +10743,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: track_effect_id,
         bypassed: false,
         state: filter_state.clone(),
@@ -10486,6 +10762,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: return_effect_id,
                 bypassed: false,
                 state: filter_state,
@@ -11252,3 +11529,62 @@ mod mutable_long_tail_tests;
 
 #[path = "stream_action_tests.rs"]
 mod stream_action_tests;
+
+#[test]
+fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    fn runtime(with_main: bool) -> SessionPlayback {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        if with_main {
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap();
+        }
+        let revision = PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    }
+    let mut empty = runtime(false);
+    let mut main = runtime(true);
+    let mut locations = std::collections::BTreeSet::new();
+    empty
+        .visit_candidate_groups(&mut |kind, index, _| {
+            assert!(locations.insert((kind, index)), "duplicate owning location");
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        locations.len() + 5,
+        candidate_group_reservation(0, 0).unwrap()
+    );
+    // Both prepared and runtime Main are real populated chains, not placeholders.
+    assert!(!main.revision.arrangement().main_device_chain.is_empty());
+    assert!(main.main_chain.storage_view().entries().next().is_some());
+    let refuses_without_emitting = |runtime: &SessionPlayback| {
+        let mut emitted = 0;
+        assert_eq!(
+            runtime.visit_candidate_groups(&mut |_, _, _| {
+                emitted += 1;
+                Ok(())
+            }),
+            Err(crate::AudioStorageError::UnsupportedGraph)
+        );
+        assert_eq!(emitted, 0);
+    };
+    refuses_without_emitting(&main);
+    std::mem::swap(&mut empty.main_chain, &mut main.main_chain);
+    refuses_without_emitting(&empty); // runtime-only population
+    refuses_without_emitting(&main); // prepared-only population
+}
+
+mod cue_isolation;

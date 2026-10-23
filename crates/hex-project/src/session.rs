@@ -1,5 +1,5 @@
-//! Sparse, independently-owned Session cells. Session clips contain source data only;
-//! they have no Arrangement placement or back-reference.
+//! Sparse, independently-owned Session cells. Clips own source data and local
+//! processing metadata, without Arrangement placement or a back-reference.
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MAX_SCENES, MAX_SESSION_CELLS,
     MidiSource, NoteId, SceneId, TrackId,
@@ -26,6 +26,7 @@ pub struct SessionMidiClip {
     pub(crate) id: ClipId,
     pub(crate) name: String,
     pub(crate) source: Arc<MidiSource>,
+    pub(crate) volume: crate::MidiClipVolume,
 }
 
 /// Frame-anchored, one-shot audio source assigned to one Session cell.
@@ -63,6 +64,9 @@ impl SessionAudioClip {
     }
 }
 impl SessionMidiClip {
+    pub fn volume(&self) -> &crate::MidiClipVolume {
+        &self.volume
+    }
     pub fn flavor(&self) -> crate::ClipFlavor {
         self.flavor
     }
@@ -118,8 +122,18 @@ pub(crate) fn apply(
 ) -> Result<Created, Invalid> {
     use crate::Command;
     match command {
-        Command::AddScene { name } => {
+        Command::AddScene { name } => apply(project, Command::InsertScene { name, before: None }),
+        Command::InsertScene { name, before } => {
             crate::edit::name_valid(&name)?;
+            let index = match before {
+                Some(anchor) => project
+                    .session
+                    .scenes
+                    .iter()
+                    .position(|scene| scene.id == anchor)
+                    .ok_or(Invalid("scene insertion anchor no longer exists"))?,
+                None => project.session.scenes.len(),
+            };
             if project.session.scenes.len() >= MAX_SCENES {
                 return Err(Invalid("scene limit reached"));
             }
@@ -129,7 +143,7 @@ pub(crate) fn apply(
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve scene storage"))?;
             let id = SceneId(project.allocate_id()?);
-            project.session.scenes.push(Scene { id, name });
+            project.session.scenes.insert(index, Scene { id, name });
             Ok(Created::Scene(id))
         }
         Command::DuplicateScene(scene) => duplicate_scene(project, scene),
@@ -182,6 +196,7 @@ pub(crate) fn apply(
                     flavor: crate::ClipFlavor::default(),
                     id,
                     name,
+                    volume: crate::MidiClipVolume::default(),
                     source: Arc::new(MidiSource::defaults(source_length)),
                 }),
             });
@@ -295,6 +310,7 @@ pub(crate) fn apply(
                     flavor: original.flavor,
                     id,
                     name: original.name.clone(),
+                    volume: original.volume.clone(),
                     source: Arc::new(source),
                 }),
             });
@@ -481,6 +497,15 @@ pub(crate) fn apply(
             let target = project
                 .session_midi_clip(clip)
                 .ok_or(Invalid("session midi clip no longer exists"))?;
+            crate::midi::validate_source_boundary(
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                target.source.one_shot_boundary(),
+            )?;
+            target.volume.validate_source_length(source_length)?;
             for note in target.source.notes() {
                 crate::midi::validate_note(
                     note.start,
@@ -633,7 +658,9 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     flavor: clip.flavor,
                     id: ClipId(0),
                     name,
+                    volume: clip.volume.clone(),
                     source: Arc::new(MidiSource {
+                        one_shot_boundary: source.one_shot_boundary,
                         source_length: source.source_length,
                         source_start: source.source_start,
                         loop_start: source.loop_start,

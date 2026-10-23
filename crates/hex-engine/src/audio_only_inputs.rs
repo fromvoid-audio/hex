@@ -158,14 +158,14 @@ pub struct AudioSourceToken {
 pub struct OwnedAudioSourceView<'a> {
     kind: &'a SourceKind,
 }
-impl OwnedAudioSourceView<'_> {
+impl<'a> OwnedAudioSourceView<'a> {
     pub fn sample_rate(&self) -> u32 {
         match self.kind {
             SourceKind::Resident(a) => a.sample_rate(),
             SourceKind::Streamed(s) => s.project_rate(),
         }
     }
-    pub fn resident_frames(&self) -> Option<&[Frame]> {
+    pub fn resident_frames(&self) -> Option<&'a [Frame]> {
         match self.kind {
             SourceKind::Resident(a) => Some(a.frames()),
             _ => None,

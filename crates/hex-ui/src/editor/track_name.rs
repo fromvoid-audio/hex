@@ -1,4 +1,4 @@
-//! Track-header focus and view-only name drafts over canonical RenameTrack.
+//! Typed ordinary/Return header focus and one view-only name draft over canonical rename edits.
 use super::{
     CancelTrackName, CommitTrackName, EditorView, RemoveHeaderTracks, RenameTrack, browser_input::*,
 };
@@ -7,18 +7,43 @@ use gpui::{
     App, AppContext, Context, Entity, FocusHandle, KeyBinding, Subscription, Window, div,
     prelude::*,
 };
-use hex_project::{Command, Track, TrackId};
+use hex_project::{Command, Project, ReturnId, ReturnTrack, Track, TrackId};
 use hex_session::service::Request;
 use std::collections::BTreeMap;
 
+/// Stable naming owners; Return identities never pass through ordinary track APIs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Target {
+    Track(TrackId),
+    Return(ReturnId),
+}
+impl Target {
+    pub(super) fn name(self, project: &Project) -> Option<&str> {
+        match self {
+            Self::Track(id) => project.track(id).map(Track::name),
+            Self::Return(id) => project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .map(ReturnTrack::name),
+        }
+    }
+    fn rename(self, name: String) -> Command {
+        match self {
+            Self::Track(track) => Command::RenameTrack { track, name },
+            Self::Return(return_track) => Command::RenameReturnTrack { return_track, name },
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct TrackNameState {
-    focuses: BTreeMap<TrackId, FocusHandle>,
+    focuses: BTreeMap<Target, FocusHandle>,
     edit: Option<NameEdit>,
     scope: Option<(u64, u64)>,
 }
 struct NameEdit {
-    track: TrackId,
+    target: Target,
     generation: u64,
     revision: u64,
     original: String,
@@ -36,6 +61,11 @@ pub(super) fn bind_keys(cx: &mut App) {
             "cmd-r",
             RenameTrack,
             Some("hex_track_header && !hex_text_editing"),
+        ),
+        KeyBinding::new(
+            "cmd-r",
+            RenameTrack,
+            Some("hex_return_header && !hex_text_editing"),
         ),
         KeyBinding::new(
             "backspace",
@@ -70,7 +100,10 @@ impl EditorView {
             .track_name
             .focuses
             .iter()
-            .find_map(|(id, focus)| focus.is_focused(window).then_some(*id));
+            .find_map(|(target, focus)| match target {
+                Target::Track(id) if focus.is_focused(window) => Some(*id),
+                _ => None,
+            });
         let tracks = self.selected_track_ids();
         if tracks.is_empty() || !focused.is_some_and(|id| tracks.contains(&id)) {
             return true;
@@ -97,16 +130,14 @@ impl EditorView {
 
     pub(super) fn track_header_focused(&self, window: &Window) -> bool {
         self.mode == super::EditorMode::Arrangement
-            && self
-                .track_name
-                .focuses
-                .values()
-                .any(|focus| focus.is_focused(window))
+            && self.track_name.focuses.iter().any(|(target, focus)| {
+                matches!(target, Target::Track(_)) && focus.is_focused(window)
+            })
     }
     pub(super) fn focus_track_header_after_navigation(&self, track: TrackId, window: &mut Window) {
         self.track_name
             .focuses
-            .get(&track)
+            .get(&Target::Track(track))
             .unwrap_or(&self.focus)
             .focus(window);
     }
@@ -131,7 +162,7 @@ impl EditorView {
             } else if let Some(state) = &self.state {
                 self.track_name
                     .focuses
-                    .retain(|id, _| state.project.track(*id).is_some());
+                    .retain(|target, _| target.name(&state.project).is_some());
             }
             if old_focus.is_some_and(|id| !self.track_name.focuses.contains_key(&id)) {
                 self.focus.focus(window);
@@ -143,10 +174,7 @@ impl EditorView {
                 || edit.generation != self.project_generation
                 || !self.state.as_ref().is_some_and(|state| {
                     state.revision == edit.revision
-                        && state
-                            .project
-                            .track(edit.track)
-                            .is_some_and(|t| t.name() == edit.original)
+                        && edit.target.name(&state.project) == Some(edit.original.as_str())
                 }))
         {
             let focused = edit.input.read(cx).focus_handle().is_focused(window);
@@ -157,6 +185,34 @@ impl EditorView {
         }
     }
     pub(super) fn begin_track_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self
+            .track_name
+            .focuses
+            .iter()
+            .find_map(|(target, focus)| focus.is_focused(window).then_some(*target))
+        else {
+            return;
+        };
+        self.begin_name_target(target, window, cx);
+    }
+    /// A delayed menu answer cannot retarget a newer document or canonical edit.
+    pub(super) fn begin_captured_name(
+        &mut self,
+        target: Target,
+        generation: u64,
+        revision: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if generation == self.project_generation
+            && self.state.as_ref().is_some_and(|state| {
+                state.revision == revision && target.name(&state.project).is_some()
+            })
+        {
+            self.begin_name_target(target, window, cx);
+        }
+    }
+    fn begin_name_target(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != super::EditorMode::Arrangement
             || self.edit_pending()
             || self.track_name.edit.is_some()
@@ -168,29 +224,19 @@ impl EditorView {
         {
             return;
         }
-        let Some(track) = self
-            .track_name
-            .focuses
-            .iter()
-            .find(|(_, focus)| focus.is_focused(window))
-            .map(|(id, _)| *id)
-        else {
-            return;
-        };
         let Some(state) = &self.state else {
             return;
         };
-        let Some(source) = state.project.track(track) else {
+        let Some(original) = target.name(&state.project).map(str::to_owned) else {
             return;
         };
-        let original = source.name().to_owned();
         let revision = state.revision;
         // This existing name-input mode preserves case/Unicode and selects all.
         let input = cx.new(|cx| BrowserSearch::for_clip_name(original.clone(), cx));
         let focus = input.read(cx).focus_handle().clone();
         let blur = cx.on_blur(&focus, window, |view, _, cx| view.commit_track_name(cx));
         self.track_name.edit = Some(NameEdit {
-            track,
+            target,
             generation: self.project_generation,
             revision,
             original,
@@ -209,23 +255,47 @@ impl EditorView {
             && !self.edit_pending()
             && self.state.as_ref().is_some_and(|state| {
                 state.revision == edit.revision
-                    && state
-                        .project
-                        .track(edit.track)
-                        .is_some_and(|t| t.name() == edit.original)
+                    && edit.target.name(&state.project) == Some(edit.original.as_str())
             })
             && name != edit.original
         {
             if name.trim().is_empty() {
                 self.error = Some("track name must not be empty".into());
             } else {
-                self.enqueue(Request::Edit(Command::RenameTrack {
-                    track: edit.track,
-                    name,
-                }));
+                self.enqueue(Request::Edit(edit.target.rename(name)));
             }
         }
         cx.notify();
+    }
+    /// Match the existing Enter/blur commit law, but keep a refused draft
+    /// visible when a project replacement is requested.
+    pub(super) fn finalize_track_name_for_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = &self.track_name.edit else {
+            return true;
+        };
+        let name = &edit.input.read(cx).content;
+        if self.edit_pending()
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || edit.generation != self.project_generation
+            || !self.state.as_ref().is_some_and(|state| {
+                state.revision == edit.revision
+                    && edit.target.name(&state.project) == Some(edit.original.as_str())
+            })
+            || name.trim().is_empty()
+            || name.len() > hex_project::MAX_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            self.error =
+                Some("finish or cancel the current name edit before opening a project".into());
+            return false;
+        }
+        self.finish_track_name(true, window, cx);
+        true
     }
     pub(super) fn finish_track_name(
         &mut self,
@@ -233,7 +303,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let track = self.track_name.edit.as_ref().map(|edit| edit.track);
+        let track = self.track_name.edit.as_ref().map(|edit| edit.target);
         if commit {
             self.commit_track_name(cx);
         } else {
@@ -253,31 +323,49 @@ impl EditorView {
     ) -> FocusHandle {
         self.track_name
             .focuses
-            .entry(track)
+            .entry(Target::Track(track))
             .or_insert_with(|| cx.focus_handle())
             .clone()
     }
 
+    /// One inline label/input renderer for both stable naming owners. Row geometry
+    /// and ordinary header focus remain with their existing callers.
     pub(super) fn track_name_label(
         &mut self,
-        track: &Track,
+        target: Target,
+        name: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let id = track.id();
-        let click_focus = self.track_header_focus(id, cx);
+        let focus = self
+            .track_name
+            .focuses
+            .entry(target)
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let click_focus = focus.clone();
+        let (element_id, input_selector): (gpui::ElementId, &str) = match target {
+            Target::Track(id) => (("track-name-focus", id.value()).into(), "track-name-input"),
+            Target::Return(id) => (
+                ("return-name-focus", id.value()).into(),
+                "return-name-input",
+            ),
+        };
         let content = if let Some(edit) = &self.track_name.edit
-            && edit.track == id
+            && edit.target == target
         {
             div()
-                .debug_selector(|| "track-name-input".into())
+                .debug_selector(move || input_selector.into())
                 .child(edit.input.clone())
         } else {
-            div().child(theme::text(track.name()))
+            div().child(theme::text(name))
         };
         div()
-            .id(("track-name-focus", id.value()))
+            .id(element_id)
             .min_w_0()
             .flex_1()
+            .when(matches!(target, Target::Return(_)), |label| {
+                label.track_focus(&focus).key_context("hex_return_header")
+            })
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     cx.stop_propagation();
@@ -285,11 +373,20 @@ impl EditorView {
                         .track_name
                         .edit
                         .as_ref()
-                        .is_some_and(|edit| edit.track == id)
+                        .is_some_and(|edit| edit.target == target)
                     {
                         return;
                     }
-                    view.select_track_with_modifiers(id, event.modifiers(), window);
+                    match target {
+                        Target::Track(id) => {
+                            view.select_track_with_modifiers(id, event.modifiers(), window)
+                        }
+                        Target::Return(id) => {
+                            if !view.focus_return_details(id, window, cx) {
+                                return;
+                            }
+                        }
+                    }
                     click_focus.focus(window);
                     cx.notify();
                 }),
@@ -396,6 +493,19 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("track-name-input").is_some());
         visual.simulate_input("Verse S 🎹");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            let input = view.track_name.edit.as_ref().unwrap().input.read(cx);
+            assert_eq!(
+                input.content, "Verse S 🎹",
+                "display policy must preserve the submitted name"
+            );
+            assert_eq!(
+                input.painted_text_for_test(),
+                Some("verse s 🎹"),
+                "editing and committed display must use the same lowercase policy"
+            );
+        });
         visual.simulate_keystrokes("enter");
         let command = editor.read_with(&visual,|view,_| {
             assert!(view.track_name.edit.is_none());
@@ -461,11 +571,17 @@ mod tests {
         visual.simulate_keystrokes("down cmd-r");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.track_name.edit.as_ref().unwrap().track, target)
+            assert_eq!(
+                view.track_name.edit.as_ref().unwrap().target,
+                Target::Track(target)
+            )
         });
         visual.simulate_keystrokes("cmd-r");
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.track_name.edit.as_ref().unwrap().track, target)
+            assert_eq!(
+                view.track_name.edit.as_ref().unwrap().target,
+                Target::Track(target)
+            )
         });
         visual.simulate_keystrokes("escape");
         visual.update(|window, cx| {

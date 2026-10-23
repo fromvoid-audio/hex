@@ -161,7 +161,9 @@ fn beats_attack_mapping_tail_modes_and_decay_are_real() {
         0,
     );
     assert_eq!(off.frames[0], [1.0; 2]);
-    assert_eq!(off.frames[400], [1.0; 2]);
+    // A real Off gap restarts with the original attack CHANGE above its
+    // background; preserving raw DC here would manufacture a new step.
+    assert_eq!(off.frames[400], source[200].map(|x| x - source[199][0]));
     assert_eq!(off.frames[300], [0.0; 2]);
     let forward = prepare(
         &source,
@@ -195,7 +197,10 @@ fn beats_attack_mapping_tail_modes_and_decay_are_real() {
         },
         0,
     );
-    assert_eq!(transient.frames[400], [1.0; 2]);
+    assert_eq!(
+        transient.frames[400],
+        source[200].map(|x| x - source[199][0])
+    );
 }
 #[test]
 fn texture_is_seeded_and_grain_size_changes_processing() {

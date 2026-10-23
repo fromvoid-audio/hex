@@ -1,7 +1,7 @@
 use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 
-fn begin(visual: &mut VisualTestContext) {
+pub(super) fn begin(visual: &mut VisualTestContext) {
     visual.run_until_parked();
     let bounds = visual.debug_bounds("project-tempo-value").unwrap();
     visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
@@ -62,8 +62,10 @@ fn project_tempo_stale_revision_and_project_switch_retire_drafts(cx: &mut TestAp
             let old = view.state.as_ref().unwrap();
             view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: std::sync::Arc::new(model.project().clone()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),
@@ -119,7 +121,23 @@ fn project_tempo_cursor_movement_cannot_retarget_an_active_draft(cx: &mut TestAp
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("enter");
-    editor.read_with(cx, |view, _| assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::SetTempoPoint { beat: hex_project::BeatTime::ZERO, tempo }) if tempo.micro_bpm() == 91_234_567)));
+    let command = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    model.execute(command).unwrap();
+    assert_eq!(
+        model.project().tempo_map().points().len(),
+        1,
+        "a global edit must replace the tempo map, not leave a later tempo point"
+    );
+    for quarter in [0, 2, 8] {
+        assert_eq!(
+            model
+                .project()
+                .tempo_map()
+                .tempo_at(hex_project::BeatTime::from_quarters(quarter).unwrap())
+                .micro_bpm(),
+            91_234_567
+        );
+    }
 }
 
 #[gpui::test]
@@ -189,7 +207,7 @@ fn project_tempo_direct_input_validation_cancel_focus_and_canonical_commit(
             .expect("canonical tempo command")
     });
     assert!(
-        matches!(command, hex_project::Command::SetTempoPoint { beat: hex_project::BeatTime::ZERO, tempo } if tempo.micro_bpm() == 123_456_789)
+        matches!(command, hex_project::Command::SetProjectTempo { tempo } if tempo.micro_bpm() == 123_456_789)
     );
     let mut model = hex_project::Editor::new(project.clone(), 8).unwrap();
     model.execute(command).unwrap();
@@ -234,7 +252,7 @@ fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortc
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             match expected {
-                Some(micro) => assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::SetTempoPoint { beat: hex_project::BeatTime::ZERO, tempo }) if tempo.micro_bpm() == micro)),
+                Some(micro) => assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::SetProjectTempo { tempo }) if tempo.micro_bpm() == micro)),
                 None => assert!(view.last_enqueued_edit.is_none()),
             }
         });

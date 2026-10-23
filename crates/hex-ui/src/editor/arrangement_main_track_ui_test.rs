@@ -40,8 +40,10 @@ fn completed_event(state: &ViewState) -> Event {
     Event {
         state: Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
@@ -55,13 +57,17 @@ fn completed_event(state: &ViewState) -> Event {
         playback: None,
         status: None,
         error: None,
+        recovery_failure: None,
         request_complete: true,
+        sampler_load_complete: None,
+        sampler_edit_complete: None,
         computer_keyboard_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        document_format_upgrade_required: false,
         open_complete: false,
         project_replaced: false,
         stopped_playback_restore_complete: false,
@@ -167,8 +173,10 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
         editor.update(cx, |view, cx| {
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::default(),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -346,7 +354,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             let x = left + width * 0.2;
             let y = lane.top + lane.height * 0.7;
             let expected = viewport.start + viewport.length / 5;
-            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             view.update_time_selection_gesture(x, y, true);
             assert!(view.finish_time_selection_gesture());
             assert!(
@@ -355,7 +363,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             );
             assert_eq!(view.edit_cursor.expect("cursor").frame, expected);
 
-            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             assert!(view.update_time_selection_gesture(left + width * 0.6, y, true));
             assert!(view.finish_time_selection_gesture());
             let range = view.normalized_time_selection().expect("main range");
@@ -374,7 +382,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             assert!(view.finish_time_range_move_gesture());
             assert!(view.last_enqueued_edit.is_none());
 
-            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             // Inside Main's right edge but outside the narrower regular lane:
             // the timer must not spuriously scroll the viewport.
             view.update_time_selection_gesture(left + width - 0.5, y, true);
@@ -440,6 +448,13 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
+        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            track: track_ids[0],
+            frame: range.start(),
+            generation: view.project_generation,
+            pulse_color: 0,
+            pulse_started: std::time::Instant::now(),
+        });
         view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
             source: range.clone(),
             range,
@@ -447,6 +462,7 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             destination_first_index: 0,
             destination_last_index: track_ids.len() - 1,
             source_revision: state.revision,
+            selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
         });
         let event = completed_event(state);
@@ -464,6 +480,20 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
     editor.update(cx, |view, _| {
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: track_ids[0],
+            end_track: *track_ids.last().expect("tracks"),
+            anchor_frame: range.start(),
+            end_frame: range.end(),
+        });
+        view.time_selection_project_scope = true;
+        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            track: track_ids[0],
+            frame: range.start(),
+            generation: view.project_generation,
+            pulse_color: 0,
+            pulse_started: std::time::Instant::now(),
+        });
         view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
             source: range.clone(),
             range,
@@ -471,6 +501,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
             destination_first_index: 0,
             destination_last_index: track_ids.len() - 1,
             source_revision: state.revision,
+            selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
         });
         let event = completed_event(state);

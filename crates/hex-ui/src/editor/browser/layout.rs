@@ -1,12 +1,28 @@
 //! Browser composition and transient visual review state. Tag storage stays outside the UI.
 use super::*;
 
-const SECTIONS: [(BrowserSection, &str); 4] = [
+const SECTIONS: [(BrowserSection, &str); 5] = [
     (BrowserSection::Samples, "samples"),
     (BrowserSection::Instruments, "devices"),
     (BrowserSection::Projects, "projects"),
     (BrowserSection::All, "all"),
+    (BrowserSection::Plugins, "vst3"),
 ];
+// Match existing browser buttons: a 22px hit/centering slot plus the
+// sidebar's existing 1px right border. Glyph padding lives inside the slot.
+const PICKER_CONTROL_SIZE: f32 = 22.0;
+const PICKER_BORDER_WIDTH: f32 = 1.0;
+const PICKER_MIN_WIDTH: f32 = PICKER_CONTROL_SIZE + PICKER_BORDER_WIDTH;
+const PICKER_RESIZE_WIDTH: f32 = 4.0;
+// Capture within one divider width; an extra divider width of intentional
+// expansion releases the current gesture, avoiding threshold chatter.
+fn picker_resize_width(raw: f32, maximum: f32, locked: bool) -> (f32, bool) {
+    let width = raw.clamp(PICKER_MIN_WIDTH, maximum);
+    let band = PICKER_RESIZE_WIDTH * if locked { 2.0 } else { 1.0 };
+    let locked = width <= PICKER_MIN_WIDTH + band;
+    (if locked { PICKER_MIN_WIDTH } else { width }, locked)
+}
+
 const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("content", &["audio clip", "midi clip", "preset", "sample"]),
@@ -19,13 +35,13 @@ const TAG_GROUPS: [(&str, &[&str]); 6] = [
 
 pub(super) struct BrowserLayout {
     sidebar_width: f32,
-    pub(super) sidebar_drag: Option<(f32, f32)>,
+    pub(super) sidebar_drag: Option<(f32, f32, bool)>,
     tags_visible: bool,
     editor_visible: bool,
     settings_visible: bool,
     group_open: [bool; 6],
-    visible: [bool; 4],
-    icons: [usize; 4],
+    visible: [bool; 5],
+    icons: [usize; 5],
 }
 
 impl Default for BrowserLayout {
@@ -37,13 +53,26 @@ impl Default for BrowserLayout {
             editor_visible: false,
             settings_visible: false,
             group_open: [true, true, false, false, false, false],
-            visible: [true; 4],
-            icons: [0, 1, 2, 6],
+            visible: [true; 5],
+            icons: [0, 1, 2, 6, 3],
         }
     }
 }
 
 impl BrowserLayout {
+    pub(super) fn history_source_available(&self, source: &BrowserSection) -> bool {
+        SECTIONS
+            .iter()
+            .position(|(section, _)| section == source)
+            .is_none_or(|index| self.visible[index])
+    }
+
+    pub(super) fn samples_visible(&self) -> bool {
+        self.visible[0]
+    }
+    pub(super) fn set_samples_visible(&mut self, visible: bool) {
+        self.visible[0] = visible;
+    }
     pub(super) fn reveal_all(&mut self) {
         if let Some(index) = SECTIONS
             .iter()
@@ -72,10 +101,8 @@ impl BrowserLayout {
     }
 
     fn sidebar_width(&self, base_width: f32) -> f32 {
-        let width = self
-            .sidebar_width
-            .clamp(36.0, (base_width - 124.0).max(36.0));
-        if width < 64.0 { 36.0 } else { width }
+        self.sidebar_width
+            .clamp(PICKER_MIN_WIDTH, (base_width - 124.0).max(PICKER_MIN_WIDTH))
     }
 }
 
@@ -90,10 +117,109 @@ fn browser_caption(value: impl AsRef<str>) -> Div {
     div().text_xs().child(theme::text(value))
 }
 
+fn picker_icon(icon: Div) -> Div {
+    let icon = icon.whitespace_nowrap();
+    div()
+        .size(px(PICKER_CONTROL_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon)
+}
+
+// Keep the full capture gutter independent of its visible separator. The leading
+// line adjoins the existing 1px panel border without consuming layout width.
+pub(super) fn resize_divider_line(
+    group: &'static str,
+    selector: &'static str,
+    active: bool,
+) -> Div {
+    div()
+        .absolute()
+        .left(px(0.0))
+        .top(px(0.0))
+        .w(px(1.0))
+        .h_full()
+        .bg(rgb(theme::color(if active {
+            theme::PaletteRole::Secondary
+        } else {
+            theme::PaletteRole::Border
+        })))
+        .group_hover(group, |style| {
+            style.bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+        })
+        .debug_selector(move || selector.to_owned())
+}
+
 fn browser_divider() -> Div {
     div()
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+}
+
+// Keep the same line box at every picker width: labels clip rather than
+// wrapping, ellipsizing or removing rows when the icon-only width is reached.
+fn picker_label(value: impl AsRef<str>) -> Div {
+    browser_caption(value)
+        .flex_1()
+        .min_w_0()
+        .whitespace_nowrap()
+        .overflow_hidden()
+}
+
+fn picker_heading(value: &str) -> Div {
+    browser_heading(value)
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+}
+
+// Keep the original heading's text line box laid out, but do not paint its
+// descendants at the exact icon-only minimum. The separator is an overlay, so
+// neither its height nor text length can move subsequent source rows.
+fn picker_group_heading(value: &'static str, compact: bool) -> gpui::Stateful<Div> {
+    div()
+        .id(gpui::SharedString::from(format!(
+            "browser-picker-heading-{value}"
+        )))
+        .debug_selector(move || format!("browser-picker-heading-{value}"))
+        .relative()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .when(compact, |line| line.invisible())
+                .child(
+                    picker_heading(value)
+                        .debug_selector(move || format!("browser-picker-heading-text-{value}")),
+                ),
+        )
+        .when(compact, |heading| {
+            heading.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(PICKER_CONTROL_SIZE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(PICKER_CONTROL_SIZE - 2.0 * PICKER_RESIZE_WIDTH))
+                            .h(px(PICKER_BORDER_WIDTH))
+                            .bg(rgb(theme::color(theme::PaletteRole::Muted)))
+                            .debug_selector(move || format!("browser-picker-heading-mark-{value}")),
+                    ),
+            )
+        })
+        .tooltip(move |_, cx| browser_label_tooltip(value, cx))
 }
 
 fn browser_heading(value: &str) -> Div {
@@ -114,6 +240,46 @@ fn browser_pending(value: &str) -> Div {
 }
 
 impl EditorView {
+    fn browser_history_arrow(&self, forward: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let enabled = if forward {
+            self.browser.history.can_forward()
+        } else {
+            self.browser.history.can_back()
+        };
+        let selector = if forward {
+            "browser-history-forward"
+        } else {
+            "browser-history-back"
+        };
+        browser_pending(if forward { "›" } else { "‹" })
+            .id(selector)
+            .debug_selector(move || selector.to_owned())
+            .when(enabled, |button| {
+                button
+                    .cursor_pointer()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            })
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::super::transport::MiniTooltip {
+                    description: theme::text(if forward { "forward" } else { "back" }),
+                })
+                .into()
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if enabled {
+                        view.move_browser_history(forward, cx);
+                    } else {
+                        // A disabled arrow is inert, including the ancestor's
+                        // ordinary non-text focus transfer and text checkpoint.
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+    }
+
     pub(super) fn browser_toolbar(&self, cx: &mut Context<Self>) -> Div {
         browser_divider()
             .h(px(30.0))
@@ -123,39 +289,36 @@ impl EditorView {
             .px_1()
             .gap_1()
             .debug_selector(|| "browser-toolbar".to_owned())
-            .child(
-                browser_pending("‹")
-                    .id("browser-history-back")
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::super::transport::MiniTooltip {
-                            description: theme::text("back · history pending"),
-                        })
-                        .into()
-                    }),
-            )
-            .child(
-                browser_pending("›")
-                    .id("browser-history-forward")
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::super::transport::MiniTooltip {
-                            description: theme::text("forward · history pending"),
-                        })
-                        .into()
-                    }),
-            )
+            .child(self.browser_history_arrow(false, cx))
+            .child(self.browser_history_arrow(true, cx))
+            .child(self.browser_reveal_button(cx))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
+                    .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                        if event.button == MouseButton::Left {
+                            view.checkpoint_browser_history(cx);
                             view.browser.results_focused = false;
-                            window.prevent_default();
                             cx.notify();
-                        }),
-                    )
+                        }
+                    }))
                     .child(self.browser.search.clone()),
+            )
+            .child(
+                self.browser_icon(
+                    "⌗",
+                    "quantized sample input · nearest arrangement grid line · enter",
+                    |view, _, cx| {
+                        view.browser.insert_quantized = !view.browser.insert_quantized;
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .debug_selector(|| "browser-insert-grid".to_owned())
+                .when(self.browser.insert_quantized, |button| {
+                    button.text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                }),
             )
             .child(self.browser_icon(
                 "≡",
@@ -168,7 +331,7 @@ impl EditorView {
             ))
             .child(self.browser_icon(
                 "⋮",
-                "open tag editor",
+                "show or hide tag editor",
                 |view, _, cx| {
                     view.browser.layout.editor_visible = !view.browser.layout.editor_visible;
                     cx.notify();
@@ -185,13 +348,45 @@ impl EditorView {
             ))
     }
 
+    fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let target = self.browser_selected_sample(cx);
+        let enabled = target.is_some();
+        hex_widgets::action(theme::text("◎"), theme::action_style())
+            .id("browser-reveal-sample")
+            .debug_selector(|| "browser-reveal-sample".to_owned())
+            .w(px(22.0))
+            .h(px(22.0))
+            .text_xs()
+            .when(!enabled, |button| button.cursor_default().opacity(0.4))
+            .tooltip(move |_, cx| {
+                browser_label_tooltip(
+                    if enabled {
+                        "show selected sample"
+                    } else {
+                        "no sample selected in current results"
+                    },
+                    cx,
+                )
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if let Some(path) = &target {
+                        view.reveal_browser_sample(path, window, cx);
+                    }
+                }),
+            )
+    }
+
     pub(super) fn browser_sidebar(
         &self,
         width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let width = self.browser.layout.sidebar_width(width);
-        let compact = width < 64.0;
+        let compact = width == PICKER_MIN_WIDTH;
         let mut sidebar = div()
             .id("browser-sidebar")
             .w(px(width))
@@ -203,7 +398,7 @@ impl EditorView {
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .debug_selector(|| "browser-sidebar".to_owned())
-            .children((!compact).then(|| browser_heading("collections")));
+            .child(picker_group_heading("collections", compact));
         for (index, name) in ["favorites", "inspiration", "recent finds"]
             .into_iter()
             .enumerate()
@@ -213,6 +408,11 @@ impl EditorView {
                 hex_project::ElementColor::Cyan,
                 hex_project::ElementColor::Gray,
             ][index];
+            let icon = picker_icon(
+                browser_caption("■")
+                    .text_color(rgb(theme::element_colors(color).accent))
+                    .debug_selector(move || format!("browser-picker-glyph-collection-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
                     .id(("browser-collection", index))
@@ -221,7 +421,10 @@ impl EditorView {
                         browser_label_tooltip(format!("{name} · collections pending"), cx)
                     })
                     .h(px(22.0))
-                    .px_2()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_1()
@@ -238,75 +441,85 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Collection(index), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
                     )
-                    .child(
-                        browser_caption("■").text_color(rgb(theme::element_colors(color).accent)),
-                    )
-                    .children(
-                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
-                    ),
+                    .child(icon)
+                    .child(picker_label(name).debug_selector(move || {
+                        format!("browser-picker-label-collection-{index}")
+                    })),
             );
         }
-        if !compact {
-            sidebar = sidebar.child(browser_heading("collections pending"));
-        }
-        sidebar = sidebar.children((!compact).then(|| browser_heading("library")));
-        for (index, (section, name)) in SECTIONS.into_iter().enumerate() {
+        sidebar = sidebar
+            .child(picker_group_heading("collections pending", compact))
+            .child(picker_group_heading("library", compact));
+        for index in [3, 0, 1, 2, 4] {
+            let (section, name) = SECTIONS[index].clone();
             if !self.browser.layout.visible[index] {
                 continue;
             }
             let active = self.browser.section == section;
-            sidebar = sidebar.child(
-                div()
-                    .id(("browser-section", index))
-                    .debug_selector(move || format!("browser-section-{name}"))
-                    .tooltip(move |_, cx| browser_label_tooltip(name, cx))
-                    .overflow_hidden()
-                    .h(px(25.0))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .bg(rgb(theme::color(if active {
-                        theme::PaletteRole::Hover
-                    } else {
-                        theme::PaletteRole::Surface
-                    })))
-                    .text_color(rgb(theme::color(if active {
-                        theme::PaletteRole::Secondary
-                    } else {
-                        theme::PaletteRole::Text
-                    })))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, window, cx| {
-                            view.select_browser_source(section.clone(), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
-                            window.prevent_default();
-                            cx.notify();
-                        }),
-                    )
-                    .child(browser_caption(ICONS[self.browser.layout.icons[index]]))
-                    .children(
-                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
-                    ),
+            let icon = picker_icon(
+                browser_caption(ICONS[self.browser.layout.icons[index]])
+                    .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
             );
+            sidebar =
+                sidebar.child(
+                    div()
+                        .id(("browser-section", index))
+                        .debug_selector(move || format!("browser-section-{name}"))
+                        .tooltip(move |_, cx| browser_label_tooltip(name, cx))
+                        .h(px(25.0))
+                        .w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .cursor_pointer()
+                        .bg(rgb(theme::color(if active {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Surface
+                        })))
+                        .text_color(rgb(theme::color(if active {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Text
+                        })))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                view.select_browser_source(section.clone(), cx);
+                                view.browser.results_focus.focus(window);
+                                window.prevent_default();
+                                cx.notify();
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                                if name == "samples" {
+                                    view.open_browser_samples_menu(event.position, window, cx);
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                }
+                            }),
+                        )
+                        .child(icon)
+                        .child(picker_label(name).debug_selector(move || {
+                            format!("browser-picker-label-section-{index}")
+                        })),
+                );
         }
         sidebar = sidebar.child(self.browser_icon(
             "⚙",
-            "configure sections · session only",
+            "configure browser sources",
             move |view, _, cx| {
-                view.browser.layout.settings_visible =
-                    compact || !view.browser.layout.settings_visible;
+                view.browser.layout.settings_visible = !view.browser.layout.settings_visible;
                 if view.browser.layout.settings_visible {
                     view.browser.layout.sidebar_width =
                         view.browser.layout.sidebar_width.max(124.0);
@@ -315,22 +528,40 @@ impl EditorView {
             },
             cx,
         ));
-        if self.browser.layout.settings_visible && !compact {
-            sidebar = sidebar.child(browser_heading("sections · session"));
+        if self.browser.layout.settings_visible {
+            sidebar = sidebar.child(picker_group_heading("sections · session", compact));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];
                 sidebar = sidebar.child(
                     div()
+                        .h(px(PICKER_CONTROL_SIZE))
+                        .flex_shrink_0()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .items_center()
                         .gap_1()
                         .child(
                             div()
                                 .id(("browser-section-visibility", index))
+                                .debug_selector(move || {
+                                    format!("browser-section-visibility-{index}")
+                                })
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, _, cx| {
+                                        if index == 0 {
+                                            view.set_browser_source_visible(
+                                                BrowserSection::Samples,
+                                                !view.browser.layout.visible[index],
+                                                cx,
+                                            );
+                                            return;
+                                        }
                                         let layout = &mut view.browser.layout;
                                         if layout.visible[index]
                                             && layout.visible.iter().filter(|v| **v).count() == 1
@@ -351,15 +582,16 @@ impl EditorView {
                                         cx.notify();
                                     }),
                                 )
-                                .child(browser_caption(format!(
-                                    "{} {}",
+                                .child(picker_label(format!(
+                                    "{} {name}",
                                     if visible { "☑" } else { "□" },
-                                    if compact { "" } else { name }
                                 ))),
                         )
                         .child(
                             div()
                                 .id(("browser-section-icon", index))
+                                .w(px(PICKER_CONTROL_SIZE))
+                                .flex_shrink_0()
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -374,9 +606,62 @@ impl EditorView {
                 );
             }
         }
-        sidebar = sidebar.children((!compact).then(|| browser_heading("places")));
+        if self.browser.layout.settings_visible {
+            for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
+                let path = place.clone();
+                let visible = self.browser_place_visible(place);
+                let name = if *place == self.browser.music {
+                    "music".to_owned()
+                } else if *place == self.browser.home {
+                    "home".to_owned()
+                } else {
+                    place
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                let tooltip = name.clone();
+                sidebar = sidebar.child(
+                    div()
+                        .id(("browser-place-visibility", index))
+                        .debug_selector(move || format!("browser-place-visibility-{index}"))
+                        .h(px(PICKER_CONTROL_SIZE))
+                        .w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .cursor_pointer()
+                        .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                view.set_browser_source_visible(
+                                    BrowserSection::Place(path.clone()),
+                                    !visible,
+                                    cx,
+                                );
+                                view.browser.results_focus.focus(window);
+                                window.prevent_default();
+                            }),
+                        )
+                        .child(picker_label(format!(
+                            "{} {name}",
+                            if visible { "☑" } else { "□" }
+                        ))),
+                );
+            }
+        }
+        sidebar = sidebar.child(picker_group_heading("places", compact));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
+            if !self.browser_place_visible(place) {
+                continue;
+            }
             let path = place.clone();
+            let icon_path = place.clone();
+            let row_bounds = Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
+            let measured_bounds = Rc::clone(&row_bounds);
             let name = if *place == self.browser.music {
                 "music"
             } else if *place == self.browser.home {
@@ -388,18 +673,25 @@ impl EditorView {
                     .unwrap_or("folder")
             };
             let tooltip = name.to_owned();
+            let icon = picker_icon(
+                browser_caption(self.browser_place_glyph(place))
+                    .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
+            );
             sidebar = sidebar.child(
                 div()
+                    .relative()
                     .id(("browser-place", index))
                     .debug_selector(move || format!("browser-place-{index}"))
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
                     .h(px(23.0))
-                    .px_2()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_1()
                     .cursor_pointer()
-                    .overflow_hidden()
                     .bg(rgb(theme::color(
                         if self.browser.section == BrowserSection::Place(place.clone()) {
                             theme::PaletteRole::Hover
@@ -411,16 +703,38 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, window, cx| {
                             view.select_browser_source(BrowserSection::Place(path.clone()), cx);
-                            view.browser
-                                .search
-                                .update(cx, |input, _| input.focus(window));
+                            view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
                         }),
                     )
-                    .child(browser_caption("□"))
-                    .children(
-                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                            view.open_browser_place_icons(
+                                icon_path.clone(),
+                                row_bounds.get().map_or(event.position, |bounds| {
+                                    gpui::point(bounds.left(), bounds.bottom())
+                                }),
+                                window,
+                                cx,
+                            );
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        canvas(
+                            move |bounds, _, _| measured_bounds.set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .child(icon)
+                    .child(
+                        picker_label(name)
+                            .debug_selector(move || format!("browser-picker-label-place-{index}")),
                     ),
             );
         }
@@ -435,8 +749,11 @@ impl EditorView {
         if let Some(status) = &self.browser.places_status {
             let tooltip = status.clone();
             sidebar = sidebar.child(
-                browser_heading(if compact { "!" } else { status })
+                picker_heading(status)
                     .id("browser-places-status")
+                    .debug_selector(|| "browser-places-status".into())
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx)),
             );
         }
@@ -453,12 +770,17 @@ impl EditorView {
         div()
             .id("browser-sidebar-resize")
             .debug_selector(|| "browser-sidebar-resize".to_owned())
-            .w(px(4.0))
+            .w(px(PICKER_RESIZE_WIDTH))
             .h_full()
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(theme::PaletteRole::Border)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+            .relative()
+            .group("browser-sidebar-resize")
+            .child(resize_divider_line(
+                "browser-sidebar-resize",
+                "browser-sidebar-resize-line",
+                self.browser.layout.sidebar_drag.is_some(),
+            ))
             .child(
                 canvas(
                     |_, _, _| (),
@@ -469,9 +791,13 @@ impl EditorView {
                                 && event.button == MouseButton::Left
                                 && bounds.contains(&event.position)
                             {
-                                down_entity.update(cx, |view, _| {
-                                    view.browser.layout.sidebar_drag =
-                                        Some((f32::from(event.position.x), sidebar_width));
+                                down_entity.update(cx, |view, cx| {
+                                    view.browser.layout.sidebar_drag = Some((
+                                        f32::from(event.position.x),
+                                        sidebar_width,
+                                        sidebar_width == PICKER_MIN_WIDTH,
+                                    ));
+                                    cx.notify();
                                 });
                             }
                         });
@@ -482,13 +808,20 @@ impl EditorView {
                             }
                             move_entity.update(cx, |view, cx| {
                                 if !event.dragging() {
-                                    view.browser.layout.sidebar_drag = None;
-                                } else if let Some((start, initial)) =
+                                    if view.browser.layout.sidebar_drag.take().is_some() {
+                                        cx.notify();
+                                    }
+                                } else if let Some((start, initial, locked)) =
                                     view.browser.layout.sidebar_drag
                                 {
-                                    view.browser.layout.sidebar_width =
-                                        (initial + f32::from(event.position.x) - start)
-                                            .clamp(36.0, (width - 124.0).max(36.0));
+                                    let (next, locked) = picker_resize_width(
+                                        initial + f32::from(event.position.x) - start,
+                                        (width - 124.0).max(PICKER_MIN_WIDTH),
+                                        locked,
+                                    );
+                                    view.browser.layout.sidebar_width = next;
+                                    view.browser.layout.sidebar_drag =
+                                        Some((start, initial, locked));
                                     cx.notify();
                                 }
                             });
@@ -496,8 +829,10 @@ impl EditorView {
                         let up_entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                             if phase.bubble() && event.button == MouseButton::Left {
-                                up_entity.update(cx, |view, _| {
-                                    view.browser.layout.sidebar_drag = None;
+                                up_entity.update(cx, |view, cx| {
+                                    if view.browser.layout.sidebar_drag.take().is_some() {
+                                        cx.notify();
+                                    }
                                 });
                             }
                         });
@@ -613,17 +948,27 @@ impl EditorView {
     }
 
     pub(super) fn browser_selected_label(&self, cx: &App) -> String {
-        let files = self.browser_visible_entries(cx);
-        let index = self.browser.selected_index;
-        if let Some(entry) = files.get(index) {
-            entry.name.clone()
-        } else {
-            self.browser_visible_devices(cx)
-                .get(index.saturating_sub(files.len()))
+        match self.browser_item_at(self.browser.selected_index, cx) {
+            Some(BrowserItemKey::Plugin(path, id)) => self
+                .browser_visible_plugins(cx)
+                .iter()
+                .find(|row| row.module == path && row.cid == id)
+                .map_or_else(|| "no item selected".into(), |row| row.name.clone()),
+            Some(BrowserItemKey::File(path)) => path.file_name().map_or_else(
+                || "no item selected".into(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            _ => self
+                .browser_visible_devices(cx)
+                .get(
+                    self.browser
+                        .selected_index
+                        .saturating_sub(self.browser_visible_entries(cx).len()),
+                )
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
-                )
+                ),
         }
     }
 
@@ -659,9 +1004,10 @@ impl EditorView {
                     .child(div().flex_1().min_w_0())
                     .child(self.browser_icon(
                         "⋯",
-                        "open full tag editor",
+                        "show or hide tag editor",
                         |view, _, cx| {
-                            view.browser.layout.editor_visible = true;
+                            view.browser.layout.editor_visible =
+                                !view.browser.layout.editor_visible;
                             cx.notify();
                         },
                         cx,

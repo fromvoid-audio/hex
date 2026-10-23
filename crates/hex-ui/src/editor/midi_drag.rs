@@ -89,6 +89,35 @@ pub(super) fn snap_raw(raw: u64, grid: MidiGrid) -> u64 {
     snap_clamped(i128::from(raw), 0, u64::MAX, step)
 }
 
+/// Creation starts at the grid line at or before the pointer. Move/resize
+/// deltas retain their existing nearest-grid policy.
+pub(super) fn creation_start(raw: u64, grid: MidiGrid) -> u64 {
+    grid.step_raw().map_or(raw, |step| raw / step * step)
+}
+
+/// Free creation starts one logical pixel wide. The prepared playback minimum
+/// prevents a positive beat duration rounding to zero audio frames at deep zoom.
+pub(super) fn creation_gate(
+    remaining: u64,
+    grid: MidiGrid,
+    span: u64,
+    width: f32,
+    minimum: u64,
+) -> Option<u64> {
+    if remaining == 0 || minimum == 0 || !width.is_finite() || width <= 0.0 || span == 0 {
+        return None;
+    }
+    let desired = if grid.step_raw().is_some() {
+        default_gate_raw(remaining, grid)
+    } else {
+        ((span as f64 / f64::from(width)).ceil() as u64)
+            .max(1)
+            .max(minimum)
+    };
+    let duration = desired.min(remaining);
+    (duration >= minimum).then_some(duration)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GestureKind {
     Move {
@@ -127,6 +156,7 @@ pub(super) struct NoteGesture {
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
 }
 
@@ -145,6 +175,7 @@ pub(super) struct GestureStart {
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
 }
 
@@ -159,6 +190,7 @@ pub(super) struct GestureContext {
     pub(super) beat_start: u64,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
     pub(super) bounds: [f32; 4],
 }
@@ -173,6 +205,7 @@ pub(super) fn is_current(gesture: &NoteGesture, context: GestureContext) -> bool
         && gesture.beat_start == context.beat_start
         && gesture.beat_span == context.beat_span
         && gesture.pitch_low == context.pitch_low
+        && gesture.pitch_rows == context.pitch_rows
         && gesture.grid == context.grid
         && gesture.bounds == context.bounds
 }
@@ -204,6 +237,34 @@ pub(super) fn hit_kind(
     }
 }
 
+/// Tiny unselected halos stay easy to select/move. Once explicitly selected,
+/// their left/right thirds expose the two real, visible note edges while the
+/// middle third still moves. Hidden clipped edges never become resize handles.
+pub(super) fn selected_hit_kind(
+    local_x: f32,
+    left: f32,
+    width: f32,
+    leading: bool,
+    trailing: bool,
+    selected: bool,
+) -> HitKind {
+    if selected
+        && (3.0..6.0).contains(&width)
+        && local_x.is_finite()
+        && left.is_finite()
+        && (left..=left + width).contains(&local_x)
+    {
+        let handle = width / 3.0;
+        if leading && local_x <= left + handle {
+            return HitKind::ResizeLeading;
+        }
+        if trailing && local_x >= left + width - handle {
+            return HitKind::ResizeTrailing;
+        }
+    }
+    hit_kind(local_x, left, width, leading, trailing)
+}
+
 pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
     let pointer_beat_raw = beat_at_point(
         start.pointer[0],
@@ -211,7 +272,12 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
         start.beat_start,
         start.beat_span,
     )?;
-    let pointer_pitch = pitch_at_point(start.pointer[1], start.bounds, start.pitch_low)?;
+    let pointer_pitch = pitch_at_point(
+        start.pointer[1],
+        start.bounds,
+        start.pitch_low,
+        start.pitch_rows,
+    )?;
     let note_end = start.original.start.checked_add(start.original.duration)?;
     if start.original.duration == 0 || note_end > start.clip_length {
         return None;
@@ -242,6 +308,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
         beat_span: start.beat_span,
         clip_length: start.clip_length,
         pitch_low: start.pitch_low,
+        pitch_rows: start.pitch_rows,
         grid: start.grid,
     })
 }
@@ -265,7 +332,12 @@ pub(super) fn update_with_modifier(
     ) else {
         return false;
     };
-    let Some(pointer_pitch) = pitch_at_point(pointer_y, gesture.bounds, gesture.pitch_low) else {
+    let Some(pointer_pitch) = pitch_at_point(
+        pointer_y,
+        gesture.bounds,
+        gesture.pitch_low,
+        gesture.pitch_rows,
+    ) else {
         return false;
     };
     let effective_grid = effective_grid(gesture.grid, invert_snap);
@@ -308,7 +380,7 @@ pub(super) fn update_with_modifier(
             note_end,
         } => {
             let delta = delta_from(down_beat);
-            let min_gate = effective_grid.minimum_gate().min(note_end);
+            let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
             let max_start = note_end.saturating_sub(min_gate);
             let start =
                 (i128::from(gesture.original.start) + delta).clamp(0, i128::from(max_start)) as u64;
@@ -325,9 +397,7 @@ pub(super) fn update_with_modifier(
             pointer_beat_raw: down_beat,
         } => {
             let delta = delta_from(down_beat);
-            let min_gate = effective_grid
-                .minimum_gate()
-                .min(gesture.clip_length.saturating_sub(gesture.original.start));
+            let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
             let min_end = gesture.original.start.saturating_add(min_gate);
             let original_end = gesture
                 .original
@@ -407,7 +477,12 @@ pub(super) fn quantize_delta(delta: i128, grid: MidiGrid) -> i128 {
     if delta < 0 { -snapped } else { snapped }
 }
 
-pub(super) fn pitch_at_point(y: f32, bounds: [f32; 4], pitch_low: u8) -> Option<u8> {
+pub(super) fn pitch_at_point(
+    y: f32,
+    bounds: [f32; 4],
+    pitch_low: u8,
+    pitch_rows: u8,
+) -> Option<u8> {
     let [left, top, width, height] = bounds;
     if !y.is_finite()
         || !left.is_finite()
@@ -416,13 +491,17 @@ pub(super) fn pitch_at_point(y: f32, bounds: [f32; 4], pitch_low: u8) -> Option<
         || !height.is_finite()
         || width <= 0.0
         || height <= 0.0
-        || pitch_low > 104
+        || !super::midi_scene::valid_pitch_range(pitch_low, pitch_rows)
     {
         return None;
     }
-    let row = (((y - top) / height) * 24.0).floor();
+    let row = (((y - top) / height) * f32::from(pitch_rows)).floor();
     let row = row.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
-    Some((i32::from(pitch_low) + 23 - row).clamp(0, 127) as u8)
+    Some(
+        (i32::from(pitch_low) + i32::from(pitch_rows) - 1)
+            .saturating_sub(row)
+            .clamp(0, 127) as u8,
+    )
 }
 
 fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
@@ -481,6 +560,7 @@ mod tests {
             beat_span: 4 * BeatTime::ONE.raw(),
             clip_length: CLIP_LENGTH,
             pitch_low: 48,
+            pitch_rows: 24,
             grid,
         })
         .expect("valid note gesture")
@@ -508,6 +588,7 @@ mod tests {
             beat_span: 4 * BeatTime::ONE.raw(),
             clip_length,
             pitch_low: 48,
+            pitch_rows: 24,
             grid: MidiGrid::Sixteenth,
         })
         .expect("valid note gesture")
@@ -535,6 +616,7 @@ mod tests {
             beat_span,
             clip_length: CLIP_LENGTH,
             pitch_low: 48,
+            pitch_rows: 24,
             grid: MidiGrid::Sixteenth,
         })
         .expect("valid note gesture")
@@ -736,6 +818,7 @@ mod tests {
                 beat_span: 4 * BeatTime::ONE.raw(),
                 clip_length: CLIP_LENGTH,
                 pitch_low: 48,
+                pitch_rows: 24,
                 grid: MidiGrid::Sixteenth,
             })
             .is_none()
@@ -809,6 +892,54 @@ mod tests {
             assert_eq!(resizing.preview, original);
             assert!(is_noop(&resizing));
         }
+    }
+
+    #[test]
+    fn shrinking_sub_grid_notes_does_not_expand_them() {
+        let original = NotePreview {
+            start: BeatTime::ONE.raw(),
+            duration: BeatTime::ONE.raw() / 32,
+            pitch: 60,
+        };
+        for (kind, x) in [
+            (HitKind::ResizeLeading, 151.0),
+            (HitKind::ResizeTrailing, 101.0),
+        ] {
+            let mut resize = gesture_for(original, kind, [126.0, 335.0]);
+            update(&mut resize, x, 335.0);
+            assert_eq!(
+                resize.preview, original,
+                "a coarse-grid shrink may clamp, never grow"
+            );
+        }
+    }
+
+    #[test]
+    fn only_explicitly_selected_tiny_edges_offer_resize_and_hidden_edges_stay_hidden() {
+        use super::selected_hit_kind;
+        for (x, expected) in [
+            (8.25, HitKind::ResizeLeading),
+            (10.0, HitKind::Move),
+            (11.75, HitKind::ResizeTrailing),
+        ] {
+            assert_eq!(selected_hit_kind(x, 8.0, 4.0, true, true, true), expected);
+            assert_eq!(
+                selected_hit_kind(x, 8.0, 4.0, true, true, false),
+                HitKind::Move
+            );
+        }
+        assert_eq!(
+            selected_hit_kind(8.25, 8.0, 4.0, false, true, true),
+            HitKind::Move
+        );
+        assert_eq!(
+            selected_hit_kind(11.75, 8.0, 4.0, true, false, true),
+            HitKind::Move
+        );
+        assert_eq!(
+            selected_hit_kind(f32::NAN, 8.0, 4.0, true, true, true),
+            HitKind::Move
+        );
     }
 
     #[test]
@@ -988,6 +1119,7 @@ mod tests {
             beat_start: drag.beat_start,
             beat_span: drag.beat_span,
             pitch_low: drag.pitch_low,
+            pitch_rows: drag.pitch_rows,
             grid: drag.grid,
             bounds: drag.bounds,
         };
@@ -1041,5 +1173,44 @@ mod tests {
                 ..context
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod creation_geometry_tests {
+    use super::*;
+    #[test]
+    fn creation_uses_containing_grid_cell_and_bounded_positive_pixel_gate() {
+        let beat = BeatTime::ONE.raw();
+        assert_eq!(creation_start(beat * 7 / 4, MidiGrid::Quarter), beat);
+        assert_eq!(creation_start(beat - 1, MidiGrid::Quarter), 0);
+        assert_eq!(creation_start(beat, MidiGrid::Quarter), beat);
+        assert_eq!(
+            creation_start(u64::MAX, MidiGrid::Quarter),
+            u64::MAX / beat * beat
+        );
+        assert_eq!(creation_start(beat + 73, MidiGrid::Off), beat + 73);
+        assert_eq!(
+            creation_gate(beat, MidiGrid::Off, 4 * beat, 400.0, 1),
+            Some((beat as f64 / 100.0).ceil() as u64)
+        );
+        assert_eq!(creation_gate(beat, MidiGrid::Off, 4, 400.0, 20), Some(20));
+        assert_eq!(
+            creation_gate(beat, MidiGrid::Sixteenth, 4 * beat, 400.0, 1),
+            Some(beat / 4)
+        );
+        assert_eq!(creation_gate(1, MidiGrid::Off, 4, 400.0, 2), None);
+        for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(creation_gate(beat, MidiGrid::Off, beat, width, 1), None);
+        }
+        assert_eq!(
+            creation_gate(u64::MAX, MidiGrid::Off, u64::MAX, f32::MIN_POSITIVE, 1),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            default_gate_raw(beat, MidiGrid::Off),
+            beat / 4,
+            "step editing keeps its independent default"
+        );
     }
 }
