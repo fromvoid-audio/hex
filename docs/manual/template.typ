@@ -4,6 +4,7 @@
   #grid(columns: (1fr, auto), [hex · $version$], counter(page).display("1"))
 ])
 #set text(font: "Ioskeley Mono", size: 9pt, fill: rgb("252a2d"), lang: "en")
+#set raw(font: "Ioskeley Mono")
 #set par(leading: .7em, spacing: .8em)
 #set heading(numbering: none)
 #set table(stroke: .4pt + rgb("c8cece"), inset: 6pt)

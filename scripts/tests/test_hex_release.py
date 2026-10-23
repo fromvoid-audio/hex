@@ -35,7 +35,7 @@ class ReleaseTests(unittest.TestCase):
         def documentation(root, destination, version, source):
             destination.mkdir()
             (destination / "hex-manual.html").write_text("<html>" + version + "</html>")
-            (destination / "hex-manual.pdf").write_bytes(b"%PDF-1.7\n%%EOF\n")
+            (destination / "hex-manual.pdf").write_bytes(b"%PDF-1.7\n/BaseFont /AAAAAA+Ioskeley-Mono\n%%EOF\n")
             manifest = {"schema": 1, "version": version, "source": source,
                         "outputs": {name: release.delivery.sha(destination / name)
                                     for name in ("hex-manual.html", "hex-manual.pdf")}}

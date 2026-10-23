@@ -20,7 +20,7 @@ class ManualTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        (self.root / "hex-manual.pdf").write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
+        (self.root / "hex-manual.pdf").write_bytes(b"%PDF-1.7\n/BaseFont /AAAAAA+Ioskeley-Mono\n%%EOF\n")
         (self.root / "hex-manual.html").write_text('<html><body>0.1.0-beta.1</body></html>')
         self.manifest = {"schema": 1, "version": "0.1.0-beta.1", "source": "a" * 40,
                          "outputs": {name: manual.sha(self.root / name) for name in ("hex-manual.html", "hex-manual.pdf")}}
@@ -61,6 +61,11 @@ class ManualTests(unittest.TestCase):
         font.symlink_to(self.root / "hex-manual.pdf")
         with self.assertRaisesRegex(manual.Refusal, "symlinks"):
             manual.inputs(source)
+
+    def test_pdf_cannot_silently_substitute_another_font_for_code(self):
+        (self.root / "hex-manual.pdf").write_bytes(b"%PDF-1.7\n/BaseFont /AAAAAA+Ioskeley-Mono\n/FontName /DejaVuSansMono\n%%EOF\n")
+        with self.assertRaisesRegex(manual.Refusal, "alternate font"):
+            manual.validate(self.root, "0.1.0-beta.1")
 
     def test_manifest_cannot_select_unexpected_output_paths(self):
         self.manifest["outputs"]["../outside.pdf"] = "a" * 64

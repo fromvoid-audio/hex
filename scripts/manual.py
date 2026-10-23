@@ -154,6 +154,10 @@ def validate(directory, version):
     pdf = (directory / "hex-manual.pdf").read_bytes()
     if not pdf.startswith(b"%PDF-") or b"%%EOF" not in pdf[-1024:]:
         raise Refusal("invalid manual PDF")
+    fonts = re.findall(rb"/(?:BaseFont|FontName)\s*/([^\s>/]+)", pdf)
+    if not fonts or any(re.fullmatch(rb"(?:[A-Z]{6}\+)?Ioskeley(?:-Mono|Mono)(?:-(?:Bold|Medium|Italic))?", font) is None
+                        for font in fonts):
+        raise Refusal("manual PDF contains a missing or alternate font")
 
 
 def verify(directory, version=None, source=None):
