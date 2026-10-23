@@ -195,36 +195,19 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
     assert_eq!(restored, original.snapshot());
     session.redo_prepared_revision(None).unwrap().unwrap();
     assert!(session.project().clip(clip).is_some());
-    // Reverse conversion deliberately produces empty editable MIDI, with no transcription.
-    session
+    let bounced_project = session.project().clone();
+    let media_path = session.project().assets().next().unwrap().path().to_owned();
+    let bytes = fs::read(&media_path).unwrap();
+    let error = session
         .command(Command::ConvertAudioClipToMidi(clip))
-        .unwrap();
-    let midi = session.project().midi_clip(clip).unwrap();
-    assert_eq!(midi.name(), "Rendered Chorus");
-    assert!(midi.notes().is_empty());
-    assert_eq!(
-        session
-            .project()
-            .tempo_map()
-            .beat_to_frame(midi.start())
-            .unwrap(),
-        start
-    );
-    assert_eq!(
-        session.project().midi_bounce_range(clip).unwrap(),
-        (start, frames)
-    );
-    session
-        .command(Command::AddMidiNote {
-            clip,
-            start: BeatTime::ZERO,
-            duration: beat(1),
-            pitch: 67,
-            channel: 1,
-            velocity: 95,
-        })
-        .unwrap();
-    assert_eq!(session.project().midi_clip(clip).unwrap().notes().len(), 1);
+        .unwrap_err();
+    assert_eq!(error.to_string(), hex_project::AUDIO_TO_MIDI_UNSUPPORTED);
+    assert_eq!(session.project(), &bounced_project);
+    assert_eq!(fs::read(&media_path).unwrap(), bytes);
+    assert!(session.undo());
+    assert!(session.project().midi_clip(clip).is_some());
+    assert!(session.redo());
+    assert_eq!(session.project(), &bounced_project);
 }
 
 #[test]
@@ -326,15 +309,16 @@ fn session_conversion_retains_cell_name_identity_and_source_window() {
             .any(|sample| sample.abs() > 0.001)
     );
     assert!(session.project().midi_clip(arrangement).is_some());
-    session
-        .command(Command::ConvertAudioClipToMidi(clip))
-        .unwrap();
-    let midi = session.project().session_midi_clip(clip).unwrap();
-    assert_eq!(midi.name(), "phrase");
-    assert!(midi.source().notes().is_empty());
-    session.undo();
-    assert!(session.project().session_audio_clip(clip).is_some());
-    session.undo();
+    let bounced_project = session.project().clone();
+    assert_eq!(
+        session
+            .command(Command::ConvertAudioClipToMidi(clip))
+            .unwrap_err()
+            .to_string(),
+        hex_project::AUDIO_TO_MIDI_UNSUPPORTED
+    );
+    assert_eq!(session.project(), &bounced_project);
+    assert!(session.undo());
     let mut restored = session.project().snapshot();
     restored.next_id = original.snapshot().next_id;
     assert_eq!(restored, original.snapshot());

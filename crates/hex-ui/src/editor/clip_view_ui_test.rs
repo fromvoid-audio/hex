@@ -841,85 +841,103 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
 }
 
 #[gpui::test]
-fn conversion_control_dispatches_selected_clip_and_blocks_pending_edits(cx: &mut TestAppContext) {
-    let (handle, editor, track, clip) = audio_detail_fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let button = visual
-        .debug_bounds("convert-clip")
-        .expect("audio conversion control");
-    let click = button.center();
-    editor.update(cx, |view, cx| {
-        view.worker_requests_pending = 1;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(view.last_enqueued_clip_conversion.is_none())
-    });
-    editor.update(cx, |view, cx| {
-        view.worker_requests_pending = 0;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let expected = editor.read_with(cx, |view, _| {
-        (
-            view.project_generation,
-            view.state.as_ref().unwrap().revision,
-            clip,
-            false,
-        )
-    });
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.last_enqueued_clip_conversion, Some(expected));
-        assert_eq!(view.selected_track, Some(track));
-    });
-
-    // The same selection changes its editor and conversion target after worker adoption.
-    editor.update(cx, |view, cx| {
-        let old = view.state.as_ref().unwrap();
-        let mut model = hex_project::Editor::new(old.project.as_ref().clone(), 4).unwrap();
-        model
-            .execute(Command::ConvertAudioClipToMidi(clip))
-            .unwrap();
-        let state = ViewState {
-            canonical_audio_source: None,
-            comparison_audio: None,
-            project: Arc::new(model.project().clone()),
-            waveforms: old.waveforms.clone(),
-            source_overviews: old.source_overviews.clone(),
-            audio_clip_waveforms: old.audio_clip_waveforms.clone(),
-            midi_preview: Arc::default(),
-            gain_preview: old.gain_preview.clone(),
-            timeline_frames: old.timeline_frames,
-            can_undo: true,
-            can_redo: false,
-            revision: old.revision + 1,
-            unsaved: true,
-            document_path: None,
-        };
-        view.state = Some(Arc::new(state));
-        view.worker_requests_pending = 0;
-        view.selected_track = Some(track);
-        view.selected_clip = Some(clip);
-        view.last_enqueued_clip_conversion = None;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("midi-note-roll").is_some());
-    let click = visual.debug_bounds("convert-clip").unwrap().center();
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_enqueued_clip_conversion
-                .is_some_and(|(_, _, id, to_audio)| id == clip && to_audio)
-        )
-    });
+fn conversion_control_only_offers_midi_bounce_and_blocks_pending_edits(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        for session in [false, true] {
+            let (project, track, _, mut clip) = if midi {
+                clip_drag_ui_test::midi_project()
+            } else {
+                clip_drag_ui_test::audio_project()
+            };
+            let mut model = hex_project::Editor::new(project, 8).unwrap();
+            let hex_project::Created::Scene(scene) = model
+                .execute(Command::AddScene {
+                    name: "scene".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            if session {
+                let command = if midi {
+                    Command::CopyArrangementMidiToSession {
+                        source: clip,
+                        scene,
+                    }
+                } else {
+                    Command::CopyArrangementAudioClipToSession {
+                        source: clip,
+                        scene,
+                    }
+                };
+                let hex_project::Created::SessionClip(cell) = model.execute(command).unwrap()
+                else {
+                    panic!("cell")
+                };
+                clip = cell;
+            }
+            let (handle, editor) =
+                clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            editor.update(&mut visual, |view, cx| {
+                view.mode = if session {
+                    EditorMode::Session
+                } else {
+                    EditorMode::Arrangement
+                };
+                view.selected_track = Some(track);
+                view.selected_clip = Some(clip);
+                view.selected_cell = session.then_some((track, scene));
+                view.clip_view_open = true;
+                view.device_panel_active = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            if !midi {
+                assert!(
+                    visual.debug_bounds("convert-clip").is_none(),
+                    "audio must not offer destructive empty-MIDI conversion"
+                );
+                editor.read_with(&visual, |view, _| {
+                    assert!(view.last_enqueued_clip_conversion.is_none());
+                    assert_eq!(view.selected_track, Some(track));
+                    assert_eq!(view.selected_clip, Some(clip));
+                });
+                continue;
+            }
+            let click = visual
+                .debug_bounds("convert-clip")
+                .expect("MIDI bounce control")
+                .center();
+            editor.update(&mut visual, |view, cx| {
+                view.worker_requests_pending = 1;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.simulate_click(click, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert!(view.last_enqueued_clip_conversion.is_none())
+            });
+            editor.update(&mut visual, |view, cx| {
+                view.worker_requests_pending = 0;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.simulate_click(click, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.last_enqueued_clip_conversion,
+                    Some((
+                        view.project_generation,
+                        view.state.as_ref().unwrap().revision,
+                        clip,
+                        true
+                    ))
+                );
+                assert_eq!(view.selected_track, Some(track));
+            });
+        }
+    }
 }
 
 #[gpui::test]

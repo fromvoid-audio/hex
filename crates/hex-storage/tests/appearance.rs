@@ -200,11 +200,8 @@ fn track_colors_and_both_clip_domains_roundtrip_with_history_and_copies() {
             .iter()
             .all(|c| c.flavor() == ClipFlavor::Accent)
     );
-    for clip in [right, session_audio] {
-        editor
-            .execute(Command::ConvertAudioClipToMidi(clip))
-            .unwrap();
-        assert_eq!(editor.project().clip_flavor(clip), Some(ClipFlavor::Accent));
+    // Conversion only supports MIDI-to-audio; flavor survives both locations.
+    for clip in [midi_right, session_midi] {
         let (_, frames) = editor.project().midi_bounce_range(clip).unwrap();
         editor
             .execute(Command::ConvertMidiClipToAudio {
