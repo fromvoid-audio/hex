@@ -471,9 +471,28 @@ fn button(
                 cx.notify();
                 return;
             }
-            match command(&state.project, capture.clip, action) {
+            let intent = if view.selected_clip_ids().len() > 1 {
+                actions::selection_command(&state.project, capture.clip, action)
+            } else {
+                command(&state.project, capture.clip, action)
+            };
+            match intent {
                 Ok(command) => {
-                    view.enqueue(hex_session::service::Request::Edit(command));
+                    if matches!(
+                        action,
+                        Action::MarkerAdd
+                            | Action::MarkerFrame(..)
+                            | Action::MarkerBeat(..)
+                            | Action::MarkerRemove(_)
+                            | Action::EnvelopeAdd
+                            | Action::EnvelopeFrame(..)
+                            | Action::EnvelopeGain(..)
+                            | Action::EnvelopeRemove(_)
+                    ) {
+                        view.enqueue_focused_source_edit(command);
+                    } else {
+                        view.enqueue(hex_session::service::Request::Edit(command));
+                    }
                 }
                 Err(error) => view.error = Some(error.0.into()),
             };
