@@ -23,13 +23,19 @@ struct Root {
     width: f32,
 }
 impl Render for Root {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(
             div()
                 .debug_selector(|| "compact-slot".into())
                 .flex()
                 .w(px(self.width))
-                .h(px(21.0))
+                .h(px(
+                    if self.control.read(cx).kind == NumericControlKind::VerticalSlider {
+                        90.0
+                    } else {
+                        21.0
+                    },
+                ))
                 .child(self.control.clone()),
         )
     }
@@ -88,14 +94,16 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
         let widget = visual.debug_bounds("header-volume").unwrap();
         assert!(widget.right() <= slot.right() && widget.bottom() <= slot.bottom());
         assert!(slider.size.width >= px(36.0));
-        assert!(slider.right() <= value.origin.x && value.right() <= slot.right());
+        assert!(value.left() >= slider.left() && value.right() <= slider.right());
+        assert!(value.top() >= slider.top() && value.bottom() <= slider.bottom());
         for gain in [0.0, 200.0] {
             control.update(cx, |control, cx| {
                 control.set_external_value(gain, cx).unwrap()
             });
             visual.run_until_parked();
-            let thumb = visual.debug_bounds("header-volume-slider-thumb").unwrap();
-            assert!(thumb.left() >= slider.left() && thumb.right() <= slider.right());
+            let fill = visual.debug_bounds("header-volume-bar-fill").unwrap();
+            assert!(fill.left() >= slider.left() && fill.right() <= slider.right());
+            assert!(visual.debug_bounds("header-volume-slider-thumb").is_none());
         }
     }
     control.update(cx, |control, cx| {
@@ -104,7 +112,7 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
     visual.run_until_parked();
     let slider = visual.debug_bounds("header-volume-slider").unwrap();
     let start = slider.center();
-    let outside = point(start.x + px(100.0), start.y + px(40.0));
+    let outside = point(start.x + px(100.0), start.y - px(40.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
@@ -130,7 +138,7 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
     let before = control.read_with(cx, |control, _| control.value());
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
-        point(start.x - px(25.0), start.y),
+        point(start.x, start.y + px(25.0)),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
@@ -165,7 +173,14 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
 #[gpui::test]
 fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestAppContext) {
     cx.update(bind_numeric_control_keys);
-    for bipolar in [false, true] {
+    for (bipolar, kind) in [false, true].into_iter().flat_map(|b| {
+        [
+            NumericControlKind::HorizontalSlider,
+            NumericControlKind::VerticalSlider,
+        ]
+        .map(|k| (b, k))
+    }) {
+        let vertical = kind == NumericControlKind::VerticalSlider;
         let handle = *cx.add_window(|_, _| Empty);
         let (control, root) = cx
             .update_window(handle, |_, window, cx| {
@@ -196,7 +211,7 @@ fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestA
                         NumericControlConfig::new(
                             "filled-volume",
                             "volume",
-                            NumericControlKind::HorizontalSlider,
+                            kind,
                             spec.clone(),
                             spec.default(),
                             STYLE,
@@ -234,28 +249,42 @@ fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestA
                 let fill = visual.debug_bounds("filled-volume-bar-fill").unwrap();
                 assert_eq!(
                     bar.size.width,
-                    px(width - 2.0),
+                    px(if vertical { 58.0 } else { width - 2.0 }),
                     "retain shared focus-marker inset"
                 );
-                assert_eq!(field, bar, "text and bar must occupy one combined field");
+                assert_eq!(
+                    field.center(),
+                    bar.center(),
+                    "text is centered inside the bar"
+                );
+                assert_eq!(field.size.width, bar.size.width);
+                assert_eq!(field.size.height, bar.size.height);
+                assert!(visual.debug_bounds("filled-volume-slider-thumb").is_none());
                 assert!(bar.right() <= slot.right() && bar.bottom() <= slot.bottom());
                 assert!(fill.left() >= bar.left() && fill.right() <= bar.right());
+                let extent = if vertical {
+                    fill.size.height
+                } else {
+                    fill.size.width
+                };
+                let full_extent = if vertical {
+                    field.size.height
+                } else {
+                    field.size.width
+                };
+                assert!(fill.top() >= bar.top() && fill.bottom() <= bar.bottom());
                 if bipolar {
                     let center = visual.debug_bounds("filled-volume-bar-center").unwrap();
-                    assert_eq!(center.left(), bar.center().x);
-                    if value < 0.0 {
-                        assert_eq!(fill.right(), center.left());
+                    if vertical {
+                        assert_eq!(center.bottom(), field.center().y);
+                    } else {
+                        assert_eq!(center.left(), field.center().x);
                     }
-                    if value > 0.0 {
-                        assert_eq!(fill.left(), center.left());
-                    }
-                    if value == 0.0 {
-                        assert_eq!(fill.size.width, px(0.0));
-                    }
+                    assert!((extent - full_extent * (value as f32).abs() * 0.5).abs() <= px(1.0));
                 } else if value == 0.0 {
-                    assert_eq!(fill.size.width, px(0.0));
+                    assert_eq!(extent, px(0.0));
                 } else if value == 2.0 {
-                    assert_eq!(fill.size.width, bar.size.width);
+                    assert_eq!(extent, full_extent);
                 }
             }
         }
@@ -311,7 +340,7 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
     visual.simulate_resize(size(px(400.0), px(140.0)));
     let field = visual.debug_bounds("filled-edit-value").unwrap();
     let start = field.center();
-    let end = point(start.x + px(20.0), start.y);
+    let end = point(start.x, start.y - px(20.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -369,22 +398,30 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
 }
 
 #[gpui::test]
-fn filled_slider_instance_drag_axis_preserves_geometry_and_other_instances(
+fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
     cx: &mut TestAppContext,
 ) {
     cx.update(bind_numeric_control_keys);
-    for axis in [
-        None,
-        Some(NumericDragAxis::Horizontal),
-        Some(NumericDragAxis::Vertical),
-    ] {
+    for (kind, axis) in [
+        NumericControlKind::HorizontalSlider,
+        NumericControlKind::VerticalSlider,
+    ]
+    .into_iter()
+    .flat_map(|kind| {
+        [
+            None,
+            Some(NumericDragAxis::Horizontal),
+            Some(NumericDragAxis::Vertical),
+        ]
+        .map(|axis| (kind, axis))
+    }) {
         let handle = *cx.add_window(|_, _| Empty);
         let control = cx
             .update_window(handle, |_, window, cx| {
                 let config = NumericControlConfig::new(
                     "axis-pan",
                     "pan",
-                    NumericControlKind::HorizontalSlider,
+                    kind,
                     NumericSpec::new(
                         -1.0,
                         1.0,
@@ -422,7 +459,10 @@ fn filled_slider_instance_drag_axis_preserves_geometry_and_other_instances(
         visual.simulate_resize(size(px(400.0), px(140.0)));
         visual.run_until_parked();
         let field = visual.debug_bounds("axis-pan-value").unwrap();
-        assert_eq!(field, visual.debug_bounds("axis-pan-slider").unwrap());
+        assert_eq!(
+            field.center(),
+            visual.debug_bounds("axis-pan-slider").unwrap().center()
+        );
         let start = field.center();
         for (dx, dy) in [(24.0, 0.0), (0.0, -24.0)] {
             control.update(cx, |control, cx| {
@@ -434,15 +474,11 @@ fn filled_slider_instance_drag_axis_preserves_geometry_and_other_instances(
             visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
-            let expected = if axis == Some(NumericDragAxis::Vertical) {
-                -dy / 60.0
-            } else {
-                dx / 60.0
-            };
+            let expected = -dy / 60.0;
             assert!(
                 (control.read_with(cx, |control, _| control.value()) - f64::from(expected)).abs()
                     < 1e-6,
-                "axis={axis:?} dx={dx} dy={dy}"
+                "kind={kind:?} axis={axis:?} dx={dx} dy={dy}"
             );
             let events = events.borrow();
             assert_eq!(

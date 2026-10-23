@@ -142,7 +142,7 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
     let selector = Box::leak(format!("track-volume-{}-slider", track.value()).into_boxed_str());
     let rail = visual.debug_bounds(selector).unwrap();
     let start = point(rail.left() + px(10.0), rail.center().y);
-    let end = point(rail.right() - px(2.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
