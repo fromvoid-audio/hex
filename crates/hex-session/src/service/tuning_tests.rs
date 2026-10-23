@@ -74,8 +74,11 @@ fn discrete_tuning_edit_undo_redo_preserves_held_keyboard_lease_and_actual_phase
     let service = Service::new(48000, 16, 8_000_000).unwrap();
     let _ = next(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = next(&service);
@@ -150,8 +153,11 @@ fn control_preparation_refusal_preserves_canonical_history_and_keyboard_lease() 
     let service = Service::new(8000, 16, 8_000_000).unwrap();
     let _ = next(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = next(&service);
@@ -190,8 +196,11 @@ fn grouped_previews_skip_cancel_and_commit_retarget_the_actual_keyboard_without_
     let service = Service::new(48000, 16, 8_000_000).unwrap();
     let _ = next(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "audible".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let initial = next(&service);
@@ -373,8 +382,11 @@ fn review_lifecycle_canonical_edit_publishes_actual_rebased_tuning_pcm() {
         let service = Service::new(48_000, 16, 8_000_000).unwrap();
         let _ = next(&service);
         service
-            .submit(Request::Edit(Command::AddMidiTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "notes".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .unwrap();
         let added = next(&service);

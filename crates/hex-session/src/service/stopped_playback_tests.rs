@@ -43,8 +43,11 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_refu
     next(&service);
     let added = submit(
         &service,
-        Request::Edit(Command::AddTrack {
+        Request::Edit(Command::InsertTrackWithDevice {
             name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         }),
     );
     let track = added.state.project.tracks()[0].id();

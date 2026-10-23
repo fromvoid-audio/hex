@@ -5,6 +5,7 @@ use crate::{
 };
 use std::sync::Arc;
 mod insert;
+mod midi_volume;
 pub(crate) use insert::insert;
 pub(crate) use insert::insert_on_source_tracks;
 
@@ -86,6 +87,7 @@ impl RangeClipboard {
 }
 #[derive(Debug, Clone)]
 struct MidiFragment {
+    volume: midi_volume::FrameVolume,
     name: String,
     flavor: crate::ClipFlavor,
     row: usize,
@@ -226,6 +228,7 @@ impl Project {
                 }
                 reserve(&mut result.midi, 1)?;
                 result.midi.push(MidiFragment {
+                    volume: midi_volume::FrameVolume::capture(clip, self.tempo_map(), start, end)?,
                     name: clip.name().into(),
                     flavor: clip.flavor,
                     row,
@@ -255,10 +258,10 @@ fn clear_rows(
     end: u64,
 ) -> Result<(), Invalid> {
     project.refuse_automation_transform(rows)?;
-    for track in rows.iter().copied() {
-        crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
-        crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
-    }
+    let mut cuts = Vec::new();
+    reserve(&mut cuts, rows.len())?;
+    cuts.extend(rows.iter().map(|track| (*track, start, end)));
+    crate::clip_group::place_batch(project, Vec::new(), &cuts)?;
     Ok(())
 }
 
@@ -343,6 +346,16 @@ pub(crate) fn paste_rows(
     rows: &[TrackId],
     frame: u64,
 ) -> Result<Created, Invalid> {
+    paste_rows_with_source(project, clipboard, rows, frame, None)
+}
+
+fn paste_rows_with_source(
+    project: &mut Project,
+    clipboard: &RangeClipboard,
+    rows: &[TrackId],
+    frame: u64,
+    source: Option<&TimeRange>,
+) -> Result<Created, Invalid> {
     if project.sample_rate() != clipboard.sample_rate {
         return Err(Invalid("time clipboard belongs to another sample rate"));
     }
@@ -357,34 +370,41 @@ pub(crate) fn paste_rows(
     let end = frame
         .checked_add(clipboard.duration)
         .ok_or(Invalid("paste end overflow"))?;
-    // A time rectangle includes its empty cells: paste replaces that interval.
-    clear_rows(project, rows, frame, end)?;
-    let existing = project
-        .tracks()
-        .iter()
-        .map(|track| track.clips().len() + track.midi_clips().len())
-        .sum::<usize>();
-    if existing
-        .checked_add(clipboard.audio.len())
-        .and_then(|n| n.checked_add(clipboard.midi.len()))
-        .is_none_or(|n| n > MAX_CLIPS)
-    {
-        return Err(Invalid("clip limit reached"));
+    // Admit the complete rectangle, including empty cells, in one final-row plan.
+    project.refuse_automation_transform(rows)?;
+    let mut cuts = Vec::new();
+    reserve(&mut cuts, rows.len())?;
+    cuts.extend(rows.iter().map(|track| (*track, frame, end)));
+    if let Some(source) = source {
+        project.refuse_automation_transform(&source.tracks)?;
+        reserve(&mut cuts, source.tracks.len())?;
+        cuts.extend(
+            source
+                .tracks
+                .iter()
+                .map(|track| (*track, source.start, source.end)),
+        );
     }
+    let mut incoming = Vec::new();
+    reserve(
+        &mut incoming,
+        clipboard.audio.len().saturating_add(clipboard.midi.len()),
+    )?;
     for (row, original) in &clipboard.audio {
         let destination = *rows
             .get(*row)
             .ok_or(Invalid("copied track offset is invalid"))?;
         let mut clip = original.clone();
-        clip.id = ClipId(project.allocate_id()?);
+        clip.id = ClipId(0);
         clip.start = frame
             .checked_add(original.start())
             .ok_or(Invalid("paste clip start overflow"))?;
         let target_frame = clip.start;
         crate::audio_edit::move_clip(&mut clip, target_frame, project.tempo_map())?;
-        let clips = project.audio_clips_mut(destination)?;
-        reserve(clips, 1)?;
-        clips.push(clip);
+        incoming.push(crate::ClipGroupPreview {
+            track: destination,
+            content: crate::ClipGroupContent::Audio(clip),
+        });
     }
     for fragment in &clipboard.midi {
         let destination = *rows
@@ -427,7 +447,7 @@ pub(crate) fn paste_rows(
                 .map(BeatTime::from_raw)
                 .ok_or(Invalid("pasted note is before its clip"))?;
             notes.push(MidiNote {
-                id: NoteId(project.allocate_id()?),
+                id: NoteId(0),
                 start: note_start,
                 duration,
                 pitch: original.pitch,
@@ -436,6 +456,7 @@ pub(crate) fn paste_rows(
             });
         }
         let source = MidiSource {
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
@@ -444,17 +465,22 @@ pub(crate) fn paste_rows(
             notes,
         };
         let clip = MidiClip {
+            volume: fragment
+                .volume
+                .paste(project.tempo_map(), start_frame, end_frame)?,
             name: fragment.name.clone(),
             flavor: fragment.flavor,
-            id: ClipId(project.allocate_id()?),
+            id: ClipId(0),
             start,
             length,
             source: Arc::new(source),
         };
-        let clips = &mut project.track_mut(destination)?.content.midi_clips;
-        reserve(clips, 1)?;
-        clips.push(clip);
+        incoming.push(crate::ClipGroupPreview {
+            track: destination,
+            content: crate::ClipGroupContent::Midi(clip),
+        });
     }
+    crate::clip_group::place_batch(project, incoming, &cuts)?;
     // Global note/ID/source validation includes the independent Session inventory.
     Project::from_snapshot(project.snapshot())?;
     Ok(Created::None)
@@ -471,8 +497,8 @@ pub(crate) fn move_range(
         return Ok(Created::None);
     }
     let clipboard = project.capture_time_range(range)?;
-    clear(project, range)?;
-    paste(project, &clipboard, track, frame)
+    let rows = adjacent_rows(project, &clipboard, track, "paste")?;
+    paste_rows_with_source(project, &clipboard, &rows, frame, Some(range))
 }
 
 pub(crate) fn copy_range(

@@ -96,17 +96,20 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: vec![
                 DeviceSnapshot {
+                    comparison: None,
                     id: prefix_id,
                     bypassed: false,
                     state: utility_state.clone(),
                 },
                 DeviceSnapshot {
+                    comparison: None,
                     id: suffix_id,
                     bypassed: false,
                     state: utility_state,
                 },
             ],
             instrument: Some(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: if workload.operator {
@@ -142,6 +145,8 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(workload.instrument_position),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
@@ -158,6 +163,8 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
         });
     }
     Ok(Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
