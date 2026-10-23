@@ -103,7 +103,9 @@ impl FrameVolume {
             if let Some(previous) = points.last_mut()
                 && previous.frame == frame
             {
-                previous.value = point.value;
+                // The last boundary in a rounded frame owns both limits,
+                // including the preceding ramp's incoming endpoint.
+                *previous = point;
             } else {
                 points.push(point);
             }
@@ -173,7 +175,7 @@ impl FrameVolume {
             if let Some(previous) = points.last_mut()
                 && previous.beat == beat
             {
-                previous.value = point.value;
+                *previous = point;
             } else {
                 points.push(point);
             }
