@@ -328,13 +328,14 @@ impl EditorView {
             .clone()
     }
 
-    pub(super) fn return_name_label(
+    /// One inline label/input renderer for both stable naming owners. Row geometry
+    /// and ordinary header focus remain with their existing callers.
+    pub(super) fn track_name_label(
         &mut self,
-        track: &ReturnTrack,
+        target: Target,
+        name: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let id = track.id();
-        let target = Target::Return(id);
         let focus = self
             .track_name
             .focuses
@@ -342,60 +343,29 @@ impl EditorView {
             .or_insert_with(|| cx.focus_handle())
             .clone();
         let click_focus = focus.clone();
+        let (element_id, input_selector): (gpui::ElementId, &str) = match target {
+            Target::Track(id) => (("track-name-focus", id.value()).into(), "track-name-input"),
+            Target::Return(id) => (
+                ("return-name-focus", id.value()).into(),
+                "return-name-input",
+            ),
+        };
         let content = if let Some(edit) = &self.track_name.edit
             && edit.target == target
         {
             div()
-                .debug_selector(|| "return-name-input".into())
+                .debug_selector(move || input_selector.into())
                 .child(edit.input.clone())
         } else {
-            div().child(theme::text(track.name()))
+            div().child(theme::text(name))
         };
         div()
-            .id(("return-name-focus", id.value()))
-            .track_focus(&focus)
-            .key_context("hex_return_header")
+            .id(element_id)
             .min_w_0()
             .flex_1()
-            .on_click(cx.listener(move |view, _, window, cx| {
-                cx.stop_propagation();
-                if view
-                    .track_name
-                    .edit
-                    .as_ref()
-                    .is_some_and(|edit| edit.target == target)
-                {
-                    return;
-                }
-                if view.focus_return_details(id, window, cx) {
-                    click_focus.focus(window);
-                    cx.notify();
-                }
-            }))
-            .child(content)
-            .into_any_element()
-    }
-
-    pub(super) fn track_name_label(
-        &mut self,
-        track: &Track,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let id = track.id();
-        let click_focus = self.track_header_focus(id, cx);
-        let content = if let Some(edit) = &self.track_name.edit
-            && edit.target == Target::Track(id)
-        {
-            div()
-                .debug_selector(|| "track-name-input".into())
-                .child(edit.input.clone())
-        } else {
-            div().child(theme::text(track.name()))
-        };
-        div()
-            .id(("track-name-focus", id.value()))
-            .min_w_0()
-            .flex_1()
+            .when(matches!(target, Target::Return(_)), |label| {
+                label.track_focus(&focus).key_context("hex_return_header")
+            })
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     cx.stop_propagation();
@@ -403,11 +373,20 @@ impl EditorView {
                         .track_name
                         .edit
                         .as_ref()
-                        .is_some_and(|edit| edit.target == Target::Track(id))
+                        .is_some_and(|edit| edit.target == target)
                     {
                         return;
                     }
-                    view.select_track_with_modifiers(id, event.modifiers(), window);
+                    match target {
+                        Target::Track(id) => {
+                            view.select_track_with_modifiers(id, event.modifiers(), window)
+                        }
+                        Target::Return(id) => {
+                            if !view.focus_return_details(id, window, cx) {
+                                return;
+                            }
+                        }
+                    }
                     click_focus.focus(window);
                     cx.notify();
                 }),

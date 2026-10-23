@@ -269,7 +269,11 @@ impl EditorView {
                         .cursor(gpui::CursorStyle::PointingHand)
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .child(self.return_name_label(track, cx)),
+                        .child(self.track_name_label(
+                            super::track_name::Target::Return(id),
+                            track.name(),
+                            cx,
+                        )),
                 )
                 .on_mouse_down(
                     gpui::MouseButton::Right,
