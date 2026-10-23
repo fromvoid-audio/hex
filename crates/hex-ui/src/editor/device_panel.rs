@@ -258,7 +258,7 @@ fn title_label(title: String, warning: bool) -> Div {
 }
 
 pub(super) fn control_style() -> ControlStyle {
-    theme::device_style(theme::DeviceStyleRole::Control)
+    theme::control_style()
 }
 
 // Reuse the canonical device-side balance display/parser for track mixer fields.

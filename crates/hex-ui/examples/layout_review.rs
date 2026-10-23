@@ -10,11 +10,15 @@ mod gallery;
 #[allow(dead_code)]
 mod theme;
 
+#[path = "layout_review/sandbox.rs"]
+mod sandbox;
+
 use gpui::{App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
 
 fn main() {
     Application::new().run(|cx: &mut App| {
         hex_widgets::bind_numeric_control_keys(cx);
+        hex_widgets::bind_response_graph_keys(cx);
         if let Err(error) = theme::load_fonts(cx) {
             eprintln!("{error}");
             cx.quit();
@@ -29,7 +33,7 @@ fn main() {
         let result = cx.open_window(
             WindowOptions {
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some(theme::text("hex · layout review · fixture only")),
+                    title: Some(theme::text("hex · native widget sandbox")),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -37,11 +41,11 @@ fn main() {
                     size(px(1040.0), px(720.0)),
                     cx,
                 ))),
-                window_min_size: Some(size(px(760.0), px(660.0))),
+                window_min_size: Some(size(px(760.0), px(480.0))),
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(gallery::Gallery::new);
+                let view = cx.new(sandbox::Sandbox::new);
                 view.update(cx, |view, cx| view.focus_first(window, cx));
                 view
             },
