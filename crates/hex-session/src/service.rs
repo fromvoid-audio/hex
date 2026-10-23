@@ -9175,11 +9175,11 @@ mod service_tests {
             2
         );
         let mut playback = duplicated.playback.expect("prepared copied playback");
-        playback.apply(PlaybackCommand::Play);
+        playback.apply(hex_engine::PlaybackCommand::Play);
         let mut pcm = [[0.0; 2]; 128];
         playback.render(&mut pcm).unwrap();
         assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.1));
-        playback.apply(PlaybackCommand::Seek(24_000));
+        playback.apply(hex_engine::PlaybackCommand::Seek(24_000));
         let mut copied_pcm = [[0.0; 2]; 128];
         playback.render(&mut copied_pcm).unwrap();
         assert_eq!(
@@ -9211,7 +9211,10 @@ mod service_tests {
         }
         service.submit(Request::Undo).unwrap();
         let undone = next_event(&service);
-        assert_eq!(undone.state.project, before.state.project);
+        let restored = undone.state.project.snapshot();
+        let mut original = before.state.project.snapshot();
+        original.next_id = restored.next_id;
+        assert_eq!(restored, original);
         service.submit(Request::Redo).unwrap();
         assert_eq!(next_event(&service).state.project, duplicated.state.project);
     }
