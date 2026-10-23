@@ -629,7 +629,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_fixed_return_main_rows(
     );
     assert_eq!(
         visual
-            .debug_bounds("main-track-header")
+            .debug_bounds("pinned-main-track")
             .unwrap()
             .size
             .height,
