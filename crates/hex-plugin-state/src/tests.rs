@@ -151,3 +151,34 @@ fn oversize_capture_preserves_both_caller_buffers() {
         Err(Error::TooLarge)
     );
 }
+
+#[test]
+fn independent_wire_fixture_fixes_uid_bytes_presence_and_little_endian_lengths() {
+    let mut expected = b"HXVS\x01\x03\x00\x00".to_vec();
+    expected.extend(0_u8..16);
+    expected.extend(32_u8..64);
+    expected.extend(64_u8..96);
+    expected.extend([2, 1, 0, 0, 3, 0, 0, 0]); // component258, controller3
+    expected.extend((0..258).map(|n| n as u8));
+    expected.extend([0, 255, 17]);
+    let fixture = NativeDeviceState::new(TYPE_ID, 1, expected.clone()).unwrap();
+    let decoded = decode(&fixture).unwrap();
+    assert_eq!(
+        decoded.identity.class.bytes(),
+        std::array::from_fn(|n| n as u8)
+    );
+    assert_eq!(
+        decoded.identity.binary.executable_sha256,
+        std::array::from_fn(|n| n as u8 + 32)
+    );
+    assert_eq!(
+        decoded.identity.binary.info_sha256,
+        std::array::from_fn(|n| n as u8 + 64)
+    );
+    assert_eq!(
+        decoded.component.unwrap(),
+        (0..258).map(|n| n as u8).collect::<Vec<_>>()
+    );
+    assert_eq!(decoded.controller, Some(&[0, 255, 17][..]));
+    assert_eq!(encode(decoded).unwrap().payload(), expected);
+}
