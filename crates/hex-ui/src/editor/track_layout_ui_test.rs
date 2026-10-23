@@ -396,3 +396,79 @@ fn selected_lane_paint_tracks_virtualized_scrolling_and_compact_window(cx: &mut 
         assert_eq!(v.selected_track_ids(), [tracks[20]])
     });
 }
+
+#[gpui::test]
+fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, tracks) = fixture(cx, 3);
+    for (track, delta) in [(tracks[0], 40.0), (tracks[1], 80.0)] {
+        let handle = bounds(&mut visual, "track-height-resize", track).center();
+        drag(&mut visual, handle, point(handle.x, handle.y + px(delta)));
+    }
+    let original = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    let old: Vec<_> = tracks
+        .iter()
+        .map(|track| {
+            bounds(&mut visual, "arrangement-track-header", *track)
+                .size
+                .height
+        })
+        .collect();
+    let main = visual.debug_bounds("pinned-main-track").unwrap();
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    for cancel in [true, false] {
+        let handle = bounds(&mut visual, "track-height-resize", tracks[0]).center();
+        let to = point(handle.x, handle.y + px(20.0));
+        visual.simulate_mouse_down(handle, MouseButton::Left, alt);
+        visual.simulate_mouse_move(to, MouseButton::Left, alt);
+        visual.run_until_parked();
+        let expected = old[0] + px(20.0);
+        let mut previous_bottom = None;
+        for track in &tracks {
+            let header = bounds(&mut visual, "arrangement-track-header", *track);
+            let lane = bounds(&mut visual, "arrangement-lane", *track);
+            assert_eq!(header.size.height, expected);
+            assert_eq!(lane.size.height, expected);
+            assert_eq!(lane.top(), header.top());
+            if let Some(bottom) = previous_bottom {
+                assert_eq!(header.top(), bottom);
+            }
+            previous_bottom = Some(header.bottom());
+        }
+        if cancel {
+            visual.simulate_keystrokes("escape");
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            for (track, height) in tracks.iter().zip(old.iter().copied()) {
+                assert_eq!(
+                    bounds(&mut visual, "arrangement-track-header", *track)
+                        .size
+                        .height,
+                    height
+                );
+            }
+        } else {
+            visual.simulate_mouse_up(to, MouseButton::Left, alt);
+            visual.run_until_parked();
+            for track in &tracks {
+                assert_eq!(
+                    bounds(&mut visual, "arrangement-track-header", *track)
+                        .size
+                        .height,
+                    expected
+                );
+            }
+        }
+        assert_eq!(visual.debug_bounds("pinned-main-track").unwrap(), main);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+}

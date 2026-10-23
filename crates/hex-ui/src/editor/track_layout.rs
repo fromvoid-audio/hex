@@ -25,7 +25,6 @@ pub(super) struct TrackLayout {
     tracks: Vec<TrackId>,
     revision: Option<u64>,
 }
-#[derive(Clone, Copy)]
 struct ResizeDrag {
     track: Option<TrackId>,
     pointer: f32,
@@ -33,6 +32,7 @@ struct ResizeDrag {
     generation: u64,
     revision: u64,
     previous: Option<f32>,
+    previous_heights: Option<BTreeMap<TrackId, f32>>,
     maximum: f32,
 }
 
@@ -222,12 +222,15 @@ impl EditorView {
             generation: self.project_generation,
             revision,
             previous,
+            // A modifier may change during capture: retain every custom height
+            // once so all live updates have one complete cancellation owner.
+            previous_heights: track.map(|_| self.track_layout.heights.clone()),
             maximum,
         });
         self.focus.focus(window);
         cx.notify();
     }
-    fn track_resize_current(&self, drag: ResizeDrag) -> bool {
+    fn track_resize_current(&self, drag: &ResizeDrag) -> bool {
         self.mode == super::EditorMode::Arrangement
             && drag.generation == self.project_generation
             && self.state.as_ref().is_some_and(|state| {
@@ -241,13 +244,14 @@ impl EditorView {
         if self
             .track_layout
             .drag
+            .as_ref()
             .is_some_and(|drag| !self.track_resize_current(drag) || !self.focus.is_focused(window))
         {
             self.cancel_track_resize(cx);
         }
     }
-    fn update_track_resize(&mut self, x: f32, y: f32, cx: &mut Context<Self>) {
-        let Some(drag) = self.track_layout.drag else {
+    fn update_track_resize(&mut self, x: f32, y: f32, all_tracks: bool, cx: &mut Context<Self>) {
+        let Some(drag) = self.track_layout.drag.as_ref() else {
             return;
         };
         if !self.track_resize_current(drag) {
@@ -258,13 +262,30 @@ impl EditorView {
         if !pointer.is_finite() {
             return;
         }
-        if let Some(track) = drag.track {
+        let target = drag.track;
+        if let Some(track) = target {
             let height =
                 (drag.original + pointer - drag.pointer).clamp(TRACK_ROW_HEIGHT, drag.maximum);
-            if height == self.track_height(track) {
-                return;
+            if all_tracks {
+                if self
+                    .track_layout
+                    .tracks
+                    .iter()
+                    .all(|id| self.track_height(*id) == height)
+                {
+                    return;
+                }
+                for id in &self.track_layout.tracks {
+                    self.track_layout.heights.insert(*id, height);
+                }
+                self.track_scroll.remeasure();
+            } else {
+                if height == self.track_height(track) {
+                    return;
+                }
+                self.track_layout.heights.insert(track, height);
+                self.invalidate_track_size(Some(track));
             }
-            self.track_layout.heights.insert(track, height);
         } else {
             let width = drag.original - (pointer - drag.pointer);
             let width = width.clamp(TRACK_HEADER_WIDTH, drag.maximum);
@@ -273,23 +294,18 @@ impl EditorView {
             }
             self.track_layout.width = Some(width);
         }
-        self.invalidate_track_size(drag.track);
         cx.notify();
     }
     fn restore_track_resize(&mut self, drag: ResizeDrag) {
         if drag.generation != self.project_generation {
             return;
         }
-        if let Some(track) = drag.track {
-            if let Some(previous) = drag.previous {
-                self.track_layout.heights.insert(track, previous);
-            } else {
-                self.track_layout.heights.remove(&track);
-            }
+        if let Some(previous) = drag.previous_heights {
+            self.track_layout.heights = previous;
+            self.track_scroll.remeasure();
         } else {
             self.track_layout.width = drag.previous;
         }
-        self.invalidate_track_size(drag.track);
     }
     pub(super) fn cancel_track_resize(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(drag) = self.track_layout.drag.take() else {
@@ -375,6 +391,7 @@ impl EditorView {
                             view.update_track_resize(
                                 f32::from(event.position.x),
                                 f32::from(event.position.y),
+                                event.modifiers.alt,
                                 cx,
                             );
                         }
@@ -393,6 +410,7 @@ impl EditorView {
                         view.update_track_resize(
                             f32::from(event.position.x),
                             f32::from(event.position.y),
+                            event.modifiers.alt,
                             cx,
                         );
                         view.track_layout.drag = None;
