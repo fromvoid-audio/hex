@@ -25,7 +25,7 @@ RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
-    "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py",
+    "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py",
 }
 
 
@@ -243,14 +243,18 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     return result
 
 
-def reuse_checks(root: Path, plan: dict, report: Path) -> dict:
+def reuse_checks(root: Path, plan: dict, report: Path, env=None) -> dict:
     """Reuse runtime checks only for an ordered, prose-only continuation."""
     if plan["profile"] != "merge":
         raise ValueError("runtime reuse requires an explicit merge profile")
+    if python_tests.native_acceptance_inputs(os.environ if env is None else env):
+        raise ValueError("native/external acceptance inputs require fresh checks; runtime reuse refused")
     if plan["runtime_inputs"].get("symlinks"):
         raise ValueError("runtime continuation cannot certify external repository symlink targets")
     raw = report.read_bytes()
     evidence = json.loads(raw)
+    if evidence.get("native_acceptance_opt_in") is not False:
+        raise ValueError("native/external acceptance opt-in is present or unknown; runtime reuse refused")
     old_plan = evidence.get("plan")
     if (evidence.get("schema_version") != 2 or evidence.get("mode") not in {"full", "merge", "release"}
             or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
@@ -270,7 +274,8 @@ def reuse_checks(root: Path, plan: dict, report: Path) -> dict:
         raise ValueError("runtime report lacks guarded toolchain/dependency identity")
     result = dict(plan)
     result["reuse"] = {"report": str(report.resolve()), "sha256": hashlib.sha256(raw).hexdigest(),
-                       "source": previous, "dependency_inputs": dependency}
+                       "source": previous, "dependency_inputs": dependency,
+                       "native_acceptance_opt_in": False}
     result["reasons"] = [*plan["reasons"], "runtime inputs identical; metadata continuation checked separately"]
     result.pop("plan_sha256")
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()

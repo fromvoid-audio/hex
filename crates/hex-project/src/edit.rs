@@ -759,6 +759,13 @@ pub enum Command {
         edge: TrimEdge,
         beat: crate::BeatTime,
     },
+    /// Scale retained MIDI source timing around the opposite Arrangement edge.
+    /// Collapsed notes/volume boundaries and overflow refuse the complete edit.
+    StretchMidiClipEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        beat: crate::BeatTime,
+    },
     /// Split a finite MIDI Arrangement clip at an absolute musical beat.
     SplitMidiClip {
         clip: ClipId,
@@ -1701,6 +1708,7 @@ impl Project {
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
             | Command::TrimMidiClipEdge { .. }
+            | Command::StretchMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }

@@ -89,6 +89,15 @@ Reviewed evidence reuse must identify the original tested inputs and assumptions
 The runner's `--reuse-report SUMMARY.json` is narrower: it accepts an original
 complete runtime report for a prose-only continuation with matching executable
 inputs and guarded dependencies. It does not compose arbitrary per-owner reports.
+Each report records `native_acceptance_opt_in` from the actual runner environment,
+without publishing fixture paths or signing credentials. Reuse requires an
+explicit `false` in the original report and its reuse receipt. Missing historical
+flags are unknown: retain the old report and run fresh checks. Any current
+`HEX_VST3_*` or `HEX_TEST_SIGNING_IDENTITY` opt-in refuses reuse before target
+preparation or stage execution, including when the environment changed after
+plan resolution. External fixture/receipt/SDK bytes and Keychain state can change
+at the same path; those checks require fresh observations. Ordinary fresh runs
+and direct qualification of complete full audits retain their existing workflow.
 Neither reviewed merge evidence nor a merge certificate replaces the full audit
 required by [qualified native delivery](test-builds.md).
 
@@ -98,11 +107,58 @@ build/configuration, mixed UI/core or unknown inputs, and new/missing/nested tes
 modules retain comprehensive discovery. Full/release profiles always discover all
 modules. The summary records selected and excluded groups and exact selectors.
 
-Explicit native acceptance inputs (`HEX_VST3_MACOS_RECEIPT`,
-`HEX_VST3_DISCOVERY_RECEIPT`, `HEX_VST3_PACKAGE_SCANNER`,
-`HEX_VST3_PACKAGE_FIXTURES`, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
+Explicit native acceptance inputs (any nonempty `HEX_VST3_*`, including partial
+SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
+
+## Continue after a disk refusal
+
+A run that stops **between stages solely because free space fell below the
+operational floor** can retain a `checkpoint` in its failed summary. After
+recovering space through supported cleanup of your own inactive generated
+development outputs, repeat the exact profile/base/source with:
+
+```sh
+python3 scripts/local-ci.py --resume-report artifacts/local-ci/ORIGINAL/summary.json
+# For a scoped plan, also repeat its original --profile, --base and --source.
+```
+
+The original report stays failed and unchanged. A new report identifies each
+inherited stage, its original report/log hashes and the remaining executed
+stages. Inherited timing is null in the new run; original timings remain in the
+original report. `disk_history` retains each headroom probe. Compare original
+versus new command counts, cache cleanup, elapsed time and minimum free space;
+inheriting observations does not imply that Cargo artifacts are reusable.
+
+Continuation requires a nonempty passing prefix, an unexecuted suffix, the same
+clean exact source, complete plan/argv/configurations, check/build environment, command
+binaries, toolchain, dependencies, target directory identity and unchanged owner
+record. The normal exclusive target lock and conservative cache invalidation
+still apply. A conservative macOS/Linux process snapshot refuses any visible
+Cargo/compiler job, including jobs whose target is unknown; wait for them to
+finish. An unavailable/unrecognized process inventory refuses too. Preserve the
+original summary and raw logs at their recorded paths.
+Shell bookkeeping and the per-invocation `CODEX_TOOL_CALL_ID` are excluded from
+the environment identity; actual build/check configuration remains bound.
+Missing/changed evidence, test failures, zero passing tests, interruptions, stale
+source, changed/foreign/recreated ownership or a lower/changed disk floor refuse.
+No automatic deletion or adoption occurs; the minimum remains at least 2 GiB.
+Explicit `HEX_VST3_*` or `HEX_TEST_SIGNING_IDENTITY` inputs disable checkpointing:
+external fixture/receipt trees and Keychain state can change at unchanged paths.
+Those runs still execute their complete ordinary validation; use a fresh run.
+
+Only original runs can continue; continued runs never emit another checkpoint.
+A refusal before a guarded Cargo target was established has no checkpoint. A
+refused attempt that has not changed the target owner can retry the original
+checkpoint after its blocker is removed. Once the owner advances, a failed
+continuation requires a fresh run. Do not run raw Cargo writers against the
+target concurrently; the cooperative lock cannot control unrelated commands.
+Local hashes detect accidental evidence changes, not coordinated forgery. A
+complete resumed full audit can qualify native packaging only when all required
+stages pass and the packaging consumer revalidates the inherited lineage; a
+partial/scoped plan cannot replace that audit. `--reuse-report` keeps its separate
+prose-only complete-certificate contract.
 
 ## Measure feedback time
 

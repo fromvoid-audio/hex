@@ -98,6 +98,7 @@ mod midi_cue;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
+mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;
@@ -151,6 +152,8 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_compact_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_creation_ui_tests;
 mod track_gain;

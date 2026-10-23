@@ -513,6 +513,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 true,
             )
         }
+        Command::StretchMidiClipEdge { clip, edge, beat } => {
+            crate::midi_stretch::apply(project, clip, edge, beat)
+        }
         Command::TrimMidiClipEdge { clip, edge, beat } => {
             let original = project
                 .midi_clip(clip)

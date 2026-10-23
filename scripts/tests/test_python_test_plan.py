@@ -77,7 +77,8 @@ class SelectionTests(unittest.TestCase):
     def test_explicit_native_inputs_keep_comprehensive_discovery_and_native_cases(self):
         for key in ("HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
                     "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
-                    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP"):
+                    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP",
+                    "HEX_VST3_SDK_DIR", "HEX_VST3_FUTURE_FIXTURE"):
             with self.subTest(key=key):
                 chosen = selection(["crates/hex-ui/src/editor.rs"], env={key: "explicit-input"})
                 self.assertEqual(chosen["mode"], "comprehensive")
@@ -108,6 +109,15 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
                                      "HEX_VST3_INSTANCE_RECEIPT": "collection-only"},
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_native_acceptance_inputs_are_sorted_truthy_names_including_sdk_and_future_inputs(self):
+        env = {"HEX_VST3_SDK_DIR": "external-sdk", "HEX_VST3_Z_FUTURE": "fixture",
+               "HEX_TEST_SIGNING_IDENTITY": "fixture identity", "HEX_VST3_EMPTY": "",
+               "HEX_VST3": "unrelated", "HEX_TEST_SIGNING_IDENTITY_SUFFIX": "unrelated",
+               "OTHER": "unrelated"}
+        self.assertEqual(impact.native_acceptance_inputs(env), [
+            "HEX_TEST_SIGNING_IDENTITY", "HEX_VST3_SDK_DIR", "HEX_VST3_Z_FUTURE"])
+        self.assertEqual(impact.native_acceptance_inputs({"HEX_VST3_SDK_DIR": ""}), [])
 
     def test_tooling_configuration_vendor_and_unknown_inputs_stay_comprehensive(self):
         for path in (

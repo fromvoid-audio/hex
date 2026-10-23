@@ -692,6 +692,7 @@ class ScopeTests(unittest.TestCase):
             run(selected)
             run(selection("unknown.input"), passed=False)
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_prose_continuation_requires_complete_original_runtime_certificate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -720,6 +721,7 @@ class ScopeTests(unittest.TestCase):
             tree = {"commit": previous, "dirty": False, "dirty_files": [], "content_sha256": "fixture"}
             evidence = {"schema_version": 2, "mode": "full", "status": "passed", "exit_code": 0,
                         "commit": previous, "dirty": False, "stale": False,
+                        "native_acceptance_opt_in": False,
                         "start_tree": tree, "end_tree": tree, "runtime_inputs": plan.runtime_inputs(root),
                         "target_cache": {"dependency_inputs": {"version": 1, "sha256": "a" * 64, "packages": []}},
                         "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
@@ -735,6 +737,48 @@ class ScopeTests(unittest.TestCase):
             reused = ci.reusable_plan(root, resolved, report)
             self.assertEqual([s.step_id for s in ci.planned_steps(reused)], ["metadata-continuation"])
             self.assertEqual(reused["reuse"]["source"], previous)
+            self.assertIs(reused["reuse"]["native_acceptance_opt_in"], False)
+            original_report = report.read_bytes()
+            original_plan = json.dumps(resolved, sort_keys=True)
+            # Full reports without a plan and scoped reports must both carry an
+            # explicit false observation. Missing historical state is unknown.
+            for old_plan in (None, {"scope": "tooling", "qualifies_merge": True}):
+                candidate = {**evidence, "plan": old_plan,
+                             "mode": "full" if old_plan is None else "merge",
+                             "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                                        "test_results": {"rust_passed_by_binary": [1]}}
+                                       for s in ci.planned_steps(old_plan or {"scope": "full"})]}
+                for flag in ("missing", True, None, 0, 1, "false", [], {}):
+                    rejected = {**candidate, "native_acceptance_opt_in": flag}
+                    if flag == "missing":
+                        rejected.pop("native_acceptance_opt_in")
+                    raw = json.dumps(rejected).encode()
+                    report.write_bytes(raw)
+                    with self.subTest(scope=old_plan, flag=flag), self.assertRaisesRegex(ValueError, "native/external"):
+                        ci.reusable_plan(root, resolved, report)
+                    self.assertEqual(report.read_bytes(), raw)
+                    self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
+                report.write_text(json.dumps(candidate))
+                self.assertIs(ci.reusable_plan(root, resolved, report)["reuse"]["native_acceptance_opt_in"], False)
+            report.write_bytes(original_report)
+            for key in ("HEX_VST3_SDK_DIR", "HEX_VST3_FUTURE_FIXTURE", "HEX_TEST_SIGNING_IDENTITY"):
+                with self.subTest(current_input=key), self.assertRaisesRegex(ValueError, "native/external"):
+                    plan.reuse_checks(root, resolved, report, env={key: "explicit-input"})
+                self.assertEqual(report.read_bytes(), original_report)
+                self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
+            # A path string and repository tree can stay identical while an
+            # external plugin changes. Native evidence remains non-reusable.
+            with tempfile.TemporaryDirectory() as external:
+                plugin = Path(external) / "fixture.plugin"
+                report.write_text(json.dumps({**evidence, "native_acceptance_opt_in": True}))
+                native_report = report.read_bytes()
+                for content in (b"original plugin", b"replacement at the same path"):
+                    plugin.write_bytes(content)
+                    with self.assertRaisesRegex(ValueError, "native/external"):
+                        plan.reuse_checks(root, resolved, report, env={})
+                    self.assertEqual(report.read_bytes(), native_report)
+                self.assertEqual(json.dumps(resolved, sort_keys=True), original_plan)
+            report.write_bytes(original_report)
             (root / "linked-runtime.rs").symlink_to(root / "runtime.rs")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 plan.resolve(root, profile="merge", base=base, source=current, metadata=metadata)

@@ -92,8 +92,17 @@ and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
-track's color a saturated fill; **use muted flavor** uses a pale tint. selection
+track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
+
+drag the bottom edge of a track header to resize that row. hold **option** while
+resizing to give all ordinary tracks the same height. at the minimum height, rows
+keep their names and clip titles; expand them to use the mixer and fade controls.
+with the computer midi keyboard off, press **h** in arrange to toggle a compact
+overview. press **h** again to restore each track's previous height. resizing in
+the overview is temporary; it does not replace normal heights. these view sizes
+last for the current editor session. return and main rows retain their own size.
+with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or
 **insert return track**. return buses stay pinned above **main** in arrange;
@@ -141,6 +150,18 @@ press **command+shift+t** to add a track for notes. select the intended track an
 piano roll. note position, length and pitch belong to the clip; selecting a device
 is a different operation.
 
+in arrange, drag a midi clip edge normally to trim its visible region. hold
+**shift** while dragging either edge to stretch its notes: note positions and
+lengths scale together, while pitch and velocity stay the same. the opposite edge
+stays fixed. **command** temporarily changes grid snapping; shift can be pressed
+or released during the drag. **escape** cancels the gesture. the note preview stays
+visible until the edit finishes; undo restores the whole stretch in one step.
+
+stretching also scales retained source offsets, loop markers and clip-volume
+points. extremely small intervals that cannot retain a positive duration are
+refused with the original clip preserved. per-note expression is not currently
+stored by hex.
+
 load a sample into the sampler on a selected midi track. sample loading requires
 the supported project/track state. replacing the current instrument is currently
 limited to the sampler's classic mode. check the selected track and loading status
@@ -169,6 +190,14 @@ does not imply complete compatibility with another application's device.
 click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
+
+in the eq graph, single-click empty space to create a band. the left and right
+edges create low-cut and high-cut bands; the bottom interior creates a notch;
+other empty space creates a bell. at the bottom corners, the edge cut takes
+priority. a small curve beside the crosshair shows the shape before pressing.
+keep the button held to position the new band in the same gesture. vertical
+movement changes q for a cut or notch, or the gain of a bell. existing
+nodes keep their own selection and drag targets. press **escape** to cancel.
 
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual
@@ -214,6 +243,7 @@ even when live audio output is unavailable.
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser / search | command+option+b / command+f |
+| compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | export | command+shift+e |
 | changelog | command+shift+l |

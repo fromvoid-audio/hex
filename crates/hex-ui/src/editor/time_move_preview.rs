@@ -1,8 +1,10 @@
-//! Passive time-chunk fragment rendering using cached waveform and note summaries.
+//! Passive time-chunk fragments retain their timeline bounds and clip shell.
+//! A supplied compact title replaces body construction; normal rows use cached
+//! waveform/note summaries. Inputs remain prepared display data, never edits.
 use super::tracks::clip_grid_layer;
 use super::viewport::Viewport;
 use crate::theme;
-use gpui::{Div, div, prelude::*, px, relative, rgb};
+use gpui::{AnyElement, Div, div, prelude::*, px, relative, rgb};
 use hex_project::Clip;
 
 pub(super) fn move_exclusions(
@@ -106,6 +108,7 @@ pub(super) fn passive_audio_fragment(
     grid: &[super::musical_time::GridLine],
     cache: std::rc::Rc<std::cell::RefCell<super::waveform_geometry::WaveformGeometryCache>>,
     selector: String,
+    compact_header: Option<AnyElement>,
 ) -> Option<Div> {
     let end = clip.start().checked_add(clip.duration())?;
     let start = clip.start().max(viewport.start);
@@ -126,8 +129,11 @@ pub(super) fn passive_audio_fragment(
         .overflow_hidden()
         .border_1()
         .border_color(rgb(0x000000))
-        .bg(rgb(fill))
-        .children([clip_grid_layer(grid, start, stop)]);
+        .bg(rgb(fill));
+    if let Some(header) = compact_header {
+        return Some(content.child(header));
+    }
+    content = content.children([clip_grid_layer(grid, start, stop)]);
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
             waveform, clip, start, stop, cache,
@@ -160,6 +166,7 @@ pub(super) fn passive_midi_fragment(
     grid: &[super::musical_time::GridLine],
     selector: String,
     shape_budget: usize,
+    compact_header: Option<AnyElement>,
 ) -> (Option<Div>, usize) {
     let visible_start = timeline_interval.0.max(viewport.start);
     let visible_end = timeline_interval.1.min(viewport_end);
@@ -179,8 +186,11 @@ pub(super) fn passive_midi_fragment(
         .overflow_hidden()
         .bg(rgb(fill))
         .border_1()
-        .border_color(rgb(0x000000))
-        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+        .border_color(rgb(0x000000));
+    if let Some(header) = compact_header {
+        return (Some(content.child(header)), 0);
+    }
+    content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
     let mut shown = 0;
     for sample in samples
         .iter()

@@ -9,6 +9,14 @@ use std::time::Instant;
 
 pub(super) const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
 
+/// A compact row keeps the complete title usable; larger rows retain their
+/// existing proportional move rail. Rendered affordances and hit tests agree.
+pub(super) fn header_hit_height(row_height: f32) -> f32 {
+    (row_height * SELECTION_HANDLE_FRACTION)
+        .max(super::clip_name::CLIP_NAME_HEIGHT)
+        .min(row_height)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimeSelection {
     pub(super) anchor_track: TrackId,
@@ -230,7 +238,7 @@ impl EditorView {
         let lane = self.main_track_lane_bounds.filter(|lane| {
             self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
         })?;
-        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+        if y >= lane.top + header_hit_height(lane.height) {
             return None;
         }
         let frame = super::seek::pointer_to_frame(
@@ -405,8 +413,8 @@ impl EditorView {
         let Some((track, lane)) = self.visible_lane_at(x, y) else {
             return false;
         };
-        // Only the upper third is a move handle; the rest always reselects.
-        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+        // The visible title/move rail is the handle; the rest reselects.
+        if y >= lane.top + header_hit_height(lane.height) {
             return false;
         }
         let Some(track_offset) = range.tracks().iter().position(|item| *item == track) else {
@@ -1056,7 +1064,7 @@ impl EditorView {
             }
             let edge = super::trim::handle_width(width);
             Some(
-                y < lane.top + lane.height * SELECTION_HANDLE_FRACTION
+                y < lane.top + header_hit_height(lane.height)
                     || (visible_start == start && x < left + edge)
                     || (visible_end == end && x >= left + width - edge),
             )
@@ -1167,7 +1175,7 @@ impl EditorView {
                         .absolute()
                         .top_0()
                         .w_full()
-                        .h(relative(SELECTION_HANDLE_FRACTION))
+                        .h(px(header_hit_height(self.track_height(track))))
                         .cursor(CursorStyle::OpenHand)
                         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
                 ),

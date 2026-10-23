@@ -64,6 +64,17 @@ impl ComputerKeyboard {
         self.physical.iter().copied().flatten()
     }
 
+    pub(super) fn physical_through(&self) -> u64 {
+        self.next_token
+    }
+
+    pub(super) fn physical_notes_after(&self, floor: u64) -> impl Iterator<Item = HeldKey> + '_ {
+        self.physical
+            .iter()
+            .zip(self.tokens)
+            .filter_map(move |(note, token)| (token > floor).then_some(*note).flatten())
+    }
+
     pub fn toggle(&mut self) {
         self.enabled = !self.enabled;
         if !self.enabled {
@@ -505,6 +516,35 @@ impl super::EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_floor_excludes_old_keys_without_releasing_physical_ownership() {
+        let mut keyboard = ComputerKeyboard::default();
+        keyboard.toggle();
+        keyboard.key_down("a", false);
+        let floor = keyboard.physical_through();
+        keyboard.key_down("a", true);
+        keyboard.key_down("d", false);
+        assert_eq!(keyboard.physical_notes().count(), 2);
+        assert_eq!(
+            keyboard
+                .physical_notes_after(floor)
+                .map(|n| n.pitch)
+                .collect::<Vec<_>>(),
+            [64]
+        );
+        keyboard.key_up("d");
+        assert!(keyboard.physical_notes_after(floor).next().is_none());
+        keyboard.key_up("a");
+        keyboard.key_down("a", false);
+        assert_eq!(
+            keyboard
+                .physical_notes_after(floor)
+                .map(|n| n.pitch)
+                .collect::<Vec<_>>(),
+            [60]
+        );
+    }
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
