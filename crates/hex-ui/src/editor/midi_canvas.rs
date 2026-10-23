@@ -159,6 +159,7 @@ impl EditorView {
             Err(error) => {
                 self.error = Some(error.to_string().into());
                 self.cancel_midi_note_gesture();
+                self.retire_pending_midi_drag();
                 None
             }
         };
@@ -171,7 +172,9 @@ impl EditorView {
         let selected_ids = self.midi_selection.shared_ids();
         let draw_primary = self.midi_selection.primary();
         let selection_epoch = self.midi_selection.epoch();
-        let preview = self.midi_note_gesture.map(|gesture| gesture.preview);
+        let preview = self
+            .displayed_midi_note_gesture()
+            .map(|gesture| gesture.preview);
         let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
         let status = if let Some((first, last)) = self.midi_time_selection_bounds() {
             format!(
@@ -211,11 +214,10 @@ impl EditorView {
         let canvas_scene = std::sync::Arc::clone(&scene);
         let draw_selected = selected_ids;
         let draw_preview = self
-            .midi_note_gesture
+            .displayed_midi_note_gesture()
             .map(|gesture| (gesture.note, gesture.preview));
         let draw_group = self
-            .midi_group_gesture
-            .as_ref()
+            .displayed_midi_group_gesture()
             .map(|gesture| (gesture.shared_originals(), gesture.clone()));
         let draw_stroke = self
             .midi_stroke
@@ -1361,13 +1363,15 @@ impl EditorView {
                                 if gesture.is_copy() {
                                     match gesture.copied_notes() {
                                         Ok(insert) => {
-                                            view.enqueue(Request::Edit(
+                                            view.submit_midi_drag_preview(
+                                                clip_id,
+                                                super::midi_pending_drag::Frozen::Group(gesture),
                                                 Command::EditMidiNotesWithSourceExtent {
                                                     clip: clip_id,
                                                     remove: Vec::new(),
                                                     insert,
                                                 },
-                                            ));
+                                            );
                                         }
                                         Err(error) => view.error = Some(error.into()),
                                     }
@@ -1376,10 +1380,14 @@ impl EditorView {
                                 }
                                 match gesture.updates() {
                                     Ok(notes) => {
-                                        view.enqueue(Request::Edit(Command::UpdateMidiNotes {
-                                            clip: clip_id,
-                                            notes,
-                                        }));
+                                        view.submit_midi_drag_preview(
+                                            clip_id,
+                                            super::midi_pending_drag::Frozen::Group(gesture),
+                                            Command::UpdateMidiNotes {
+                                                clip: clip_id,
+                                                notes,
+                                            },
+                                        );
                                     }
                                     Err(error) => view.error = Some(error.into()),
                                 }
@@ -1426,14 +1434,18 @@ impl EditorView {
                             event.modifiers.platform,
                         );
                         if !midi_drag::is_noop(&gesture) {
-                            view.enqueue(Request::Edit(Command::UpdateMidiNote {
-                                note: gesture.note,
-                                start: BeatTime::from_raw(gesture.preview.start),
-                                duration: BeatTime::from_raw(gesture.preview.duration),
-                                pitch: gesture.preview.pitch,
-                                channel: gesture.channel,
-                                velocity: gesture.velocity,
-                            }));
+                            view.submit_midi_drag_preview(
+                                clip_id,
+                                super::midi_pending_drag::Frozen::Single(gesture),
+                                Command::UpdateMidiNote {
+                                    note: gesture.note,
+                                    start: BeatTime::from_raw(gesture.preview.start),
+                                    duration: BeatTime::from_raw(gesture.preview.duration),
+                                    pitch: gesture.preview.pitch,
+                                    channel: gesture.channel,
+                                    velocity: gesture.velocity,
+                                },
+                            );
                         }
                         view_cx.notify();
                     });
@@ -2427,3 +2439,7 @@ mod copy_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_input_refinement_ui_tests.rs"]
 mod input_refinement_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pending_drag_ui_tests.rs"]
+mod pending_drag_tests;

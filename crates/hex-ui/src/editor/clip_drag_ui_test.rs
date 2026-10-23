@@ -2614,6 +2614,17 @@ fn selector(value: String) -> &'static str {
 }
 
 fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
+    assert_drag_handoff(cx, midi, vertical, false);
+}
+
+#[gpui::test]
+fn rendered_copy_retains_destination_until_real_worker_ack(cx: &mut TestAppContext) {
+    for midi in [&[false][..], &[true][..], &[false, true][..]] {
+        assert_drag_handoff(cx, midi, true, true);
+    }
+}
+
+fn assert_drag_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool, copy: bool) {
     use hex_session::service::Request;
     let (_files, handle, editor) = upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -2726,6 +2737,11 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
     let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&tracks[usize::from(vertical)]]);
     let end = point(down.x + px(120.0), px(lane.top + lane.height * 0.5));
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    let release_modifiers = Modifiers {
+        alt: copy,
+        ..Default::default()
+    };
+    visual.simulate_modifiers_change(release_modifiers);
     visual.run_until_parked();
     let previews: Vec<_> = clips
         .iter()
@@ -2757,13 +2773,12 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
             )
         })
         .collect();
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, release_modifiers);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, before);
         assert_eq!(v.worker_requests_pending, 1);
         assert!(v.active_clip_drag.is_none());
-        assert!(v.pending_clip_move.is_some());
     });
     // Repaint explicitly with ACK intake held. These inspect completed scenes,
     // not only layout bounds or a wall-clock promise that a frame occurred.
@@ -2824,14 +2839,39 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
                 clip.value()
             ));
             assert!(
-                visual.debug_bounds(source).is_none(),
-                "no duplicate source paint"
+                visual.debug_bounds(source).is_some() == copy,
+                "copies retain originals; moves suppress originals"
             );
         }
     }
     let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
     let mut expected = Editor::new((*before).clone(), 32).unwrap();
-    expected.execute(command).unwrap();
+    let created = expected.execute(command).unwrap();
+    let canonical_ids: Vec<_> = if copy {
+        let (first, last) = match created {
+            hex_project::Created::Clip(id) => (id, id),
+            hex_project::Created::Clips { first, last } => (first, last),
+            other => panic!("expected canonical copies: {other:?}"),
+        };
+        let mut ids: Vec<_> = expected
+            .project()
+            .tracks()
+            .iter()
+            .flat_map(|track| {
+                track
+                    .clips()
+                    .iter()
+                    .map(|clip| clip.id())
+                    .chain(track.midi_clips().iter().map(|clip| clip.id()))
+            })
+            .filter(|id| *id >= first && *id <= last)
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids.len(), clips.len());
+        ids
+    } else {
+        clips.clone()
+    };
     pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.pending_clip_move.is_none());
@@ -2841,7 +2881,8 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
             "exact canonical content, IDs, offsets and extent"
         );
     });
-    for ((clip, is_midi), (preview, held, _, _, _)) in clips.iter().zip(midi).zip(&previews) {
+    for ((clip, is_midi), (preview, held, _, _, _)) in canonical_ids.iter().zip(midi).zip(&previews)
+    {
         assert!(visual.debug_bounds(preview).is_none());
         let canonical = selector(format!(
             "{}clip-visual-{}",
@@ -2860,11 +2901,12 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
     visual.simulate_keystrokes("cmd-z");
     pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(
-            v.state.as_ref().unwrap().project.snapshot(),
-            before.snapshot(),
-            "one group Undo"
-        )
+        let actual = v.state.as_ref().unwrap().project.snapshot();
+        let mut expected = before.snapshot();
+        // Undo retires copied identities; it never rewinds their allocator.
+        assert_eq!(actual.next_id, committed.next_id);
+        expected.next_id = committed.next_id;
+        assert_eq!(actual, expected, "one group Undo")
     });
     visual.simulate_keystrokes("cmd-shift-z");
     pump_move(&editor, &mut visual);
@@ -2971,6 +3013,7 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
         v.pending_clip_move = Some(super::pending_clip_move::Pending::new(
             drag,
             invalid.clone(),
+            Arc::clone(&v.state.as_ref().unwrap().project),
         ));
         assert!(v.enqueue(Request::DeviceGesture(
             hex_session::device_gesture::GestureRequest::Cancel {
