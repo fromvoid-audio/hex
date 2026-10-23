@@ -239,7 +239,10 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     result?;
     Ok(output.bytes)
 }
-/// Open schemas34–37 into the current validated model without file/media I/O.
+/// Open current and evidenced historical schemas without file/media I/O.
+/// Schemas1–33 select frozen readers and branch-aware adapters using the version
+/// and complete field inventories. Only absent-by-design fields acquire their
+/// original defaults; authored metadata is never discarded to accept a file.
 /// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
 /// Schema36 had independent tempo and sections branches, selected by presence of
 /// the section inventory. Historical audio timing, projection/offset and gain
@@ -247,8 +250,6 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// remain strict. No tempo-map collapse,
 /// overlap repair or opaque device-state conversion is performed. Older projects
 /// violating current model invariants refuse rather than lose musical data.
-/// Schemas1–33 are not yet supported by this public migration path; retained
-/// internal DTOs alone do not establish complete historical compatibility.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
@@ -266,6 +267,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     match header.version {
         CURRENT_SCHEMA_VERSION => schema::DocumentV11::decode(bytes),
+        1..=33 => schema::legacy::decode(bytes, header.version),
         34..=36 => schema::tuning::decode_version(bytes, header.version),
         version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
             "project uses a newer schema; open it with a newer hex version; original file unchanged",

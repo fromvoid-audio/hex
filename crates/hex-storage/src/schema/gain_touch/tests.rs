@@ -88,10 +88,13 @@ fn span_roundtrip_preserves_canonical_value_through_current_writer() {
     let current = crate::encode(&restored).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
-        37
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&current).unwrap(), restored);
-    assert!(crate::decode(&crate::encode_schema22(&restored).unwrap()).is_err());
+    assert_eq!(
+        crate::decode(&crate::encode_schema22(&restored).unwrap()).unwrap(),
+        restored
+    );
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&restored).is_err());
     let lane = GainLane::new(
         snapshot.tracks[0].gain_envelope.clone(),

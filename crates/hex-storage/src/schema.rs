@@ -9,6 +9,8 @@ pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
 mod host_gain;
+pub(crate) mod legacy;
+pub(crate) mod legacy_early;
 mod midi_clip_volume;
 mod migrations;
 pub(crate) mod musical_audio;
