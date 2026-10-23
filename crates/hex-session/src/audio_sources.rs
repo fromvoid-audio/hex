@@ -1,5 +1,13 @@
-//! Control-side immutable source facts. These do not grant native ownership,
-//! catalog leases or page readiness, and never retain a verified file descriptor.
+//! Immutable control-side source bindings, independent of native source custody.
+//!
+//! DocumentAudioMode is chosen before New/Open preparation. Verified mode captures resolved
+//! original paths, fingerprints, rates/extents and reader bounds without retaining readers or
+//! decoding full resident PCM. History retains binding metadata and consumes its
+//! source/path/manifest reservations even when clips disappear. Save As changes the document
+//! handle, not the captured source binding; reopen or relink verifies a fresh binding instead of
+//! silently refreshing changed bytes. Document generation, semantic source epoch and native
+//! catalog generation are distinct. These facts cannot grant a catalog lease, constructor owner or
+//! page readiness, and unavailable waveform data must not become fabricated peaks.
 use crate::{AssetId, Audio, SessionError};
 use hex_engine::{PreparedRevision, PreparedSessionInventory, compile::PreparedAudioSource};
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits};
@@ -174,12 +182,43 @@ pub(crate) fn fresh_source_epoch() -> Result<u64, SessionError> {
 }
 pub(crate) struct MediaBank {
     pub(crate) epoch: u64,
+    pub(crate) device_only: std::collections::BTreeSet<AssetId>,
     pub(crate) resident: BTreeMap<AssetId, Audio>,
     pub(crate) verified: BTreeMap<AssetId, VerifiedAudioFile>,
 }
 impl MediaBank {
+    pub(crate) fn validate_clip_sources(
+        &self,
+        project: &Project,
+    ) -> Result<(), hex_engine::Invalid> {
+        for track in project.tracks() {
+            if track
+                .clips()
+                .iter()
+                .any(|clip| self.device_only.contains(&clip.asset()))
+            {
+                return Err(hex_engine::Invalid(
+                    "device-only source needs an accounted clip derivative",
+                ));
+            }
+        }
+        for cell in project.session_cells() {
+            if let hex_project::SessionCellContent::Audio(clip) = cell.content()
+                && self.device_only.contains(&clip.asset())
+            {
+                return Err(hex_engine::Invalid(
+                    "device-only source needs an accounted clip derivative",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn contains_key(&self, id: &AssetId) -> bool {
-        self.resident.contains_key(id) || self.verified.contains_key(id)
+        // Namespace membership is distinct from playable clip availability.
+        self.resident.contains_key(id)
+            || self.verified.contains_key(id)
+            || self.device_only.contains(id)
     }
     pub(crate) fn insert(&mut self, id: AssetId, audio: Audio) -> Option<Audio> {
         self.resident.insert(id, audio)
@@ -190,6 +229,7 @@ impl MediaBank {
         table: Arc<hex_engine::SineTable>,
         previous: Option<&PreparedSessionInventory>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        self.validate_clip_sources(project)?;
         if self.verified.is_empty() {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }

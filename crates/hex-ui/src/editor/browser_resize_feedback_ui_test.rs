@@ -21,6 +21,16 @@ fn fixture(
     (handle, editor, directory)
 }
 
+// PR323 moves the same feedback paint into a thin child; retain all original
+// gesture, state, cursor/capture and color assertions against the actual paint.
+fn paint_selector(handle: &str) -> &'static str {
+    if handle == "browser-sidebar-resize" {
+        "browser-sidebar-resize-line"
+    } else {
+        "browser-resize-line"
+    }
+}
+
 fn palette(role: crate::theme::PaletteRole) -> gpui::Background {
     gpui::rgb(crate::theme::color(role)).into()
 }
@@ -49,7 +59,7 @@ fn browser_resize_feedback_stays_cyan_outside_moving_hit_bounds(cx: &mut TestApp
             let outside_y = visual.debug_bounds("browser-toolbar").unwrap().top() - px(8.0);
             visual.simulate_mouse_move(start, None, Modifiers::default());
             assert_eq!(
-                visual.rendered_background(selector),
+                visual.rendered_background(paint_selector(selector)),
                 Some(palette(crate::theme::PaletteRole::Secondary)),
                 "idle hover must be cyan"
             );
@@ -59,7 +69,7 @@ fn browser_resize_feedback_stays_cyan_outside_moving_hit_bounds(cx: &mut TestApp
                 visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
                 assert!(active(&editor, visual, selector));
                 assert_eq!(
-                    visual.rendered_background(selector),
+                    visual.rendered_background(paint_selector(selector)),
                     Some(palette(crate::theme::PaletteRole::Secondary)),
                     "active {selector} lost cyan after leaving actual moving hit bounds"
                 );
@@ -69,14 +79,14 @@ fn browser_resize_feedback_stays_cyan_outside_moving_hit_bounds(cx: &mut TestApp
                     "browser-sidebar-resize"
                 };
                 assert_eq!(
-                    visual.rendered_background(other),
+                    visual.rendered_background(paint_selector(other)),
                     Some(palette(crate::theme::PaletteRole::Border)),
                     "only the active divider should latch cyan"
                 );
                 let current = visual.debug_bounds(selector).unwrap().center();
                 visual.simulate_mouse_move(current, MouseButton::Left, Modifiers::default());
                 assert_eq!(
-                    visual.rendered_background(selector),
+                    visual.rendered_background(paint_selector(selector)),
                     Some(palette(crate::theme::PaletteRole::Secondary))
                 );
             }
@@ -89,7 +99,7 @@ fn browser_resize_feedback_stays_cyan_outside_moving_hit_bounds(cx: &mut TestApp
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             assert!(!active(&editor, visual, selector));
             assert_eq!(
-                visual.rendered_background(selector),
+                visual.rendered_background(paint_selector(selector)),
                 Some(palette(if release_inside {
                     crate::theme::PaletteRole::Secondary
                 } else {
@@ -99,7 +109,7 @@ fn browser_resize_feedback_stays_cyan_outside_moving_hit_bounds(cx: &mut TestApp
             );
             visual.simulate_mouse_move(point(start.x, outside_y), None, Modifiers::default());
             assert_eq!(
-                visual.rendered_background(selector),
+                visual.rendered_background(paint_selector(selector)),
                 Some(palette(crate::theme::PaletteRole::Border))
             );
         }
@@ -124,7 +134,7 @@ fn browser_resize_feedback_lost_left_button_cancels_without_stale_capture(cx: &m
             "{selector} retained stale activity after actual Left button was no longer held"
         );
         assert_eq!(
-            visual.rendered_background(selector),
+            visual.rendered_background(paint_selector(selector)),
             Some(palette(crate::theme::PaletteRole::Border))
         );
         let bounds = visual.debug_bounds(selector).unwrap();
@@ -168,7 +178,7 @@ fn browser_resize_feedback_close_cancels_both_existing_gestures(cx: &mut TestApp
         );
         assert_eq!(visual.debug_bounds(selector).unwrap(), bounds);
         assert_eq!(
-            visual.rendered_background(selector),
+            visual.rendered_background(paint_selector(selector)),
             Some(palette(crate::theme::PaletteRole::Border))
         );
         visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
@@ -217,13 +227,13 @@ fn browser_resize_feedback_open_editor_and_compact_picker_keep_gesture_paint(
                 visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
                 assert!(active(&editor, visual, selector));
                 assert_eq!(
-                    visual.rendered_background(selector),
+                    visual.rendered_background(paint_selector(selector)),
                     Some(palette(crate::theme::PaletteRole::Secondary))
                 );
                 visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
                 assert!(!active(&editor, visual, selector));
                 assert_eq!(
-                    visual.rendered_background(selector),
+                    visual.rendered_background(paint_selector(selector)),
                     Some(palette(crate::theme::PaletteRole::Border))
                 );
             }

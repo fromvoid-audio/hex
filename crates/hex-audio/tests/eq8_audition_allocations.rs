@@ -69,8 +69,11 @@ fn eq8_return_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_
 
 fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 8)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "eq8 audition allocation".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
     })?
     else {
         return Err("track missing".into());

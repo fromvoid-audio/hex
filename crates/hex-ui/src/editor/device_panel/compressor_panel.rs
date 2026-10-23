@@ -18,6 +18,7 @@ const RELEASE: ParameterId = ParameterId::from_static(4);
 const KNEE: ParameterId = ParameterId::from_static(5);
 const OUTPUT: ParameterId = ParameterId::from_static(6);
 const MIX: ParameterId = ParameterId::from_static(7);
+const DETECTOR: ParameterId = ParameterId::from_static(8);
 const PARAMETERS: [ParameterId; 5] = [THRESHOLD, RATIO, KNEE, OUTPUT, MIX];
 
 pub(super) struct PreviewCache {
@@ -108,6 +109,25 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
     };
+    let mode = device_view
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.id == DETECTOR)
+        .map(|p| {
+            effective_parameter_value(
+                view,
+                ParameterKey {
+                    device,
+                    parameter: DETECTOR,
+                },
+                p.value,
+            )
+        });
+    let mode_name = if mode == Some(ParameterValue::Choice(1)) {
+        "rms"
+    } else {
+        "peak"
+    };
     let mut control = |id, presentation| match device_view
         .parameters
         .iter()
@@ -138,6 +158,7 @@ pub(super) fn render_body(
     let output = control(OUTPUT, ControlPresentation::InlineValue);
     let knee = control(KNEE, ControlPresentation::InlineValue);
     let mix = control(MIX, ControlPresentation::InlineValue);
+    let detector = control(DETECTOR, ControlPresentation::CompactSelector);
     let mut graph = div()
         .id(ElementId::Name(
             format!("compressor-transfer-{}", device.value()).into(),
@@ -185,11 +206,27 @@ pub(super) fn render_body(
     let footer = crate::device_composition::rail_column()
         .child(
             div()
+                .h(px(14.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .child(field("detector", detector)),
+        )
+        .child(
+            div()
                 .h(px(10.0))
                 .flex_shrink_0()
                 .text_size(px(7.0))
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text("static · in -60…0 db · out -66…24 db")),
+                .child(
+                    div()
+                        .debug_selector(move || {
+                            format!("compressor-{mode_name}-detector-{}", device.value())
+                        })
+                        .child(theme::text(format!(
+                            "static {mode_name} detector -60…0 → -66…24 db"
+                        ))),
+                ),
         )
         .child(
             div()

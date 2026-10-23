@@ -1,7 +1,9 @@
 //! Native pointer trim gesture state and bounded canonical dispatch.
 use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
 use gpui::{Context, CursorStyle, Div, MouseButton, Stateful, Window, div, prelude::*, px};
-use hex_project::{BeatTime, Clip, Command, MidiClip, MidiClipTrim, Project, TrackId, TrimEdge};
+use hex_project::{
+    BeatTime, Clip, Command, MidiClip, MidiClipStretch, MidiClipTrim, Project, TrackId, TrimEdge,
+};
 use hex_session::service::Request;
 use std::{
     cell::{Cell, RefCell},
@@ -42,9 +44,86 @@ fn replace_audio_trim_preview(
     true
 }
 
+/// One immutable source plus metadata projection survives capture and the exact
+/// worker terminal. Pointer updates never materialize a stretched note array.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MidiEdgePreview {
+    Trim(MidiClipTrim),
+    Stretch(MidiClipStretch),
+}
+impl From<MidiClipTrim> for MidiEdgePreview {
+    fn from(value: MidiClipTrim) -> Self {
+        Self::Trim(value)
+    }
+}
+impl MidiEdgePreview {
+    pub(super) fn start(self) -> BeatTime {
+        match self {
+            Self::Trim(p) => p.start(),
+            Self::Stretch(p) => p.start(),
+        }
+    }
+    pub(super) fn length(self) -> BeatTime {
+        match self {
+            Self::Trim(p) => p.length(),
+            Self::Stretch(p) => p.length(),
+        }
+    }
+    pub(super) fn source_start(self) -> BeatTime {
+        match self {
+            Self::Trim(p) => p.source_start(),
+            Self::Stretch(p) => p.source_start(),
+        }
+    }
+    pub(super) fn note_interval(
+        self,
+        note: &hex_project::MidiNote,
+    ) -> Option<(BeatTime, BeatTime)> {
+        let start = self.source_beat(note.start())?;
+        let end = self.source_beat(BeatTime::from_raw(
+            note.start().raw().checked_add(note.duration().raw())?,
+        ))?;
+        let duration = end.raw().checked_sub(start.raw()).filter(|n| *n > 0)?;
+        Some((start, BeatTime::from_raw(duration)))
+    }
+    /// The same endpoint projection used by the canonical stretch command.
+    pub(super) fn source_beat(self, beat: BeatTime) -> Option<BeatTime> {
+        match self {
+            Self::Trim(p) => beat
+                .raw()
+                .checked_add(p.source_prefix().raw())
+                .map(BeatTime::from_raw),
+            Self::Stretch(p) => p.scale(beat).ok(),
+        }
+    }
+}
+fn midi_edge_preview(drag: &MidiTrimDrag, beat: BeatTime) -> Option<MidiEdgePreview> {
+    if drag.stretch_modifier.get() {
+        let preview = drag.clip.preview_edge_stretch(drag.edge, beat).ok()?;
+        // Match the bounded thumbnail budget. Full source validation remains
+        // the worker command's responsibility; a sub-tick unsampled interval
+        // may refuse atomically at its terminal rather than stall pointer input.
+        let candidate = MidiEdgePreview::Stretch(preview);
+        for note in drag
+            .clip
+            .notes()
+            .iter()
+            .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
+        {
+            candidate.note_interval(note)?;
+        }
+        Some(candidate)
+    } else {
+        drag.clip
+            .preview_edge_trim(drag.edge, beat)
+            .ok()
+            .map(MidiEdgePreview::Trim)
+    }
+}
+
 fn replace_midi_trim_preview(
-    preview: &RefCell<Option<MidiClipTrim>>,
-    next: Option<MidiClipTrim>,
+    preview: &RefCell<Option<MidiEdgePreview>>,
+    next: Option<MidiEdgePreview>,
 ) -> bool {
     let Ok(mut current) = preview.try_borrow_mut() else {
         return false;
@@ -96,12 +175,13 @@ pub(super) struct MidiTrimDrag {
     viewport_length: u64,
     pub(super) scroll: super::drag_autoscroll::DragScroll,
     snap_grid: super::musical_time::SnapGrid,
+    pub(super) stretch_modifier: Rc<Cell<bool>>,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
     // Last successfully projected timeline point; foreign panel positions only stop edge-pan.
     valid_pointer_x: Rc<Cell<Option<f32>>>,
     grab_delta: Rc<RefCell<Option<i128>>>,
-    pub(super) preview: Rc<RefCell<Option<MidiClipTrim>>>,
+    pub(super) preview: Rc<RefCell<Option<MidiEdgePreview>>>,
 }
 
 enum PendingTrimDisplay {
@@ -112,7 +192,7 @@ enum PendingTrimDisplay {
     },
     Midi {
         original: Rc<MidiClip>,
-        prospective: MidiClipTrim,
+        prospective: MidiEdgePreview,
     },
 }
 
@@ -180,7 +260,7 @@ impl EditorView {
         &self,
         track: TrackId,
         only: Option<hex_project::ClipId>,
-    ) -> Option<(Rc<MidiClip>, MidiClipTrim)> {
+    ) -> Option<(Rc<MidiClip>, MidiEdgePreview)> {
         if let Some(drag) = self.active_midi_trim_drag.as_ref()
             && drag.source_track == track
             && only.is_none_or(|id| id == drag.clip.id())
@@ -253,6 +333,7 @@ enum ResizeCommand {
         clip: hex_project::ClipId,
         edge: TrimEdge,
         beat: BeatTime,
+        stretch: bool,
     },
 }
 
@@ -277,6 +358,13 @@ impl ResizeCommand {
                 clip: *clip,
                 edge: *edge,
                 beat: *beat,
+                stretch: false,
+            }),
+            Request::Edit(Command::StretchMidiClipEdge { clip, edge, beat }) => Some(Self::Midi {
+                clip: *clip,
+                edge: *edge,
+                beat: *beat,
+                stretch: true,
             }),
             _ => None,
         }
@@ -631,13 +719,11 @@ fn midi_preview_for_pointer(
     pointer_x: f32,
     lane: LaneBounds,
     viewport: Viewport,
-) -> Option<MidiClipTrim> {
-    drag.clip
-        .preview_edge_trim(
-            drag.edge,
-            snapped_midi_edge_beat(drag, project, pointer_x, lane, viewport)?,
-        )
-        .ok()
+) -> Option<MidiEdgePreview> {
+    midi_edge_preview(
+        drag,
+        snapped_midi_edge_beat(drag, project, pointer_x, lane, viewport)?,
+    )
 }
 
 impl EditorView {
@@ -726,6 +812,7 @@ impl EditorView {
             viewport_length: viewport.length,
             scroll: Default::default(),
             snap_grid: self.snap_grid,
+            stretch_modifier: Rc::new(Cell::new(false)),
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),
             valid_pointer_x: Rc::new(Cell::new(None)),
@@ -847,6 +934,7 @@ impl EditorView {
                 let pointer_x = f32::from(window.mouse_position().x);
                 payload.last_pointer_x.set(Some(pointer_x));
                 payload.snap_modifier.set(window.modifiers().platform);
+                payload.stretch_modifier.set(window.modifiers().shift);
                 preview_owner_entity.update(cx, |view, cx| {
                     view.begin_midi_trim_drag(payload);
                     view.update_midi_trim_preview(payload, pointer_x, cx);
@@ -854,25 +942,6 @@ impl EditorView {
                 cx.new(|_| TrimPreview {
                     data: Rc::new(RefCell::new(None)),
                 })
-            })
-            .on_drag_move::<MidiTrimDrag>(move |event, _, cx| {
-                let Some(drag) = event.dragged_item().downcast_ref::<MidiTrimDrag>() else {
-                    return;
-                };
-                let current = drag_entity.update(cx, |view, _| view.midi_trim_drag_current(drag));
-                if !current {
-                    replace_midi_trim_preview(&drag.preview, None);
-                    drag_entity.update(cx, |view, cx| {
-                        view.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
-                    });
-                    return;
-                }
-                let pointer_x = f32::from(event.event.position.x);
-                drag.last_pointer_x.set(Some(pointer_x));
-                drag.snap_modifier.set(event.event.modifiers.platform);
-                drag_entity.update(cx, |view, cx| {
-                    view.update_midi_trim_preview(drag, pointer_x, cx)
-                });
             })
     }
 
@@ -1001,24 +1070,42 @@ impl EditorView {
                     data: payload.preview.clone(),
                 })
             })
-            .on_drag_move::<TrimDrag>(move |event, _, cx| {
-                let Some(drag) = event.dragged_item().downcast_ref::<TrimDrag>() else {
-                    return;
-                };
-                let current = drag_entity.update(cx, |view, _| view.trim_drag_current(drag));
-                if !current {
-                    replace_audio_trim_preview(&drag.preview, None);
-                    drag_entity.update(cx, |view, cx| {
-                        view.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
-                    });
-                    return;
-                }
-                let pointer_x = f32::from(event.event.position.x);
-                drag.last_pointer_x.set(Some(pointer_x));
-                drag.snap_modifier.set(event.event.modifiers.platform);
-                drag.stretch_modifier.set(event.event.modifiers.shift);
-                drag_entity.update(cx, |view, cx| view.update_trim_preview(drag, pointer_x, cx));
-            })
+    }
+
+    pub(super) fn refresh_trim_pointer(
+        &mut self,
+        drag: &TrimDrag,
+        event: &gpui::MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.trim_drag_current(drag) {
+            replace_audio_trim_preview(&drag.preview, None);
+            self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        let pointer_x = f32::from(event.position.x);
+        drag.last_pointer_x.set(Some(pointer_x));
+        drag.snap_modifier.set(event.modifiers.platform);
+        drag.stretch_modifier.set(event.modifiers.shift);
+        self.update_trim_preview(drag, pointer_x, cx);
+    }
+
+    pub(super) fn refresh_midi_trim_pointer(
+        &mut self,
+        drag: &MidiTrimDrag,
+        event: &gpui::MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.midi_trim_drag_current(drag) {
+            replace_midi_trim_preview(&drag.preview, None);
+            self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
+            return;
+        }
+        let pointer_x = f32::from(event.position.x);
+        drag.last_pointer_x.set(Some(pointer_x));
+        drag.snap_modifier.set(event.modifiers.platform);
+        drag.stretch_modifier.set(event.modifiers.shift);
+        self.update_midi_trim_preview(drag, pointer_x, cx);
     }
 
     pub(super) fn cancel_trim_gesture(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1203,18 +1290,25 @@ impl EditorView {
         changed
     }
 
-    pub(super) fn refresh_midi_trim_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
-        if let Some(drag) = self.active_midi_trim_drag.clone()
-            && drag.snap_modifier.replace(held) != held
-        {
-            let pointer = retained_timeline_pointer(
-                drag.last_pointer_x.get(),
-                drag.valid_pointer_x.get(),
-                drag.preview.borrow().is_some(),
-                drag.source_lane,
-            );
-            if let Some(pointer_x) = pointer {
-                self.update_midi_trim_preview(&drag, pointer_x, cx);
+    pub(super) fn refresh_midi_trim_snap_modifier(
+        &mut self,
+        held: bool,
+        stretch: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(drag) = self.active_midi_trim_drag.clone() {
+            let snap_changed = drag.snap_modifier.replace(held) != held;
+            let stretch_changed = drag.stretch_modifier.replace(stretch) != stretch;
+            if snap_changed || stretch_changed {
+                let pointer = retained_timeline_pointer(
+                    drag.last_pointer_x.get(),
+                    drag.valid_pointer_x.get(),
+                    drag.preview.borrow().is_some(),
+                    drag.source_lane,
+                );
+                if let Some(pointer_x) = pointer {
+                    self.update_midi_trim_preview(&drag, pointer_x, cx);
+                }
             }
         }
     }
@@ -1266,7 +1360,7 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Ok(preview) = drag.clip.preview_edge_trim(drag.edge, beat) else {
+        let Some(preview) = midi_edge_preview(drag, beat) else {
             return;
         };
         if preview.start() == drag.clip.start()
@@ -1276,10 +1370,19 @@ impl EditorView {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        let request = Request::Edit(Command::TrimMidiClipEdge {
-            clip: drag.clip.id(),
-            edge: drag.edge,
-            beat,
+        let stretch = drag.stretch_modifier.get();
+        let request = Request::Edit(if stretch {
+            Command::StretchMidiClipEdge {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                beat,
+            }
+        } else {
+            Command::TrimMidiClipEdge {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                beat,
+            }
         });
         self.pending_trim = Some(PendingTrim {
             generation: drag.project_generation,
@@ -1289,6 +1392,7 @@ impl EditorView {
                 clip: drag.clip.id(),
                 edge: drag.edge,
                 beat,
+                stretch,
             },
             remaining: None,
             scroll_viewport: drag.scroll.get().viewport,
@@ -1305,14 +1409,13 @@ impl EditorView {
         cx.notify();
     }
 
-    /// Resolve the actual Arrangement target, or the explicit browser hitbox
-    /// exception. Other outside releases retain ordinary cancellation semantics.
-    /// Foreign coordinates never become timeline coordinates; canonical drop
-    /// validation and the existing single pending-trim owner remain authoritative.
+    /// Finalize the captured source, regardless of the release's hovered panel.
+    /// Foreign horizontal coordinates retain the last valid timeline point;
+    /// canonical validation and the existing pending-trim owner stay authoritative.
     pub(super) fn finish_trim_pointer_release(
         &mut self,
         event: &gpui::MouseUpEvent,
-        browser_release: bool,
+        _browser_release: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -1330,16 +1433,6 @@ impl EditorView {
             self.cancel_trim_gesture(cx);
             return true;
         }
-        // `browser_release` is supplied only by the browser's own hovered
-        // capture listener. Never infer that exception from a foreign x value.
-        let target_track = if browser_release && self.browser.open {
-            None
-        } else if let Some((track, _)) = self.hovered_drag_target(x, f32::from(event.position.y)) {
-            Some(track)
-        } else {
-            // Let existing mouse-up/out cancellation retire this outside drag.
-            return false;
-        };
         if let Some(drag) = self.active_trim_drag.clone() {
             drag.snap_modifier.set(event.modifiers.platform);
             drag.stretch_modifier.set(event.modifiers.shift);
@@ -1353,11 +1446,12 @@ impl EditorView {
                 drag.last_pointer_x.set(Some(pointer));
                 self.update_trim_preview(&drag, pointer, cx);
                 if drag.preview.borrow().is_some() {
-                    self.drop_trim(&drag, target_track.unwrap_or(drag.source_track), window, cx);
+                    self.drop_trim(&drag, drag.source_track, window, cx);
                 }
             }
         } else if let Some(drag) = self.active_midi_trim_drag.clone() {
             drag.snap_modifier.set(event.modifiers.platform);
+            drag.stretch_modifier.set(event.modifiers.shift);
             let pointer = retained_timeline_pointer(
                 Some(x),
                 drag.valid_pointer_x.get(),
@@ -1368,7 +1462,7 @@ impl EditorView {
                 drag.last_pointer_x.set(Some(pointer));
                 self.update_midi_trim_preview(&drag, pointer, cx);
                 if drag.preview.borrow().is_some() {
-                    self.drop_midi_trim(&drag, target_track.unwrap_or(drag.source_track), cx);
+                    self.drop_midi_trim(&drag, drag.source_track, cx);
                 }
             }
         }
@@ -1412,7 +1506,7 @@ impl EditorView {
             let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
             let requested = i128::from(beat.raw()) - delta;
             let beat = BeatTime::from_raw(requested.clamp(0, i128::from(u64::MAX)) as u64);
-            let clip = drag.clip.preview_edge_trim(drag.edge, beat).ok()?;
+            let clip = midi_edge_preview(drag, beat)?;
             let edge = match drag.edge {
                 TrimEdge::Left => clip.start().raw(),
                 TrimEdge::Right => clip.start().raw().checked_add(clip.length().raw())?,
@@ -1695,8 +1789,14 @@ mod tests {
             .preview_edge_trim(TrimEdge::Right, hex_project::BeatTime::ONE)
             .expect("midi trim candidate");
         let midi = RefCell::new(None);
-        assert!(replace_midi_trim_preview(&midi, Some(midi_candidate)));
-        assert!(!replace_midi_trim_preview(&midi, Some(midi_candidate)));
+        assert!(replace_midi_trim_preview(
+            &midi,
+            Some(midi_candidate.into())
+        ));
+        assert!(!replace_midi_trim_preview(
+            &midi,
+            Some(midi_candidate.into())
+        ));
     }
 
     #[test]
@@ -1758,6 +1858,7 @@ mod tests {
             comparison_audio: None,
             project: Arc::clone(&state.project),
             waveforms: BTreeMap::new(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
@@ -1818,6 +1919,7 @@ mod tests {
             comparison_audio: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -1866,6 +1968,7 @@ mod tests {
             comparison_audio: None,
             project: Arc::new(moved_editor.project().clone()),
             waveforms: BTreeMap::new(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -1917,6 +2020,7 @@ mod tests {
             comparison_audio: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -1976,3 +2080,11 @@ mod resize_release_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "resize_terminal_tests.rs"]
 mod resize_terminal_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_left_extension_ui_tests.rs"]
+mod midi_left_extension_ui_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_stretch_ui_tests.rs"]
+mod midi_stretch_ui_tests;

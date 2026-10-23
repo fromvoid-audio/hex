@@ -156,7 +156,16 @@ fn include(result: &mut Option<[Peak; 2]>, peaks: [Peak; 2]) {
     }
 }
 
+/// Summary for editor deep zoom: shares resident PCM for exact sub-bin queries.
 pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, ImportError> {
+    let mut waveform = summarize_peaks(audio, requested_bins)?;
+    waveform.samples = Some(audio.clone());
+    Ok(waveform)
+}
+
+/// Peak-only browser metadata. Decoded PCM is borrowed during construction and
+/// is not kept alive by the summary or its range-query hierarchy.
+pub fn summarize_peaks(audio: &Audio, requested_bins: usize) -> Result<Waveform, ImportError> {
     if requested_bins == 0 || requested_bins > MAX_BINS {
         return Err(ImportError::LimitExceeded("waveform bins must be 1..65536"));
     }
@@ -185,9 +194,7 @@ pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, Impor
         bins.push(peaks);
         start = end;
     }
-    let mut waveform = Waveform::from_peaks(frames.len(), bins)?;
-    waveform.samples = Some(audio.clone());
-    Ok(waveform)
+    Waveform::from_peaks(frames.len(), bins)
 }
 
 #[cfg(test)]
@@ -234,6 +241,68 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn detailed_browser_summary_keeps_impulses_and_releases_pcm() {
+        let mut frames = vec![[0.125, -0.25]; 8195];
+        frames[4097] = [-1.0, 0.875];
+        frames[8194] = [0.75, -0.9];
+        let audio = Audio::new(48_000, frames).unwrap();
+        let summary = summarize_peaks(&audio, 4096).unwrap();
+        assert_eq!(summary.bins.len(), 4096);
+        assert!(
+            summary.samples.is_none(),
+            "browser cache must not retain decoded PCM"
+        );
+        assert!(!summary.shares_audio_with(&audio));
+        assert_eq!(
+            summary.peaks_for_frames(4097, 4098),
+            Some([
+                Peak {
+                    min: -1.0,
+                    max: 0.125
+                },
+                Peak {
+                    min: -0.25,
+                    max: 0.875
+                }
+            ])
+        );
+        assert_eq!(
+            summary.peaks_for_frames(8193, 8195),
+            Some([
+                Peak {
+                    min: 0.125,
+                    max: 0.75
+                },
+                Peak {
+                    min: -0.9,
+                    max: -0.25
+                }
+            ])
+        );
+        drop(audio);
+        assert_eq!(
+            summary.peaks_for_frames(0, 2),
+            Some([
+                Peak {
+                    min: 0.125,
+                    max: 0.125
+                },
+                Peak {
+                    min: -0.25,
+                    max: -0.25
+                }
+            ])
+        );
+        let silence = Audio::new(8000, vec![[0.0; 2]; 3]).unwrap();
+        let tiny = summarize_peaks(&silence, 4096).unwrap();
+        assert_eq!(tiny.bins.len(), 3);
+        assert_eq!(
+            tiny.peaks_for_frames(0, 3),
+            Some([Peak { min: 0.0, max: 0.0 }; 2])
+        );
+    }
+
     #[test]
     fn tiny_sources_and_limits_are_explicit() {
         let audio = Audio::new(48_000, vec![[0.25, -0.25]]).unwrap();

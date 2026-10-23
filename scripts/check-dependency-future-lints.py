@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="hex-dependency-lints-") as scratch:
     subprocess.run([
         "rustc", "--crate-name", "block", "--crate-type", "lib", "--emit", "metadata",
-        "-D", "uninhabited_static", str(ROOT / "third_party/block/src/lib.rs"),
+        "-D", "uninhabited_static", "-D", "missing_abi", str(ROOT / "third_party/block/src/lib.rs"),
         "-o", str(Path(scratch) / "block.rmeta"),
     ], check=True, cwd=ROOT)
 env = os.environ.copy()

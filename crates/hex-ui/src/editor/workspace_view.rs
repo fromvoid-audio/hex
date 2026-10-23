@@ -39,11 +39,11 @@ impl EditorView {
             || self.opening_project
             || self.project_open.busy()
             || self.pending_open_path.is_some()
-            || self.pending_new_mode.is_some()
             || self.export_dialog_open
             || self.save_dialog_open
             || self.preset_dialog_open
             || self.track_resize_active()
+            || self.track_reorder_active()
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
             || self.project_spectrum.resize_is_active()

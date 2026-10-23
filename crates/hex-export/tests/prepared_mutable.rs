@@ -307,8 +307,11 @@ fn prepared_hybrid(
 ) -> (Arc<PreparedRevision>, AssetId) {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {
@@ -327,9 +330,25 @@ fn prepared_hybrid(
             state: mutable_state(),
         })
         .expect("mutable instrument");
+    // Keep the authored MIDI on a silent input track. The hybrid owner retains
+    // its audio prefix, mutable instrument gap and suffix without stacked clips.
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack {
+            name: "silent midi source".into(),
+        })
+        .expect("midi source")
+    else {
+        panic!("source track")
+    };
+    editor
+        .execute(Command::SetMidiSource {
+            destination: track,
+            source: Some(source),
+        })
+        .expect("route authored midi to hybrid owner");
     let clip = match editor
         .execute(Command::PlaceMidiClip {
-            track,
+            track: source,
             start: BeatTime::ZERO,
             length: BeatTime::ONE,
         })
@@ -425,7 +444,7 @@ fn prepared_hybrid(
         };
         let session_clip = match editor
             .execute(Command::CreateSessionMidiClip {
-                track,
+                track: source,
                 scene,
                 name: "unused loop".into(),
                 source_length: BeatTime::ONE,
@@ -591,8 +610,11 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
     let range_path = dir.0.join("range.wav");
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "analytic".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {
@@ -632,6 +654,10 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
         .expect("nonmutable range remains supported");
     assert_eq!(report.frames, 16);
     let full = fs::read(full_path).expect("read full wav");
+    assert!(
+        full[44..].iter().any(|sample_byte| *sample_byte != 0),
+        "analytic range control must retain its audible instrument workload"
+    );
     let range = fs::read(range_path).expect("read range wav");
     assert_eq!(range.len(), 44 + 16 * 4);
     assert_eq!(&range[44..], &full[44 + 10 * 4..44 + 26 * 4]);

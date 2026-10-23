@@ -969,11 +969,13 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
             project_generation: 0,
             project_revision: state.revision,
-            prepared_revision: prepared,
+            prepared_revision: Some(prepared),
+            device_preview_identity: None,
         },
         fence,
     );
@@ -1041,8 +1043,11 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
         service.submit(request).unwrap();
         receive_service_event(&service)
     };
-    let e = send(Request::Edit(Command::AddMidiTrack {
+    let e = send(Request::Edit(Command::InsertTrackWithDevice {
         name: "held".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }));
     let track = e.state.project.tracks()[0].id();
     let e = send(Request::Edit(Command::PlaceMidiClip {
@@ -1246,8 +1251,11 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     };
     receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "held".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         }))
         .unwrap();
     receive_service_event(&service);
@@ -1329,6 +1337,8 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         );
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
+                worker_requires_preroll: None,
+                observation: None,
                 audio_revision,
                 project_generation: 0,
                 state: state.clone(),
@@ -1915,4 +1925,360 @@ fn auto_pan_generic_ab_track_shapes_banks_copy_and_persistence(cx: &mut TestAppC
 #[gpui::test]
 fn auto_pan_generic_ab_return_shapes_banks_copy_and_persistence(cx: &mut TestAppContext) {
     auto_pan_banks_roundtrip(cx, true);
+}
+
+fn rms_bank_values(state: &hex_lattice_contract::NativeDeviceState) -> (u32, f32) {
+    let ParameterValue::Choice(mode) = hex_engine::native_device_parameter_for_class(
+        NativeDeviceClass::Effect,
+        state,
+        hex_lattice_contract::ParameterId::from_static(8),
+    )
+    .unwrap() else {
+        panic!("actual detector choice")
+    };
+    (mode, compressor_mix(state))
+}
+
+fn assert_rms_banks(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    cx: &TestAppContext,
+    device: DeviceId,
+    active: DeviceVariant,
+    pair: [(u32, f32); 2],
+) {
+    visual.run_until_parked();
+    let mode = if pair[0].0 == 1 { "rms" } else { "peak" };
+    let other = if pair[0].0 == 1 { "peak" } else { "rms" };
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("compressor-{mode}-detector-{}", device.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "actual selected-bank caption"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("compressor-{other}-detector-{}", device.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "no stale opposite-bank caption"
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let entry = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert_eq!(entry.active_variant(), active);
+        let inactive = entry.comparison().unwrap().inactive();
+        assert_eq!(rms_bank_values(entry.state()), pair[0]);
+        assert_eq!(rms_bank_values(inactive), pair[1]);
+        assert_eq!(
+            compressor_panel::cached_curve(view, device).unwrap(),
+            &hex_engine::native_compressor_transfer_curve(entry.state()).unwrap(),
+            "actual rendered cached transfer follows the selected bank and mix"
+        );
+        if pair[0].1 != pair[1].1 {
+            assert_ne!(
+                hex_engine::native_compressor_transfer_curve(entry.state()).unwrap(),
+                hex_engine::native_compressor_transfer_curve(inactive).unwrap(),
+                "distinct mix makes stale-bank curve an observable discriminator"
+            );
+        }
+        for state in [entry.state(), inactive] {
+            assert_eq!(state.input_gain_millidb(), -1234);
+            assert_eq!(state.output_gain_millidb(), 4321);
+        }
+    });
+}
+
+fn choose_compressor_detector(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    cx: &mut TestAppContext,
+    device: DeviceId,
+    mode: u32,
+) {
+    let chooser = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-8", device.value()).into_boxed_str(),
+        ))
+        .expect("actual detector selector");
+    visual.simulate_click(chooser.center(), Modifiers::default());
+    visual.run_until_parked();
+    let option = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-8-option-{mode}", device.value()).into_boxed_str(),
+        ))
+        .expect("actual detector option");
+    visual.simulate_click(option.center(), Modifiers::default());
+    pump_until(editor, cx, settled);
+    visual.run_until_parked();
+}
+
+fn compressor_rms_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
+    let directory = Directory::new();
+    let (service, state, track, bus, device) = catalog_fixture(
+        NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
+        on_return,
+    );
+    // Global host trims belong to the device, not either provider payload bank.
+    let trimmed = state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .clone()
+        .with_input_gain_millidb(-1234)
+        .unwrap()
+        .with_output_gain_millidb(4321)
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: trimmed,
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let (handle, editor) = directory.window(cx, service, state, track, bus);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(800.0)));
+    visual.run_until_parked();
+    enter_compressor_mix(&mut visual, &editor, cx, device, "25%");
+    title(&mut visual, device);
+    menu(&mut visual, device);
+    labels(&editor, cx, &["switch to b", "copy a to b"]);
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(0, 0.25), (0, 0.25)],
+    );
+    choose_compressor_detector(&mut visual, &editor, cx, device, 1);
+    enter_compressor_mix(&mut visual, &editor, cx, device, "75%");
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(1, 0.75), (0, 0.25)],
+    );
+
+    // Persist the *distinct* pair before copies erase the discriminator.
+    let saved = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let project_path = directory.0.join("distinct-rms-mix-banks.hex");
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(project_path.clone())))
+    });
+    pump_until(&editor, cx, settled);
+    let reopened = Service::new(48_000, 8, 8_000_000).unwrap();
+    receive_service_event(&reopened);
+    reopened
+        .submit(Request::Open(project_path.clone()))
+        .unwrap();
+    let loaded = receive_service_event(&reopened);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_eq!(loaded.state.project, saved);
+    let generation = editor.read_with(cx, |view, _| view.project_generation);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Open(project_path.clone())))
+    });
+    pump_until(&editor, cx, settled);
+    editor.update(cx, |view, cx| {
+        assert!(view.project_generation > generation);
+        view.selected_track = Some(track);
+        view.focused_return = bus;
+        view.clip_view_open = true;
+        view.device_panel_active = true;
+        cx.notify();
+    });
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(1, 0.75), (0, 0.25)],
+    );
+    let preset_path = directory
+        .0
+        .join("distinct-rms-mix-banks.hex-device-preset.json");
+    let owner = |view: &EditorView| hex_session::service::preset::Owner {
+        project_generation: view.project_generation,
+        revision: view.state.as_ref().unwrap().revision,
+        device,
+        class: NativeDeviceClass::Effect,
+        type_id: view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .type_id(),
+    };
+    editor.update(cx, |view, _| {
+        let owner = owner(view);
+        assert!(view.enqueue(Request::SaveDevicePreset {
+            owner,
+            path: preset_path.clone()
+        }));
+    });
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error)
+    });
+    let preset_bytes = std::fs::read(&preset_path).unwrap();
+    enter_compressor_mix(&mut visual, &editor, cx, device, "50%");
+    choose_compressor_detector(&mut visual, &editor, cx, device, 0);
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(0, 0.5), (0, 0.25)],
+    );
+    let before_load = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    editor.update(cx, |view, _| {
+        let owner = owner(view);
+        assert!(view.enqueue(Request::LoadDevicePreset {
+            owner,
+            path: preset_path.clone()
+        }));
+    });
+    pump_until(&editor, cx, settled);
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(1, 0.75), (0, 0.25)],
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before_load)
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, settled);
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(1, 0.75), (0, 0.25)],
+    );
+    assert_eq!(std::fs::read(&preset_path).unwrap(), preset_bytes);
+    visual.run_until_parked();
+
+    // A real keyboard switch is one edit and re-renders mode caption and curve.
+    title(&mut visual, device);
+    let before_switch =
+        editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::A,
+        [(0, 0.25), (1, 0.75)],
+    );
+    let after_switch = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before_switch)
+    });
+    assert_rms_banks(
+        &mut visual,
+        &editor,
+        cx,
+        device,
+        DeviceVariant::B,
+        [(1, 0.75), (0, 0.25)],
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, after_switch)
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, settled);
+    visual.run_until_parked();
+
+    // Both directional menu copies retain the active slot and are exactly one edit.
+    for (active, current, inactive, next) in [
+        (DeviceVariant::B, (1, 0.75), (0, 0.25), DeviceVariant::A),
+        (DeviceVariant::A, (0, 0.25), (1, 0.75), DeviceVariant::B),
+    ] {
+        title(&mut visual, device);
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        menu(&mut visual, device);
+        labels(
+            &editor,
+            cx,
+            if active == DeviceVariant::A {
+                &["switch to b", "copy a to b"]
+            } else {
+                &["switch to a", "copy b to a"]
+            },
+        );
+        visual.simulate_keystrokes("down enter");
+        pump_until(&editor, cx, settled);
+        assert_rms_banks(&mut visual, &editor, cx, device, active, [current, current]);
+        let copied = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, before)
+        });
+        assert_rms_banks(
+            &mut visual,
+            &editor,
+            cx,
+            device,
+            active,
+            [current, inactive],
+        );
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, copied)
+        });
+        assert_rms_banks(&mut visual, &editor, cx, device, active, [current, current]);
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, settled);
+        visual.run_until_parked();
+        title(&mut visual, device);
+        visual.simulate_keystrokes("p");
+        pump_until(&editor, cx, settled);
+        visual.run_until_parked();
+        assert_rms_banks(&mut visual, &editor, cx, device, next, [inactive, current]);
+    }
+    eprintln!(
+        "compressor RMS generic A/B: return={on_return}; actual ID8 Peak/RMS plus ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved"
+    );
+}
+
+#[gpui::test]
+fn compressor_generic_ab_track_rms_mix_banks_copy_and_persistence(cx: &mut TestAppContext) {
+    compressor_rms_banks_roundtrip(cx, false);
+}
+
+#[gpui::test]
+fn compressor_generic_ab_return_rms_mix_banks_copy_and_persistence(cx: &mut TestAppContext) {
+    compressor_rms_banks_roundtrip(cx, true);
 }

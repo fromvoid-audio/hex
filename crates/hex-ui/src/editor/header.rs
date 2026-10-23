@@ -235,6 +235,7 @@ mod ui_tests {
                 comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -296,7 +297,7 @@ mod ui_tests {
             assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
             assert!((toolbar_top - title_bottom).abs() < 1.0);
             assert!((title_center - window_center).abs() < 1.0);
-            assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
+            assert!(title_label.origin.x + title_label.size.width + px(8.0) <= version.origin.x);
             assert!(version.size.width > px(0.0));
             assert!(
                 (f32::from(
@@ -448,7 +449,13 @@ mod ui_tests {
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
+                    for selector in ["arrange-zoom-fit", "arrange-zoom-back"] {
+                        let control = visual.debug_bounds(selector).unwrap();
+                        assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));
+                        assert!(control.left() >= toolbar.left() && control.right() <= name.left());
+                    }
                     for selector in [
+                        "project tuning · cmd+alt+t",
                         "import audio · cmd+i",
                         "show arrange view · tab",
                         "show console view · tab",
