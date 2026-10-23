@@ -533,6 +533,7 @@ impl Command {
             | Self::MoveReturnDevice { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
+            | Self::MoveTrackBefore { .. }
             | Self::ImportAudioTrack { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }
