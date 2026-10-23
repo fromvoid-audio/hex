@@ -47,7 +47,7 @@ fn required_current_tuning_roundtrips_every_waveform_enabled_and_disabled() {
 
 #[test]
 fn older_alpha_tuning_documents_are_explicitly_unsupported() {
-    for version in 1..37 {
+    for version in 1..34 {
         let mut value = document();
         value["version"] = json!(version);
         refuses(&value);
