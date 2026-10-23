@@ -120,6 +120,7 @@ impl EditorView {
                 self.cancel_computer_keyboard();
             }
             self.piano_zoom_wheel_accum = 0.0;
+            self.piano_pitch_wheel_accum = 0.0;
             self.piano_beat_start = BeatTime::ZERO;
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
@@ -758,11 +759,20 @@ impl EditorView {
                     }
                     cx.stop_propagation();
                     wheel_entity.update(cx, |view, cx| {
-                        if view.zoom_piano_wheel_at(
-                            gesture_bounds_from(bounds),
-                            f32::from(event.position.x),
-                            delta,
-                        ) {
+                        let changed = if event.modifiers.alt {
+                            view.zoom_piano_pitch_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.y),
+                                delta,
+                            )
+                        } else {
+                            view.zoom_piano_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                delta,
+                            )
+                        };
+                        if changed {
                             cx.notify();
                         }
                     });
@@ -1970,6 +1980,49 @@ impl EditorView {
         self.cancel_midi_note_gesture();
     }
 
+    pub(super) fn zoom_piano_pitch_wheel_at(
+        &mut self,
+        bounds: [f32; 4],
+        y: f32,
+        delta: f32,
+    ) -> bool {
+        if self.context_menu.is_some()
+            || self.midi_clip().is_none()
+            || !delta.is_finite()
+            || delta == 0.0
+            || !y.is_finite()
+            || !bounds.iter().all(|value| value.is_finite())
+            || bounds[2] <= 0.0
+            || bounds[3] <= 0.0
+        {
+            return false;
+        }
+        let fraction = (y - bounds[1]) / bounds[3];
+        if !(0.0..=1.0).contains(&fraction) {
+            return false;
+        }
+        self.piano_pitch_wheel_accum = (self.piano_pitch_wheel_accum + delta).clamp(-320.0, 320.0);
+        let steps = (self.piano_pitch_wheel_accum / 80.0).trunc() as i8;
+        if steps == 0 {
+            return false;
+        }
+        self.piano_pitch_wheel_accum -= f32::from(steps) * 80.0;
+        let Some(next) = super::midi_scene::wheel_pitch_zoom(
+            self.piano_pitch_low,
+            self.piano_pitch_rows,
+            fraction,
+            steps,
+        ) else {
+            return false;
+        };
+        if next == (self.piano_pitch_low, self.piano_pitch_rows) {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        (self.piano_pitch_low, self.piano_pitch_rows) = next;
+        true
+    }
+
     pub(super) fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
         if self.context_menu.is_some() || !delta.is_finite() || delta == 0.0 {
             return false;
@@ -2195,7 +2248,30 @@ impl EditorView {
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |_, _, window, _| {
+                    move |bounds, _, window, _| {
+                        let wheel_entity = entity.clone();
+                        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                            if !phase.capture()
+                                || !event.modifiers.alt
+                                || !bounds.contains(&event.position)
+                            {
+                                return;
+                            }
+                            let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
+                            if !delta.is_finite() || delta == 0.0 {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            wheel_entity.update(cx, |view, cx| {
+                                if view.zoom_piano_pitch_wheel_at(
+                                    gesture_bounds_from(bounds),
+                                    f32::from(event.position.y),
+                                    delta,
+                                ) {
+                                    cx.notify();
+                                }
+                            });
+                        });
                         let entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if !phase.capture() {
