@@ -34,6 +34,29 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_centered_fade_defaults(current: &mut Value, old: &Value) {
+    let mut policies: Vec<Value> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["midi_clips"].as_array().unwrap())
+        .map(|clip| json!({"clip":clip["id"],"boundary":"source_end"}))
+        .collect();
+    policies.extend(
+        old["session"]["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|cell| cell["content"]["kind"] == "midi")
+            .map(|cell| json!({"clip":cell["content"]["clip"]["id"],"boundary":"source_end"})),
+    );
+    assert_eq!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("midi_one_shot_boundaries"),
+        Some(json!(policies))
+    );
+
     let expected: Vec<_> = old["fade_shapes"]
         .as_array()
         .unwrap()
