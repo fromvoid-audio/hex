@@ -130,7 +130,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     ));
     controls = controls.child(button(
         capture,
-        if edit.is_some_and(|e| e.musical_start.is_some()) {
+        if edit.is_some_and(|e| e.live_musical_start().is_some()) {
             "anchor · beats"
         } else {
             "anchor · frames"
@@ -415,17 +415,14 @@ fn button(
     disabled: bool,
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
-    div()
+    hex_widgets::action(theme::text(value), theme::action_style())
         .id(gpui::ElementId::Name(
             format!("musical-{}-{}", capture.clip.value(), action_key(action)).into(),
         ))
         .min_h(px(20.0))
         .px(px(3.0))
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
         .opacity(if disabled { 0.4 } else { 1.0 })
-        .child(theme::text(value))
         .on_click(cx.listener(move |view, _, _, cx| {
             if disabled
                 || view.edit_pending()
@@ -471,9 +468,28 @@ fn button(
                 cx.notify();
                 return;
             }
-            match command(&state.project, capture.clip, action) {
+            let intent = if view.selected_clip_ids().len() > 1 {
+                actions::selection_command(&state.project, capture.clip, action)
+            } else {
+                command(&state.project, capture.clip, action)
+            };
+            match intent {
                 Ok(command) => {
-                    view.enqueue(hex_session::service::Request::Edit(command));
+                    if matches!(
+                        action,
+                        Action::MarkerAdd
+                            | Action::MarkerFrame(..)
+                            | Action::MarkerBeat(..)
+                            | Action::MarkerRemove(_)
+                            | Action::EnvelopeAdd
+                            | Action::EnvelopeFrame(..)
+                            | Action::EnvelopeGain(..)
+                            | Action::EnvelopeRemove(_)
+                    ) {
+                        view.enqueue_focused_source_edit(command);
+                    } else {
+                        view.enqueue(hex_session::service::Request::Edit(command));
+                    }
                 }
                 Err(error) => view.error = Some(error.0.into()),
             };

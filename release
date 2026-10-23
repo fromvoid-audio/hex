@@ -1,0 +1,4 @@
+#!/bin/sh
+# Repository-owned local release packaging; no hosted CI or uploads.
+set -eu
+exec python3 "$(dirname "$0")/scripts/hex-release.py" "$@"

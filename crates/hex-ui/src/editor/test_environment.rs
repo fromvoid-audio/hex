@@ -85,6 +85,7 @@ pub(super) struct Environment {
     root: OwnedRoot,
     pub(super) home: PathBuf,
     catalog_save_gate: Mutex<Option<Arc<CatalogSaveGate>>>,
+    folder_validation_gate: Mutex<Option<Arc<FolderValidationGate>>>,
 }
 impl Environment {
     pub(super) fn new() -> io::Result<Arc<Self>> {
@@ -96,6 +97,7 @@ impl Environment {
             root,
             home,
             catalog_save_gate: Mutex::new(None),
+            folder_validation_gate: Mutex::new(None),
         }))
     }
     #[cfg(feature = "ui-test-support")]
@@ -136,6 +138,31 @@ impl Environment {
                 project
             },
         )
+    }
+    #[cfg(feature = "ui-test-support")]
+    pub(super) fn gate_next_folder_validation(&self) -> Arc<FolderValidationGate> {
+        let gate = Arc::new(FolderValidationGate::default());
+        let mut slot = self
+            .folder_validation_gate
+            .lock()
+            .expect("folder test gate poisoned");
+        assert!(
+            slot.is_none(),
+            "a folder validation gate is already installed"
+        );
+        *slot = Some(Arc::clone(&gate));
+        gate
+    }
+    pub(super) async fn before_folder_validation(&self) -> Option<Arc<FolderValidationGate>> {
+        let gate = self
+            .folder_validation_gate
+            .lock()
+            .expect("folder test gate poisoned")
+            .take();
+        if let Some(gate) = &gate {
+            gate.wait().await;
+        }
+        gate
     }
     #[cfg(feature = "ui-test-support")]
     pub(super) fn gate_next_catalog_save(&self) -> Arc<CatalogSaveGate> {
@@ -206,6 +233,45 @@ impl CatalogSaveGate {
     pub(super) fn did_save(&self, succeeded: bool, root_present: bool) {
         self.save_succeeded.store(succeeded, Ordering::Relaxed);
         self.root_present_during_save
+            .store(root_present, Ordering::Relaxed);
+        self.finished.store(true, Ordering::Release);
+    }
+}
+
+/// Checkpoint inside the actual folder metadata job, separate from catalog saves.
+#[derive(Default)]
+pub(super) struct FolderValidationGate {
+    pub(super) reached: AtomicBool,
+    released: AtomicBool,
+    waker: Mutex<Option<Waker>>,
+    pub(super) finished: AtomicBool,
+    pub(super) validation_succeeded: AtomicBool,
+    pub(super) root_present_during_validation: AtomicBool,
+}
+impl FolderValidationGate {
+    async fn wait(&self) {
+        std::future::poll_fn(|cx| {
+            self.reached.store(true, Ordering::Release);
+            *self.waker.lock().expect("folder test gate poisoned") = Some(cx.waker().clone());
+            if self.released.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+    #[cfg(feature = "ui-test-support")]
+    pub(super) fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        if let Some(waker) = self.waker.lock().expect("folder test gate poisoned").take() {
+            waker.wake();
+        }
+    }
+    pub(super) fn did_validate(&self, succeeded: bool, root_present: bool) {
+        self.validation_succeeded
+            .store(succeeded, Ordering::Relaxed);
+        self.root_present_during_validation
             .store(root_present, Ordering::Relaxed);
         self.finished.store(true, Ordering::Release);
     }

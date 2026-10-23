@@ -150,21 +150,21 @@ impl EditorView {
         true
     }
 
-    fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
+    fn bounce_selection(&self) -> Option<hex_project::ClipId> {
         let project = &self.state.as_ref()?.project;
         if self.mode == EditorMode::Session {
             let (track, scene) = self.selected_cell?;
             match project.session_cell(track, scene)? {
-                hex_project::SessionCellContent::Midi(clip) => Some((clip.id(), true)),
-                hex_project::SessionCellContent::Audio(clip) => Some((clip.id(), false)),
+                hex_project::SessionCellContent::Midi(clip) => Some(clip.id()),
+                hex_project::SessionCellContent::Audio(_) => None,
                 hex_project::SessionCellContent::Stop => None,
             }
         } else {
             let clip = self.detail_clip_id()?;
             if project.midi_clip(clip).is_some() {
-                Some((clip, true))
+                Some(clip)
             } else {
-                project.clip(clip).map(|_| (clip, false))
+                None
             }
         }
     }
@@ -308,7 +308,7 @@ impl EditorView {
                 .child(theme::text(label)),
         );
         if !self.device_panel_active
-            && let Some((clip, to_audio)) = self.conversion_selection()
+            && let Some(clip) = self.bounce_selection()
         {
             let enabled = !self.edit_pending();
             let generation = self.project_generation;
@@ -327,15 +327,10 @@ impl EditorView {
                         theme::PaletteRole::Muted
                     })))
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                    .child(theme::text(if to_audio { "→ audio" } else { "→ midi" }))
+                    .child(theme::text("→ audio"))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
-                            description: if to_audio {
-                                "bounce clip to audio in place"
-                            } else {
-                                "convert to empty editable midi clip"
-                            }
-                            .into(),
+                            description: "bounce clip to audio in place".into(),
                         })
                         .into()
                     })
@@ -343,7 +338,7 @@ impl EditorView {
                         if !enabled
                             || view.edit_pending()
                             || view.project_generation != generation
-                            || view.conversion_selection() != Some((clip, to_audio))
+                            || view.bounce_selection() != Some(clip)
                         {
                             return;
                         }
@@ -356,14 +351,9 @@ impl EditorView {
                             project_generation: generation,
                             revision,
                             clip,
-                            to_audio,
+                            to_audio: true,
                         }) {
-                            view.status = if to_audio {
-                                "bouncing clip to audio"
-                            } else {
-                                "converting clip to midi"
-                            }
-                            .into();
+                            view.status = "bouncing clip to audio".into();
                         }
                         cx.notify();
                     })),

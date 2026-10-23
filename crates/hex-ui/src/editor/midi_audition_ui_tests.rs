@@ -125,13 +125,13 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     let start = position(&mut visual, &editor, 0.5, 65);
     let end = position(&mut visual, &editor, 3.5, 59);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request)
     });
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
     pump(&editor, &mut visual);
     let chord = editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request + 1);
@@ -140,9 +140,9 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     // Explicitly committing the same marquee is one new intent, never a paint trigger.
     let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request + 1)
@@ -181,6 +181,23 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
         ));
         assert_eq!(v.computer_keyboard.physical_notes().count(), 1);
     });
+    let [start, one, both] = marquee_points(&mut visual, &editor, false);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    for destination in [one, both] {
+        visual.simulate_mouse_move(destination, Some(MouseButton::Left), shift);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(Arc::ptr_eq(
+                &performance,
+                v.computer_keyboard.input.as_ref().unwrap()
+            ))
+        });
+    }
+    visual.simulate_mouse_up(both, MouseButton::Left, shift);
     visual.simulate_event(KeyUpEvent {
         keystroke: Keystroke::parse("a").unwrap(),
     });
@@ -194,6 +211,7 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
                 .is_note_audition()
         )
     });
+    assert_audition_bank(&editor, &visual, &[(64, 93)]);
     // Hold a physical key while changing selection, so preparation cannot race
     // the focus-loss boundary before this test takes custody of its real event.
     visual.simulate_event(KeyDownEvent {
@@ -330,4 +348,366 @@ fn clip_owner_wins_over_track_selection_and_stop_or_source_loss_cannot_retrigger
     assert!(pending.is_cancelled());
     assert_eq!(pending.key_word(0), Some(0));
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
+}
+
+fn marquee_points(
+    visual: &mut VisualTestContext,
+    editor: &Entity<super::EditorView>,
+    velocity: bool,
+) -> [gpui::Point<gpui::Pixels>; 3] {
+    if velocity {
+        let b = visual.debug_bounds("midi-velocity-lane").unwrap();
+        [
+            point(b.left() + b.size.width * 0.125, b.top() + gpui::px(2.0)),
+            point(b.left() + b.size.width * 0.375, b.top() + gpui::px(54.0)),
+            point(b.left() + b.size.width * 0.875, b.top() + gpui::px(54.0)),
+        ]
+    } else {
+        [
+            position(visual, editor, 0.5, 65),
+            position(visual, editor, 1.5, 59),
+            position(visual, editor, 3.5, 59),
+        ]
+    }
+}
+fn assert_audition_bank(
+    editor: &Entity<super::EditorView>,
+    visual: &VisualTestContext,
+    expected: &[(u8, u8)],
+) -> Arc<hex_engine::computer_keyboard::ComputerKeyboardInput> {
+    editor.read_with(visual, |v, _| {
+        let input = v
+            .computer_keyboard
+            .input
+            .as_ref()
+            .expect("real worker audition input");
+        assert!(input.is_note_audition());
+        let bank = (0..hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES)
+            .filter_map(|slot| {
+                let word = input.key_word(slot).unwrap();
+                if word == 0 {
+                    None
+                } else {
+                    assert!((1..=128).contains(&(word & 255)) && word >> 16 != 0);
+                    assert!((1..=127).contains(&((word >> 8) as u8)));
+                    Some(((word as u8) - 1, (word >> 8) as u8))
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bank, expected);
+        Arc::clone(input)
+    })
+}
+#[gpui::test]
+fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repaint_retrigger(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = authored(cx);
+    let (baseline, first, before) = editor.read_with(&visual, |v, _| {
+        let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
+        (
+            source.notes()[1].id(),
+            source.notes()[0].id(),
+            v.state.as_ref().unwrap().project.snapshot(),
+        )
+    });
+    toggle(&mut visual);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    for velocity in [false, true] {
+        editor.update(&mut visual, |v, cx| {
+            v.midi_selection.set_single(baseline);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let [start, one, both] = marquee_points(&mut visual, &editor, velocity);
+        visual.simulate_mouse_down(start, MouseButton::Left, shift);
+        visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.midi_selection.ids(), [first, baseline]);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        pump(&editor, &mut visual); // Real preparation completes while capture stays held.
+        let first_input = assert_audition_bank(&editor, &visual, &[(60, 37)]);
+        let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
+        for _ in 0..3 {
+            visual.simulate_mouse_move(
+                one + point(gpui::px(1.0), gpui::px(0.0)),
+                Some(MouseButton::Left),
+                shift,
+            );
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.computer_keyboard.request_id, request);
+            assert!(v.midi_marquee.is_some() || v.velocity_marquee_active());
+            assert!(Arc::ptr_eq(
+                &first_input,
+                v.computer_keyboard.input.as_ref().unwrap()
+            ));
+        });
+        visual.simulate_mouse_move(both, Some(MouseButton::Left), shift);
+        pump(&editor, &mut visual);
+        let second_input = assert_audition_bank(&editor, &visual, &[(64, 93)]);
+        assert!(first_input.is_cancelled());
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.computer_keyboard.request_id, request + 1)
+        });
+        visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+        pump(&editor, &mut visual);
+        assert!(
+            second_input.is_cancelled(),
+            "leaving revokes the finite chord even when that pitch belongs to the additive baseline"
+        );
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.computer_keyboard.request_id, request + 1)
+        });
+        visual.simulate_mouse_move(both, Some(MouseButton::Left), shift);
+        pump(&editor, &mut visual);
+        let reentered = assert_audition_bank(&editor, &visual, &[(64, 93)]);
+        visual.simulate_mouse_up(both, MouseButton::Left, shift);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.computer_keyboard.request_id, request + 2);
+            assert!(Arc::ptr_eq(
+                &reentered,
+                v.computer_keyboard.input.as_ref().unwrap()
+            ));
+            assert_eq!(v.midi_selection.ids(), [first, baseline]);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+}
+#[gpui::test]
+fn canceling_held_marquee_revokes_unreceived_real_preparation_and_restores_baseline(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, _) = authored(cx);
+    let baseline = editor.read_with(&visual, |v, _| v.midi_selection.shared_ids());
+    toggle(&mut visual);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    for velocity in [false, true] {
+        let [start, one, both] = marquee_points(&mut visual, &editor, velocity);
+        visual.simulate_mouse_down(start, MouseButton::Left, shift);
+        visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+        visual.run_until_parked();
+        let input = editor.update(&mut visual, |v, _| {
+            assert_eq!(v.tick_midi_audition(), Some(true));
+            assert!(v.edit_pending());
+            Arc::clone(v.computer_keyboard.input.as_ref().unwrap())
+        });
+        visual.simulate_mouse_move(both, Some(MouseButton::Left), shift);
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(v.edit_pending());
+            assert!(
+                v.midi_marquee.is_some() || v.velocity_marquee_active(),
+                "its own pending preparation must not cancel live capture"
+            );
+        });
+        // Deliberately leave the actual Service terminal unreceived until after cancel.
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(input.is_cancelled());
+        pump(&editor, &mut visual);
+        visual.simulate_mouse_up(one, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.midi_selection.ids(), baseline.as_ref());
+            assert!(v.computer_keyboard.input.is_none());
+            assert!(!v.velocity_marquee_active());
+            assert!(v.midi_marquee.is_none());
+        });
+    }
+}
+#[gpui::test]
+fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = authored(cx);
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    let [start, one, _] = marquee_points(&mut visual, &editor, false);
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_selection.len(), 2);
+        assert!(v.computer_keyboard.input.is_none());
+        assert_eq!(v.computer_keyboard.request_id, 0);
+    });
+    visual.simulate_mouse_up(one, MouseButton::Left, shift);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::AddMidiNotes {
+                clip,
+                notes: (36..54)
+                    .map(|pitch| MidiNoteInsert {
+                        start: BeatTime::ONE,
+                        duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
+                        pitch,
+                        channel: 0,
+                        velocity: 100
+                    })
+                    .collect()
+            }))
+        )
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, cx| {
+        v.piano_pitch_low = 24;
+        v.piano_pitch_rows = 72;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    toggle(&mut visual);
+    let start = position(&mut visual, &editor, 0.5, 54);
+    let end = position(&mut visual, &editor, 1.5, 35);
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_selection.len(), 18);
+        assert!(v.computer_keyboard.input.is_none());
+        assert_eq!(v.computer_keyboard.request_id, 0);
+        assert!(v.error.as_deref().unwrap().contains("at most 17"));
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn explicit_note_actions_adopt_live_membership_and_retire_both_pointer_owners(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = authored(cx);
+    let (baseline, before) = editor.read_with(&visual, |v, _| {
+        (
+            v.midi_selection.primary().unwrap(),
+            v.state.as_ref().unwrap().project.snapshot(),
+        )
+    });
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    for group in [false, true] {
+        for velocity in [false, true] {
+            editor.update(&mut visual, |v, cx| {
+                if group {
+                    v.midi_selection.set_single(baseline);
+                } else {
+                    v.midi_selection.clear();
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let [start, one, _] = marquee_points(&mut visual, &editor, velocity);
+            visual.simulate_mouse_down(start, MouseButton::Left, shift);
+            visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+            visual.run_until_parked();
+            visual.simulate_keystrokes("right");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.midi_selection.len(), if group { 2 } else { 1 });
+                assert!(v.midi_marquee.is_none());
+                assert!(!v.velocity_marquee_active());
+                let notes = v
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .midi_source(clip)
+                    .unwrap()
+                    .notes();
+                assert_eq!(
+                    notes.iter().map(|n| n.start().raw()).collect::<Vec<_>>(),
+                    [
+                        5 * BeatTime::ONE.raw() / 4,
+                        if group {
+                            13 * BeatTime::ONE.raw() / 4
+                        } else {
+                            3 * BeatTime::ONE.raw()
+                        }
+                    ]
+                );
+            });
+            visual.simulate_mouse_up(one, MouseButton::Left, shift);
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+            });
+            // Even a selection action that keeps identical IDs/primary retires capture.
+            visual.simulate_keystrokes("cmd-a");
+            visual.run_until_parked();
+            visual.simulate_mouse_down(start, MouseButton::Left, shift);
+            visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+            visual.run_until_parked();
+            visual.simulate_keystrokes("cmd-a");
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!(v.midi_marquee.is_none());
+                assert!(!v.velocity_marquee_active());
+                assert_eq!(v.midi_selection.len(), 2);
+            });
+            visual.simulate_mouse_up(one, MouseButton::Left, shift);
+            visual.run_until_parked();
+        }
+    }
+}
+
+#[gpui::test]
+fn real_project_replacement_cancels_live_marquee_without_reviving_old_selection_or_input(
+    cx: &mut TestAppContext,
+) {
+    for velocity in [false, true] {
+        let (mut visual, editor, _environment, _) = authored(cx);
+        toggle(&mut visual);
+        let [start, one, _] = marquee_points(&mut visual, &editor, velocity);
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(start, MouseButton::Left, shift);
+        visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
+        pump(&editor, &mut visual);
+        let input = assert_audition_bank(&editor, &visual, &[(60, 37)]);
+        let generation = editor.update(&mut visual, |v, _| {
+            let generation = v.project_generation;
+            assert!(v.enqueue(Request::NewWithAudioMode {
+                mode: hex_session::DocumentAudioMode::Resident,
+                reservation: None
+            }));
+            generation
+        });
+        pump(&editor, &mut visual);
+        assert!(input.is_cancelled());
+        visual.simulate_mouse_up(one, MouseButton::Left, shift);
+        for _ in 0..3 {
+            editor.update(&mut visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |v, _| {
+            assert!(v.project_generation > generation);
+            assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
+            assert!(v.midi_selection.is_empty());
+            assert!(v.midi_marquee.is_none());
+            assert!(!v.velocity_marquee_active());
+            assert!(v.computer_keyboard.input.is_none());
+        });
+    }
 }

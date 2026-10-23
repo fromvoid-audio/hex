@@ -1,6 +1,7 @@
 //! Actual input/UTF-16 selection checks; never a native focus-bug acceptance claim.
 use super::*;
 use gpui::EntityInputHandler;
+use hex_session::service::Request;
 use std::ops::Range;
 
 fn selection(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) -> Range<usize> {
@@ -661,4 +662,163 @@ fn toggle_fixture_same_root_retains_actual_catalog_job_after_view_and_caller_dro
     eprintln!(
         "toggle_fixture_custody same_root=true real_save=true all_four_preferences=true view_retired=true cleaned=true"
     );
+}
+
+#[gpui::test]
+fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    for width in [240.0, 480.0] {
+        let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        editor.update(visual, |view, cx| {
+            view.browser.width = width;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        // This browser fixture begins with a projected UI snapshot. Establish
+        // matching real worker state before comparing it across later ticks.
+        editor.update(visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "target".into()
+            })))
+        });
+        super::super::super::clip_drag_ui_test::pump_move(&editor, visual);
+        let before = editor.read_with(visual, |view, cx| {
+            assert!(!view.browser_visible_entries(cx).is_empty());
+            (
+                view.browser.section.clone(),
+                view.state.as_ref().unwrap().project.clone(),
+                view.selected_track,
+            )
+        });
+        let field = visual.debug_bounds("browser-search").unwrap();
+        let slot = visual
+            .debug_bounds("browser-search-clear-slot")
+            .expect("reserved clear slot");
+        assert!(visual.debug_bounds("browser-search-clear").is_none());
+        visual.simulate_click(field.center(), Modifiers::default());
+        visual.simulate_input("missing_query_Ω_long_enough_to_scroll_the_input");
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("browser-search"), Some(field));
+        assert_eq!(visual.debug_bounds("browser-search-clear-slot"), Some(slot));
+        let clear = visual.debug_bounds("browser-search-clear").unwrap();
+        let text = visual.debug_bounds("browser-search-text").unwrap();
+        assert!(text.right() <= clear.left() && clear.right() <= field.right());
+        editor.read_with(visual, |view, cx| {
+            assert!(view.browser_visible_entries(cx).is_empty())
+        });
+        visual.simulate_click(clear.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("browser-search-clear").is_none());
+        assert_eq!(visual.debug_bounds("browser-search-clear-slot"), Some(slot));
+        assert_eq!(selection(&editor, visual), 0..0);
+        workers_and_ticks(&editor, visual, &directory.0);
+        editor.read_with(visual, |view, cx| {
+            assert!(view.browser.search.read(cx).content.is_empty());
+            assert_eq!(
+                (
+                    view.browser.section.clone(),
+                    view.state.as_ref().unwrap().project.clone(),
+                    view.selected_track
+                ),
+                before
+            );
+            assert!(!view.browser_visible_entries(cx).is_empty());
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert_eq!(view.browser.playback_generation, 0);
+        });
+        visual.simulate_input("loop");
+        editor.read_with(visual, |view, cx| {
+            assert_eq!(view.browser.search.read(cx).content, "loop")
+        });
+    }
+}
+
+#[gpui::test]
+fn clear_search_accessibility_refuses_old_text_and_uses_current_input_owner(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let bounds = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.simulate_input("old query");
+    visual.run_until_parked();
+    let request = |visual: &mut VisualTestContext| {
+        visual.update(|window, _| {
+            let node = window
+                .accessibility_nodes()
+                .find(|node| node.descriptor.name.as_ref() == "clear search")
+                .expect("clear action semantics");
+            assert_eq!(node.descriptor.value, gpui::AccessibilityValue::Button);
+            gpui::AccessibilityRequest {
+                id: node.descriptor.id,
+                revision: node.descriptor.revision,
+                action: gpui::AccessibilityAction::Press,
+            }
+        })
+    };
+    let stale = request(visual);
+    visual.simulate_input(" newer text");
+    visual.run_until_parked();
+    assert!(!visual.update(|window, cx| window.perform_accessibility_request(&stale, cx)));
+    let current = request(visual);
+    assert!(visual.update(|window, cx| window.perform_accessibility_request(&current, cx)));
+    visual.run_until_parked();
+    assert!(!visual.update(|window, cx| window.perform_accessibility_request(&current, cx)));
+    assert!(visual.debug_bounds("browser-search-clear").is_none());
+    assert_eq!(selection(&editor, visual), 0..0);
+    visual.simulate_input("replacement");
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "replacement")
+    });
+}
+
+#[gpui::test]
+fn clear_search_cancels_composition_and_resets_selection(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let bounds = visual.debug_bounds("browser-search").unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    let mark = |visual: &mut VisualTestContext| {
+        visual.update(|window, cx| {
+            editor
+                .read(cx)
+                .browser
+                .search
+                .clone()
+                .update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(None, "候補", Some(2..2), window, cx)
+                });
+        })
+    };
+    mark(visual);
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("browser-search-clear").is_none(),
+        "composition alone is not committed query text"
+    );
+    visual.simulate_input("kick");
+    mark(visual);
+    visual.run_until_parked();
+    let clear = visual.debug_bounds("browser-search-clear").unwrap();
+    visual.simulate_click(clear.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor
+            .read(cx)
+            .browser
+            .search
+            .clone()
+            .update(cx, |input, cx| {
+                assert!(input.content.is_empty());
+                assert!(input.marked_text_range(window, cx).is_none());
+            })
+    });
+    visual.simulate_input("loop");
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "loop")
+    });
 }

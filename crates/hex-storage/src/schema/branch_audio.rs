@@ -166,11 +166,6 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             content,
         });
     }
-    if states.is_empty() {
-        return Err(StorageError::Invalid(
-            "ambiguous development audio envelope without audio clips",
-        ));
-    }
     let base = DocumentV19 {
         format: doc.format,
         version: 17,

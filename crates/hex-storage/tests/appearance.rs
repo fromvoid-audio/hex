@@ -200,11 +200,9 @@ fn track_colors_and_both_clip_domains_roundtrip_with_history_and_copies() {
             .iter()
             .all(|c| c.flavor() == ClipFlavor::Accent)
     );
-    for clip in [right, session_audio] {
-        editor
-            .execute(Command::ConvertAudioClipToMidi(clip))
-            .unwrap();
-        assert_eq!(editor.project().clip_flavor(clip), Some(ClipFlavor::Accent));
+    // Conversion only supports MIDI-to-audio; flavor survives both locations.
+    for clip in [midi_right, session_midi] {
+        let flavor = editor.project().clip_flavor(clip);
         let (_, frames) = editor.project().midi_bounce_range(clip).unwrap();
         editor
             .execute(Command::ConvertMidiClipToAudio {
@@ -213,7 +211,7 @@ fn track_colors_and_both_clip_domains_roundtrip_with_history_and_copies() {
                 frames,
             })
             .unwrap();
-        assert_eq!(editor.project().clip_flavor(clip), Some(ClipFlavor::Accent));
+        assert_eq!(editor.project().clip_flavor(clip), flavor);
     }
     assert_eq!(
         decode(&encode(editor.project()).unwrap()).unwrap(),
@@ -231,7 +229,7 @@ fn current_format_strict_appearance_validation() {
         })
         .unwrap();
     let value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
-    assert_eq!(value["version"], 35);
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     for (field, bad) in [
         ("track_colors", json!([])),
         ("track_colors", json!([{"track":1,"color":"unknown"}])),

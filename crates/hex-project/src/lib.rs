@@ -1,6 +1,9 @@
 //! # Purpose
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
-//! transactional history. Clip-local MIDI volume has independent immutable identity
+//! transactional history. Main-lane song sections are stable named/color/range
+//! objects, separate from DSP clips. Structural reorder permutes complete
+//! supported song content atomically through retained source/history contracts.
+//! Clip-local MIDI volume has independent immutable identity
 //! from note/source data, with bounded current-format and history fidelity.
 //! Arrangement clips sharing a hybrid TrackId have disjoint
 //! half-open occupancy. Newly placed/extended material replaces older occupancy;
@@ -17,24 +20,36 @@
 //! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
 //! preparation must preserve project, IDs and history.
 mod arrangement_occupancy;
+mod arrangement_sections;
+pub use arrangement_sections::{
+    ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
+    SectionReorderPreview, SectionSplicePreview,
+};
 mod audio_events;
+mod project_tempo;
+mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
+mod clip_selection_edit;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
-    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
-    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
-    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
-    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
+    AudioImportWarp, AudioProcessingProjection, AudioViewMode, AudioViewOccurrence,
+    AudioViewPlacement, AudioViewProjection, AudioViewResize, AudioViewResizeOperation,
+    BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN,
+    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings,
+    audio_projection_beat, audio_projection_frame, default_audio_warp, preview_audio_clip_stretch,
+    preview_audio_view_resize, preview_view_resize,
 };
+pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod clip_clipboard;
 mod clip_copy;
+mod clip_duplicate;
 mod clip_group;
 mod clip_group_preview;
 pub use clip_clipboard::ClipClipboard;
@@ -75,6 +90,8 @@ mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
 mod midi_source_range;
+mod midi_stretch;
+pub use midi_stretch::MidiClipStretch;
 mod midi_volume;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
@@ -105,7 +122,10 @@ pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
-pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi::{
+    MidiClip, MidiClipTrim, MidiNote, MidiOneShotBoundary, MidiSource, MidiSourceIdentity,
+    TrackContent,
+};
 pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
@@ -152,6 +172,7 @@ identifier!(SceneId);
 identifier!(DeviceId);
 identifier!(ReturnId);
 identifier!(RouteId);
+identifier!(SectionId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,12 +284,14 @@ impl Asset {
 mod clip_fade;
 pub use clip_fade::ClipFade;
 
-/// Edge used by the canonical absolute-frame clip trim command.
+/// Edge used by clip trimming and structural section resizing.
+/// Clip trim uses an absolute frame. Section resize changes the prefix/suffix
+/// length while keeping its start fixed and rippling later song content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrimEdge {
-    /// Inclusive timeline start frame.
+    /// Leading edge or section prefix.
     Left,
-    /// Exclusive timeline end frame.
+    /// Trailing edge or section suffix.
     Right,
 }
 /// Saved audio-clip gain in integer millidecibels, before track processing.
@@ -527,6 +550,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) arrangement_sections: Vec<ArrangementSection>,
     pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
@@ -550,6 +574,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            arrangement_sections: Vec::new(),
             tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
@@ -577,6 +602,7 @@ impl Project {
     /// Used by prepared tuning publications; it does not authorize playback itself.
     pub fn same_except_tuning(&self, other: &Self) -> bool {
         let Self {
+            arrangement_sections,
             tuning: _,
             routing,
             audio_feeds,
@@ -594,7 +620,8 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        routing == &other.routing
+        arrangement_sections == &other.arrangement_sections
+            && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
             && import_provenance == &other.import_provenance
