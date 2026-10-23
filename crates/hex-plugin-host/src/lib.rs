@@ -5,6 +5,8 @@
 //! can retire even a startup-hung instance without signalling numeric PIDs.
 //! A real child-custody preflight refuses unsupported inherited auto-reap;
 //! the client never changes caller signal dispositions.
+//! Source-bound facts precede presentation/state/processing finalization. The
+//! pending type cannot exchange PCM or grant graph/canonical acceptance.
 //! Configuration, prepared state and PCM are copied and strictly bounded.
 //!
 //! # Dependencies
