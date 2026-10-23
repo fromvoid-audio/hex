@@ -610,7 +610,7 @@ impl NativeRuntimeChain {
             ) && (instance
                 .configuration
                 .as_ref()
-                .is_none_or(|state| state.type_id() != instance.device_type)
+                .is_none_or(|state| state.as_ref().type_id() != instance.device_type)
                 || !instance.matrix.is_identity())
             {
                 return Err(DeviceContractError::ForeignProcessingUnavailable);
