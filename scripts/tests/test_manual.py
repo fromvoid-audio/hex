@@ -1,6 +1,5 @@
 """Offline documentation integrity; real renderer output is a release-cut gate."""
 import importlib.util
-import json
 import hashlib
 import io
 from pathlib import Path

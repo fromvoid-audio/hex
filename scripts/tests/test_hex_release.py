@@ -1,11 +1,8 @@
 """Release channel/custody regressions; native gates remain separate acceptance."""
 import importlib.util
 import json
-import os
 from pathlib import Path
 import plistlib
-import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
