@@ -80,6 +80,12 @@ fn fixture(
     let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     // This empty schema36 fixture predates horizontal fade coordinates.
     assert_eq!(
+        old.as_object_mut()
+            .unwrap()
+            .remove("midi_one_shot_boundaries"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
         old.as_object_mut().unwrap().remove("fade_curve_positions"),
         Some(serde_json::json!([]))
     );

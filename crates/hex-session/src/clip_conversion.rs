@@ -176,12 +176,9 @@ fn isolated_source(
     let mut snapshot = project.snapshot();
     let source = if let Some(item) = project.session_midi_clip(clip) {
         let source = item.source();
-        let end = if source.looping() {
-            source.loop_end()
-        } else {
-            source.source_length()
-        };
+        let end = source.effective_end();
         MidiClipSnapshot {
+            one_shot_boundary: item.source().one_shot_boundary(),
             volume: item.volume().clone(),
             name: item.name().to_owned(),
             flavor: hex_project::ClipFlavor::default(),
