@@ -151,7 +151,10 @@ or keyboard control as a complete live-performance workflow.
 
 select a track and its device to show the corresponding controls. the set of
 available controls depends on the device. use the visible parameter labels and
-readouts, and check the audio after changing a sound. a device that looks familiar
+readouts, and check the audio after changing a sound. drag an effect from the
+browser onto a track header in arrange or console to append it to that track.
+header drops accept an instrument only when its device chain is empty; an
+occupied instrument slot is preserved. a device that looks familiar
 does not imply complete compatibility with another application's device.
 
 click a device header to focus its card, then press **0** to toggle its bypass.

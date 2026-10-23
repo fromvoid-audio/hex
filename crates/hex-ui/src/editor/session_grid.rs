@@ -426,7 +426,7 @@ impl EditorView {
                     .iter()
                     .map(|track| {
                         let track_id = track.id();
-                        div()
+                        let header = div()
                             .id(("session-track", track.id().value()))
                             .debug_selector(move || format!("session-track-{}", track_id.value()))
                             .relative()
@@ -478,7 +478,8 @@ impl EditorView {
                                 route_snapshot,
                                 routes_ready,
                                 transport_playing,
-                            ))
+                            ));
+                        self.device_drop_header(track_id, header, cx)
                     }),
             )
             .child(div().flex_1().min_w_0())

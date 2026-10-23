@@ -1495,7 +1495,7 @@ impl EditorView {
             .flex_shrink_0()
             .flex()
             .child(clip_area)
-            .child(header)
+            .child(self.device_drop_header(track_id, header, cx))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {

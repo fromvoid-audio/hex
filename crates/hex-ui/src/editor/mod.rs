@@ -34,6 +34,7 @@ mod clip_selection;
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
+mod track_header_device_drop;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
