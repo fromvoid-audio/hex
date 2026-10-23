@@ -803,6 +803,7 @@ pub(super) struct EditorView {
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
+    hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
@@ -1422,6 +1423,7 @@ impl EditorView {
             pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
+            hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
