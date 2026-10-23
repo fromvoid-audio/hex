@@ -2,6 +2,8 @@
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
 mod epoch;
 pub use epoch::Quiescent;
+mod preparation_failure;
+pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 
 use crate::{
     Error, Result,
@@ -186,6 +188,36 @@ pub struct Pending {
     build: InstanceBuild,
 }
 impl Pending {
+    /// Preserve actual failed-construction custody for the host's already
+    /// reserved Root cell. Failure grants no source/graph admission or disposal.
+    pub fn prepare_retained_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        Self::prepare_retained(build, source, preparation, None, cancellation, |_| {})
+    }
+    /// The retained form of canonical startup restore; original state is not
+    /// replaced by capture or by any later preparation failure.
+    pub fn prepare_restored_retained_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        Self::prepare_retained(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |_| {},
+        )
+    }
     pub fn prepare_on_control(
         build: &InstanceBuild,
         source: Source,
@@ -231,9 +263,26 @@ impl Pending {
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
     ) -> Result<Self> {
+        Self::prepare_retained(build, source, preparation, restore, cancellation, setup)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    fn prepare_retained(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        restore: Option<NativeDeviceState>,
+        cancellation: PreparationCancellation,
+        setup: impl FnOnce(&mut Command),
+    ) -> std::result::Result<Self, PreparationFailure> {
         let options = preparation;
-        cancellation.token.check()?;
-        options.limits.validate()?;
+        cancellation
+            .token
+            .check()
+            .map_err(PreparationFailure::before_native)?;
+        options
+            .limits
+            .validate()
+            .map_err(PreparationFailure::before_native)?;
         let config = Configuration {
             binding: options.binding,
             identity: source.identity,
@@ -246,38 +295,54 @@ impl Pending {
                 .bundle
                 .canonical_path
                 .to_str()
-                .ok_or(Error::Protocol("bundle path encoding"))?
+                .ok_or(Error::Protocol("bundle path encoding"))
+                .map_err(PreparationFailure::before_native)?
                 .to_owned(),
             executable: source.executable.relative_path.clone(),
         };
-        let request = config.encode()?;
-        source.unchanged()?;
-        build.unchanged().map_err(Error::Source)?;
+        let request = config.encode().map_err(PreparationFailure::before_native)?;
+        source
+            .unchanged()
+            .map_err(PreparationFailure::before_native)?;
+        build
+            .unchanged()
+            .map_err(Error::Source)
+            .map_err(PreparationFailure::before_native)?;
         // No foreign module is loaded by this exact executable's probe. A
         // missing/auto-reaped child refuses before any SDK instance starts.
-        let mut probe = Command::new(build.helper())
+        let probe = Command::new(build.helper())
             .arg("--child-custody-probe")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(Error::Io)?;
-        let status = probe
-            .wait()
-            .map_err(|e| Error::Custody(format!("waitable-child preflight failed: {e}")))?;
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
+        let mut probe = ChildCustody::Owned(probe);
+        let status = match probe.reap() {
+            Ok(status) => status,
+            Err(cause) => return Err(PreparationFailure::probe(cause, probe)),
+        };
         if !status.success() {
-            return Err(Error::Custody(
+            return Err(PreparationFailure::before_native(Error::Custody(
                 "waitable-child preflight did not exit normally".into(),
-            ));
+            )));
         }
-        build.unchanged().map_err(Error::Source)?;
-        source.unchanged()?;
-        let (data, child_data) = UnixStream::pair().map_err(Error::Io)?;
+        build
+            .unchanged()
+            .map_err(Error::Source)
+            .map_err(PreparationFailure::before_native)?;
+        source
+            .unchanged()
+            .map_err(PreparationFailure::before_native)?;
+        let (data, child_data) = UnixStream::pair()
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
         let PreparationCancellation {
             token: cancellation,
             receiver: child_cancel,
         } = cancellation;
-        let channel = Channel::new(data)?;
+        let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
@@ -285,7 +350,10 @@ impl Pending {
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
             .stderr(Stdio::null());
         setup(&mut command);
-        let child = command.spawn().map_err(Error::Io)?;
+        let child = command
+            .spawn()
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
         // Command retains its Stdio descriptors for reuse. Close the parent
         // copies now, otherwise a crashed/cancelled child cannot produce EOF.
         drop(command);
@@ -298,10 +366,10 @@ impl Pending {
             #[cfg(test)]
             reap_probe: None,
         };
-        let until = end_after(options.limits.startup)?;
         let mut packet = Packet::new();
         let token = pending.cancellation.clone();
         let prepared = (|| {
+            let until = end_after(options.limits.startup)?;
             pending
                 .channel
                 .send(&request, until, &mut || token.check())?;
@@ -333,16 +401,11 @@ impl Pending {
         let facts = match prepared {
             Ok(facts) => facts,
             Err(cause) => {
-                pending.cancel_native();
-                let (exit, custody_error) = match pending.child.reap() {
-                    Ok(s) => (Some(s), None),
-                    Err(e) => (None, Some(e.to_string())),
-                };
-                return Err(Error::Preparation {
-                    cause: Box::new(cause),
-                    exit,
-                    custody_error,
-                });
+                return Err(PreparationFailure::native(
+                    cause,
+                    pending,
+                    options.limits.retirement,
+                ));
             }
         };
         Ok(Self {
@@ -358,8 +421,17 @@ impl Pending {
     pub fn facts(&self) -> Facts {
         self.facts
     }
+    /// Immutable facts of this actual pending lease, not admission authority.
+    pub fn configuration(&self) -> &Configuration {
+        &self.config
+    }
     pub fn cancellation_on_control(&self) -> Cancellation {
         self.lease.cancellation.clone()
+    }
+    /// Cancel this actual pending source and retain its physical cleanup owner
+    /// for Root polling. No source/graph can be accepted from the returned error.
+    pub fn cancel_retained_on_control(self) -> PreparationFailure {
+        PreparationFailure::native(Error::Cancelled, self.lease, self.limits.retirement)
     }
     /// Explicit pending cancellation with actual direct reap. This is OS
     /// retirement, not a successful SDK close or prepared-instance terminal.
@@ -380,9 +452,18 @@ impl Pending {
     /// absence may complete without inventing zero. Source and final Ready are
     /// checked again; a changed reported latency invalidates the caller's plan.
     pub fn complete_on_control(
-        mut self,
+        self,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.complete_retained_on_control(presentation)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    /// Completion errors retain the same actual child for Root's independent
+    /// cleanup observation. Failure cannot create a reusable prepared source.
+    pub fn complete_retained_on_control(
+        mut self,
+        presentation: Option<PresentationLatency>,
+    ) -> std::result::Result<Prepared, PreparationFailure> {
         let token = self.lease.cancellation.clone();
         let result = (|| {
             token.check()?;
@@ -433,16 +514,11 @@ impl Pending {
         let ready = match result {
             Ok(ready) => ready,
             Err(cause) => {
-                self.lease.cancel_native();
-                let (exit, custody_error) = match self.lease.child.reap() {
-                    Ok(status) => (Some(status), None),
-                    Err(error) => (None, Some(error.to_string())),
-                };
-                return Err(Error::Preparation {
-                    cause: Box::new(cause),
-                    exit,
-                    custody_error,
-                });
+                return Err(PreparationFailure::native(
+                    cause,
+                    self.lease,
+                    self.limits.retirement,
+                ));
             }
         };
         Ok(Prepared {
