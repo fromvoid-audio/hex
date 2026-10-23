@@ -2251,26 +2251,18 @@ impl EditorView {
         tooltip: &'static str,
         click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        let button = div()
+        let button = hex_widgets::action(theme::text(label), theme::action_style())
             .id(id)
             .w(px(25.0))
             .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: tooltip.into(),
                 })
                 .into()
             })
-            .on_click(click)
-            .child(theme::text(label));
+            .on_click(click);
         #[cfg(feature = "ui-test-support")]
         let button = button.debug_selector(move || tooltip.into());
         button
