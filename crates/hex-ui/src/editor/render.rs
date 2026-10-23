@@ -520,12 +520,6 @@ impl Render for EditorView {
                         cx.notify();
                     });
                 }
-                if event.button == MouseButton::Left && view.active_fade_drag.is_some() {
-                    view.update_fade_gesture(event.position, event.modifiers.platform, cx);
-                    view.finish_fade_gesture(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
                 if view.finish_trim_pointer_release(event, false, window, cx) {
                     cx.stop_active_drag(window);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
@@ -1177,8 +1171,10 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SplitClip, _, cx| {
-                view.split_at_edit_cursor();
+            .on_action(cx.listener(|view, _: &SplitClip, window, cx| {
+                if !view.split_section_at_cursor(window) {
+                    view.split_at_edit_cursor();
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ExportProject, window, cx| {

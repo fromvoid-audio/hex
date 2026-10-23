@@ -150,11 +150,7 @@ impl Project {
             )
         } else if let Some(clip) = self.session_midi_clip(id) {
             let source = clip.source();
-            let end = if source.looping() {
-                source.loop_end()
-            } else {
-                source.source_length()
-            };
+            let end = source.effective_end();
             (BeatTime::ZERO, beat_length(source.source_start(), end)?)
         } else {
             return Err(Invalid("midi clip no longer exists"));
