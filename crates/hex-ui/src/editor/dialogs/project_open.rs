@@ -274,14 +274,29 @@ mod tests {
             Arc::default(),
         );
         editor.update(cx, |view, _| {
-            let state = Arc::get_mut(view.state.as_mut().unwrap()).unwrap();
-            state.unsaved = true;
-            state.document_path = Some(PathBuf::from("original.hex"));
+            let state = view.state.as_ref().unwrap();
+            let revision = state.revision;
+            view.state = Some(Arc::new(hex_session::service::ViewState {
+                canonical_audio_source: state.canonical_audio_source.clone(),
+                comparison_audio: state.comparison_audio.clone(),
+                project: Arc::clone(&state.project),
+                waveforms: state.waveforms.clone(),
+                source_overviews: state.source_overviews.clone(),
+                audio_clip_waveforms: state.audio_clip_waveforms.clone(),
+                midi_preview: Arc::clone(&state.midi_preview),
+                gain_preview: state.gain_preview.clone(),
+                timeline_frames: state.timeline_frames,
+                can_undo: state.can_undo,
+                can_redo: state.can_redo,
+                revision,
+                unsaved: true,
+                document_path: Some(PathBuf::from("original.hex")),
+            }));
             view.project_open.phase = Phase::Saving(Intent {
                 path: PathBuf::from("selected-next.hex"),
                 mode: DocumentAudioMode::Resident,
                 generation: view.project_generation,
-                revision: state.revision,
+                revision,
                 serial: 1,
             });
             let key = view
