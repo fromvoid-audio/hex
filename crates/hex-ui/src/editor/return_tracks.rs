@@ -177,7 +177,6 @@ impl EditorView {
         for track in returns {
             let id = track.id();
             let selected = self.focused_return == Some(id);
-            let name = track.name().to_owned();
             let muted = track.muted();
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
             let gain = track.gain();
@@ -270,12 +269,18 @@ impl EditorView {
                         .cursor(gpui::CursorStyle::PointingHand)
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .child(theme::text(name))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            if view.focus_return_details(id, window, cx) {
-                                cx.notify();
-                            }
-                        })),
+                        .child(self.track_name_label(
+                            super::track_name::Target::Return(id),
+                            track.name(),
+                            cx,
+                        )),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.open_return_name_context_menu(event.position, id, window, cx);
+                    }),
                 )
                 .child(gain_control)
                 .child(
