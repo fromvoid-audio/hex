@@ -1157,3 +1157,45 @@ fn lower_header_controls_keep_their_actions_without_selecting_background_track(
         });
     }
 }
+
+#[gpui::test]
+fn compact_resize_refuses_to_hide_an_unfinished_header_gain_draft(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, _]) = actor_fixture(cx);
+    let original = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    let selector = Box::leak(format!("track-volume-{}-value", track.value()).into_boxed_str());
+    let field = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(field, Modifiers::default());
+    visual.simulate_input("+100 db");
+    let handle = bounds(&mut visual, "track-height-resize", track).center();
+    let original_height = bounds(&mut visual, "arrangement-track-header", track)
+        .size
+        .height;
+    drag(&mut visual, handle, point(handle.x, px(0.0)));
+    assert_eq!(
+        bounds(&mut visual, "arrangement-track-header", track)
+            .size
+            .height,
+        original_height
+    );
+    assert!(
+        visual.debug_bounds(selector).is_some(),
+        "draft remains visible and recoverable"
+    );
+    editor.read_with(&visual, |view, cx| {
+        assert!(view.track_gain_controls.has_pending_draft(cx));
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+    visual.simulate_keystrokes("escape");
+    let handle = bounds(&mut visual, "track-height-resize", track).center();
+    drag(&mut visual, handle, point(handle.x, px(0.0)));
+    assert_eq!(
+        bounds(&mut visual, "arrangement-track-header", track)
+            .size
+            .height,
+        px(23.0)
+    );
+    assert!(visual.debug_bounds(selector).is_none());
+}
