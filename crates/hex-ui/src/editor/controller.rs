@@ -986,6 +986,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_pending_clip_move();
+                    visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
@@ -1006,6 +1007,7 @@ impl EditorView {
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
+                let section_request = self.pending_section_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let eq_creation_request = self.pending_eq_creation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
@@ -1027,6 +1029,9 @@ impl EditorView {
                         }
                         if clip_move_request {
                             self.clip_move_submitted();
+                        }
+                        if section_request {
+                            self.section_submitted();
                         }
                         if midi_drag_request {
                             self.midi_drag_submitted();
@@ -1055,6 +1060,9 @@ impl EditorView {
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
+                        }
+                        if section_request {
+                            self.retire_pending_section();
                         }
                         if midi_drag_request {
                             self.retire_pending_midi_drag();
@@ -1087,7 +1095,12 @@ impl EditorView {
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
                         }
-                        if matches!(request, Request::SaveNew(_) | Request::SaveCurrent) {
+                        if matches!(
+                            request,
+                            Request::SaveNew(_)
+                                | Request::SaveCurrent
+                                | Request::SaveCurrentWithFormatUpgrade { .. }
+                        ) {
                             self.saving_project = false;
                             self.cancel_open_after_save();
                         }
@@ -1101,6 +1114,9 @@ impl EditorView {
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
+                        }
+                        if section_request {
+                            self.retire_pending_section();
                         }
                         if midi_drag_request {
                             self.retire_pending_midi_drag();
@@ -1844,11 +1860,13 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         self.clip_move_request_complete(&event);
+        self.section_request_complete(&event);
         self.midi_drag_request_complete(&event);
         self.eq_creation_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
@@ -2193,6 +2211,7 @@ impl EditorView {
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.clip_paint_gesture = None;
+            self.cancel_section_pointer();
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
@@ -2687,6 +2706,31 @@ impl EditorView {
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
+        // Freeze import policy once, before this request can enter either queue.
+        let request = match self.capture_audio_import_policy(request) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.into());
+                return false;
+            }
+        };
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Source indices/coordinates deliberately belong to the displayed source.
+    /// Whole-clip property controls must use ordinary enqueue instead.
+    pub(super) fn enqueue_focused_source_edit(&mut self, command: hex_project::Command) -> bool {
+        self.enqueue_with_clip_scope(Request::Edit(command), true)
+    }
+
+    fn enqueue_with_clip_scope(&mut self, request: Request, focused_source: bool) -> bool {
+        let request = match self.resolve_clip_action_scope(request, focused_source) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.0.into());
+                return false;
+            }
+        };
         let selection = self.created_note_selection_intent(&request);
         let pending_before = self.worker_requests_pending;
         let accepted = self.enqueue_request(request, false);
@@ -2717,7 +2761,12 @@ impl EditorView {
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         let open_save = self.project_open.permits_save()
-            && matches!(&request, Request::SaveCurrent | Request::SaveNew(_));
+            && matches!(
+                &request,
+                Request::SaveCurrent
+                    | Request::SaveNew(_)
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            );
         // An already-started recovery must finish while a picker/confirmation
         // pauses user edits. Only the currently owned recovery token qualifies.
         let recovery_restore = matches!(&request, Request::RestorePlayback { generation }
@@ -2763,7 +2812,7 @@ impl EditorView {
                 Some((*project_generation, *revision, *clip, *to_audio));
         }
         #[cfg(test)]
-        if let Request::Edit(command) = &request {
+        if let Request::Edit(command) | Request::EditArrangementSection { command, .. } = &request {
             self.last_enqueued_edit = Some(command.clone());
         }
         #[cfg(test)]
@@ -2806,7 +2855,10 @@ impl EditorView {
         }
         #[cfg(test)]
         if let Request::ImportAudioBatch {
-            paths, destination, ..
+            paths,
+            destination,
+            options,
+            ..
         } = &request
         {
             if let [path] = paths.as_slice() {
@@ -2814,7 +2866,7 @@ impl EditorView {
                     hex_session::import_batch::AudioBatchDestination::Console(_) => {}
                     hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
                         self.last_enqueued_import_to_track =
-                            Some((path.clone(), *track, *start, true))
+                            Some((path.clone(), *track, *start, options.overwrite))
                     }
                     hex_session::import_batch::AudioBatchDestination::NewTracks {
                         before_track,
@@ -2899,6 +2951,7 @@ impl EditorView {
                 | Request::NewWithAudioMode { .. }
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
+                | Request::EditArrangementSection { .. }
                 | Request::Edit(_)
                 | Request::ConvertClip { .. }
                 | Request::CutTimeRange(_)
@@ -2960,6 +3013,7 @@ impl EditorView {
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
+        let section_request = self.pending_section_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let eq_creation_request = self.pending_eq_creation_matches(&request);
         match self.service.submit(request) {
@@ -2976,6 +3030,9 @@ impl EditorView {
                 }
                 if clip_move_request {
                     self.clip_move_submitted();
+                }
+                if section_request {
+                    self.section_submitted();
                 }
                 if midi_drag_request {
                     self.midi_drag_submitted();
@@ -3020,6 +3077,10 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        if self.section_install_pending() {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
         if self.stopped_playback_restore.is_some() {
             self.error = Some("restoring stopped playback · wait before seeking".into());
             return;
@@ -3351,6 +3412,13 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        if self.section_install_pending()
+            && (intent_desired_playing(action) == Some(true)
+                || matches!(action, PlaybackAction::Transport(PlaybackCommand::Seek(_))))
+        {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
         if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
             self.error = Some("restoring stopped playback · wait before playing".into());
             return;

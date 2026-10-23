@@ -17,6 +17,7 @@ pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 use hex_tuning::ProjectTuning;
+mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
@@ -42,6 +43,8 @@ mod device_comparison;
 mod effect_bus;
 #[cfg(test)]
 mod effect_bus_tests;
+#[cfg(test)]
+mod format_upgrade_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -72,7 +75,7 @@ mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
-const BROWSER_PREVIEW_BINS: usize = 48;
+const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]
@@ -188,6 +191,8 @@ pub struct Event {
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
+    /// Replacing the current file changes its reader compatibility. Opening never writes.
+    pub document_format_upgrade_required: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
     /// Completion of explicit Stop recovery, including refusal. A returned graph
@@ -267,7 +272,7 @@ pub fn prepare_audio_preview(
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
     let waveform = Arc::new(
-        hex_media::waveform::summarize(&audio, BROWSER_PREVIEW_BINS)
+        hex_media::waveform::summarize_peaks(&audio, BROWSER_PREVIEW_BINS)
             .map_err(|error| error.to_string().to_lowercase())?,
     );
     Ok(AudioPreview {
@@ -350,6 +355,12 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Captured Main-lane intent. Never retarget to a newer document/revision.
+    EditArrangementSection {
+        project_generation: u64,
+        revision: u64,
+        command: Command,
+    },
     /// Explicitly confirmed recovery storage action, scoped to one observed failure.
     RestartRecovery(RecoveryRestart),
     /// Scalar native seek; all candidate/source owners remain on control workers.
@@ -492,6 +503,7 @@ pub enum Request {
         destination: AudioBatchDestination,
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
+        options: crate::import_batch::AudioImportOptions,
     },
     ImportToTrack {
         path: PathBuf,
@@ -553,6 +565,12 @@ pub enum Request {
     Redo,
     SaveNew(PathBuf),
     SaveCurrent,
+    /// Explicit user consent to replace an older saved format. Bound to the
+    /// selected document and project generation; normal token checks still apply.
+    SaveCurrentWithFormatUpgrade {
+        project_generation: u64,
+        path: PathBuf,
+    },
     RestorePlayback {
         generation: u64,
     },
@@ -578,6 +596,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
+                | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::SamplerEdit(SamplerEdit::Midi(_))
                 | Request::AssignSampler { .. }
@@ -585,6 +604,7 @@ impl Request {
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::CompareDevice { .. }
@@ -608,6 +628,7 @@ impl Request {
                 destination,
                 context,
                 control: Arc::clone(&control),
+                options: Default::default(),
             },
             control,
         ))
@@ -968,6 +989,8 @@ impl Service {
         let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("hex-session".into())
+            // Structural stopped publications reuse the bounded preroll constructor.
+            .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
                 let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
                 let session = match session {
@@ -1211,7 +1234,7 @@ fn view_state_bound(
 ) -> Arc<ViewState> {
     let project = Arc::new(session.project().clone());
     let rate = u64::from(project.sample_rate());
-    let latest_clip_end = latest_clip_end(&project);
+    let latest_clip_end = latest_timeline_content_end(&project);
     let latest_content_end = latest_clip_end.max(
         project
             .loop_region()
@@ -1261,7 +1284,7 @@ fn preview_view_state(
     prepared: Arc<PreparedRevision>,
 ) -> Arc<ViewState> {
     let rate = u64::from(project.sample_rate());
-    let content_end = latest_clip_end(&project).max(
+    let content_end = latest_timeline_content_end(&project).max(
         project
             .loop_region()
             .map(|region| region.end())
@@ -1651,6 +1674,7 @@ fn run_worker(
                 live_expression_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
+                document_format_upgrade_required: false,
                 open_complete: false,
                 project_replaced: false,
                 stopped_playback_restore_complete: false,
@@ -1684,6 +1708,7 @@ fn run_worker(
             live_expression_complete: None,
             audio_batch_complete: None,
             save_complete: false,
+            document_format_upgrade_required: false,
             open_complete: false,
             project_replaced: false,
             stopped_playback_restore_complete: false,
@@ -1951,6 +1976,24 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = browser_failure.or_else(|| match &request {
+            Request::EditArrangementSection {
+                project_generation: captured,
+                revision: captured_revision,
+                command,
+            } => {
+                if *captured != project_generation || *captured_revision != revision {
+                    Some("arrangement section target changed".into())
+                } else if !arrangement_sections::is_command(command) {
+                    Some("section request requires a structural marker command".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before editing sections".into())
+                } else {
+                    None
+                }
+            }
             Request::SamplerEdit(SamplerEdit::Midi(edit)) => {
                 if pending_sampler_parameter.is_some() {
                     Some("sampler edit is already preparing".into())
@@ -2196,6 +2239,7 @@ fn run_worker(
                 Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::EditArrangementSection { .. }
                     | Request::ImportDeviceAsset { .. }
             );
         let sampler_refusal = private_sampler
@@ -2210,9 +2254,11 @@ fn run_worker(
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::EditArrangementSection { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Export(_)
                     | Request::ExportRange { .. }
                     | Request::NewWithAudioMode { .. }
@@ -2220,7 +2266,9 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if native_edit_refusal {
+        if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command)) {
+            error = Some("section edits require a revision-bound section request".into());
+        } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
         } else if sampler_refusal {
             error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; other history steps and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, other history steps and runtime tools are unavailable"}.into());
@@ -2233,7 +2281,12 @@ fn run_worker(
             if matches!(&request, Request::RestoreStoppedPlayback) {
                 stopped_playback_restore_complete = true;
             }
-            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+            if matches!(
+                &request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            ) {
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
@@ -2253,7 +2306,12 @@ fn run_worker(
                     error: Some(reason.clone()),
                 });
             }
-            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+            if matches!(
+                &request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            ) {
                 save_complete = true;
             }
             if let Request::Export(path) | Request::ExportRange { path, .. } = &request {
@@ -2816,6 +2874,7 @@ fn run_worker(
                     destination,
                     context,
                     control,
+                    options,
                 } => {
                     audio_batch_complete = Some(Arc::clone(&control));
                     let actual = AudioBatchContext {
@@ -2833,6 +2892,7 @@ fn run_worker(
                             &session,
                             actual,
                             Arc::clone(&control),
+                            options,
                         )
                         .and_then(|job| {
                             if session.audio_mode() == DocumentAudioMode::Resident
@@ -4354,6 +4414,51 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::EditArrangementSection {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    command,
+                } => {
+                    if captured_generation != project_generation || captured_revision != revision {
+                        error = Some("arrangement section target changed".into());
+                    } else if !arrangement_sections::is_command(&command) {
+                        error = Some("section request requires a structural marker command".into());
+                    } else {
+                        let context = hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision.saturating_add(1),
+                        };
+                        let admission = export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        );
+                        match arrangement_sections::command(
+                            &mut session,
+                            command,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            context,
+                            &mut events,
+                            &mut resident_snapshot,
+                            admission,
+                        ) {
+                            Ok((result, prepared)) => {
+                                if session.project() != state.project.as_ref() {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                }
+                                created = Some(result);
+                                status = Some("arrangement section edited".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    }
+                }
                 Request::Edit(command) => {
                     duplicate_complete = matches!(&command, Command::DuplicateClip(_));
                     match session.command_prepared_revision_with(
@@ -4383,6 +4488,43 @@ fn run_worker(
                         }
                         Ok(_) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session
+                            .section_history_requires_stop(matches!(&request, Request::Redo)) =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    match arrangement_sections::history(
+                        &mut session,
+                        matches!(request, Request::Redo),
+                        context,
+                        &mut events,
+                        &mut resident_snapshot,
+                        admission,
+                    ) {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("section history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 request @ (Request::Undo | Request::Redo)
@@ -4519,8 +4661,20 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
-                Request::SaveCurrent => {
+                request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
                     save_complete = true;
+                    let consent = match &request {
+                        Request::SaveCurrentWithFormatUpgrade {
+                            project_generation: expected,
+                            path,
+                        } => {
+                            *expected == project_generation
+                                && document.as_ref().is_some_and(|handle| handle.path == *path)
+                        }
+                        _ => false,
+                    };
+                    let stale_consent =
+                        matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
                     match (
                         document.as_mut(),
                         project_for_save(&session, media_base.as_deref()),
@@ -4530,6 +4684,14 @@ fn run_worker(
                                 Some("cannot save current project before it has a file path".into())
                         }
                         (_, Err(reason)) => error = Some(reason),
+                        (Some(_), Ok(_)) if stale_consent => {
+                            error = Some("project changed · format upgrade cancelled".into());
+                        }
+                        (Some(handle), Ok(_))
+                            if handle.token.requires_format_upgrade() && !consent =>
+                        {
+                            error = Some("saving replaces this project's older format; use save as to preserve it, or explicitly confirm format overwrite".into());
+                        }
                         (Some(handle), Ok(project)) => {
                             match hex_storage::replace_existing(
                                 &handle.path,
@@ -5571,6 +5733,9 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                document_format_upgrade_required: document
+                    .as_ref()
+                    .is_some_and(|handle| handle.token.requires_format_upgrade()),
                 open_complete,
                 project_replaced,
                 stopped_playback_restore_complete,
@@ -5660,7 +5825,7 @@ fn run_worker(
     }
 }
 
-fn latest_clip_end(project: &Project) -> u64 {
+fn latest_timeline_content_end(project: &Project) -> u64 {
     let audio_end = project
         .tracks()
         .iter()
@@ -5681,7 +5846,13 @@ fn latest_clip_end(project: &Project) -> u64 {
         })
         .max()
         .unwrap_or(0);
-    audio_end.max(midi_end)
+    let section_end = project
+        .arrangement_sections()
+        .iter()
+        .filter_map(|section| project.tempo_map().beat_to_frame(section.end()).ok())
+        .max()
+        .unwrap_or(0);
+    audio_end.max(midi_end).max(section_end)
 }
 
 fn run_export_worker(
@@ -6848,6 +7019,32 @@ mod service_tests {
         assert_eq!(preview.waveform.source_frames, 48);
         assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
         assert!(!preview.waveform.bins.is_empty());
+    }
+
+    #[test]
+    fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() {
+        let directory = TestDir::new();
+        let path = directory.0.join("detail.wav");
+        let mut frames = vec![0_i16; 8195];
+        frames[4097] = 24_000;
+        frames[8194] = -16_000;
+        fs::write(&path, wav_mono(&frames)).unwrap();
+        let preview = prepare_audio_preview(&path, 48_000).unwrap();
+        assert_eq!(preview.waveform.bins.len(), 4096);
+        assert_eq!(preview.waveform.source_frames, 8195);
+        let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
+        assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
+        let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();
+        assert!(
+            middle
+                .iter()
+                .all(|peak| peak.min == 0.0 && peak.max == 24_000.0 / 32768.0)
+        );
+        let last = preview.waveform.peaks_for_frames(8194, 8195).unwrap();
+        assert!(
+            last.iter()
+                .all(|peak| peak.min == -16_000.0 / 32768.0 && peak.max == 0.0)
+        );
     }
 
     #[test]

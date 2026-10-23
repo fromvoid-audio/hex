@@ -394,7 +394,7 @@ impl EditorView {
             if let Some(control) = self.tuning.controls.get(&field) {
                 control.entity.update(cx, |input, cx| {
                     let _ = input.set_external_value(value, cx);
-                    let _ = input.set_external_style(super::device_panel::control_style(), cx);
+                    let _ = input.set_external_style(theme::control_style(), cx);
                 });
                 continue;
             }
@@ -404,7 +404,7 @@ impl EditorView {
                 NumericControlKind::HorizontalSlider,
                 spec,
                 value,
-                super::device_panel::control_style(),
+                theme::control_style(),
             );
             let Ok(config) = config else { continue };
             let appearance = if matches!(

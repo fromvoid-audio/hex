@@ -93,10 +93,7 @@ fn unavailable_recovery_cancel_preserves_old_journal_and_confirm_starts_current_
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
         assert!(view.state.as_ref().unwrap().unsaved);
-        assert!(
-            format!("{:?}", view.error)
-                .contains("unsupported project format or version; current format is 35")
-        );
+        assert!(format!("{:?}", view.error).contains("unsupported older project schema"));
     });
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let action = visual

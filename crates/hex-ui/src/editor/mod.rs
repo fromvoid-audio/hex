@@ -14,11 +14,13 @@ mod arrangement_device_drop;
 mod arrangement_device_drop_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
+mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
 mod browser;
 mod browser_input;
+mod clip_action_scope;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_border_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -41,6 +43,7 @@ mod pending_edit;
 #[cfg(test)]
 mod test_environment;
 
+mod audio_import_settings;
 pub(crate) mod changelog;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -110,6 +113,7 @@ mod musical_time;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod output_meter_ui_test;
 mod overview;
+mod overview_waveform;
 mod play_intent;
 mod project_directory;
 mod project_recovery;
@@ -328,6 +332,8 @@ actions!(
         TrimLeft,
         TrimRight,
         DeleteClip,
+        DeleteSectionMarker,
+        MergeSections,
         RenameClip,
         RenameTrack,
         CommitTrackName,
@@ -496,6 +502,9 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-right", TrimRight, Some("hex_editor")),
         KeyBinding::new("backspace", DeleteClip, Some("hex_editor")),
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
+        KeyBinding::new("cmd-backspace", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("cmd-delete", DeleteSectionMarker, Some("hex_editor")),
+        KeyBinding::new("g", MergeSections, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
@@ -655,6 +664,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
+    sections: arrangement_sections::Sections,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -748,6 +758,8 @@ pub(super) struct EditorView {
     export_dialog_open: bool,
     saving_project: bool,
     save_dialog_open: bool,
+    document_format_upgrade_required: bool,
+    format_upgrade_prompt: Option<save::FormatUpgradeIntent>,
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
@@ -791,6 +803,7 @@ pub(super) struct EditorView {
     zoom_wheel_accum: f32,
     overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
     audio_point_page: usize,
+    overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
@@ -801,6 +814,7 @@ pub(super) struct EditorView {
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
+    hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
@@ -844,6 +858,7 @@ pub(super) struct EditorView {
     project_directory: project_directory::State,
     changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
+    audio_import_settings: audio_import_settings::State,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
@@ -1168,7 +1183,7 @@ impl EditorView {
             if view.cancel_loop_rail_gesture() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
-            if view.cancel_scrub() | view.cancel_clip_paint() {
+            if view.cancel_scrub() | view.cancel_clip_paint() | view.cancel_section_pointer() {
                 cx.notify();
             }
         });
@@ -1207,7 +1222,7 @@ impl EditorView {
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
-                let paint_cancelled = view.cancel_clip_paint();
+                let paint_cancelled = view.cancel_clip_paint() | view.cancel_section_pointer();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
@@ -1225,7 +1240,11 @@ impl EditorView {
             }
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
-            if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
+            if view.cancel_midi_note_gesture()
+                | view.cancel_scrub()
+                | view.cancel_clip_paint()
+                | view.cancel_section_pointer()
+            {
                 cx.notify();
             }
         });
@@ -1242,6 +1261,9 @@ impl EditorView {
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let project_directory = project_directory::State::new(project_directory_path);
+        let audio_import_settings = audio_import_settings::State::new(
+            theme_preferences_path.with_file_name("audio-import.json"),
+        );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -1271,6 +1293,7 @@ impl EditorView {
             selected_clip: None,
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
+            sections: arrangement_sections::Sections::default(),
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -1361,6 +1384,8 @@ impl EditorView {
             export_dialog_open: false,
             saving_project: false,
             save_dialog_open: false,
+            document_format_upgrade_required: false,
+            format_upgrade_prompt: None,
             preset_dialog_open: false,
             status,
             error: None,
@@ -1404,6 +1429,9 @@ impl EditorView {
             zoom_wheel_accum: 0.0,
             overview_cache: std::cell::RefCell::new(None),
             audio_point_page: 0,
+            overview_waveform_cache: Rc::new(std::cell::RefCell::new(
+                overview_waveform::Cache::default(),
+            )),
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
@@ -1415,6 +1443,7 @@ impl EditorView {
             pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
+            hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
@@ -1449,6 +1478,7 @@ impl EditorView {
             project_directory,
             changelog: changelog::State::new(cx),
             theme_settings,
+            audio_import_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
@@ -1475,6 +1505,7 @@ impl EditorView {
         view.start_recent_projects_load(cx);
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
+        view.start_audio_import_preferences_load(cx);
         view
     }
 
@@ -1530,6 +1561,10 @@ impl EditorView {
     }
 
     pub(super) fn toggle_play(&mut self) {
+        if self.section_install_pending() {
+            self.error = Some("applying edit · wait for audio".into());
+            return;
+        }
         if self.recovery.generation().is_some() {
             self.error = Some("audio recovery pending · playback is not ready".into());
             return;

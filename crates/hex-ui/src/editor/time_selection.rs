@@ -118,6 +118,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -199,6 +200,7 @@ impl EditorView {
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -258,6 +260,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -336,6 +339,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -407,6 +411,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
@@ -492,6 +497,7 @@ impl EditorView {
                 .as_ref()
                 .is_none_or(|state| state.revision != gesture.revision)
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -623,6 +629,7 @@ impl EditorView {
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.save_dialog_open
@@ -824,6 +831,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
@@ -1110,7 +1118,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id(("time-selection-handle", track.value()))
@@ -1182,7 +1190,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id("main-project-time-selection-handle")

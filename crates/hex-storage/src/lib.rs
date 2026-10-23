@@ -5,7 +5,7 @@
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
 //!
 //! # Does not own
-//! Does not decode PCM, construct DSP, access callback state or silently convert unsupported alpha
+//! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
 //! formats. Unsupported/malformed input refuses without rewriting the original file.
 mod files;
 mod journal;
@@ -25,6 +25,9 @@ pub use replacement::{
     replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
+
+/// Current saved-project schema; independent of the application version.
+pub const CURRENT_SCHEMA_VERSION: u32 = 37;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -141,10 +144,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema35 envelope with required tuning and complete
+/// Encode the single current schema37 envelope with required tuning and complete
 /// device asset and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV35::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV37::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -160,6 +163,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if !project.arrangement_sections().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save arrangement sections",
+        ));
+    }
     if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| !clip.volume().points().is_empty())
         || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if !clip.volume().points().is_empty()))
     {
@@ -231,6 +239,18 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     result?;
     Ok(output.bytes)
 }
+/// Open schemas34–37 into the current validated model without file/media I/O.
+/// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
+/// Schema36 had independent tempo and sections branches, selected by presence of
+/// the section inventory. Historical audio timing, projection/offset and gain
+/// seam/source metadata migrate by those exact branch contracts; other fields
+/// remain strict. No tempo-map collapse,
+/// overlap repair or opaque device-state conversion is performed. Older projects
+/// violating current model invariants refuse rather than lose musical data.
+/// Schemas1–33 are not yet supported by this public migration path; retained
+/// internal DTOs alone do not establish complete historical compatibility.
+/// Newer/unknown fields, duplicate keys and malformed inventories refuse.
+/// Saving uses the current schema through existing atomic publication/recovery.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(StorageError::Invalid("project document exceeds byte limit"));
@@ -241,10 +261,17 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         version: u32,
     }
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
-    if header.format != "hex-project" || header.version != 35 {
-        return Err(StorageError::Invalid(
-            "unsupported project format or version; current format is 35",
-        ));
+    if header.format != "hex-project" {
+        return Err(StorageError::Invalid("unsupported project format"));
     }
-    schema::DocumentV11::decode(bytes)
+    match header.version {
+        CURRENT_SCHEMA_VERSION => schema::DocumentV11::decode(bytes),
+        34..=36 => schema::tuning::decode_version(bytes, header.version),
+        version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
+            "project uses a newer schema; open it with a newer hex version; original file unchanged",
+        )),
+        _ => Err(StorageError::Invalid(
+            "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
+        )),
+    }
 }

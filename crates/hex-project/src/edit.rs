@@ -15,6 +15,58 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Apply one clip-wide value to a frozen Arrangement selection atomically.
+    EditClips {
+        clips: Vec<ClipId>,
+        edit: crate::ClipEdit,
+    },
+    /// Paint a structural Main-lane marker; no musical content is created.
+    AddArrangementSection {
+        name: String,
+        color: crate::ElementColor,
+        start: crate::BeatTime,
+        end: crate::BeatTime,
+    },
+    /// Marker-only placement/resize; music is never stretched or moved.
+    SetArrangementSectionRange {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+        end: crate::BeatTime,
+    },
+    RenameArrangementSection {
+        section: crate::SectionId,
+        name: String,
+    },
+    SetArrangementSectionColor {
+        section: crate::SectionId,
+        color: crate::ElementColor,
+    },
+    /// Remove the marker only, preserving all musical content and song time.
+    RemoveArrangementSection(crate::SectionId),
+    /// Insert empty time or remove edge time song-wide, keeping marker start fixed.
+    /// Left edits its prefix; Right edits its suffix. No time stretching occurs.
+    ResizeArrangementSection {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        length: crate::BeatTime,
+    },
+    /// Remove the section's entire half-open time interval and close the gap.
+    DeleteArrangementSection(crate::SectionId),
+    /// Insert a song-wide copy immediately after the source, allocating new IDs.
+    DuplicateArrangementSection(crate::SectionId),
+    /// Merge the earliest-to-latest selected marker span, including intervening
+    /// markers/gaps, retaining earliest identity/name/color and all music.
+    MergeArrangementSections(Vec<crate::SectionId>),
+    /// One song-wide cut-and-insert permutation, resolved against stable IDs.
+    ReorderSectionBefore {
+        section: crate::SectionId,
+        before: crate::SectionId,
+    },
+    /// One song-wide cut-and-insert permutation after a stable target ID.
+    ReorderSectionAfter {
+        section: crate::SectionId,
+        after: crate::SectionId,
+    },
     /// Replace validated project tuning and audition settings in one history step.
     SetTuning(hex_tuning::ProjectTuning),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
@@ -334,6 +386,11 @@ pub enum Command {
     },
     MasterGain {
         gain: f32,
+    },
+    /// Replace all project tempo points and retain musical clip onsets.
+    /// Unwarped audio keeps its source processing and natural frame duration.
+    SetProjectTempo {
+        tempo: crate::Tempo,
     },
     SetTempoPoint {
         beat: crate::BeatTime,
@@ -815,6 +872,7 @@ pub struct MidiNoteInsert {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Created {
+    ArrangementSection(crate::SectionId),
     Track(TrackId),
     ReturnTrack(ReturnId),
     Device(DeviceId),
@@ -1176,6 +1234,10 @@ pub(crate) fn split_clip_at_tempo(
     if cut <= edit.view_start || cut >= edit.view_end {
         return Err(Invalid("split has no positive musical crop"));
     }
+    let reference_start = edit
+        .reference_start_raw()
+        .map(|_| edit.reference_beat_at_destination(original, frame, tempo))
+        .transpose()?;
     let mut left = original.clone();
     let mut right = original.clone();
     left.audio_edit_mut()
@@ -1185,11 +1247,18 @@ pub(crate) fn split_clip_at_tempo(
         .audio_edit_mut()
         .ok_or(Invalid("audio domain missing"))?;
     view.view_start = cut;
-    if view.musical_start.is_some() {
-        view.musical_start = Some(tempo.frame_to_beat(frame)?);
-    }
+    view.set_reference_start_raw(reference_start)?;
     right.id = right_id;
     right.start = frame;
+    if edit.processing_projection.is_some() {
+        left.audio_edit_mut()
+            .ok_or(Invalid("audio domain missing"))?
+            .retain_frame_bounds(original.start, frame, tempo)?;
+        right
+            .audio_edit_mut()
+            .ok_or(Invalid("audio domain missing"))?
+            .retain_frame_bounds(frame, end, tempo)?;
+    }
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
     Ok((left, right))
@@ -1245,6 +1314,7 @@ impl Project {
     pub(crate) fn apply_audio_imports(
         &mut self,
         commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
     ) -> Result<Vec<Created>, Invalid> {
         let count = commands.len();
         let mut incoming = Vec::new();
@@ -1336,23 +1406,42 @@ impl Project {
                 playback_frames,
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
+            let mut clip = Clip {
+                name: "clip".into(),
+                flavor: crate::ClipFlavor::default(),
+                id: ClipId(0),
+                asset,
+                start,
+                duration: playback_frames,
+                source_offset: 0,
+                source_length: playback_frames,
+                looping: false,
+                source_phase: 0,
+                fade: ClipFade::neutral(playback_frames)?,
+                gain: crate::ClipGain::UNITY,
+                edit: None,
+            };
+            if warp == crate::AudioImportWarp::Beats {
+                let settings = crate::default_audio_warp(
+                    &clip,
+                    self.tempo_map(),
+                    crate::WarpMode::Beats {
+                        preserve: crate::BeatsPreserve::Transients,
+                        tail: crate::BeatsTail::Forward,
+                        decay: 100,
+                    },
+                )?;
+                let mut edit = crate::AudioClipEdit::capture(&clip);
+                edit.anchor(clip.start, self.tempo_map())?;
+                let domain = std::sync::Arc::make_mut(&mut edit.domain);
+                domain.warp = Some(settings);
+                domain.warp_enabled = true;
+                clip.edit = Some(std::sync::Arc::new(edit));
+                crate::audio_edit::project_clip(&mut clip, self.tempo_map())?;
+            }
             incoming.push(crate::ClipGroupPreview {
                 track,
-                content: crate::ClipGroupContent::Audio(Clip {
-                    name: "clip".into(),
-                    flavor: crate::ClipFlavor::default(),
-                    id: ClipId(0),
-                    asset,
-                    start,
-                    duration: playback_frames,
-                    source_offset: 0,
-                    source_length: playback_frames,
-                    looping: false,
-                    source_phase: 0,
-                    fade: ClipFade::neutral(playback_frames)?,
-                    gain: crate::ClipGain::UNITY,
-                    edit: None,
-                }),
+                content: crate::ClipGroupContent::Audio(clip),
             });
             owners.push((track, asset));
         }
@@ -1382,6 +1471,19 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            command @ (Command::AddArrangementSection { .. }
+            | Command::SetArrangementSectionRange { .. }
+            | Command::RenameArrangementSection { .. }
+            | Command::SetArrangementSectionColor { .. }
+            | Command::RemoveArrangementSection(_)
+            | Command::ReorderSectionBefore { .. }
+            | Command::ReorderSectionAfter { .. }
+            | Command::ResizeArrangementSection { .. }
+            | Command::DeleteArrangementSection(_)
+            | Command::DuplicateArrangementSection(_)
+            | Command::MergeArrangementSections(_)) => {
+                crate::arrangement_sections::apply(self, command)
+            }
             Command::SetTuning(tuning) => {
                 self.tuning = tuning;
                 Ok(Created::None)
@@ -1970,6 +2072,9 @@ impl Project {
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
             }
+            Command::EditClips { clips, edit } => {
+                crate::clip_selection_edit::apply(self, clips, edit)
+            }
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
@@ -2012,11 +2117,28 @@ impl Project {
                 self.master_gain = gain;
                 Ok(Created::None)
             }
+            Command::SetProjectTempo { tempo } => {
+                self.set_project_tempo(tempo)?;
+                Ok(Created::None)
+            }
             Command::SetTempoPoint { beat, tempo } => {
                 let mut candidate = self.clone();
                 candidate.tempo_map = candidate
                     .tempo_map
                     .replace_point(TempoPoint::new(beat, tempo))?;
+                // A structural reorder retains complete processing roots from
+                // their original tempo context. Rebase is not yet supported;
+                // silently projecting a new length would trim/pad their PCM.
+                if candidate.tempo_map != self.tempo_map
+                    && self.tracks.iter().flat_map(|t| t.clips()).any(|clip| {
+                        clip.audio_edit()
+                            .is_some_and(|edit| edit.processing_projection.is_some())
+                    })
+                {
+                    return Err(Invalid(
+                        "tempo changes after audio section reorder require an unsupported processing rebase; undo the reorder first",
+                    ));
+                }
                 let map = candidate.tempo_map.clone();
                 for track in &mut candidate.tracks {
                     for clip in &mut track.content.audio_clips {
@@ -2516,6 +2638,21 @@ impl Project {
             },
         );
         Ok(id)
+    }
+}
+
+impl Command {
+    /// Structural section edits use stopped resident preparation/publication.
+    /// Metadata edits and marker merging do not alter musical material.
+    pub fn requires_stopped_section_edit(&self) -> bool {
+        matches!(
+            self,
+            Self::ReorderSectionBefore { .. }
+                | Self::ReorderSectionAfter { .. }
+                | Self::ResizeArrangementSection { .. }
+                | Self::DeleteArrangementSection(_)
+                | Self::DuplicateArrangementSection(_)
+        )
     }
 }
 

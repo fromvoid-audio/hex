@@ -424,6 +424,18 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if view.begin_section_pointer(
+                                x,
+                                y,
+                                event.click_count == 2,
+                                event.modifiers.shift,
+                                event.modifiers.platform,
+                                cx,
+                            ) {
+                                view.focus.focus(window);
+                                cx.notify();
+                                return (true, false);
+                            }
                             if view.pointer_hits_fade_control(x, y) {
                                 return (false, false);
                             }
@@ -474,6 +486,17 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                            if view.sections.held() {
+                                let changed = if event.pressed_button == Some(MouseButton::Left) {
+                                    view.update_section_pointer(x, y, event.modifiers.platform)
+                                } else {
+                                    view.cancel_section_pointer()
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                                return (changed, false);
+                            }
                             if view.clip_paint_gesture.is_some() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_clip_paint(x, y, event.modifiers.platform)
@@ -514,6 +537,11 @@ impl EditorView {
                             let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
+                            if view.finish_section_pointer(x, y, event.modifiers.platform) {
+                                cx.stop_propagation();
+                                cx.notify();
+                                return (true, false);
+                            }
                             if view.finish_clip_paint(x, y, event.modifiers.platform) {
                                 cx.stop_propagation();
                                 cx.notify();
@@ -687,6 +715,8 @@ impl EditorView {
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport)])
             .children(self.main_time_selection_overlay(viewport))
+            .children(self.section_elements(viewport, cx))
+            .children([self.section_pointer_events(cx)])
             .child(
                 canvas(
                     |_, _, _| (),
