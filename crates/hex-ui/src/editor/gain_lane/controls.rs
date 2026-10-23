@@ -37,7 +37,7 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    super::super::device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
         let config = match config {

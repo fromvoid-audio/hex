@@ -1394,24 +1394,16 @@ impl EditorView {
         id: impl Into<ElementId>,
         listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        let icon = div()
+        let icon = hex_widgets::action(theme::text(glyph), theme::action_style())
             .id(id)
             .size(px(23.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
             .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: label.into(),
                 })
                 .into()
             })
-            .child(theme::text(glyph))
             .on_click(listener);
         #[cfg(feature = "ui-test-support")]
         let icon = icon.debug_selector(move || label.into());

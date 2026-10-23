@@ -8,6 +8,12 @@
 //! Does not mutate projects, decode media or run filesystem work on UI/audio callbacks. Preserve
 //! original paths and malformed settings instead of silently replacing user data.
 
+mod audio_import;
+pub use audio_import::{
+    AudioImportPreferences, audio_import_preferences_path, load_audio_import_preferences,
+    save_audio_import_preferences,
+};
+
 mod project_directory;
 pub use project_directory::{load_project_directory, save_project_directory};
 

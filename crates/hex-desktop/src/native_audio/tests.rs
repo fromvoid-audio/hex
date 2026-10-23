@@ -7,7 +7,9 @@ mod resident_export;
 mod resident_lifecycle;
 mod resident_preview;
 mod resident_routes;
+mod resident_sections;
 mod sampler;
+mod track_reorder;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -352,6 +354,15 @@ impl WorkerAudioSink for ObservedSink {
         }
         self.inner
             .prepare_sampler_keyboard(context, output, epoch, track, device)
+    }
+    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
+        self.inner.begin_section_edit(context)
+    }
+    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+        self.inner.section_edit_ready()
+    }
+    fn cancel_section_edit(&mut self) {
+        self.inner.cancel_section_edit();
     }
     fn begin_sampler_edit(
         &mut self,

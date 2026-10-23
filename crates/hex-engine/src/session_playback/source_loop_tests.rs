@@ -28,6 +28,7 @@ fn session_loop_project() -> Project {
         panic!("fixture Session MIDI clip")
     };
     clip.source = MidiSourceSnapshot {
+        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
         source_length_raw: 4 * Q,
         source_start_raw: Q / 2,
         loop_start_raw: Q,
@@ -556,4 +557,111 @@ fn mutable_source_loop_admission_keeps_period_and_density_bounds() {
     dense.next_id = 2_000_129;
     let dense = legacy_project_from_snapshot(dense).expect("valid dense source loop");
     assert!(try_prepare_mutable(&dense).is_err());
+}
+
+#[test]
+fn once_boundary_renders_the_original_source_window_in_both_views_across_blocks() {
+    use hex_project::MidiOneShotBoundary as Boundary;
+    for arrangement in [false, true] {
+        let mut snapshot = if arrangement {
+            arrangement_loop_project()
+        } else {
+            session_loop_project()
+        }
+        .snapshot();
+        let (notes, loop_end) = if arrangement {
+            let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut snapshot.tracks[0].content
+            else {
+                panic!("hybrid")
+            };
+            let clip = &mut midi_clips[0];
+            clip.looping = false;
+            clip.one_shot_boundary = Boundary::LoopEnd;
+            (&mut clip.notes, clip.loop_end_raw)
+        } else {
+            let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content
+            else {
+                panic!("midi")
+            };
+            clip.source.looping = false;
+            clip.source.one_shot_boundary = Boundary::LoopEnd;
+            (&mut clip.source.notes, clip.source.loop_end_raw)
+        };
+        notes.push(MidiNoteSnapshot {
+            id: NOTE_REPEATED + 1,
+            start_raw: 3 * Q,
+            duration_raw: Q / 2,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        });
+        snapshot.next_id = NOTE_REPEATED + 2;
+        let candidate = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+        let notes = if arrangement {
+            let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut snapshot.tracks[0].content
+            else {
+                panic!("hybrid")
+            };
+            midi_clips[0].one_shot_boundary = Boundary::SourceEnd;
+            &mut midi_clips[0].notes
+        } else {
+            let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content
+            else {
+                panic!("midi")
+            };
+            clip.source.one_shot_boundary = Boundary::SourceEnd;
+            &mut clip.source.notes
+        };
+        // Independent event oracle: explicitly retain only audible notes and cap
+        // their gates. The candidate keeps the original later notes unchanged.
+        notes.retain(|note| note.start_raw < loop_end);
+        for note in notes {
+            note.duration_raw = note.duration_raw.min(loop_end - note.start_raw);
+        }
+        let oracle = legacy_project_from_snapshot(snapshot).unwrap();
+        let render = if arrangement {
+            render_arrangement_project
+        } else {
+            render_session_project
+        };
+        let whole = render(&candidate, &[120001]).0;
+        assert_eq!(whole, render(&candidate, &[1, 17, 127, 256]).0);
+        assert_eq!(whole, render(&oracle, &[120001]).0);
+        let mut outputs = Vec::new();
+        for project in [&candidate, &oracle] {
+            let revision = prepare_mutable(project);
+            let clip = (!arrangement).then(|| revision.session().midi_clips()[0].id);
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            if let Some(clip) = clip {
+                playback
+                    .apply(SessionPlaybackCommand::LaunchClip {
+                        clip,
+                        quantization: LaunchQuantization::Immediate,
+                    })
+                    .unwrap();
+            }
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut output = vec![[0.0; 2]; 24001];
+            playback.render(&mut output).unwrap();
+            let before = playback.performance_frame();
+            assert_eq!(
+                playback.apply(SessionPlaybackCommand::Seek(60000)),
+                Err(SessionPlaybackError::MutableInstrumentActive)
+            );
+            assert_eq!(playback.performance_frame(), before);
+            let mut release = vec![[0.0; 2]; 24032];
+            playback.render(&mut release).unwrap();
+            output.extend(release);
+            for frame in [60000, 0] {
+                playback.apply(SessionPlaybackCommand::Seek(frame)).unwrap();
+                let mut block = vec![[0.0; 2]; 48032];
+                playback.render(&mut block).unwrap();
+                output.extend(block);
+            }
+            outputs.push(output);
+        }
+        assert_eq!(outputs[0], outputs[1]);
+
+        assert!(whole[48032..].iter().flatten().all(|sample| *sample == 0.0));
+    }
 }

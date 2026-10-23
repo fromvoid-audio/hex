@@ -90,6 +90,7 @@ impl EditorView {
         // selected-path reconciliation already waits for its canonical worker.
         if !self.finalize_track_name_for_open(window, cx)
             || !self.finalize_clip_name_for_open(window, cx)
+            || !self.finalize_section_name_for_open(window, cx)
         {
             cx.notify();
             return;
@@ -112,12 +113,7 @@ impl EditorView {
                     files: true,
                     directories: false,
                     multiple: false,
-                    prompt: Some(match mode {
-                        hex_session::DocumentAudioMode::Resident => "open project".into(),
-                        hex_session::DocumentAudioMode::VerifiedStreaming => {
-                            "open project as verified streaming".into()
-                        }
-                    }),
+                    prompt: Some("open project".into()),
                 },
                 directory.as_deref(),
             );
@@ -202,6 +198,10 @@ impl EditorView {
     }
 
     pub(super) fn new_project(&mut self, mode: hex_session::DocumentAudioMode) {
+        if self.sections.naming() {
+            self.error = Some("finish or cancel the section name before creating a project".into());
+            return;
+        }
         if self.opening_project || self.project_open.busy() || self.pending_open_path.is_some() {
             return;
         }

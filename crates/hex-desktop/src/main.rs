@@ -38,7 +38,7 @@ fn main() {
     if let Ok(handle) = &log_handle {
         let _ = handle.record(&format!(
             "hex version={}; executable={:?}",
-            env!("CARGO_PKG_VERSION"),
+            option_env!("HEX_RELEASE_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")),
             std::env::current_exe()
         ));
     }

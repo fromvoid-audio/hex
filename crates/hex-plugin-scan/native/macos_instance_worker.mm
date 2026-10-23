@@ -15,7 +15,7 @@ namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
 enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Presentation=5,Capture=6,
-    Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13 };
+    Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14 };
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
 struct Module {
     CFBundleRef bundle=nullptr;IPluginFactory* factory=nullptr;
@@ -78,6 +78,39 @@ int isolate_channel() {
     }
     ::close(quiet);return channel;
 }
+// Supervised clients provide an independent cancellation socket on stdout.
+// Start before any foreign entry: even a hung bundleEntry/unload cannot stop
+// this lane from retiring the entire isolated process. It never unloads SDK
+// code, signals another PID or touches the Hex callback. EOF/any byte cancels.
+class CancellationGuardian {
+    int channel=-1;
+    std::atomic<bool> complete{false};
+    std::thread watch;
+public:
+    bool start() {
+        channel=::dup(STDOUT_FILENO);if(channel<0) return false;
+        int kind=0;socklen_t size=sizeof kind;
+        if(::fcntl(channel,F_SETFD,FD_CLOEXEC)<0 ||
+            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM) {
+            ::close(channel);channel=-1;return false;
+        }
+        try {
+            watch=std::thread([this] {
+                uint8_t byte=0;ssize_t count=0;
+                do { count=::read(channel,&byte,1); } while(count<0 && errno==EINTR);
+                if(!complete.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+            });
+        } catch(...) { ::close(channel);channel=-1;return false; }
+        return true;
+    }
+    ~CancellationGuardian() {
+        if(channel<0) return;
+        complete.store(true,std::memory_order_release);
+        ::shutdown(channel,SHUT_RDWR);
+        if(watch.joinable()) watch.join();
+        ::close(channel);
+    }
+};
 void error(int channel,const wire::Config* config,uint32_t reason) {
     wire::Bytes out;wire::number(out,1,2);wire::number(out,config?1:0,1);
     if(config) for(auto id:config->binding) wire::number(out,id,8);
@@ -91,20 +124,39 @@ wire::Bytes state_payload(const wire::Config& config,const hex_instance::Capture
     wire::number(out,state.component_bytes,4);wire::number(out,state.controller_bytes,4);
     out.insert(out.end(),state.bytes.begin(),state.bytes.begin()+state.component_bytes+state.controller_bytes);return out;
 }
+wire::Bytes facts_body(const wire::Config& config,uint32 latency,bool presentation_available,const wire::Startup& startup) {
+    wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
+    out.insert(out.end(),config.executable_hash.begin(),config.executable_hash.end());
+    out.insert(out.end(),config.info_hash.begin(),config.info_hash.end());
+    uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
+    wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
+    wire::number(out,latency,4);wire::number(out,presentation_available?1:0,1);startup.acknowledge(out);return out;
+}
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
-    uint32 latency,hex_instance::Instance::PresentationResult presentation) {
+    uint32 latency,hex_instance::Instance::PresentationResult presentation,const std::optional<wire::Presentation>& supplied,bool restored) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
     wire::number(out,latency,4);wire::number(out,static_cast<uint32>(presentation),1);
+    wire::number(out,supplied?1:0,1);
+    if(supplied) { wire::number(out,supplied->input,4);wire::number(out,supplied->output,4); }
+    wire::number(out,restored?1:0,1);
     // State existence is not availability or an application/graph ACK.
     wire::number(out,state.component?1:0,1);auto payload=state_payload(config,state);
     wire::number(out,payload.size(),2);out.insert(out.end(),payload.begin(),payload.end());
     return out;
 }
 }
-int main(int argc,char**) {
-    if(argc!=1) return Configuration;
+int main(int argc,char** argv) {
+    // No SDK entry or protocol/guardian is used by the actual waitable-child
+    // preflight. The caller must observe normal direct reap before loading code.
+    if(argc==2 && !std::strcmp(argv[1],"--child-custody-probe")) return 0;
+    const bool supervised=argc==2 && !std::strcmp(argv[1],"--supervised");
+    if(argc!=1 && !supervised) return Configuration;
+    // Static lifetime keeps cancellation live through main-thread TLS/atexit
+    // cleanup registered by subsequently loaded SDK modules, not just main.
+    static CancellationGuardian guardian;
+    if(supervised && !guardian.start()) return Configuration;
     const int channel=isolate_channel();if(channel<0) return Configuration;
     @autoreleasepool {
         Module module;hex_instance::Instance instance;
@@ -113,26 +165,44 @@ int main(int argc,char**) {
         uint64_t blocks=0,frames=0;
         try {
             auto request=wire::configuration(channel);config.emplace(request);
+            const auto restoration=wire::startup(channel,*config);
             failure=Admission;module.open(*config);
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
             if(!instance.open(module.factory,cid)) throw Refusal{};
+            if(restoration.restored()) {
+                failure=Restore;if(!instance.restore_initial_state_on_control(restoration.state)) throw Refusal{};
+            }
             failure=Setup;hex_instance::ProcessingConfiguration setup{};
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
             if(instance.configure(setup)!=hex_instance::ConfigurationResult::Prepared) throw Refusal{};
+            failure=HostControl;instance.dispatch_host_callbacks();
+            if(instance.host_refusals()) throw Refusal{};
+            auto latency=instance.reported_latency_on_control();
+            auto available=instance.presentation_latency_available_on_control();
+            if(!latency || !available) throw Refusal{};
+            failure=ProtocolFailure;
+            if(!wire::send(channel,"HXVIFA02",facts_body(*config,*latency,*available,restoration))) throw Refusal{};
+            std::optional<wire::Presentation> supplied;
+            if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
-            const auto presentation=instance.set_presentation_latency(config->input_latency,config->output_latency);
-            if(presentation!=hex_instance::Instance::PresentationResult::Applied &&
-                presentation!=hex_instance::Instance::PresentationResult::Absent) throw Refusal{};
+            auto presentation=hex_instance::Instance::PresentationResult::Absent;
+            if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
+            else if(*available) throw Refusal{}; // unknown is never substituted with zero
+            if((presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
+                (presentation!=hex_instance::Instance::PresentationResult::Applied &&
+                 presentation!=hex_instance::Instance::PresentationResult::Absent)) throw Refusal{};
             failure=Capture;hex_instance::CapturedState state{};
             if(!instance.capture_initial_state_on_control(state)) throw Refusal{};
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
-            auto latency=instance.reported_latency_on_control();if(!latency) throw Refusal{};
-            const auto hello=ready_body(*config,state,*latency,presentation);
+            const auto final_latency=instance.reported_latency_on_control();
+            failure=Presentation;
+            if(!final_latency || *final_latency!=*latency) throw Refusal{}; // caller's plan became stale
+            const auto hello=ready_body(*config,state,*latency,presentation,supplied,restoration.restored());
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             std::thread worker([&] {
@@ -188,7 +258,7 @@ int main(int argc,char**) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
-            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD01",hello);
+            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD03",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             // Pump the helper main lane, never the Hex callback. Unsupported
