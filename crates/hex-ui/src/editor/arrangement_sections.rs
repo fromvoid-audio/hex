@@ -2778,4 +2778,54 @@ mod tests {
             assert_eq!(undone, before);
         }
     }
+    #[gpui::test]
+    fn inner_zones_resize_only_the_touched_edge_and_leave_the_neighbor_in_place(
+        cx: &mut TestAppContext,
+    ) {
+        for (offset, target, index) in [(-3.0, 3, 0usize), (3.0, 5, 1usize)] {
+            for marker_only in [false, true] {
+                let (handle, editor, ids) = touching_fixture(cx);
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                visual.run_until_parked();
+                let left = bounds(&mut visual, 0);
+                let neighbor = editor.read_with(cx, |v, _| {
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .arrangement_section(ids[1 - index])
+                        .unwrap()
+                        .clone()
+                });
+                let down = point(left.right() + px(offset), left.center().y);
+                let to = editor.read_with(cx, |v, _| position(v, target));
+                let modifiers = Modifiers {
+                    alt: marker_only,
+                    ..Modifiers::default()
+                };
+                visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+                visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
+                visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+                let event = editor.update(cx, |v, _| next(&v.service));
+                assert!(event.error.is_none(), "{:?}", event.error);
+                editor.update(cx, |v, cx| {
+                    v.receive(event);
+                    cx.notify();
+                });
+                editor.read_with(cx, |v, _| {
+                    let p = &v.state.as_ref().unwrap().project;
+                    assert_eq!(p.arrangement_section(ids[1 - index]), Some(&neighbor));
+                    let section = p.arrangement_section(ids[index]).unwrap();
+                    assert_eq!(
+                        if index == 0 {
+                            section.end()
+                        } else {
+                            section.start()
+                        },
+                        BeatTime::from_quarters(target).unwrap()
+                    );
+                });
+            }
+        }
+    }
 }
