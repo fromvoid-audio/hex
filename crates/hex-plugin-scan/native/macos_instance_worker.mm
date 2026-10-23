@@ -78,6 +78,39 @@ int isolate_channel() {
     }
     ::close(quiet);return channel;
 }
+// Supervised clients provide an independent cancellation socket on stdout.
+// Start before any foreign entry: even a hung bundleEntry/unload cannot stop
+// this lane from retiring the entire isolated process. It never unloads SDK
+// code, signals another PID or touches the Hex callback. EOF/any byte cancels.
+class CancellationGuardian {
+    int channel=-1;
+    std::atomic<bool> complete{false};
+    std::thread watch;
+public:
+    bool start() {
+        channel=::dup(STDOUT_FILENO);if(channel<0) return false;
+        int kind=0;socklen_t size=sizeof kind;
+        if(::fcntl(channel,F_SETFD,FD_CLOEXEC)<0 ||
+            ::getsockopt(channel,SOL_SOCKET,SO_TYPE,&kind,&size)!=0 || kind!=SOCK_STREAM) {
+            ::close(channel);channel=-1;return false;
+        }
+        try {
+            watch=std::thread([this] {
+                uint8_t byte=0;ssize_t count=0;
+                do { count=::read(channel,&byte,1); } while(count<0 && errno==EINTR);
+                if(!complete.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+            });
+        } catch(...) { ::close(channel);channel=-1;return false; }
+        return true;
+    }
+    ~CancellationGuardian() {
+        if(channel<0) return;
+        complete.store(true,std::memory_order_release);
+        ::shutdown(channel,SHUT_RDWR);
+        if(watch.joinable()) watch.join();
+        ::close(channel);
+    }
+};
 void error(int channel,const wire::Config* config,uint32_t reason) {
     wire::Bytes out;wire::number(out,1,2);wire::number(out,config?1:0,1);
     if(config) for(auto id:config->binding) wire::number(out,id,8);
@@ -103,8 +136,16 @@ wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedSt
     return out;
 }
 }
-int main(int argc,char**) {
-    if(argc!=1) return Configuration;
+int main(int argc,char** argv) {
+    // No SDK entry or protocol/guardian is used by the actual waitable-child
+    // preflight. The caller must observe normal direct reap before loading code.
+    if(argc==2 && !std::strcmp(argv[1],"--child-custody-probe")) return 0;
+    const bool supervised=argc==2 && !std::strcmp(argv[1],"--supervised");
+    if(argc!=1 && !supervised) return Configuration;
+    // Static lifetime keeps cancellation live through main-thread TLS/atexit
+    // cleanup registered by subsequently loaded SDK modules, not just main.
+    static CancellationGuardian guardian;
+    if(supervised && !guardian.start()) return Configuration;
     const int channel=isolate_channel();if(channel<0) return Configuration;
     @autoreleasepool {
         Module module;hex_instance::Instance instance;

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <csignal>
+#include <unistd.h>
 #include <limits>
 #include <pthread.h>
 #include <cstdio>
@@ -27,14 +29,27 @@ const TUID processing_id={0x48,0x45,0x58,0x50,1,2,3,4,5,6,7,8,9,10,11,12};
 static void trace(int stage,int factory_refs=-1) {
     const auto* path=std::getenv("HEX_ORIGINAL_INSTANCE_TRACE");
     if (!path || std::strlen(path)>4096) return;
-    // Only owned SDK test modules implement this opt-in trace, on helper control
-    // before/after processing. Production helper code never reads this variable.
+    // Only this owned SDK module implements the opt-in trace. Normal traces
+    // run on control; explicit hang/crash faults use a processing-entry barrier.
+    // No normal DSP path performs file I/O; the helper never reads this variable.
     auto* output=std::fopen(path,"wb");if (!output) return;
     const int values[]={stage,observed.violations,observed.created,observed.initialized,observed.terminated,
         observed.arrangements,observed.setups,observed.activations,observed.starts,observed.stops,
         observed.blocks,observed.flushes,static_cast<int>(objects.load()),factory_refs};
     std::fwrite(values,sizeof(int),14,output);std::fclose(output);
 }
+// Deterministic foreign-hang control: the test observes the actual SDK stage,
+// then cancels. A separate release file lets failing tests retire their own
+// process safely; cancellation must complete while that file is still absent.
+static void fault_hang(int stage) {
+    trace(stage);
+    const auto* release=std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE");
+    if (!release || std::strlen(release)>4096) { for (;;) ::pause(); }
+    while (::access(release,F_OK)!=0) ::usleep(1000);
+}
+static void fault_crash(int stage) { trace(stage);std::raise(SIGSEGV);std::_Exit(70); }
+struct MainThreadTail { bool enabled=false;~MainThreadTail(){if(enabled)fault_hang(13);} };
+static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.enabled=true;}
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int mode=next_mode,fault=next_fault;
     bool initialized=false, arranged=false, setup=false, active=false, processing=false;
@@ -68,6 +83,8 @@ public:
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !active || processing || !stream) return kResultFalse;
+        if (fault==35) arm_main_thread_tail();
+        if (fault==34) fault_hang(12);
         if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
         if (fault==15) { std::array<unsigned char,4001> huge{};return stream->write(huge.data(),4001,nullptr); }
         if (fault==23) {
@@ -168,6 +185,7 @@ public:
         if (enabled) { worker=pthread_self();thread_bound=true;++observed.starts; }
         else ++observed.stops;
         processing=enabled;
+        if (enabled && fault==33) fault_hang(11);
         if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
         return kResultOk;
     }
@@ -196,6 +214,8 @@ public:
             (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
             return kInvalidArgument;
         ++observed.blocks; // count attempted foreign DSP, including a refusal
+        if (fault==28) fault_hang(9);
+        if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
         const float scale=0.5f+static_cast<float>(block)*0.125f;
         bool silent=true;
@@ -269,15 +289,19 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>26) return false;next_fault=value;
+        if (value>35) return false;next_fault=value;
     }
     trace(1,0);
+    if (next_fault==27) fault_hang(8);
+    if (next_fault==30) fault_crash(8);
     if (next_fault==21) for (int n=0;n<4096;++n) { std::fputs("owned SDK stdout noise\n",stdout);std::fputs("owned SDK stderr noise\n",stderr); }
     if (next_fault==22 && std::fgetc(stdin)!=EOF) return false;
     return next_fault!=19;
 }
 extern "C" __attribute__((visibility("default"))) bool bundleExit() {
     trace(6,static_cast<int>(processing_factory.count()));
+    if (next_fault==29) fault_hang(10);
+    if (next_fault==32) fault_crash(10);
     return next_fault!=20 && objects.load()==0 && processing_factory.count()==0;
 }
 extern "C" __attribute__((visibility("default"))) IPluginFactory* GetPluginFactory() {
