@@ -33,7 +33,7 @@ ALLOWED = {
     'hex-preferences': set(),
     'hex-widgets': set(),
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
-    'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-lattice', 'hex-lattice-contract'},
+    'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-plugin-scan', 'hex-lattice', 'hex-lattice-contract'},
     'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.

@@ -36,6 +36,8 @@ pub use eligible::{
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use eligible::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -726,9 +728,11 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        drop(returns);
+        // Native source cancellation may perform control-side descriptor I/O;
+        // it must not run under the ordinary return/terminal lock.
         self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
-        drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
     }
     fn drain_abandoned_on_control(&self) -> bool {

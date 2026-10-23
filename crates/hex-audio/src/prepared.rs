@@ -42,6 +42,8 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native_sources;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};

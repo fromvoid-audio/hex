@@ -8,7 +8,11 @@ pub use preparation::{
     AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
     AudioCandidateDomainStartError,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) mod native_sources;
 pub(super) mod publication;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use native_sources::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
 pub(crate) use pages::DomainEnvelope;
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
@@ -90,6 +94,8 @@ struct NativeBank {
     closing: bool,
     publication: publication::Bank,
     native: Option<crate::native_callback_owner::NativeCandidateBoundary>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    sources: native_sources::Bank,
 }
 impl Default for NativeBank {
     fn default() -> Self {
@@ -104,6 +110,8 @@ impl Default for NativeBank {
             closing: false,
             publication: publication::Bank::default(),
             native: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            sources: native_sources::Bank::default(),
         }
     }
 }
@@ -118,6 +126,8 @@ struct DomainExecution {
 struct NativeWork {
     domains: [Option<DomainExecution>; 2],
     publication: publication::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    sources: native_sources::Work,
 }
 #[derive(Default)]
 pub(super) struct Custody {
@@ -206,6 +216,8 @@ impl Custody {
             closing: false,
             publication: publication::Bank::default(),
             native,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            sources: native_sources::Bank::default(),
         };
         self.enabled.store(true, Ordering::Release);
         Ok(())
@@ -405,6 +417,8 @@ impl Custody {
         true
     }
     pub(super) fn close(&self) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut source_cancellations = native_sources::empty_cancellations();
         let mut guard = lock(&self.bank);
         {
             let bank = &mut *guard;
@@ -414,10 +428,21 @@ impl Custody {
                     slot.retiring = true;
                 }
             }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            bank.sources.close(&mut source_cancellations);
+        }
+        drop(guard);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        for cancellation in source_cancellations.into_iter().flatten() {
+            cancellation.cancel_on_control();
         }
     }
     pub(super) fn has_work(&self, abandoned: bool) -> bool {
         let guard = lock(&self.bank);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if guard.sources.has_work(abandoned) {
+            return true;
+        }
         guard.publication.has_work(abandoned || guard.closing)
             || guard.domains.iter().any(|s| {
                 s.phase == Phase::Failed
@@ -434,12 +459,18 @@ impl Custody {
     }
     pub(super) fn complete(&self) -> bool {
         let guard = lock(&self.bank);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if guard.sources.occupied() {
+            return false;
+        }
         guard.domains.iter().all(|s| s.phase == Phase::Vacant) && guard.publication.complete()
     }
     pub(super) fn advance_on_control(&self, abandoned: bool) {
         let Ok(mut work) = self.work.try_lock() else {
             return;
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.advance_native_sources(&mut work.sources, abandoned);
         for index in 0..2 {
             {
                 let mut guard = lock(&self.bank);

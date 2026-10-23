@@ -7,6 +7,7 @@
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
 //! rtrb for bounded ownership queues. hex-plugin-host supplies the copied transport
 //! and source-bound native client; native ABI remains in its external helper.
+//! hex-plugin-scan supplies only the checked instance-build provenance accepted by that client.
 //! hex-lattice supplies the borrowed foreign node/factory contracts; hex-plugin-state
 //! and hex-lattice-contract validate the exact native effect configuration.
 //!
@@ -28,6 +29,8 @@ pub use lifecycle::{
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use candidate_custody::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
 pub mod gain_recording;
 mod lifecycle;
 mod native_callback_owner;

@@ -11,6 +11,7 @@ allocation-probe = ["hex-engine/instrument-test-support", "hex-plugin-host/alloc
 
 [dependencies]
 hex-plugin-host = { path = "../hex-plugin-host" }
+hex-plugin-scan = { path = "../hex-plugin-scan" }
 hex-plugin-state = { path = "../hex-plugin-state" }
 hex-lattice = { path = "../hex-lattice" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
@@ -20,7 +21,6 @@ cpal = "=0.17.3"
 rtrb = "=0.3.4"
 
 [dev-dependencies]
-hex-plugin-scan = { path = "../hex-plugin-scan" }
 hex-plugin-host = { path = "../hex-plugin-host", features = ["test-support"] }
 # Real provider/pair allocation probes only; no production device dependency.
 hex-devices = { path = "../hex-devices" }

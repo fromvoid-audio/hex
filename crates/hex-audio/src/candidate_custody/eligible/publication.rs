@@ -395,6 +395,10 @@ impl super::Custody {
         if !self.enabled() || bank.closing {
             return None;
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if bank.sources.occupied() {
+            return None;
+        }
         Some(bank.metadata_bytes)
     }
     #[cfg(test)]

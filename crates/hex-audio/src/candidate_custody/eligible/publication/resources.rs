@@ -82,6 +82,12 @@ pub(super) fn for_candidate(
     summary: AudioCandidateConstructorSummary,
     excluded_preparation: Option<usize>,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if bank.sources.occupied() {
+        // Preparation custody is real, but has not yet closed the actual
+        // endpoint/worker/resource witness required for graph publication.
+        return Err("native source preparation is not sealed for publication");
+    }
     if bank
         .domains
         .iter()
