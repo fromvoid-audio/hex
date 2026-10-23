@@ -253,7 +253,7 @@ mod tests {
                 .error
                 .as_ref()
                 .unwrap()
-                .contains("unsupported alpha project format 31")
+                .contains("unsupported project format or version; current format is 35")
         );
         assert!(first.state.unsaved && first.state.can_undo);
         assert_eq!(first.state.project.tracks().len(), 1);
