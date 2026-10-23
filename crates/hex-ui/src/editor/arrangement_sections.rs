@@ -61,6 +61,7 @@ struct Gesture {
     snap: SnapGrid,
     layout: [f32; 4],
     anchor: BeatTime,
+    anchor_x: f32,
     original: Option<Marker>,
     mode: Mode,
     display: Display,
@@ -430,6 +431,7 @@ impl EditorView {
             snap: self.snap_grid,
             layout,
             anchor,
+            anchor_x: x,
             original,
             mode,
             display,
@@ -473,7 +475,12 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
-                if let Some((target, after)) = insertion_target(&state.project, id, beat) {
+                // Structural destinations are fixed edges, independent of grid snap.
+                // A click must never move music, even when it snaps outside its marker.
+                let raw_beat = self.section_pointer(x, y, true).unwrap_or(beat);
+                if (x - g.anchor_x).abs() >= 4.0
+                    && let Some((target, after)) = insertion_target(&state.project, id, raw_beat)
+                {
                     let preview = if after {
                         state.project.preview_section_reorder_after(id, target)
                     } else {
@@ -1087,12 +1094,11 @@ impl EditorView {
                     .debug_selector(|| "section-insertion-preview".into())
                     .absolute()
                     .top_0()
-                    .bottom_0()
                     .left(relative(
                         (frame - viewport.start) as f32 / viewport.length as f32,
                     ))
-                    .w(px(2.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .child(theme::text("▾"))
                     .into_any_element(),
             );
         }
@@ -1455,6 +1461,20 @@ mod tests {
             assert_eq!(sections[0].name(), "Chorus");
             assert_eq!(sections[1].name(), "Intro");
             assert_eq!(sections[1].end(), BeatTime::from_quarters(12).unwrap());
+        });
+    }
+    #[gpui::test]
+    fn stationary_click_near_snapped_end_does_not_move_song(cx: &mut TestAppContext) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let a = bounds(&mut visual, 0);
+        let down = point(a.origin.x + a.size.width - px(7.0), a.origin.y + px(12.0));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.pending.is_none());
+            assert_eq!(v.worker_requests_pending, 0);
         });
     }
     #[gpui::test]

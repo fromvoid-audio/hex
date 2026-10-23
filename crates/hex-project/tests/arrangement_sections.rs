@@ -328,8 +328,8 @@ fn first_section_can_move_after_last_across_unequal_gapped_sections_with_history
         .unwrap();
     assert_eq!(moved_audio.asset(), audio.asset());
     assert_eq!(
-        moved_audio.audio_edit().unwrap().domain,
-        audio.audio_edit().unwrap().domain
+        moved_audio.audio_edit().map(|edit| &edit.domain),
+        audio.audio_edit().map(|edit| &edit.domain)
     );
 
     let after = e.project().snapshot();
