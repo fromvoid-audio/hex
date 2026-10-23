@@ -834,12 +834,16 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
-            .on_action(cx.listener(|view, _: &NewProject, _, cx| {
-                view.new_project(hex_session::DocumentAudioMode::Resident);
+            .on_action(cx.listener(|view, _: &NewProject, window, cx| {
+                view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &NewStreamingProject, _, cx| {
-                view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+            .on_action(cx.listener(|view, _: &NewStreamingProject, window, cx| {
+                view.new_project(
+                    hex_session::DocumentAudioMode::VerifiedStreaming,
+                    window,
+                    cx,
+                );
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &OpenProject, window, cx| {

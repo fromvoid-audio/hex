@@ -48,12 +48,16 @@ pub(super) fn install_project_actions(cx: &mut gpui::App) {
             cx.stop_propagation();
         });
     }
-    register::<super::NewProject>(cx, |view, _, cx| {
-        view.new_project(hex_session::DocumentAudioMode::Resident);
+    register::<super::NewProject>(cx, |view, window, cx| {
+        view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
         cx.notify();
     });
-    register::<super::NewStreamingProject>(cx, |view, _, cx| {
-        view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+    register::<super::NewStreamingProject>(cx, |view, window, cx| {
+        view.new_project(
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+            window,
+            cx,
+        );
         cx.notify();
     });
     register::<super::OpenProject>(cx, |view, window, cx| {
@@ -197,27 +201,39 @@ impl EditorView {
         self.begin_open_request(request);
     }
 
-    pub(super) fn new_project(&mut self, mode: hex_session::DocumentAudioMode) {
-        if self.sections.naming() {
-            self.error = Some("finish or cancel the section name before creating a project".into());
+    pub(super) fn new_project(
+        &mut self,
+        mode: hex_session::DocumentAudioMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.opening_project
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || self.close_prompt_open
+            || self.saving_project
+            || self.save_dialog_open
+            || self.gain_recorder.blocks_edits()
+        {
             return;
         }
-        if self.opening_project || self.project_open.busy() || self.pending_open_path.is_some() {
+        if mode == hex_session::DocumentAudioMode::VerifiedStreaming
+            && self.source_reservation.is_none()
+        {
+            self.error = Some("verified streaming is unavailable".into());
             return;
         }
-        let has_content = self.state.as_ref().is_some_and(|state| {
-            state.unsaved
-                || !state.project.tracks().is_empty()
-                || state.project.assets().next().is_some()
-        });
-        let has_content = has_content || self.tuning.client.snapshot().is_some();
-        if has_content && self.pending_new_mode != Some(mode) {
-            self.pending_new_mode = Some(mode);
-            self.status = "replace project · choose new project again to confirm".into();
-            self.error = None;
+        if !super::device_panel::finalize_controls(self, cx)
+            || !self.finalize_track_name_for_open(window, cx)
+            || !self.finalize_clip_name_for_open(window, cx)
+            || !self.finalize_section_name_for_open(window, cx)
+        {
             return;
         }
-        self.pending_new_mode = None;
+        self.queue_new_project(mode);
+    }
+
+    fn begin_new_project(&mut self, mode: hex_session::DocumentAudioMode) {
         let Some(reservation) = self.source_reservation else {
             if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
                 self.error = Some("verified streaming is unavailable".into());

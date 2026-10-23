@@ -503,16 +503,23 @@ fn confirmed_new_project_cancels_repeats_without_stranding_future_duplication(
     click(&mut visual, originals[0], false);
     press(&editor, &mut visual);
     press(&editor, &mut visual);
-    editor.update(&mut visual, |v, _| {
-        v.new_project(hex_session::DocumentAudioMode::Resident);
-        v.new_project(hex_session::DocumentAudioMode::Resident);
-        assert!(v.opening_project);
-        assert!(
-            v.duplicate_intent.is_pending(),
-            "admitted edit still owns its terminal"
-        );
-        assert_eq!(v.duplicate_intent.queued_repeats, 0);
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
+            v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
+            assert!(v.project_open.busy() && !v.opening_project);
+            assert!(
+                v.duplicate_intent.is_pending(),
+                "admitted edit still owns its terminal"
+            );
+            assert_eq!(v.duplicate_intent.queued_repeats, 0);
+        })
     });
+    pump(&editor, &mut visual);
+    visual.run_until_parked();
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("don't save");
+    visual.run_until_parked();
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.project_generation, 1);
