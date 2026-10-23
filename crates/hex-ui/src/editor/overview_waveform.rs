@@ -101,7 +101,7 @@ pub(super) struct Cache {
 impl Cache {
     /// Read-only wiring witness: entries are populated by the canvas paint
     /// closure. Geometry unit tests separately verify their actual outline.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn prepared_columns(
         &self,
         source: &Source,
