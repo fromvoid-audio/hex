@@ -12,16 +12,20 @@ pub(super) struct Pending {
     command: Command,
     receipt: Receipt,
     source: Arc<Project>,
+    members: Vec<hex_project::ClipId>,
 }
 
 impl Pending {
     pub(super) fn new(drag: ClipDrag, command: Command, source: Arc<Project>) -> Self {
         let receipt = Receipt::new(drag.project_generation);
+        let mut members = drag.group.borrow().ids.clone();
+        members.sort_unstable();
         Self {
             drag,
             command,
             receipt,
             source,
+            members,
         }
     }
 
@@ -89,19 +93,50 @@ impl Pending {
             && view.state.as_ref().is_some_and(|s| {
                 s.revision >= self.drag.revision
                     && (Arc::ptr_eq(&s.project, &self.source)
-                        || self.drag.group.borrow().ids.iter().all(|id| {
-                            match (self.source.clip(*id), self.source.midi_clip(*id)) {
-                                (Some(original), _) => {
-                                    s.project.clip(*id) == Some(original)
-                                        && self.source.asset(original.asset())
-                                            == s.project.asset(original.asset())
-                                }
-                                (_, Some(original)) => s.project.midi_clip(*id) == Some(original),
-                                _ => false,
-                            }
-                        }))
+                        || selected_sources_unchanged(&self.source, &s.project, &self.members))
             })
     }
+}
+
+// Scan each track's clip lists once, rather than looking up each selected clip
+// across the whole project on every pending frame. IDs are sorted at capture;
+// unrelated mixer edits and clip insertions do not invalidate this projection.
+fn selected_sources_unchanged(
+    source: &Project,
+    current: &Project,
+    members: &[hex_project::ClipId],
+) -> bool {
+    source.tracks().iter().all(|original| {
+        let selected = |id| members.binary_search(&id).is_ok();
+        if !original
+            .clips()
+            .iter()
+            .map(|clip| clip.id())
+            .chain(original.midi_clips().iter().map(|clip| clip.id()))
+            .any(selected)
+        {
+            return true;
+        }
+        let Some(current_track) = current.track(original.id()) else {
+            return false;
+        };
+        original
+            .clips()
+            .iter()
+            .filter(|clip| selected(clip.id()))
+            .eq(current_track
+                .clips()
+                .iter()
+                .filter(|clip| selected(clip.id())))
+            && original
+                .midi_clips()
+                .iter()
+                .filter(|clip| selected(clip.id()))
+                .eq(current_track
+                    .midi_clips()
+                    .iter()
+                    .filter(|clip| selected(clip.id())))
+    })
 }
 
 impl EditorView {
@@ -166,5 +201,77 @@ impl EditorView {
             self.retire_pending_clip_move();
         }
         abandoned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_project::{BeatTime, Created, Editor};
+
+    #[test]
+    fn unrelated_revisions_keep_selected_sources_but_member_edits_invalidate_them() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "source".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let mut members = Vec::new();
+        for start in [0, 2] {
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::from_quarters(start).unwrap(),
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip");
+            };
+            members.push(clip);
+        }
+        members.sort_unstable();
+        let source = editor.project().clone();
+        editor.execute(Command::Gain { track, gain: 0.5 }).unwrap();
+        editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(4).unwrap(),
+                length: BeatTime::ONE,
+            })
+            .unwrap();
+        assert!(selected_sources_unchanged(
+            &source,
+            editor.project(),
+            &members
+        ));
+        editor
+            .execute(Command::MoveMidiClipWithOverwrite {
+                clip: members[0],
+                track,
+                start: BeatTime::ONE,
+            })
+            .unwrap();
+        assert!(!selected_sources_unchanged(
+            &source,
+            editor.project(),
+            &members
+        ));
+        assert!(editor.undo());
+        assert!(selected_sources_unchanged(
+            &source,
+            editor.project(),
+            &members
+        ));
+        editor.execute(Command::RemoveTrack(track)).unwrap();
+        assert!(!selected_sources_unchanged(
+            &source,
+            editor.project(),
+            &members
+        ));
     }
 }
