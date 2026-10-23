@@ -421,7 +421,11 @@ fn full_real_worker_queue_defers_duplicate_and_retires_its_own_terminal(cx: &mut
         fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
             Ok(48_000)
         }
-        fn canonical_changed(&mut self, _: Arc<hex_session::CanonicalAudioSourceSnapshot>) {}
+        fn canonical_changed(
+            &mut self,
+            _: Arc<hex_session::service::CanonicalAudioSourceSnapshot>,
+        ) {
+        }
         fn poll(&mut self) {
             if self.armed.swap(false, Ordering::AcqRel) {
                 self.entered.try_send(()).unwrap();
