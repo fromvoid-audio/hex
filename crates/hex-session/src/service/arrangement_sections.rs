@@ -13,6 +13,14 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
             | Command::ReorderSectionBefore { .. }
+            | Command::ReorderSectionAfter { .. }
+            | Command::ResizeArrangementSection { .. }
+            | Command::ResizeArrangementSectionEdge { .. }
+            | Command::ResizeArrangementSectionBoundary { .. }
+            | Command::DeleteArrangementSection(_)
+            | Command::DuplicateArrangementSection(_)
+            | Command::SplitArrangementSection { .. }
+            | Command::MergeArrangementSections(_)
     )
 }
 fn stopped_frame(
@@ -51,34 +59,40 @@ pub(super) fn command(
     resident: &mut Option<resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
-    let reorder = matches!(&command, Command::ReorderSectionBefore { .. });
-    if let Command::ReorderSectionBefore { section, before } = &command
-        && session
+    let structural = command.requires_stopped_section_edit();
+    let no_op = match &command {
+        Command::ReorderSectionBefore { section, before } => session
             .project()
             .preview_section_reorder(*section, *before)?
-            .is_noop()
-    {
+            .is_noop(),
+        Command::ReorderSectionAfter { section, after } => session
+            .project()
+            .preview_section_reorder_after(*section, *after)?
+            .is_noop(),
+        _ => false,
+    };
+    if no_op {
         return session.command_prepared_revision(command, previous);
     }
-    if !reorder {
+    if !structural {
         return resident_audio::execute_command(
             session, command, previous, context, events, resident, admission,
         );
     }
     if previous.is_some_and(|prepared| prepared.gain_recording_track().is_some()) {
         return Err(SessionError::Invalid(
-            "finish or cancel gain recording before reordering sections",
+            "finish or cancel gain recording before editing song sections",
         ));
     }
     if session.audio_mode() != DocumentAudioMode::Resident {
         return Err(SessionError::Invalid(
-            "song section reorder requires resident audio",
+            "song section edit requires resident audio",
         ));
     }
     if !events.resident_publication_enabled() {
         if events.native_audio_requested() {
             return Err(SessionError::Invalid(
-                "song section reorder requires the canonical native publication owner",
+                "song section edit requires the canonical native publication owner",
             ));
         }
         return session.command_prepared_revision(command, previous);
@@ -157,5 +171,84 @@ pub(super) fn history(
             sink.cancel_section_edit();
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    fn next(service: &Service) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "section split worker completion");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    #[test]
+    fn stamped_marker_split_refuses_stale_requests_and_preserves_atomic_history() {
+        let service = Service::new(48_000, 8, 0).unwrap();
+        let initial = next(&service);
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: initial.state.revision,
+                command: Command::AddArrangementSection {
+                    name: "Original Name".into(),
+                    color: hex_project::ElementColor::Rose,
+                    start: hex_project::BeatTime::ZERO,
+                    end: hex_project::BeatTime::from_quarters(4).unwrap(),
+                },
+            })
+            .unwrap();
+        let added = next(&service);
+        assert!(added.error.is_none());
+        let Some(Created::ArrangementSection(section)) = added.created else {
+            panic!("section")
+        };
+        let before = added.state.project.snapshot();
+        let command = Command::SplitArrangementSection {
+            section,
+            at: hex_project::BeatTime::from_quarters(2).unwrap(),
+        };
+        for (generation, revision) in [(1, added.state.revision), (0, initial.state.revision)] {
+            service
+                .submit(Request::EditArrangementSection {
+                    project_generation: generation,
+                    revision,
+                    command: command.clone(),
+                })
+                .unwrap();
+            let refused = next(&service);
+            assert!(refused.error.is_some());
+            assert_eq!(refused.state.project.snapshot(), before);
+            assert_eq!(refused.state.revision, added.state.revision);
+        }
+        service
+            .submit(Request::EditArrangementSection {
+                project_generation: 0,
+                revision: added.state.revision,
+                command,
+            })
+            .unwrap();
+        let split = next(&service);
+        assert!(split.error.is_none(), "{:?}", split.error);
+        let Some(Created::ArrangementSection(right)) = split.created else {
+            panic!("split")
+        };
+        assert_ne!(right, section);
+        let after = split.state.project.snapshot();
+        service.submit(Request::Undo).unwrap();
+        let undone = next(&service);
+        assert!(undone.error.is_none());
+        let mut snapshot = undone.state.project.snapshot();
+        snapshot.next_id = before.next_id;
+        assert_eq!(snapshot, before);
+        service.submit(Request::Redo).unwrap();
+        let redone = next(&service);
+        assert!(redone.error.is_none());
+        assert_eq!(redone.state.project.snapshot(), after);
     }
 }

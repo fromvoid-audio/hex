@@ -1,11 +1,17 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod epoch;
+pub use epoch::Quiescent;
+mod preparation_failure;
+pub use preparation_failure::{PreparationDisposal, PreparationFailure};
+
 use crate::{
     Error, Result,
     channel::{Channel, Packet, end_after, pause},
-    protocol::{self, Configuration, Ready, Terminal},
+    protocol::{self, Configuration, Facts, PresentationLatency, Ready, Terminal},
 };
 use hex_audio::plugin_transport::{Binding, Block};
+use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_scan::macos::{
     build_identity::InstanceBuild,
     identity::{Bundle, Executable},
@@ -90,16 +96,21 @@ impl Limits {
     }
 }
 #[derive(Clone, Copy, Debug)]
-pub struct Options {
+pub struct Preparation {
     pub binding: Binding,
     pub sample_rate: f64,
     pub quantum: u16,
     pub input_channels: u8,
     pub output_channels: u8,
-    pub input_presentation_frames: u32,
-    pub output_presentation_frames: u32,
     pub limits: Limits,
 }
+/// Known-presentation convenience preparation uses the same two-phase protocol.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub preparation: Preparation,
+    pub presentation: PresentationLatency,
+}
+
 /// Explicitly trusted user-selected module. This is caller consent, not a source
 /// authenticity or native resource/publication permit.
 pub enum TrustUserCode {
@@ -163,6 +174,366 @@ pub struct Prepared {
     retired: Option<Retirement>,
     faulted: bool,
 }
+/// Source-bound configured component awaiting actual graph presentation facts.
+/// No processing/state capture or canonical/audio acceptance has occurred. Keep
+/// on control; dropping it cancels and joins this exact child through its lease.
+/// Derive the graph plan from `facts`, then consume it once through completion.
+pub struct Pending {
+    lease: Lease,
+    config: Configuration,
+    facts: Facts,
+    limits: Limits,
+    packet: Packet,
+    source: Source,
+    build: InstanceBuild,
+}
+impl Pending {
+    /// Preserve actual failed-construction custody for the host's already
+    /// reserved Root cell. Failure grants no source/graph admission or disposal.
+    pub fn prepare_retained_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        Self::prepare_retained(build, source, preparation, None, cancellation, |_| {})
+    }
+    /// The retained form of canonical startup restore; original state is not
+    /// replaced by capture or by any later preparation failure.
+    pub fn prepare_restored_retained_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        Self::prepare_retained(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |_| {},
+        )
+    }
+    pub fn prepare_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare(build, source, preparation, cancellation, |_| {})
+    }
+    /// Recreate captured state on a new source-bound instance. This never
+    /// edits the caller's canonical envelope, even if later capture differs.
+    pub fn prepare_restored_on_control(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        state: NativeDeviceState,
+        cancellation: PreparationCancellation,
+        _trust: TrustUserCode,
+    ) -> Result<Self> {
+        Self::prepare_with_restore(
+            build,
+            source,
+            preparation,
+            Some(state),
+            cancellation,
+            |_| {},
+        )
+    }
+    fn prepare(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        cancellation: PreparationCancellation,
+        setup: impl FnOnce(&mut Command),
+    ) -> Result<Self> {
+        Self::prepare_with_restore(build, source, preparation, None, cancellation, setup)
+    }
+    fn prepare_with_restore(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        restore: Option<NativeDeviceState>,
+        cancellation: PreparationCancellation,
+        setup: impl FnOnce(&mut Command),
+    ) -> Result<Self> {
+        Self::prepare_retained(build, source, preparation, restore, cancellation, setup)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    fn prepare_retained(
+        build: &InstanceBuild,
+        source: Source,
+        preparation: Preparation,
+        restore: Option<NativeDeviceState>,
+        cancellation: PreparationCancellation,
+        setup: impl FnOnce(&mut Command),
+    ) -> std::result::Result<Self, PreparationFailure> {
+        let options = preparation;
+        cancellation
+            .token
+            .check()
+            .map_err(PreparationFailure::before_native)?;
+        options
+            .limits
+            .validate()
+            .map_err(PreparationFailure::before_native)?;
+        let config = Configuration {
+            binding: options.binding,
+            identity: source.identity,
+            restore,
+            sample_rate: options.sample_rate,
+            quantum: options.quantum,
+            input_channels: options.input_channels,
+            output_channels: options.output_channels,
+            bundle: source
+                .bundle
+                .canonical_path
+                .to_str()
+                .ok_or(Error::Protocol("bundle path encoding"))
+                .map_err(PreparationFailure::before_native)?
+                .to_owned(),
+            executable: source.executable.relative_path.clone(),
+        };
+        let request = config.encode().map_err(PreparationFailure::before_native)?;
+        source
+            .unchanged()
+            .map_err(PreparationFailure::before_native)?;
+        build
+            .unchanged()
+            .map_err(Error::Source)
+            .map_err(PreparationFailure::before_native)?;
+        // No foreign module is loaded by this exact executable's probe. A
+        // missing/auto-reaped child refuses before any SDK instance starts.
+        let probe = Command::new(build.helper())
+            .arg("--child-custody-probe")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
+        let mut probe = ChildCustody::Owned(probe);
+        let status = match probe.reap() {
+            Ok(status) => status,
+            Err(cause) => return Err(PreparationFailure::probe(cause, probe)),
+        };
+        if !status.success() {
+            return Err(PreparationFailure::before_native(Error::Custody(
+                "waitable-child preflight did not exit normally".into(),
+            )));
+        }
+        build
+            .unchanged()
+            .map_err(Error::Source)
+            .map_err(PreparationFailure::before_native)?;
+        source
+            .unchanged()
+            .map_err(PreparationFailure::before_native)?;
+        let (data, child_data) = UnixStream::pair()
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
+        let PreparationCancellation {
+            token: cancellation,
+            receiver: child_cancel,
+        } = cancellation;
+        let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
+        let mut command = Command::new(build.helper());
+        command
+            .arg("--supervised")
+            .stdin(Stdio::from(OwnedFd::from(child_data)))
+            .stdout(Stdio::from(OwnedFd::from(child_cancel)))
+            .stderr(Stdio::null());
+        setup(&mut command);
+        let child = command
+            .spawn()
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
+        // Command retains its Stdio descriptors for reuse. Close the parent
+        // copies now, otherwise a crashed/cancelled child cannot produce EOF.
+        drop(command);
+        // The process exists before Ready. The local lease below owns every
+        // early error path, including malformed data/source changes/timeouts.
+        let mut pending = Lease {
+            child: ChildCustody::Owned(child),
+            channel,
+            cancellation,
+            #[cfg(test)]
+            reap_probe: None,
+        };
+        let mut packet = Packet::new();
+        let token = pending.cancellation.clone();
+        let prepared = (|| {
+            let until = end_after(options.limits.startup)?;
+            pending
+                .channel
+                .send(&request, until, &mut || token.check())?;
+            pending
+                .channel
+                .send(&config.startup_request()?, until, &mut || token.check())?;
+            pending
+                .channel
+                .read(&mut packet, until, &mut || token.check())?;
+            if packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    packet.body()?,
+                    config.binding,
+                )?));
+            }
+            if packet.magic() != b"HXVIFA02" {
+                return Err(Error::Protocol("worker did not report preparation facts"));
+            }
+            let facts = Facts::decode(packet.body()?, &config)?;
+            token.check()?;
+            source.unchanged()?;
+            build.unchanged().map_err(Error::Source)?;
+            match pending.child.observe()? {
+                None => {}
+                Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
+            }
+            Ok(facts)
+        })();
+        let facts = match prepared {
+            Ok(facts) => facts,
+            Err(cause) => {
+                return Err(PreparationFailure::native(
+                    cause,
+                    pending,
+                    options.limits.retirement,
+                ));
+            }
+        };
+        Ok(Self {
+            lease: pending,
+            config,
+            facts,
+            limits: options.limits,
+            packet,
+            source,
+            build: build.clone(),
+        })
+    }
+    pub fn facts(&self) -> Facts {
+        self.facts
+    }
+    /// Immutable facts of this actual pending lease, not admission authority.
+    pub fn configuration(&self) -> &Configuration {
+        &self.config
+    }
+    pub fn cancellation_on_control(&self) -> Cancellation {
+        self.lease.cancellation.clone()
+    }
+    /// Cancel this actual pending source and retain its physical cleanup owner
+    /// for Root polling. No source/graph can be accepted from the returned error.
+    pub fn cancel_retained_on_control(self) -> PreparationFailure {
+        PreparationFailure::native(Error::Cancelled, self.lease, self.limits.retirement)
+    }
+    /// Explicit pending cancellation with actual direct reap. This is OS
+    /// retirement, not a successful SDK close or prepared-instance terminal.
+    pub fn cancel_and_reap_on_control(mut self) -> Result<Retirement> {
+        self.lease.cancel_native();
+        let status = wait(
+            &mut self.lease.child,
+            end_after(self.limits.retirement)?,
+            &mut || Ok(()),
+        )?;
+        Ok(Retirement {
+            status,
+            terminal: None,
+        })
+    }
+    /// Supply actual per-direction graph/device contributions, or explicit None
+    /// when unavailable. A present optional interface requires known facts;
+    /// absence may complete without inventing zero. Source and final Ready are
+    /// checked again; a changed reported latency invalidates the caller's plan.
+    pub fn complete_on_control(
+        self,
+        presentation: Option<PresentationLatency>,
+    ) -> Result<Prepared> {
+        self.complete_retained_on_control(presentation)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    /// Completion errors retain the same actual child for Root's independent
+    /// cleanup observation. Failure cannot create a reusable prepared source.
+    pub fn complete_retained_on_control(
+        mut self,
+        presentation: Option<PresentationLatency>,
+    ) -> std::result::Result<Prepared, PreparationFailure> {
+        let token = self.lease.cancellation.clone();
+        let result = (|| {
+            token.check()?;
+            self.source.unchanged()?;
+            self.build.unchanged().map_err(Error::Source)?;
+            if self.facts.presentation_available && presentation.is_none() {
+                return Err(Error::Protocol(
+                    "actual presentation contributions are unavailable",
+                ));
+            }
+            let until = end_after(self.limits.startup)?;
+            let request = protocol::presentation_request(self.config.binding, presentation)?;
+            self.lease
+                .channel
+                .send(&request, until, &mut || token.check())?;
+            self.lease
+                .channel
+                .read(&mut self.packet, until, &mut || token.check())?;
+            if self.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.packet.body()?,
+                    self.config.binding,
+                )?));
+            }
+            if self.packet.magic() != b"HXVIRD03" {
+                return Err(Error::Protocol(
+                    "missing final prepared instance acknowledgement",
+                ));
+            }
+            let ready = Ready::decode(self.packet.body()?, &self.config, presentation)?;
+            if ready.restored != self.facts.restored
+                || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
+                || (ready.presentation == protocol::Presentation::Applied)
+                    != self.facts.presentation_available
+            {
+                return Err(Error::Protocol(
+                    "prepared facts changed before final acknowledgement",
+                ));
+            }
+            self.source.unchanged()?;
+            self.build.unchanged().map_err(Error::Source)?;
+            if self.lease.child.observe()?.is_some() {
+                return Err(Error::Custody("prepared worker already exited".into()));
+            }
+            token.check()?;
+            Ok(ready)
+        })();
+        let ready = match result {
+            Ok(ready) => ready,
+            Err(cause) => {
+                return Err(PreparationFailure::native(
+                    cause,
+                    self.lease,
+                    self.limits.retirement,
+                ));
+            }
+        };
+        Ok(Prepared {
+            lease: self.lease,
+            config: self.config,
+            ready,
+            limits: self.limits,
+            sequence: 0,
+            packet: self.packet,
+            retired: None,
+            faulted: false,
+        })
+    }
+}
+
 impl Prepared {
     /// Off-callback preparation. The caller must not independently reap these
     /// children or change their signal disposition while they are owned here.
@@ -182,125 +553,8 @@ impl Prepared {
         cancellation: PreparationCancellation,
         setup: impl FnOnce(&mut Command),
     ) -> Result<Self> {
-        cancellation.token.check()?;
-        options.limits.validate()?;
-        let config = Configuration {
-            binding: options.binding,
-            identity: source.identity,
-            sample_rate: options.sample_rate,
-            quantum: options.quantum,
-            input_channels: options.input_channels,
-            output_channels: options.output_channels,
-            input_presentation_frames: options.input_presentation_frames,
-            output_presentation_frames: options.output_presentation_frames,
-            bundle: source
-                .bundle
-                .canonical_path
-                .to_str()
-                .ok_or(Error::Protocol("bundle path encoding"))?
-                .to_owned(),
-            executable: source.executable.relative_path.clone(),
-        };
-        let request = config.encode()?;
-        source.unchanged()?;
-        build.unchanged().map_err(Error::Source)?;
-        // No foreign module is loaded by this exact executable's probe. A
-        // missing/auto-reaped child refuses before any SDK instance starts.
-        let mut probe = Command::new(build.helper())
-            .arg("--child-custody-probe")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(Error::Io)?;
-        let status = probe
-            .wait()
-            .map_err(|e| Error::Custody(format!("waitable-child preflight failed: {e}")))?;
-        if !status.success() {
-            return Err(Error::Custody(
-                "waitable-child preflight did not exit normally".into(),
-            ));
-        }
-        build.unchanged().map_err(Error::Source)?;
-        source.unchanged()?;
-        let (data, child_data) = UnixStream::pair().map_err(Error::Io)?;
-        let PreparationCancellation {
-            token: cancellation,
-            receiver: child_cancel,
-        } = cancellation;
-        let channel = Channel::new(data)?;
-        let mut command = Command::new(build.helper());
-        command
-            .arg("--supervised")
-            .stdin(Stdio::from(OwnedFd::from(child_data)))
-            .stdout(Stdio::from(OwnedFd::from(child_cancel)))
-            .stderr(Stdio::null());
-        setup(&mut command);
-        let child = command.spawn().map_err(Error::Io)?;
-        // Command retains its Stdio descriptors for reuse. Close the parent
-        // copies now, otherwise a crashed/cancelled child cannot produce EOF.
-        drop(command);
-        // The process exists before Ready. The local lease below owns every
-        // early error path, including malformed data/source changes/timeouts.
-        let mut pending = Lease {
-            child: ChildCustody::Owned(child),
-            channel,
-            cancellation,
-        };
-        let until = end_after(options.limits.startup)?;
-        let mut packet = Packet::new();
-        let token = pending.cancellation.clone();
-        let prepared = (|| {
-            pending
-                .channel
-                .send(&request, until, &mut || token.check())?;
-            pending
-                .channel
-                .read(&mut packet, until, &mut || token.check())?;
-            if packet.magic() == b"HXVIER01" {
-                return Err(Error::Worker(protocol::error(
-                    packet.body()?,
-                    config.binding,
-                )?));
-            }
-            if packet.magic() != b"HXVIRD01" {
-                return Err(Error::Protocol("worker did not prepare an instance"));
-            }
-            let ready = Ready::decode(packet.body()?, &config)?;
-            token.check()?;
-            source.unchanged()?;
-            build.unchanged().map_err(Error::Source)?;
-            match pending.child.observe()? {
-                None => {}
-                Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
-            }
-            Ok(ready)
-        })();
-        let ready = match prepared {
-            Ok(ready) => ready,
-            Err(cause) => {
-                pending.cancel_native();
-                let (exit, custody_error) = match pending.child.reap() {
-                    Ok(s) => (Some(s), None),
-                    Err(e) => (None, Some(e.to_string())),
-                };
-                return Err(Error::Preparation {
-                    cause: Box::new(cause),
-                    exit,
-                    custody_error,
-                });
-            }
-        };
-        Ok(Self {
-            lease: pending,
-            config,
-            ready,
-            limits: options.limits,
-            sequence: 0,
-            packet,
-            retired: None,
-            faulted: false,
-        })
+        Pending::prepare(build, source, options.preparation, cancellation, setup)?
+            .complete_on_control(Some(options.presentation))
     }
     pub fn ready(&self) -> &Ready {
         &self.ready
@@ -432,6 +686,8 @@ struct Lease {
     child: ChildCustody,
     channel: Channel,
     cancellation: Cancellation,
+    #[cfg(test)]
+    reap_probe: Option<Arc<std::sync::atomic::AtomicI32>>,
 }
 // The process handle is consumed exactly once. Lost custody is terminal: even
 // cleanup/Drop must not retry a numeric wait against a potentially reused PID.
@@ -507,7 +763,16 @@ fn wait(
 impl Drop for Lease {
     fn drop(&mut self) {
         self.cancel_native();
-        let _ = self.child.reap(); // joining control/worker only; lost custody never retries
+        let reaped = self.child.reap(); // joining control/worker only; lost custody never retries
+        #[cfg(test)]
+        if let Some(probe) = &self.reap_probe {
+            let code = match &reaped {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -2,
+            };
+            probe.store(code, Ordering::Release);
+        }
+        let _ = reaped;
     }
 }
 

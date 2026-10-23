@@ -18,6 +18,7 @@ mod device_theme_tests;
 pub(in crate::editor) mod eq_ui_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
+mod header_drop_tests;
 mod header_style_tests;
 mod keyboard_delete_tests;
 mod navigation_ui_tests;

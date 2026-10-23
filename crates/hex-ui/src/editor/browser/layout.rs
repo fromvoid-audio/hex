@@ -291,6 +291,7 @@ impl EditorView {
             .debug_selector(|| "browser-toolbar".to_owned())
             .child(self.browser_history_arrow(false, cx))
             .child(self.browser_history_arrow(true, cx))
+            .child(self.browser_reveal_button(cx))
             .child(
                 div()
                     .flex_1()
@@ -345,6 +346,38 @@ impl EditorView {
                 },
                 cx,
             ))
+    }
+
+    fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let target = self.browser_selected_sample(cx);
+        let enabled = target.is_some();
+        hex_widgets::action(theme::text("◎"), theme::action_style())
+            .id("browser-reveal-sample")
+            .debug_selector(|| "browser-reveal-sample".to_owned())
+            .w(px(22.0))
+            .h(px(22.0))
+            .text_xs()
+            .when(!enabled, |button| button.cursor_default().opacity(0.4))
+            .tooltip(move |_, cx| {
+                browser_label_tooltip(
+                    if enabled {
+                        "show selected sample"
+                    } else {
+                        "no sample selected in current results"
+                    },
+                    cx,
+                )
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if let Some(path) = &target {
+                        view.reveal_browser_sample(path, window, cx);
+                    }
+                }),
+            )
     }
 
     pub(super) fn browser_sidebar(
@@ -620,7 +653,41 @@ impl EditorView {
                 );
             }
         }
-        sidebar = sidebar.child(picker_group_heading("places", compact));
+        sidebar.child(self.browser_places(compact, cx))
+    }
+
+    fn browser_places(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let drop_entity = cx.entity();
+        let mut places = div()
+            .id("browser-places-drop")
+            .debug_selector(|| "browser-places-drop".into())
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .can_drop(move |payload, _, cx| {
+                payload
+                    .downcast_ref::<folder_places::FolderDrag>()
+                    .is_some_and(|drag| {
+                        let view = drop_entity.read(cx);
+                        view.folder_drag_current(drag, cx)
+                            && view.browser.preferences_writable
+                            && !view.browser.folder_bookmark_pending
+                            && (view.browser.places.contains(&drag.path)
+                                || view.browser.places.len() < PLACE_CAPACITY)
+                    })
+            })
+            .drag_over::<folder_places::FolderDrag>(|style, _, _, _| {
+                style
+                    .bg(rgb(theme::color(theme::PaletteRole::Hover)))
+                    .border_color(rgb(theme::color(theme::PaletteRole::Secondary)))
+            })
+            .on_drop(
+                cx.listener(|view, drag: &folder_places::FolderDrag, _, cx| {
+                    view.bookmark_browser_folder(drag, cx);
+                }),
+            )
+            .child(picker_group_heading("places", compact));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             if !self.browser_place_visible(place) {
                 continue;
@@ -644,7 +711,7 @@ impl EditorView {
                 browser_caption(self.browser_place_glyph(place))
                     .debug_selector(move || format!("browser-picker-glyph-place-{index}")),
             );
-            sidebar = sidebar.child(
+            places = places.child(
                 div()
                     .relative()
                     .id(("browser-place", index))
@@ -706,7 +773,7 @@ impl EditorView {
             );
         }
         if self.browser.places.len() < PLACE_CAPACITY {
-            sidebar = sidebar.child(self.browser_icon(
+            places = places.child(self.browser_icon(
                 "+",
                 "add folder place",
                 |view, _, cx| view.open_browser_folder(cx),
@@ -715,7 +782,7 @@ impl EditorView {
         }
         if let Some(status) = &self.browser.places_status {
             let tooltip = status.clone();
-            sidebar = sidebar.child(
+            places = places.child(
                 picker_heading(status)
                     .id("browser-places-status")
                     .debug_selector(|| "browser-places-status".into())
@@ -724,7 +791,7 @@ impl EditorView {
                     .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx)),
             );
         }
-        sidebar
+        places
     }
 
     pub(super) fn browser_sidebar_resize(

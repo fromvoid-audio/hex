@@ -5,7 +5,14 @@
 //! can retire even a startup-hung instance without signalling numeric PIDs.
 //! A real child-custody preflight refuses unsupported inherited auto-reap;
 //! the client never changes caller signal dispositions.
+//! Optional source-bound startup restore precedes configuration and raw facts.
+//! Facts precede presentation/final state capture/processing finalization. The
+//! pending type cannot exchange PCM or grant graph/canonical acceptance.
 //! Configuration, prepared state and PCM are copied and strictly bounded.
+//! A serialized quiescent owner can retain the same loaded component/controller
+//! through a newer epoch. Actual stop/facts/restart acknowledgements fence that
+//! transition; original startup capture stays historical. Old copied queues and
+//! graph/callback custody remain the audio owner's separate responsibility.
 //!
 //! # Dependencies
 //! Uses hex-plugin-scan's fresh source/helper provenance, hex-plugin-state's
@@ -21,6 +28,9 @@
 //! the existing joining transport worker, never an audio callback. Ready is a
 //! prepared instance fact, not canonical/audio application. Numeric child IDs
 //! are never used after reap/unknown custody; no descendant containment is claimed.
+//! Retained preparation failures preserve their actual child lease for Root's
+//! independent disposal polling. Synchronous convenience APIs join before
+//! returning an error; neither path grants graph/callback retirement authority.
 
 #[cfg(unix)]
 mod channel;

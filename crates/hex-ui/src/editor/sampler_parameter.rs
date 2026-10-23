@@ -13,7 +13,7 @@ use std::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Target {
+pub(super) struct Target {
     generation: u64,
     revision: u64,
     track: TrackId,
@@ -32,6 +32,7 @@ struct Pending {
     target: PendingTarget,
     id: u64,
     cancel: Arc<AtomicBool>,
+    value: Option<f64>,
 }
 enum PendingTarget {
     Parameter(Target),
@@ -82,7 +83,7 @@ impl Drop for State {
     }
 }
 impl Target {
-    fn current(self, view: &EditorView) -> bool {
+    pub(super) fn current(self, view: &EditorView) -> bool {
         view.project_generation == self.generation
             && view.selected_track == Some(self.track)
             && view.device_panel.owner == Some(device_panel::DevicePanelOwner::Track(self.track))
@@ -100,6 +101,134 @@ impl Target {
     }
 }
 impl EditorView {
+    /// Geometry owners capture this existing adapter's revision-bound target;
+    /// they never publish an independent sampler edit or receipt.
+    pub(super) fn sampler_boundary_target(
+        &mut self,
+        track: TrackId,
+        device: hex_project::DeviceId,
+        parameter: SamplerParameter,
+    ) -> Option<Target> {
+        if !matches!(
+            parameter,
+            SamplerParameter::StartFrame | SamplerParameter::EndFrame
+        ) || self.edit_pending()
+        {
+            self.error =
+                Some("sampler boundary is unavailable while another edit is pending".into());
+            return None;
+        }
+        let target = Target {
+            generation: self.project_generation,
+            revision: self.state.as_ref()?.revision,
+            track,
+            device,
+            parameter,
+        };
+        target.current(self).then_some(target)
+    }
+
+    pub(super) fn validate_sampler_boundary(
+        &self,
+        target: Target,
+        frame: u64,
+    ) -> Result<(), hex_engine::Invalid> {
+        if !target.current(self) || frame > target.parameter.bounds().1 as u64 {
+            return Err(hex_engine::Invalid(
+                "sampler boundary target changed or frame exceeds supported limits",
+            ));
+        }
+        let device = self
+            .state
+            .as_ref()
+            .and_then(|s| s.project.track(target.track))
+            .and_then(|t| t.instrument())
+            .filter(|d| d.id() == target.device)
+            .ok_or(hex_engine::Invalid(
+                "sampler boundary target is unavailable",
+            ))?;
+        let frames = device
+            .state()
+            .asset_references()
+            .first()
+            .and_then(|reference| {
+                self.state
+                    .as_ref()?
+                    .project
+                    .assets()
+                    .find(|a| a.id().value() == reference.asset.value())
+            })
+            .map(|asset| asset.source_frames())
+            .ok_or(hex_engine::Invalid(
+                "sampler original source extent is unavailable",
+            ))?;
+        if frame > frames {
+            return Err(hex_engine::Invalid(
+                "sampler boundary exceeds original source",
+            ));
+        }
+        hex_engine::patch_sampler_parameter_on_control(
+            target.parameter,
+            device.state(),
+            frame as f64,
+        )
+        .map(|_| ())
+    }
+
+    pub(super) fn submit_sampler_boundary(&mut self, target: Target, frame: u64) {
+        if let Err(error) = self.validate_sampler_boundary(target, frame) {
+            self.error = Some(error.to_string().into());
+            return;
+        }
+        let current = self
+            .state
+            .as_ref()
+            .and_then(|s| s.project.track(target.track))
+            .and_then(|t| t.instrument())
+            .and_then(|d| {
+                hex_engine::sampler_parameter_value_on_control(target.parameter, d.state()).ok()
+            });
+        if current != Some(frame as f64) {
+            self.submit_sampler_parameter(target, frame as f64);
+        }
+    }
+
+    /// A source boundary draft and its accepted keyed request share one display
+    /// value with numeric controls. Only the exact terminal retires the latter.
+    pub(super) fn sampler_display_value(
+        &self,
+        track: TrackId,
+        device: &hex_project::Device,
+        parameter: SamplerParameter,
+        cx: &gpui::App,
+    ) -> Result<f64, hex_engine::Invalid> {
+        if parameter.is_source_frame() {
+            if let Some(value) =
+                super::device_panel::sampler_boundary_preview(self, track, device.id(), parameter)
+            {
+                return Ok(value as f64);
+            }
+            if let Some(pending) = self.sampler_parameter.pending.as_ref()
+                && let PendingTarget::Parameter(target) = pending.target
+                && target.track == track
+                && target.device == device.id()
+                && target.parameter == parameter
+                && target.current(self)
+                && let Some(value) = pending.value
+            {
+                return Ok(value);
+            }
+            if let Some(control) = self.sampler_parameter.controls.get(&parameter)
+                && control.target.track == track
+                && control.target.device == device.id()
+                && control.target.current(self)
+                && control.entity.read(cx).is_interacting()
+            {
+                return Ok(control.entity.read(cx).value());
+            }
+        }
+        hex_engine::sampler_parameter_value_on_control(parameter, device.state())
+    }
     fn sampler_source_target_current(&self, device: &hex_project::Device) -> bool {
         let Some(state) = self.state.as_ref() else {
             return false;
@@ -213,12 +342,14 @@ impl EditorView {
                 target: PendingTarget::Parameter(target),
                 id,
                 cancel,
+                value: Some(value),
             });
         }
     }
     /// A local numeric draft is not canonical history. Cancel it and consume the
     /// shortcut; a subsequent press may move the global history edge.
     pub(super) fn cancel_sampler_drafts(&mut self, cx: &mut Context<Self>) -> bool {
+        let boundary_cancelled = super::device_panel::cancel_sampler_boundary(self);
         let controls = self
             .sampler_parameter
             .controls
@@ -232,7 +363,7 @@ impl EditorView {
                 }
             })
             .collect::<Vec<_>>();
-        let cancelled = !controls.is_empty();
+        let cancelled = boundary_cancelled || !controls.is_empty();
         for entity in controls {
             entity.update(cx, |widget, cx| widget.cancel(cx));
         }
@@ -297,6 +428,7 @@ impl EditorView {
                 },
                 id,
                 cancel,
+                value: None,
             });
         }
     }
@@ -307,8 +439,7 @@ impl EditorView {
         parameter: SamplerParameter,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let value = match hex_engine::sampler_parameter_value_on_control(parameter, device.state())
-        {
+        let value = match self.sampler_display_value(track, device, parameter, cx) {
             Ok(value) => value,
             Err(error) => {
                 return div()
@@ -443,7 +574,7 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    device_panel::control_style(),
+                    crate::theme::control_style(),
                 )
                 .and_then(|config| {
                     let config = config.with_appearance(NumericControlAppearance::InlineValue);
@@ -564,4 +695,4 @@ impl EditorView {
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests;
+pub(super) mod tests;

@@ -61,6 +61,49 @@ impl Scene {
     pub(super) fn points(&self) -> &[Point] {
         &self.points
     }
+    /// Rectangle intersections use the actual handle and stem extents, including
+    /// notes outside the piano's pitch view. Results are canonical note identities.
+    pub(super) fn marquee_hits(
+        &self,
+        first: [f32; 2],
+        last: [f32; 2],
+        width: f32,
+        height: f32,
+    ) -> Result<Vec<NoteId>, &'static str> {
+        if !first
+            .into_iter()
+            .chain(last)
+            .chain([width, height])
+            .all(f32::is_finite)
+            || width <= 0.0
+            || height <= 8.0
+        {
+            return Err("invalid velocity selection geometry");
+        }
+        let [left, top, right, bottom] = [
+            first[0].min(last[0]),
+            first[1].min(last[1]),
+            first[0].max(last[0]),
+            first[1].max(last[1]),
+        ];
+        let mut hits = Vec::new();
+        hits.try_reserve(self.points.len())
+            .map_err(|_| "could not reserve velocity selection")?;
+        for point in self.points.iter() {
+            let x = point.x * width;
+            let Some(y) = handle_y(point.note.velocity, height) else {
+                continue;
+            };
+            let handle = x + 3.0 >= left && x - 3.0 <= right && y + 2.0 >= top && y - 2.0 <= bottom;
+            let stem = x + 1.0 >= left && x <= right && height - 4.0 >= top && y <= bottom;
+            if handle || stem {
+                hits.push(point.note.id);
+            }
+        }
+        hits.sort_unstable();
+        hits.dedup();
+        Ok(hits)
+    }
     /// Pick the nearest handle. Equal-position handles cycle by stable note ID;
     /// the caller retains `after` only for repeated clicks at the same location.
     pub(super) fn hit(
@@ -94,7 +137,9 @@ impl Scene {
             let dy = handle_y(point.note.velocity, height)? - y;
             let dx = point.x * width - x;
             let distance = dx * dx + dy * dy;
-            if distance > 36.0 {
+            let on_stem =
+                dx.abs() <= 3.0 && y >= handle_y(point.note.velocity, height)? && y <= height - 4.0;
+            if distance > 36.0 && !on_stem {
                 continue;
             }
             if distance < best_distance - 0.01 {
@@ -292,6 +337,35 @@ mod tests {
             source_length: BeatTime::ONE.raw() * 4,
             selection_epoch: 4,
         }
+    }
+    #[test]
+    fn marquee_intersects_stems_and_coincident_hidden_pitch_handles_in_both_directions() {
+        let (editor, clip) = fixture();
+        let scene =
+            Scene::build(key(clip), editor.project().midi_clip(clip).unwrap().notes()).unwrap();
+        let ids = scene.points().iter().map(|p| p.note.id).collect::<Vec<_>>();
+        for (first, last) in [
+            ([195.0, 50.0], [205.0, 59.0]),
+            ([205.0, 59.0], [195.0, 50.0]),
+        ] {
+            assert_eq!(scene.marquee_hits(first, last, 400.0, 64.0).unwrap(), ids);
+        }
+        assert_eq!(scene.hit([200.0, 57.0], [400.0, 64.0], None), Some(ids[0]));
+        assert_eq!(
+            scene.hit([200.0, 57.0], [400.0, 64.0], Some(ids[0])),
+            Some(ids[1])
+        );
+        assert!(
+            scene
+                .marquee_hits([0.0, 0.0], [190.0, 64.0], 400.0, 64.0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            scene
+                .marquee_hits([f32::NAN, 0.0], [205.0, 59.0], 400.0, 64.0)
+                .is_err()
+        );
     }
     #[test]
     fn lane_uses_onsets_across_all_pitches_and_cycles_coincident_handles() {

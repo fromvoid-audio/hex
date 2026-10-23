@@ -1,5 +1,5 @@
 use super::*;
-use crate::{GainInterpolation, GainLane, GainPoint, MeterMap, MeterPoint, TempoMap, TempoPoint};
+use crate::{GainInterpolation, GainLane, GainPoint, MeterMap, TempoMap, TempoPoint};
 use std::collections::BTreeSet;
 
 fn boundaries(preview: &SectionReorderPreview) -> Vec<BeatTime> {
@@ -35,26 +35,16 @@ pub(super) fn tempo_map(
     TempoMap::new(old.sample_rate(), points)
 }
 fn meter_map(old: &MeterMap, preview: &SectionReorderPreview) -> Result<MeterMap, Invalid> {
-    let mut beats: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();
-    beats.extend(preview.cuts());
-    let mut points = Vec::new();
-    points
-        .try_reserve_exact(beats.len())
-        .map_err(|_| Invalid("could not reserve section meter map"))?;
-    for beat in beats {
-        let index = old
-            .points()
-            .partition_point(|p| p.beat() <= beat)
-            .saturating_sub(1);
-        points.push(MeterPoint::new(
-            preview.map_beat(beat)?,
-            old.points()[index].meter(),
-        ));
+    let mut result = meter::MeterEdit::default();
+    for point in old.points() {
+        result.original(preview.map_beat(point.beat())?, *point);
     }
-    points.sort_by_key(|p| p.beat());
-    MeterMap::new(points)
+    for beat in preview.cuts() {
+        result.seam(preview.map_beat(beat)?, old.meter_at(beat));
+    }
+    result.finish(old.meter_at(BeatTime::ZERO))
 }
-fn base_value(
+pub(super) fn base_value(
     points: &[GainPoint],
     fallback: f32,
     beat: BeatTime,
@@ -379,7 +369,7 @@ fn midi_fragments(
     }
     Ok(result)
 }
-fn take_id(next: &mut u64) -> Result<u64, Invalid> {
+pub(super) fn take_id(next: &mut u64) -> Result<u64, Invalid> {
     let id = *next;
     *next = next
         .checked_add(1)
@@ -393,6 +383,20 @@ pub(super) fn reorder(
     before: SectionId,
 ) -> Result<Created, Invalid> {
     let preview = project.preview_section_reorder(section, before)?;
+    reorder_preview(project, preview)
+}
+pub(super) fn reorder_after(
+    project: &mut Project,
+    section: SectionId,
+    after: SectionId,
+) -> Result<Created, Invalid> {
+    let preview = project.preview_section_reorder_after(section, after)?;
+    reorder_preview(project, preview)
+}
+fn reorder_preview(
+    project: &mut Project,
+    preview: SectionReorderPreview,
+) -> Result<Created, Invalid> {
     if preview.is_noop() {
         return Ok(Created::None);
     }

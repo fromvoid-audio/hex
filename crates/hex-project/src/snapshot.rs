@@ -75,6 +75,8 @@ pub struct SessionMidiClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSourceSnapshot {
+    /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
+    pub one_shot_boundary: crate::MidiOneShotBoundary,
     pub source_length_raw: u64,
     pub source_start_raw: u64,
     pub loop_start_raw: u64,
@@ -172,6 +174,8 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
+    pub one_shot_boundary: crate::MidiOneShotBoundary,
     pub volume: crate::MidiClipVolume,
     pub name: String,
     pub flavor: crate::ClipFlavor,
@@ -325,6 +329,7 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                one_shot_boundary: clip.source.one_shot_boundary,
                                 volume: clip.volume.clone(),
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
@@ -408,6 +413,7 @@ impl Project {
                                     id: clip.id.value(),
                                     name: clip.name.clone(),
                                     source: MidiSourceSnapshot {
+                                        one_shot_boundary: clip.source.one_shot_boundary,
                                         source_length_raw: clip.source.source_length.raw(),
                                         source_start_raw: clip.source.source_start.raw(),
                                         loop_start_raw: clip.source.loop_start.raw(),
@@ -708,12 +714,13 @@ impl Project {
                 let loop_start = crate::BeatTime::from_raw(clip.loop_start_raw);
                 let loop_end = crate::BeatTime::from_raw(clip.loop_end_raw);
                 crate::midi::validate_clip(start, length)?;
-                crate::midi::validate_source(
+                crate::midi::validate_source_boundary(
                     source_length,
                     source_start,
                     loop_start,
                     loop_end,
                     clip.looping,
+                    clip.one_shot_boundary,
                 )?;
                 total_notes = total_notes
                     .checked_add(clip.notes.len())
@@ -753,6 +760,7 @@ impl Project {
                     start,
                     length,
                     source: std::sync::Arc::new(crate::MidiSource {
+                        one_shot_boundary: clip.one_shot_boundary,
                         source_length,
                         source_start,
                         loop_start,
@@ -850,12 +858,13 @@ impl Project {
                     let source_start = crate::BeatTime::from_raw(clip.source.source_start_raw);
                     let loop_start = crate::BeatTime::from_raw(clip.source.loop_start_raw);
                     let loop_end = crate::BeatTime::from_raw(clip.source.loop_end_raw);
-                    crate::midi::validate_source(
+                    crate::midi::validate_source_boundary(
                         source_length,
                         source_start,
                         loop_start,
                         loop_end,
                         clip.source.looping,
+                        clip.source.one_shot_boundary,
                     )?;
                     total_notes = total_notes
                         .checked_add(clip.source.notes.len())
@@ -893,6 +902,7 @@ impl Project {
                         id: ClipId(clip.id),
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
+                            one_shot_boundary: clip.source.one_shot_boundary,
                             source_length,
                             source_start,
                             loop_start,

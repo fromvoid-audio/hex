@@ -368,6 +368,8 @@ def verify_native_executable(binary: Path) -> None:
 
 
 def verify(app: Path) -> dict:
+    if (app / "Contents/Resources/release-build.json").exists():
+        return verify_distribution(app)
     assert_identity(app)
     receipt = json.loads((app / "Contents/Resources/test-build.json").read_text())
     actual = native_signature(app / "Contents/MacOS/hex")
@@ -388,6 +390,64 @@ def verify(app: Path) -> dict:
         verify_discovery_package(app, receipt)
     if receipt.get("vst3_instance") is not None:
         verify_instance_package(app, receipt)
+    return receipt
+
+
+def verify_distribution(app: Path) -> dict:
+    """Verify the sealed distribution receipt, shared by release and installer.
+
+    The full bundle seal authenticates all resources. Distribution archive hashes
+    and notarization/stapling are checked by hex-release; local launch verification
+    never needs a network call. No distribution receipt is a test-build receipt.
+    """
+    assert_identity(app)
+    resources = app / "Contents/Resources"
+    receipt = json.loads((resources / "release-build.json").read_bytes())
+    if (not isinstance(receipt, dict) or receipt.get("schema") != 1
+            or receipt.get("channel") not in {"beta", "nightly", "stable"}
+            or receipt.get("profile") != "release"
+            or receipt.get("verification") != {"mode": "full-ci", "tests": "passed"}
+            or type(receipt.get("build")) is not int or receipt["build"] < 1
+            or not isinstance(receipt.get("source"), str)
+            or re.fullmatch(r"[0-9a-f]{40}", receipt["source"]) is None):
+        raise DeliveryError("invalid distribution receipt")
+    signing = signing_configuration(json.loads((ROOT / "scripts/hex-test-build.json").read_bytes()))
+    if receipt.get("signing") != signing:
+        raise DeliveryError("distribution signer differs from configuration")
+    verify_signed_bundle(app, signing, native_signature(app / "Contents/MacOS/hex"))
+    signature = subprocess.run(["codesign", "--display", "--verbose=4", "--entitlements", "-", str(app)],
+                               check=True, capture_output=True)
+    entitlements = plistlib.loads(signature.stdout)
+    details = signature.stderr.decode("utf-8", errors="replace")
+    if (not re.search(r"flags=.*\bruntime\b", details)
+            or not re.search(r"(?m)^Timestamp=.+", details)
+            or entitlements != {"com.apple.security.device.audio-input": True}):
+        raise DeliveryError("distribution app requires timestamp, hardened runtime and exact audio-input entitlement")
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    if info.get("NSMicrophoneUsageDescription") != "hex uses audio input to record audio into your project.":
+        raise DeliveryError("distribution microphone usage description differs")
+    for key, expected in (("CFBundleVersion", str(receipt["build"])),
+                          ("CFBundleShortVersionString", receipt["target"]),
+                          ("HexReleaseVersion", receipt["version"]),
+                          ("HexReleaseChannel", receipt["channel"]),
+                          ("HexSourceRevision", receipt["source"])):
+        if info.get(key) != expected:
+            raise DeliveryError("distribution metadata differs from sealed receipt")
+    for filename, key in (("notes.json", "notes_sha256"), ("snapshot.json", "snapshot_sha256"),
+                          ("TESTING.md", "checklist_sha256"), ("local-ci-summary.json", "ci_report_sha256"),
+                          ("manual/documentation.json", "documentation_sha256")):
+        if sha(resources / filename) != receipt.get(key):
+            raise DeliveryError("distribution resource differs from sealed receipt")
+    documentation = json.loads((resources / "manual/documentation.json").read_bytes())
+    if (documentation.get("schema") != 1 or documentation.get("version") != receipt["version"]
+            or documentation.get("source") != receipt["source"]
+            or set(documentation.get("outputs", {})) != {"hex-manual.html", "hex-manual.pdf"}):
+        raise DeliveryError("distribution manual provenance differs")
+    if any(sha(resources / "manual" / name) != digest for name, digest in documentation["outputs"].items()):
+        raise DeliveryError("distribution manual bytes differ")
+    if not os.access(app / "Contents/MacOS/hex", os.X_OK):
+        raise DeliveryError("distribution executable is not executable")
+    verify_native_executable(app / "Contents/MacOS/hex")
     return receipt
 
 
@@ -604,6 +664,10 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
             or evidence.get("commit") != candidate
             or evidence["start_tree"].get("content_sha256") != current["content_sha256"]):
         raise DeliveryError("full exact-source local CI evidence is missing, failed, dirty or stale")
+    try:
+        ci.ci_checkpoint.validate_inheritance(runner.root, evidence)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise DeliveryError(f"CI inherited stage evidence is invalid: {error}") from error
     head = current["commit"]
     if head != candidate:
         # A merge commit is eligible only with identical complete Git tree and ancestry.

@@ -55,6 +55,7 @@ mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod sampler_overview;
+pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_preview};
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
@@ -141,6 +142,7 @@ pub(super) struct DevicePanelState {
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
     eq_spectrum: eq_panel::SpectrumSelection,
+    sampler_cursor: sampler_overview::CursorState,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -258,7 +260,7 @@ fn title_label(title: String, warning: bool) -> Div {
 }
 
 pub(super) fn control_style() -> ControlStyle {
-    theme::device_style(theme::DeviceStyleRole::Control)
+    theme::control_style()
 }
 
 // Reuse the canonical device-side balance display/parser for track mixer fields.
@@ -483,6 +485,10 @@ pub(super) fn view(
         view.device_panel.generation = view.project_generation;
     }
     reconcile_eq_spectrum(view);
+    sampler_overview::reconcile_cursor(view);
+    if window.is_some_and(|window| !view.focus.is_focused(window)) {
+        cancel_sampler_boundary(view);
+    }
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
@@ -1589,6 +1595,7 @@ fn render_effect(
             )
         }
     };
+    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2083,7 +2090,7 @@ fn render_instrument(
                 "{readiness} · * release inactive in trigger mode{}",
                 loop_error.map_or_else(String::new, |error| format!(" · {error}"))
             )));
-        let overview = sampler_overview::render(view, device, &name);
+        let overview = sampler_overview::render(view, track, device, &name, cx);
         let body = crate::device_composition::body()
             .flex()
             .flex_col()
@@ -2182,6 +2189,7 @@ fn render_instrument(
             }
         }
     };
+    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2384,9 +2392,9 @@ fn bypass_action(
             "toggle device bypass"
         },
         if bypassed {
-            theme::DeviceActionRole::Muted
+            theme::DeviceActionRole::Bypassed
         } else {
-            theme::DeviceActionRole::Normal
+            theme::DeviceActionRole::Enabled
         },
         selected,
     )
