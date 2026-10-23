@@ -527,7 +527,14 @@ fn control_button(
             } else {
                 frame_step(window.sample_rate, fine)
             };
-            if let Some(command) = command_for(window, field, direction, step) {
+            let command = selection_command_for(
+                window,
+                field,
+                direction,
+                step,
+                view.selected_clip_ids().len() > 1,
+            );
+            if let Some(command) = command {
                 view.enqueue(hex_session::service::Request::Edit(command));
             }
             cx.notify();
@@ -539,6 +546,26 @@ fn frame_step(sample_rate: u32, fine: bool) -> u64 {
         1
     } else {
         u64::from((sample_rate / 1_000).max(1))
+    }
+}
+
+fn selection_command_for(
+    window: ClipWindow,
+    field: Field,
+    direction: i8,
+    step: u64,
+    multiple: bool,
+) -> Option<Command> {
+    if field == Field::Gain && multiple {
+        let millidb = i32::try_from(step)
+            .ok()?
+            .checked_mul(i32::from(direction))?;
+        Some(Command::EditClips {
+            clips: vec![window.clip],
+            edit: hex_project::ClipEdit::GainBy { millidb },
+        })
+    } else {
+        command_for(window, field, direction, step)
     }
 }
 
@@ -1041,6 +1068,13 @@ mod tests {
             command_for(captured, Field::Gain, -1, 100),
             Some(Command::SetAudioClipGain { millidb: -100, .. })
         ));
+        for (direction, step, delta) in [(-1, 100, -100), (1, 1_000, 1_000)] {
+            assert!(
+                matches!(selection_command_for(captured, Field::Gain, direction, step, true),
+                Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb } })
+                if clips == vec![captured.clip] && millidb == delta)
+            );
+        }
         captured.gain = hex_project::ClipGain::new(24_000).unwrap();
         assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
         captured.gain = hex_project::ClipGain::new(-60_000).unwrap();

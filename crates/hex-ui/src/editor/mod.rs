@@ -20,6 +20,7 @@ mod audio_admission;
 mod audio_event_editor;
 mod browser;
 mod browser_input;
+mod clip_action_scope;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_border_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -750,6 +751,8 @@ pub(super) struct EditorView {
     export_dialog_open: bool,
     saving_project: bool,
     save_dialog_open: bool,
+    document_format_upgrade_required: bool,
+    format_upgrade_prompt: Option<save::FormatUpgradeIntent>,
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
@@ -1369,6 +1372,8 @@ impl EditorView {
             export_dialog_open: false,
             saving_project: false,
             save_dialog_open: false,
+            document_format_upgrade_required: false,
+            format_upgrade_prompt: None,
             preset_dialog_open: false,
             status,
             error: None,

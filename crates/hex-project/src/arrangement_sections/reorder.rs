@@ -393,6 +393,20 @@ pub(super) fn reorder(
     before: SectionId,
 ) -> Result<Created, Invalid> {
     let preview = project.preview_section_reorder(section, before)?;
+    reorder_preview(project, preview)
+}
+pub(super) fn reorder_after(
+    project: &mut Project,
+    section: SectionId,
+    after: SectionId,
+) -> Result<Created, Invalid> {
+    let preview = project.preview_section_reorder_after(section, after)?;
+    reorder_preview(project, preview)
+}
+fn reorder_preview(
+    project: &mut Project,
+    preview: SectionReorderPreview,
+) -> Result<Created, Invalid> {
     if preview.is_noop() {
         return Ok(Created::None);
     }

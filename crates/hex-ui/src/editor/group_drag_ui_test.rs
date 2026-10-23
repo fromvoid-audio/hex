@@ -358,11 +358,12 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
                 let current = project.clip(*id).unwrap();
                 assert_eq!(current.start(), old.start());
                 assert_eq!(current.source_offset(), old.source_offset());
+                assert_eq!(current.name(), "independent rename");
             }
             assert_eq!(project.clip(clips[0]).unwrap().name(), "independent rename");
             assert!(
-                matches!(&v.last_enqueued_edit, Some(Command::RenameClip { .. })),
-                "no group command after pending/stale refusal"
+                matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"),
+                "no movement command after pending/stale refusal"
             );
         });
     }
