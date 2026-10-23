@@ -56,6 +56,51 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(BOOT.verify(self.receipt, run=True), {
             "version": 1, "scope": "original-macos-bootstrap", "effect_frames": 64, "instrument_frames": 64})
 
+    @staticmethod
+    def stream_packet(sequence, *, graph=3, frames=8, events=True):
+        header = struct.pack("<4sHHH6x6Q", b"HXVB", 1, frames, int(events),
+                             1, 2, graph, 4, sequence, sequence * frames)
+        pcm = struct.pack("<" + "ff" * frames, *([0.75, -0.5] * frames))
+        event = struct.pack("<HB3B2x", frames - 1, 3, 0x90, 60, 100) if events else b""
+        return header + pcm + event
+
+    def stream(self, data):
+        BOOT.verify(self.receipt)
+        return subprocess.run([str(self.root / BOOT.EXECUTABLE), "--stream-fixture"],
+                              input=data, capture_output=True, timeout=10)
+
+    def test_persistent_stream_uses_one_real_processor_and_copied_event_metadata(self):
+        packets = [self.stream_packet(n) for n in range(32)]
+        run = self.stream(b"".join(packets))
+        self.assertEqual(run.returncode, 0, run.stderr.decode())
+        self.assertEqual(len(run.stdout), sum(map(len, packets)))
+        self.assertIn(b"blocks=32 closed=1 violations=0", run.stderr)
+        size = len(packets[0])
+        for sequence, request in enumerate(packets):
+            reply = run.stdout[sequence * size:(sequence + 1) * size]
+            self.assertEqual(reply[:64], request[:64])
+            self.assertEqual(reply[-8:], request[-8:], "MIDI transport metadata, not SDK event processing")
+            scale = 0.5 if sequence == 0 else 0.25  # original stateful fixture's literal oracle
+            self.assertEqual(struct.unpack("<16f", reply[64:-8]), tuple([0.75 * scale, -0.5 * scale] * 8))
+
+    def test_stream_refuses_bad_bounds_truncation_and_stale_identity_without_dsp_replay(self):
+        first = self.stream_packet(0)
+        bad_count = bytearray(first)
+        bad_count[8:10] = struct.pack("<H", 65)
+        nonfinite = bytearray(first)
+        nonfinite[64:68] = struct.pack("<f", float("nan"))
+        cases = [bytes(bad_count), bytes(nonfinite), first[:-1], self.stream_packet(0, frames=65),
+                 self.stream_packet(1), first + self.stream_packet(0),
+                 first + self.stream_packet(2), first + self.stream_packet(1, graph=99)]
+        for data in cases:
+            with self.subTest(size=len(data), tail=data[-8:]):
+                run = self.stream(data)
+                self.assertNotEqual(run.returncode, 0, run.stderr.decode())
+                self.assertLessEqual(len(run.stdout), len(first))
+                if len(data) == len(first) * 2:
+                    self.assertEqual(run.stdout[:64], first[:64])
+                    self.assertIn(b"blocks=1 closed=1 violations=0", run.stderr)
+
     def lifecycle(self, mode, failure, expected_exit=0):
         # Own original helper only; source/inventory admission before execution.
         BOOT.verify(self.receipt)

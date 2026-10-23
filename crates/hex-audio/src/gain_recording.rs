@@ -274,6 +274,13 @@ fn validate_gain(gain: f32) -> Result<(), &'static str> {
     }
 }
 impl Callback {
+    pub(crate) fn has_take(&self) -> bool {
+        self.owner.is_some()
+            || self.value.is_some()
+            || self.staged.is_some()
+            || self.terminal.is_some()
+            || self.pending_len != 0
+    }
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {

@@ -915,6 +915,7 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
+    output_transport_reaper: Option<crate::plugin_transport::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -943,7 +944,19 @@ impl std::ops::DerefMut for Control {
     }
 }
 
+/// Final worker-input disposition, distinct from host delivery. Cancellation
+/// must replace an already copied host chunk with silence, never dispatch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputTransportDelivery {
+    Accepted,
+    Cancelled,
+    Refused,
+}
+
 pub struct Callback {
+    output_transport: Option<Box<crate::plugin_transport::Callback>>,
+    output_transport_cancelled: bool,
+    transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
@@ -1027,6 +1040,7 @@ pub fn channel_with_spectrum(
             gain_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
                 held_control_return: None,
@@ -1045,6 +1059,9 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            output_transport: None,
+            output_transport_cancelled: false,
+            transport_setup_open: true,
             sample_preview: callback_preview,
             candidate_root,
             publications: incoming,
@@ -1677,6 +1694,9 @@ impl PublicationControl {
         self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
+        if let Some(reaper) = self.output_transport_reaper.as_ref() {
+            reaper.revoke();
+        }
         self.status.pending_stop_marker.store(
             self.status.admitted_ticket.load(Acquire).saturating_add(1),
             Release,
@@ -1773,6 +1793,12 @@ impl Control {
 
 impl Drop for PublicationControl {
     fn drop(&mut self) {
+        // The exact worker guard retains its endpoints independently of
+        // callback terminal order. Join/final disposal stay on control.
+        if let Some(reaper) = self.output_transport_reaper.as_mut() {
+            self.status.closing.store(true, Release);
+            let _ = reaper.join_on_control();
+        }
         if self.status.split_endpoints.load(Acquire) {
             self.request_shutdown();
         }
@@ -1786,7 +1812,195 @@ impl Drop for PublicationControl {
     }
 }
 
+impl PublicationControl {
+    /// Original whole-output exchange, with its actual joining worker retained
+    /// by this existing control owner. Native device/graph admission remains
+    /// unavailable until device insertion and delayed delivery clocks exist.
+    /// `process` runs only on the worker and must bound its own IPC/supervision;
+    /// it must never load native plugin ABI into Hex.
+    pub fn prepare_output_transport_worker_on_control(
+        &mut self,
+        callback: &mut Callback,
+        binding: crate::plugin_transport::Binding,
+        quantum: u16,
+        process: impl FnMut(
+            crate::plugin_transport::Block,
+        )
+            -> Result<crate::plugin_transport::Block, crate::plugin_transport::Fault>
+        + Send
+        + 'static,
+    ) -> Result<(), Invalid> {
+        if self.native_custody
+            || self.output_transport_reaper.is_some()
+            || binding.root != self.candidate_root.root_id()
+            || !callback.belongs_to_candidate_root(&self.candidate_root)
+            || !callback.matches_native_status(&self.status)
+        {
+            return Err(Invalid(
+                "output transport owner mismatch or already exposed",
+            ));
+        }
+        let (control, worker) = callback.prepare_output_transport_on_control(
+            binding.instance,
+            binding.graph,
+            binding.epoch,
+            quantum,
+        )?;
+        match crate::plugin_transport::spawn(control, worker, process) {
+            Ok(reaper) => {
+                self.output_transport_reaper = Some(reaper);
+                Ok(())
+            }
+            Err(_) => {
+                // Spawn failed before exposure/dispatch; all endpoint disposal
+                // is still on this constructing control lane.
+                callback.output_transport = None;
+                Err(Invalid("output transport worker could not start"))
+            }
+        }
+    }
+    /// Diagnostic/control-fixture observation, never readiness or custody proof.
+    pub fn output_transport_completed_blocks_on_control(&self) -> Option<u64> {
+        self.output_transport_reaper
+            .as_ref()
+            .map(crate::plugin_transport::Reaper::completed_blocks)
+    }
+}
+
 impl Callback {
+    /// Construct an original whole-output transport profile before callback
+    /// exposure. This does not admit a device, graph node or native worker.
+    /// Native resource admission remains unavailable until device insertion
+    /// and delayed delivery clocks exist. Spectrum/gain capture are unsupported
+    /// in this original whole-output profile; ordinary output is unchanged.
+    pub(crate) fn prepare_output_transport_on_control(
+        &mut self,
+        instance: u64,
+        graph_revision: u64,
+        epoch: u64,
+        quantum: u16,
+    ) -> Result<
+        (
+            crate::plugin_transport::Control,
+            crate::plugin_transport::Worker,
+        ),
+        Invalid,
+    > {
+        if self.output_transport.is_some()
+            || !self.transport_setup_open
+            || self.active.is_some()
+            || self.spectrum_capture.is_some()
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || epoch != self.status.transport_epoch.load(Acquire)
+        {
+            return Err(Invalid(
+                "output transport requires an unexposed empty callback",
+            ));
+        }
+        let binding = crate::plugin_transport::Binding {
+            root: self.candidate_root.root_id(),
+            instance,
+            graph: graph_revision,
+            epoch,
+        };
+        let (control, callback, worker) = crate::plugin_transport::channel(binding, quantum)
+            .map_err(|_| Invalid("invalid output transport configuration"))?;
+        self.output_transport = Some(Box::new(callback));
+        Ok((control, worker))
+    }
+
+    pub(crate) fn output_transport_quantum(&self) -> Option<usize> {
+        self.output_transport
+            .as_ref()
+            .map(|transport| transport.quantum_frames())
+    }
+
+    pub(crate) fn revoke_output_transport(&mut self) {
+        if let Some(transport) = self.output_transport.as_mut() {
+            transport.revoke();
+            self.output_transport_cancelled = true;
+        }
+    }
+
+    pub(crate) fn stage_output_transport(&mut self, frames: &mut [hex_engine::Frame]) -> bool {
+        if self.status.closing.load(Acquire) {
+            self.revoke_output_transport();
+        }
+        if self.output_transport_cancelled {
+            frames.fill([0.0; 2]);
+            if self.status.playing.load(Relaxed) {
+                if let Some(transport) = self.output_transport.as_mut() {
+                    transport.reject(crate::plugin_transport::Fault::Revoked);
+                }
+                return false;
+            }
+            return true;
+        }
+        let Some(transport) = self.output_transport.as_mut() else {
+            return true;
+        };
+        if transport.binding().graph != self.status.applied_revision.load(Acquire)
+            || transport.binding().epoch != self.status.transport_epoch.load(Acquire)
+        {
+            transport.reject(crate::plugin_transport::Fault::Identity);
+            return false;
+        }
+        if self.gain_recording.has_take() || frames.len() > crate::plugin_transport::MAX_FRAMES {
+            transport.reject(crate::plugin_transport::Fault::Protocol);
+            return false;
+        }
+        let mut input = [[0.0; 2]; crate::plugin_transport::MAX_FRAMES];
+        input[..frames.len()].copy_from_slice(frames);
+        // This finite stereo-output profile has no MIDI destination. Refuse
+        // output events rather than silently claiming they reached a device.
+        transport
+            .stage(&input[..frames.len()], &[], frames)
+            .is_ok_and(|events| events.as_slice().is_empty())
+    }
+
+    pub(crate) fn finish_output_transport(&mut self, accepted: bool) -> OutputTransportDelivery {
+        use OutputTransportDelivery::{Accepted, Cancelled, Refused};
+        let Some(transport) = self.output_transport.as_ref() else {
+            return Accepted;
+        };
+        if transport
+            .fault()
+            .is_some_and(|fault| fault != crate::plugin_transport::Fault::Revoked)
+        {
+            return Refused;
+        }
+        // Control may cancel after staging/conversion. Recheck its real owner
+        // signals at the last boundary before any request can reach the worker.
+        if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
+            self.revoke_output_transport();
+            return Cancelled;
+        }
+        if self.output_transport_cancelled {
+            return if self.status.playing.load(Relaxed) {
+                Refused
+            } else {
+                Cancelled
+            };
+        }
+        match self.output_transport.as_mut() {
+            Some(transport) => {
+                if transport.finish(accepted).is_ok() {
+                    Accepted
+                } else {
+                    Refused
+                }
+            }
+            _ => Refused,
+        }
+    }
+    pub(crate) fn output_transport_error(&self) -> Option<Invalid> {
+        self.output_transport
+            .as_ref()?
+            .fault()
+            .map(|fault| Invalid(fault.message()))
+    }
+
     pub(crate) fn native_spectrum_receipt(
         &self,
     ) -> Option<Option<crate::spectrum_worker::NativeSpectrumReceipt>> {
@@ -1797,6 +2011,12 @@ impl Callback {
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        // Worker endpoints retire through the existing guards/control owner.
+        // Ring custody still does not grant native graph/device admission or
+        // supply the delayed delivery clocks required for real device insertion.
+        if self.output_transport.is_some() {
+            return None;
+        }
         self.sample_preview
             .constructor_channel_storage()?
             .plus(self.gain_recording.constructor_channel_storage()?)?
@@ -1996,6 +2216,10 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.transport_setup_open = false;
+        if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
+            self.revoke_output_transport();
+        }
         self.sample_preview
             .begin_block(self.status.closing.load(Acquire));
         if self.status.closing.load(Acquire) {
@@ -2508,6 +2732,7 @@ impl Callback {
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if cut.stop_through.is_some() {
+            self.revoke_output_transport();
             self.revoke_current_sampler_keyboard();
             #[cfg(all(test, feature = "allocation-probe"))]
             self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
@@ -2609,6 +2834,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
         #[cfg(all(test, feature = "allocation-probe"))]
         self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
@@ -2975,6 +3201,9 @@ impl Callback {
     }
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
+        // Reuse the existing transport-discontinuity owner/epoch; asynchronous
+        // output must not expose pre-seek/pause/stop buffers in a new context.
+        self.revoke_output_transport();
         self.gain_recording.abort(reason);
         if let Some(mut active) = self
             .active

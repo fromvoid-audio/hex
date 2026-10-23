@@ -3,6 +3,9 @@
 //! Original macOS helper fixtures also exercise a native-only persistent component/controller
 //! lifecycle and bounded host message/controller-metadata transactions. No foreign interface
 //! pointer enters this Rust API; controller metadata is not canonical/audio application.
+//! The original copied-stream fixture retains one SDK instance across bounded PCM packets;
+//! MIDI bytes there are transport metadata, not SDK event translation. The realtime endpoint
+//! and joining transport worker belong to hex-audio.
 //!
 //! # Dependencies
 //! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported
