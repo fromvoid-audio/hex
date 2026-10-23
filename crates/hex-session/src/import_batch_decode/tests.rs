@@ -144,9 +144,14 @@ fn real_ordered_mixed_rate_import_progress_paths_and_undo_redo_without_reopen() 
 }
 
 #[test]
-fn one_file_matches_existing_worker_decode_and_single_import() {
+fn one_file_with_legacy_riff_size_matches_worker_decode_and_single_import() {
     let files = Files::new();
     let path = files.wav("Source.wav", 24_000, 6, 1234);
+    let mut original = fs::read(&path).unwrap();
+    // Complete PCM chunks with the observed legacy four-byte container overrun.
+    let legacy_size = u32::try_from(original.len() - 4).unwrap();
+    original[4..8].copy_from_slice(&legacy_size.to_le_bytes());
+    fs::write(&path, &original).unwrap();
     // Both import routes start from the same authored project. Cyan is the
     // only unused hue, so creation remains deterministic without replacing
     // production randomness or discarding colors from the comparison.
@@ -182,9 +187,10 @@ fn one_file_matches_existing_worker_decode_and_single_import() {
     .unwrap();
     old.import_prepared_audio_track_at_revision(prepared, None, 8, None)
         .unwrap();
-    capture(&new, vec![path])
+    capture(&new, vec![path.clone()])
         .run(&mut new, None, context)
         .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(
         old.project().tracks().last().unwrap().color(),
         hex_project::ElementColor::Cyan
