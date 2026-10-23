@@ -13,6 +13,11 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
             | Command::ReorderSectionBefore { .. }
+            | Command::ReorderSectionAfter { .. }
+            | Command::ResizeArrangementSection { .. }
+            | Command::DeleteArrangementSection(_)
+            | Command::DuplicateArrangementSection(_)
+            | Command::MergeArrangementSections(_)
     )
 }
 fn stopped_frame(
@@ -51,34 +56,40 @@ pub(super) fn command(
     resident: &mut Option<resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
-    let reorder = matches!(&command, Command::ReorderSectionBefore { .. });
-    if let Command::ReorderSectionBefore { section, before } = &command
-        && session
+    let structural = command.requires_stopped_section_edit();
+    let no_op = match &command {
+        Command::ReorderSectionBefore { section, before } => session
             .project()
             .preview_section_reorder(*section, *before)?
-            .is_noop()
-    {
+            .is_noop(),
+        Command::ReorderSectionAfter { section, after } => session
+            .project()
+            .preview_section_reorder_after(*section, *after)?
+            .is_noop(),
+        _ => false,
+    };
+    if no_op {
         return session.command_prepared_revision(command, previous);
     }
-    if !reorder {
+    if !structural {
         return resident_audio::execute_command(
             session, command, previous, context, events, resident, admission,
         );
     }
     if previous.is_some_and(|prepared| prepared.gain_recording_track().is_some()) {
         return Err(SessionError::Invalid(
-            "finish or cancel gain recording before reordering sections",
+            "finish or cancel gain recording before editing song sections",
         ));
     }
     if session.audio_mode() != DocumentAudioMode::Resident {
         return Err(SessionError::Invalid(
-            "song section reorder requires resident audio",
+            "song section edit requires resident audio",
         ));
     }
     if !events.resident_publication_enabled() {
         if events.native_audio_requested() {
             return Err(SessionError::Invalid(
-                "song section reorder requires the canonical native publication owner",
+                "song section edit requires the canonical native publication owner",
             ));
         }
         return session.command_prepared_revision(command, previous);

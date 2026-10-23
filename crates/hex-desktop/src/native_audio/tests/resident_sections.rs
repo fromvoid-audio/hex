@@ -110,9 +110,9 @@ fn resident_sections_reproject_stopped_cursor_and_history_and_refuse_stale_playi
         &mut h,
         section_request(
             before_revision,
-            Command::ReorderSectionBefore {
-                section: chorus,
-                before: intro,
+            Command::ReorderSectionAfter {
+                section: intro,
+                after: chorus,
             },
         ),
     );
@@ -352,5 +352,86 @@ fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
                 .load(Acquire),
             position
         );
+    }
+}
+
+#[test]
+fn structural_section_splices_use_stopped_publication_and_preserve_failed_history() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for kind in 0..3 {
+        let mut h = ResidentHarness::new();
+        let initial = h.next();
+        assert!(initial.error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let event = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "song".into(),
+        }));
+        let Some(Created::Track(track)) = event.created else {
+            panic!("track")
+        };
+        (applied, _) = h.applied(applied);
+        let event = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(8).unwrap(),
+        }));
+        (applied, _) = h.applied(applied);
+        let (event, section) = add(&mut h, event.state.revision, "intro", 0, 2);
+        (applied, _) = h.applied(applied);
+        let before = event.state.project.snapshot();
+        let revision = event.state.revision;
+        let command = match kind {
+            0 => Command::ResizeArrangementSection {
+                section,
+                edge: hex_project::TrimEdge::Right,
+                length: BeatTime::from_quarters(3).unwrap(),
+            },
+            1 => Command::DeleteArrangementSection(section),
+            _ => Command::DuplicateArrangementSection(section),
+        };
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render();
+        let refused = run_callback(&mut h, section_request(revision, command.clone()));
+        assert!(
+            refused
+                .error
+                .as_ref()
+                .is_some_and(|e| e.contains("stop playback")),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(refused.state.project.snapshot(), before);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+        h.refuse.store(true, std::sync::atomic::Ordering::Release);
+        let refused = run_callback(&mut h, section_request(revision, command.clone()));
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project.snapshot(), before);
+        h.refuse.store(false, std::sync::atomic::Ordering::Release);
+        let changed = run_callback(&mut h, section_request(revision, command));
+        assert!(changed.error.is_none(), "{:?}", changed.error);
+        (applied, _) = h.applied(applied);
+        let after = changed.state.project.snapshot();
+        assert_ne!(after, before);
+        let undone = run_callback(&mut h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        let mut restored = undone.state.project.snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        (applied, _) = h.applied(applied);
+        let redone = run_callback(&mut h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        assert_eq!(redone.state.project.snapshot(), after);
+        h.applied(applied);
     }
 }

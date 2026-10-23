@@ -1095,7 +1095,12 @@ impl EditorView {
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
                         }
-                        if matches!(request, Request::SaveNew(_) | Request::SaveCurrent) {
+                        if matches!(
+                            request,
+                            Request::SaveNew(_)
+                                | Request::SaveCurrent
+                                | Request::SaveCurrentWithFormatUpgrade { .. }
+                        ) {
                             self.saving_project = false;
                             self.cancel_open_after_save();
                         }
@@ -1855,6 +1860,7 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
@@ -2700,6 +2706,31 @@ impl EditorView {
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
+        // Freeze import policy once, before this request can enter either queue.
+        let request = match self.capture_audio_import_policy(request) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.into());
+                return false;
+            }
+        };
+        self.enqueue_with_clip_scope(request, false)
+    }
+
+    /// Source indices/coordinates deliberately belong to the displayed source.
+    /// Whole-clip property controls must use ordinary enqueue instead.
+    pub(super) fn enqueue_focused_source_edit(&mut self, command: hex_project::Command) -> bool {
+        self.enqueue_with_clip_scope(Request::Edit(command), true)
+    }
+
+    fn enqueue_with_clip_scope(&mut self, request: Request, focused_source: bool) -> bool {
+        let request = match self.resolve_clip_action_scope(request, focused_source) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.0.into());
+                return false;
+            }
+        };
         let selection = self.created_note_selection_intent(&request);
         let pending_before = self.worker_requests_pending;
         let accepted = self.enqueue_request(request, false);
@@ -2730,7 +2761,12 @@ impl EditorView {
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         let open_save = self.project_open.permits_save()
-            && matches!(&request, Request::SaveCurrent | Request::SaveNew(_));
+            && matches!(
+                &request,
+                Request::SaveCurrent
+                    | Request::SaveNew(_)
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            );
         // An already-started recovery must finish while a picker/confirmation
         // pauses user edits. Only the currently owned recovery token qualifies.
         let recovery_restore = matches!(&request, Request::RestorePlayback { generation }
@@ -2819,7 +2855,10 @@ impl EditorView {
         }
         #[cfg(test)]
         if let Request::ImportAudioBatch {
-            paths, destination, ..
+            paths,
+            destination,
+            options,
+            ..
         } = &request
         {
             if let [path] = paths.as_slice() {
@@ -2827,7 +2866,7 @@ impl EditorView {
                     hex_session::import_batch::AudioBatchDestination::Console(_) => {}
                     hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
                         self.last_enqueued_import_to_track =
-                            Some((path.clone(), *track, *start, true))
+                            Some((path.clone(), *track, *start, options.overwrite))
                     }
                     hex_session::import_batch::AudioBatchDestination::NewTracks {
                         before_track,

@@ -12,7 +12,10 @@ use std::{
     },
 };
 
-pub const SOURCE_OVERVIEW_BINS: usize = 128;
+/// Maximum original-source leaf resolution. At 16 bytes per stereo leaf, the
+/// shared domain admits at most 256 MiB of peak backing for 4096 long sources.
+/// Short sources allocate one leaf per frame instead of the maximum capacity.
+pub const SOURCE_OVERVIEW_BINS: usize = 4096;
 type StereoPeak = [Peak; 2];
 const BIN_BYTES: usize = SOURCE_OVERVIEW_BINS * mem::size_of::<StereoPeak>();
 const MAX_BIN_BYTES: usize = MAX_ASSETS * BIN_BYTES;
@@ -141,15 +144,15 @@ impl OverviewBudget {
     }
 }
 
-/// Normalized stereo overview in original source-frame coordinates. Fixed
-/// capacity128 is charged even for a shorter source; only valid bins are exposed.
+/// Normalized stereo overview in original source-frame coordinates. Bounded
+/// capacity is min(source frames, 4096); actual backing remains charged until freed.
 pub struct OriginalSourceOverview {
     frames: u64,
     sample_rate: u32,
     content: OriginalSourceFacts,
     count: usize,
-    // The fixed bin backing is freed before _charge returns its capacity.
-    bins: Box<[StereoPeak; SOURCE_OVERVIEW_BINS]>,
+    // The bin backing is freed before _charge returns its capacity.
+    bins: Box<[StereoPeak]>,
     _charge: Charge,
 }
 impl OriginalSourceOverview {
@@ -180,6 +183,37 @@ impl OriginalSourceOverview {
             .checked_add(u64::from(index < extra))?;
         (start < end && end <= self.frames).then_some(start..end)
     }
+    /// Conservative signed stereo extrema for an original-frame interval.
+    /// Only intersecting cached leaves are visited; no PCM or allocation is used.
+    /// A full-width pixel projection visits at most leaves + twice its columns.
+    pub fn peaks_for_frames(&self, start: u64, end: u64) -> Option<StereoPeak> {
+        let end = end.min(self.frames);
+        if start >= end || self.count == 0 {
+            return None;
+        }
+        let count = self.count as u64;
+        let width = self.frames / count;
+        let extra = self.frames % count;
+        let wide = (width + 1) * extra;
+        let bin_at = |frame: u64| {
+            if frame < wide {
+                frame / (width + 1)
+            } else {
+                extra + (frame - wide) / width
+            }
+        };
+        let first = usize::try_from(bin_at(start)).ok()?;
+        let last = usize::try_from(bin_at(end - 1)).ok()?;
+        let bins = self.bins.get(first..=last)?;
+        let mut result = *bins.first()?;
+        for pair in &bins[1..] {
+            for (peak, other) in result.iter_mut().zip(pair) {
+                peak.min = peak.min.min(other.min);
+                peak.max = peak.max.max(other.max);
+            }
+        }
+        Some(result)
+    }
     pub fn bin_count(&self) -> usize {
         self.count
     }
@@ -207,15 +241,27 @@ impl OriginalSourceOverview {
             ));
         }
         let count = frames.len().min(SOURCE_OVERVIEW_BINS);
-        let charge = budget.reserve(BIN_BYTES, shared_bytes::<Self>()?)?;
+        let bytes = count
+            .checked_mul(mem::size_of::<StereoPeak>())
+            .ok_or(SessionError::Invalid("source overview peak size overflow"))?;
+        let charge = budget.reserve(bytes, shared_bytes::<Self>()?)?;
+        let mut bins = Vec::new();
+        bins.try_reserve_exact(count)
+            .map_err(|_| SessionError::Allocation)?;
+        if bins.capacity() != count {
+            return Err(SessionError::Invalid(
+                "source overview peak capacity differs from reservation",
+            ));
+        }
         let zero = Peak { min: 0.0, max: 0.0 };
+        bins.resize(count, [zero; 2]);
         let mut result = Arc::new(Self {
             frames: u64::try_from(frames.len())
                 .map_err(|_| SessionError::Invalid("source overview extent exceeds frame range"))?,
             sample_rate: rate,
             content,
             count,
-            bins: Box::new([[zero; 2]; SOURCE_OVERVIEW_BINS]),
+            bins: bins.into_boxed_slice(),
             _charge: charge,
         });
         let target = Arc::get_mut(&mut result).ok_or(SessionError::Invalid(

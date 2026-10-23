@@ -153,24 +153,53 @@ impl<'a> DocumentV37<'a> {
     }
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 37)
+}
+
+/// Frozen upgrades backed by original schema34–36 encoder fixtures.
+/// Fields absent by design default only for the precise historical version;
+/// present inventories always pass their original strict parser.
+pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     // Preserve duplicate-field refusal before adapting the older strict envelope.
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if (34..=36).contains(&version) {
+        super::migrations::upgrade_nested(&mut value, version)?;
+    }
     require_device_host_gains(&value)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(37) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(u64::from(version))
+        || !(34..=37).contains(&version)
+    {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
-    let sections: super::arrangement_sections::Manifest =
-        serde_json::from_value(object.remove("arrangement_sections").ok_or(
+    // Two historical branches reused36. A wholly absent inventory selects the
+    // valid tempo branch; deletion of that whole field is indistinguishable.
+    // Present null/partial inventories never select a fallback.
+    let sections = if version <= 35
+        || (version == 36 && !object.contains_key("arrangement_sections"))
+    {
+        None
+    } else {
+        Some(serde_json::from_value::<
+            super::arrangement_sections::Manifest,
+        >(object.remove("arrangement_sections").ok_or(
             StorageError::Invalid("arrangement section inventory is missing"),
-        )?)?;
-    let volumes: super::midi_clip_volume::Manifest =
-        serde_json::from_value(object.remove("midi_clip_volumes").ok_or(
-            StorageError::Invalid("midi clip volume inventory is missing"),
-        )?)?;
+        )?)?)
+    };
+    let volumes = if version == 34 {
+        None
+    } else {
+        Some(serde_json::from_value::<super::midi_clip_volume::Manifest>(
+            object
+                .remove("midi_clip_volumes")
+                .ok_or(StorageError::Invalid(
+                    "midi clip volume inventory is missing",
+                ))?,
+        )?)
+    };
     let tuning: Tuning = serde_json::from_value(
         object
             .remove("tuning")
@@ -194,7 +223,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
     snapshot.tuning = tuning;
-    snapshot.arrangement_sections = sections.into_sections()?;
+    if let Some(sections) = sections {
+        snapshot.arrangement_sections = sections.into_sections()?;
+    }
     snapshot.main_devices = main
         .devices
         .into_iter()
@@ -202,7 +233,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         .collect::<Result<_, _>>()?;
     manifest.apply(&mut snapshot)?;
     original_sources.apply(&mut snapshot)?;
-    volumes.apply(&mut snapshot)?;
+    if let Some(volumes) = volumes {
+        volumes.apply(&mut snapshot)?;
+    }
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
