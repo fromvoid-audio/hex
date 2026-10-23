@@ -474,3 +474,76 @@ fn mixed_duplicate_never_trims_an_original_at_a_fractional_frame_midi_end() {
     assert!(copied.start() >= end);
     assert_eq!(copied.length(), end);
 }
+
+#[test]
+fn selected_duplicate_retains_one_shot_boundary_for_midi_and_mixed_groups() {
+    for mixed in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let midi_track = track(&mut editor, "one shot");
+        let midi = midi_clip(&mut editor, midi_track, BeatTime::ZERO, beat(20));
+        editor
+            .execute(Command::SetMidiClipSource {
+                clip: midi,
+                source_length: beat(12),
+                source_start: beat(2),
+                loop_start: beat(2),
+                loop_end: beat(6),
+                looping: false,
+                length: beat(20),
+            })
+            .unwrap();
+        editor
+            .execute(Command::AddMidiNote {
+                clip: midi,
+                start: beat(10),
+                duration: beat(1),
+                pitch: 60,
+                channel: 0,
+                velocity: 90,
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut snapshot.tracks[0].content
+        else {
+            panic!("hybrid MIDI fixture");
+        };
+        midi_clips[0].one_shot_boundary = hex_project::MidiOneShotBoundary::LoopEnd;
+        editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+        let mut ids = vec![midi];
+        if mixed {
+            let row = track(&mut editor, "audio");
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: "one-frame.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 1,
+                })
+                .unwrap()
+            else {
+                panic!("audio asset");
+            };
+            ids.push(audio_clip(&mut editor, row, asset, 0, 1, 0));
+        }
+        let original = editor.project().midi_clip(midi).unwrap().clone();
+        editor.execute(Command::DuplicateClips(ids)).unwrap();
+        assert_eq!(editor.project().midi_clip(midi), Some(&original));
+        let copied = editor
+            .project()
+            .track(midi_track)
+            .unwrap()
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.id() != midi)
+            .unwrap();
+        assert_eq!(
+            copied.source().one_shot_boundary(),
+            hex_project::MidiOneShotBoundary::LoopEnd
+        );
+        assert_eq!(copied.source().effective_end(), beat(6));
+        assert_eq!(copied.source().notes()[0].start(), beat(10));
+        assert_ne!(
+            copied.source().notes()[0].id(),
+            original.source().notes()[0].id()
+        );
+    }
+}
