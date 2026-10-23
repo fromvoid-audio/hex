@@ -103,7 +103,9 @@ transport and audible result; a selected item is not evidence that it is playing
 # find, preview and import audio
 
 open the browser with **command+option+b**. press **command+f** to search.
-use the browser's categories and locations to narrow the results.
+use the browser's categories and locations to narrow the results. when a search
+is entered, click **×** inside the field to clear it and type a replacement.
+clearing keeps the selected category or location.
 
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's

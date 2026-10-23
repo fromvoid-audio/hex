@@ -1015,6 +1015,10 @@ mod tests {
                 "track-name-input"
             };
             assert!(visual.debug_bounds(input).is_some());
+            assert!(
+                visual.debug_bounds("browser-search-clear").is_none(),
+                "shared name mode must not acquire a search clear action"
+            );
             visual.simulate_input("Lead Ω");
             visual.simulate_keystrokes("enter");
             pump(&editor, &mut visual);
