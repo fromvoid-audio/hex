@@ -126,6 +126,12 @@ def inputs(root):
     return {p.relative_to(root).as_posix(): sha(p) for p in sorted(files) if p.is_file()}
 
 
+def require_source(root, source):
+    if (run(["git", "rev-parse", "HEAD"], root) != source
+            or run(["git", "status", "--porcelain", "--untracked-files=normal"], root)):
+        raise Refusal("commit the clean exact manual source before rendering qualified documentation")
+
+
 class OfflineHtml(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -168,6 +174,7 @@ def build(root, destination, version, source, tools=None):
     root, destination = Path(root).resolve(), Path(destination).absolute()
     if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.]+)?", version) is None or re.fullmatch(r"[0-9a-f]{40}", source) is None:
         raise Refusal("manual requires a release version and full source SHA")
+    require_source(root, source)
     identity = inputs(root)
     tools = tools or setup(root / "artifacts/documentation-tools")
     if destination.exists():
@@ -196,6 +203,7 @@ def build(root, destination, version, source, tools=None):
              "manual.generated.typ", output / "hex-manual.pdf"], working)
         if inputs(root) != identity:
             raise Refusal("manual source changed during rendering; no output published")
+        require_source(root, source)
         validate(output, version)
         manifest = {"schema": 1, "version": version, "source": source, "inputs": identity, "tools": tools,
                     "outputs": {name: sha(output / name) for name in ("hex-manual.html", "hex-manual.pdf")}}

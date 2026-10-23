@@ -5,6 +5,7 @@ import hashlib
 import io
 from pathlib import Path
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -96,6 +97,18 @@ class ManualTests(unittest.TestCase):
             self.assertEqual(executable.stat().st_ino, inode)
             self.assertEqual(executable.read_bytes(), b"pinned executable fixture")
             self.assertEqual(len(calls), 3)
+
+    def test_render_cannot_attribute_dirty_or_different_source_to_a_release(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "-c", "user.name=manual fixture", "-c", "user.email=fixture@invalid",
+                        "commit", "-qm", "manual fixture"], cwd=self.root, check=True)
+        source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root).decode().strip()
+        with self.assertRaisesRegex(manual.Refusal, "exact manual source"):
+            manual.build(self.root, self.root / "out", "0.1.0-beta.1", "a" * 40)
+        (self.root / "new-uncommitted-manual.md").write_text("new manual")
+        with self.assertRaisesRegex(manual.Refusal, "exact manual source"):
+            manual.build(self.root, self.root / "out", "0.1.0-beta.1", source)
 
 
 if __name__ == "__main__":
