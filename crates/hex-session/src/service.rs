@@ -9217,6 +9217,18 @@ mod service_tests {
         assert_eq!(restored, original);
         service.submit(Request::Redo).unwrap();
         assert_eq!(next_event(&service).state.project, duplicated.state.project);
+        // Restore the authored external file before testing reopen; missing-media
+        // recovery is separate from the cached-source duplication guarantee.
+        fs::write(&source, wav_mono(&[16_384; 128])).unwrap();
+        let path = directory.0.join("duplicated.hex");
+        service.submit(Request::SaveNew(path.clone())).unwrap();
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        service.submit(Request::Open(path)).unwrap();
+        let reopened = next_event(&service);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert!(reopened.project_replaced);
+        assert_eq!(reopened.state.project, duplicated.state.project);
     }
 
     #[test]
