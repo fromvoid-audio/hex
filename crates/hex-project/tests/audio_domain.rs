@@ -368,8 +368,8 @@ fn copied_musical_edits_isolate_crop_placement_domain_and_history() {
     }
     let copied_edit = editor.project().clip(copied).unwrap().audio_edit().unwrap();
     assert_ne!(
-        copied_edit.musical_start,
-        original.audio_edit().unwrap().musical_start
+        copied_edit.live_musical_start(),
+        original.audio_edit().unwrap().live_musical_start()
     );
     assert!(copied_edit.view_start > 0);
     assert_eq!(copied_edit.domain.pitch_cents, -257);
@@ -477,7 +477,7 @@ fn lower_fade_resize_crops_musical_warp_events_without_changing_the_processing_r
             "source, warp, pitch, phase, source gains and embedded events are retained"
         );
         assert_eq!(
-            after_root.musical_start,
+            after_root.live_musical_start(),
             Some(
                 editor
                     .project()

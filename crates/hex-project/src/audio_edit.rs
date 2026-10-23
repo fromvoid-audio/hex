@@ -3,6 +3,9 @@
 use crate::{BeatTime, Clip, ClipFade, Invalid, TempoMap, TrimEdge};
 use std::sync::Arc;
 
+mod timing;
+pub use timing::AudioClipTiming;
+
 pub const MAX_AUDIO_POINTS: usize = 1_024;
 pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
 pub const SOURCE_GAIN_UNITY: u32 = 65_536;
@@ -143,14 +146,15 @@ pub struct AudioClipDomain {
 }
 
 /// A crop of a retained full processing root. View units follow `domain.clock`.
-/// The sole authored musical placement is its start plus the exact view span;
-/// `Clip::start/duration` are checked derived frame caches in this case.
+/// Live musical placement derives frame caches from the project map. A frozen
+/// projection retains the old processing map and uses Clip::start as its frame
+/// destination; its source/crop/loop/fade coordinates remain unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipEdit {
     pub domain: Arc<AudioClipDomain>,
     pub view_start: u64,
     pub view_end: u64,
-    pub musical_start: Option<BeatTime>,
+    pub timing: AudioClipTiming,
     pub placement: Option<AudioViewPlacement>,
 }
 
@@ -283,8 +287,9 @@ impl AudioClipEdit {
         &'a self,
         tempo: &'a TempoMap,
     ) -> Result<ProjectedAudioFade<'a>, Invalid> {
+        let tempo = self.effective_tempo(tempo);
         let (first, length, _, _) = self.projected_domain(tempo)?;
-        let origin = if self.musical_start.is_some() {
+        let origin = if self.reference_start_raw().is_some() {
             self.projection_origin()?
         } else {
             0
@@ -317,11 +322,12 @@ impl AudioClipEdit {
             }),
             view_start: 0,
             view_end: clip.duration,
-            musical_start: None,
+            timing: AudioClipTiming::Frames,
             placement: None,
         }
     }
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
+        let tempo = self.effective_tempo(tempo);
         if position > self.domain.clock.length() {
             return Err(Invalid("audio event position exceeds its root"));
         }
@@ -338,6 +344,7 @@ impl AudioClipEdit {
         }
     }
     pub fn root_position_at(&self, frame: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
+        let tempo = self.effective_tempo(tempo);
         let position = match self.domain.clock {
             AudioDomainClock::Frames(_) => frame,
             AudioDomainClock::Beats(_) => {
@@ -354,15 +361,23 @@ impl AudioClipEdit {
         Ok(position.min(self.domain.clock.length()))
     }
     pub fn projection_origin(&self) -> Result<i128, Invalid> {
-        self.musical_start
-            .map(|start| {
-                i128::from(start.raw())
-                    - i128::from(self.view_start)
-                    - i128::from(self.placement.map_or(0, |p| p.cycle_phase))
+        let start = self
+            .reference_start_raw()
+            .ok_or(Invalid("audio domain has no musical projection"))?;
+        if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&start) {
+            return Err(Invalid(
+                "audio reference placement exceeds bounded beat range",
+            ));
+        }
+        start
+            .checked_sub(i128::from(self.view_start))
+            .and_then(|origin| {
+                origin.checked_sub(i128::from(self.placement.map_or(0, |p| p.cycle_phase)))
             })
-            .ok_or(Invalid("audio domain has no musical projection"))
+            .ok_or(Invalid("audio projection origin overflow"))
     }
     pub fn projected_domain(&self, tempo: &TempoMap) -> Result<(i128, u64, u64, u64), Invalid> {
+        let tempo = self.effective_tempo(tempo);
         match self.domain.clock {
             AudioDomainClock::Frames(length) => Ok((0, length, self.view_start, self.view_end)),
             AudioDomainClock::Beats(length) => {
@@ -392,6 +407,18 @@ impl AudioClipEdit {
         asset_frames: u64,
     ) -> Result<(), Invalid> {
         let domain = &self.domain;
+        if let AudioClipTiming::Frozen {
+            reference_start_raw,
+            tempo: frozen,
+        } = &self.timing
+        {
+            if domain.warp_enabled || frozen.sample_rate() != tempo.sample_rate() {
+                return Err(Invalid(
+                    "frozen audio needs warp off and the project sample rate",
+                ));
+            }
+            audio_projection_frame(frozen, *reference_start_raw)?;
+        }
         if let Some(events) = &domain.events {
             events.validate(domain.clock.length())?;
         }
@@ -415,7 +442,9 @@ impl AudioClipEdit {
         if domain.fade_start >= domain.clock.length() {
             return Err(Invalid("audio fade starts outside its domain"));
         }
-        if matches!(domain.clock, AudioDomainClock::Beats(_)) != self.musical_start.is_some() {
+        if matches!(domain.clock, AudioDomainClock::Beats(_))
+            != self.reference_start_raw().is_some()
+        {
             return Err(Invalid("audio clock and placement disagree"));
         }
         if domain.source_gain.len() > MAX_AUDIO_POINTS
@@ -433,7 +462,7 @@ impl AudioClipEdit {
             ));
         }
         if let Some(warp) = &domain.warp {
-            if domain.warp_enabled && self.musical_start.is_none() {
+            if domain.warp_enabled && self.reference_start_raw().is_none() {
                 return Err(Invalid("warp requires musical placement"));
             }
             warp.mode.validate()?;
@@ -471,9 +500,9 @@ impl AudioClipEdit {
                 "audio source cache differs from its canonical domain",
             ));
         }
-        if self.placement.is_some() {
+        if self.placement.is_some() || matches!(self.timing, AudioClipTiming::Frozen { .. }) {
             AudioViewProjection::new(clip, tempo)?;
-        } else if let Some(start) = self.musical_start {
+        } else if let Some(start) = self.live_musical_start() {
             let end = start
                 .raw()
                 .checked_add(self.view_end - self.view_start)
@@ -508,7 +537,11 @@ impl AudioClipEdit {
         Ok(())
     }
     pub(crate) fn anchor(&mut self, clip_start: u64, tempo: &TempoMap) -> Result<(), Invalid> {
-        if self.musical_start.is_some() {
+        if self.live_musical_start().is_some() {
+            return Ok(());
+        }
+        if matches!(self.timing, AudioClipTiming::Frozen { .. }) {
+            self.timing = AudioClipTiming::Musical(tempo.frame_to_beat(clip_start)?);
             return Ok(());
         }
         if self.domain.events.is_some() {
@@ -564,17 +597,22 @@ impl AudioClipEdit {
         });
         self.view_start = start;
         self.view_end = end;
-        self.musical_start = Some(tempo.frame_to_beat(clip_start)?);
+        self.timing = AudioClipTiming::Musical(tempo.frame_to_beat(clip_start)?);
         self.placement = placement;
         Ok(())
     }
     pub(crate) fn unanchor(&mut self, tempo: &TempoMap) -> Result<(), Invalid> {
-        if self.musical_start.is_some() && self.domain.events.is_some() {
+        // Frozen beat processing is already frame-placed; do not flatten its
+        // event/fade mapping into a different source program.
+        if matches!(self.timing, AudioClipTiming::Frozen { .. }) {
+            return Ok(());
+        }
+        if self.reference_start_raw().is_some() && self.domain.events.is_some() {
             return Err(Invalid(
                 "timing mode cannot change after audio event edits; undo those edits first",
             ));
         }
-        if self.musical_start.is_some() && !self.domain.fade.is_neutral() {
+        if self.reference_start_raw().is_some() && !self.domain.fade.is_neutral() {
             return Err(Invalid(
                 "musical audio with a retained fade cannot switch to frame anchoring; clear the fade first",
             ));
@@ -586,7 +624,7 @@ impl AudioClipEdit {
         let placement = self
             .placement
             .map(|p| -> Result<_, Invalid> {
-                if let Some(musical_start) = self.musical_start {
+                if let Some(musical_start) = self.live_musical_start() {
                     let first = tempo.beat_to_frame(musical_start)?;
                     let last = tempo.beat_to_frame(BeatTime::from_raw(
                         musical_start
@@ -628,7 +666,7 @@ impl AudioClipEdit {
         domain.fade_projection = None;
         self.view_start = start;
         self.view_end = end;
-        self.musical_start = None;
+        self.timing = AudioClipTiming::Frames;
         self.placement = placement;
         Ok(())
     }
@@ -648,7 +686,8 @@ impl AudioClipEdit {
                 )
                 .ok_or(Invalid("audio crop overflow")),
             AudioDomainClock::Beats(_) => u64::try_from(
-                i128::from(tempo.frame_to_beat(frame)?.raw()) - self.projection_origin()?,
+                self.reference_beat_at_destination(clip, frame, tempo)?
+                    - self.projection_origin()?,
             )
             .map_err(|_| Invalid("audio crop precedes its root")),
         }

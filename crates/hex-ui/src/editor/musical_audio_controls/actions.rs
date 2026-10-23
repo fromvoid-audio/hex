@@ -80,7 +80,9 @@ pub(super) fn command(
         Action::Anchor => {
             return Ok(Command::SetAudioClipMusical {
                 clip: id,
-                enabled: clip.audio_edit().is_none_or(|e| e.musical_start.is_none()),
+                enabled: clip
+                    .audio_edit()
+                    .is_none_or(|e| e.live_musical_start().is_none()),
             });
         }
         Action::Warp => {
