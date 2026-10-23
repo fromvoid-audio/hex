@@ -129,6 +129,11 @@ fn selected_sources_unchanged(
                 .iter()
                 .filter(|clip| selected(clip.id())))
             && original
+                .clips()
+                .iter()
+                .filter(|clip| selected(clip.id()))
+                .all(|clip| source.asset(clip.asset()) == current.asset(clip.asset()))
+            && original
                 .midi_clips()
                 .iter()
                 .filter(|clip| selected(clip.id()))
