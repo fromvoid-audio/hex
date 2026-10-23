@@ -202,6 +202,14 @@ impl Case {
         token: Cancellation,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> T {
+        self.after_stage(stage, work, || token.cancel_on_control())
+    }
+    fn after_stage<T: Send + 'static>(
+        &self,
+        stage: i32,
+        work: impl FnOnce() -> T + Send + 'static,
+        after: impl FnOnce(),
+    ) -> T {
         let (send, receive) = mpsc::sync_channel(1);
         let task = thread::spawn(move || {
             let _ = send.send(work());
@@ -223,10 +231,10 @@ impl Case {
             thread::sleep(Duration::from_millis(1));
         }
         assert!(!self.release().exists());
-        token.cancel_on_control();
+        after();
         let result = receive
             .recv_timeout(Duration::from_secs(5))
-            .expect("cancellation must retire before releasing the actual foreign hang");
+            .expect("operation must retire before releasing the actual foreign hang");
         joining.task.take().unwrap().join().unwrap();
         assert!(!self.release().exists());
         result
@@ -813,10 +821,15 @@ fn actual_source_change_while_pending_refuses_before_presentation_or_processing(
     let bundle = case.root.join("source.vst3");
     copy(&fixture("processing"), &bundle);
     let selected = Source::inspect_on_control(&bundle, "Contents/MacOS/fixture", class()).unwrap();
+    // This functional stale-source check is not a three-second module-load
+    // benchmark. Fresh copied bundles use the supported startup budget; the
+    // held-entry deadline regression below separately verifies short limits.
+    let mut preparation = options().preparation;
+    preparation.limits.startup = Duration::from_secs(30);
     let pending = Pending::prepare(
         &build(),
         selected,
-        options().preparation,
+        preparation,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(0),
     )
@@ -842,4 +855,44 @@ fn actual_source_change_while_pending_refuses_before_presentation_or_processing(
     }
     let observed = case.observation().unwrap();
     assert_eq!((observed[8], observed[10]), (0, 0));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_startup_deadline_retires_a_held_entry_without_release_or_processing() {
+    let case = Case::new();
+    let setup = case.setup(27);
+    let build = build();
+    let source = source();
+    let result = case.after_stage(
+        8,
+        move || {
+            Pending::prepare(
+                &build,
+                source,
+                options().preparation,
+                PreparationCancellation::new_on_control().unwrap(),
+                setup,
+            )
+        },
+        || {},
+    ); // retain the actual entry hang until supervision expires
+    match result {
+        Err(Error::Preparation {
+            cause,
+            exit,
+            custody_error,
+        }) => {
+            assert!(matches!(*cause, Error::Timeout));
+            assert_eq!(exit.unwrap().code(), Some(9));
+            assert!(custody_error.is_none());
+        }
+        _ => panic!("held native entry must time out and directly retire"),
+    }
+    assert!(!case.release().exists());
+    let observed = case.observation().unwrap();
+    assert_eq!(
+        (observed[0], observed[2], observed[8], observed[10]),
+        (8, 0, 0, 0)
+    );
 }
