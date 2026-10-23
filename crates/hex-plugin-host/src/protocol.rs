@@ -20,6 +20,8 @@ pub struct Configuration {
     pub output_channels: u8,
     pub bundle: String,
     pub executable: String,
+    /// Copied canonical startup state, never authority to publish a graph.
+    pub restore: Option<NativeDeviceState>,
 }
 impl Configuration {
     pub fn validate(&self) -> Result<()> {
@@ -43,7 +45,61 @@ impl Configuration {
         {
             return Err(Error::Protocol("unsupported instance configuration"));
         }
+        if let Some(state) = &self.restore {
+            state
+                .require_asset_free_processing()
+                .map_err(|_| Error::Protocol("startup state must be asset free"))?;
+            hex_plugin_state::available(state, Some(self.identity)).map_err(Error::State)?;
+        }
         Ok(())
+    }
+    /// A separate bounded frame keeps the existing path/configuration bound.
+    /// The worker validates both frames before entering the selected module.
+    pub fn startup_request(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let mut out = Vec::with_capacity(
+            37 + self
+                .restore
+                .as_ref()
+                .map_or(0, |state| state.payload().len()),
+        );
+        stamp(&mut out, self.binding);
+        self.append_restore_ack(&mut out);
+        control(*b"HXVIST01", &out)
+    }
+    fn append_restore_ack(&self, out: &mut Vec<u8>) {
+        let payload = self
+            .restore
+            .as_ref()
+            .map_or(&[][..], |state| state.payload());
+        out.push(u8::from(self.restore.is_some()));
+        out.extend((payload.len() as u16).to_le_bytes());
+        out.extend(payload);
+    }
+    fn check_restore_ack(&self, r: &mut Reader<'_>) -> Result<bool> {
+        let restored = match r.byte()? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(Error::Protocol(
+                    "invalid startup restoration acknowledgement",
+                ));
+            }
+        };
+        let count = usize::from(u16::from_le_bytes(r.array()?));
+        let expected = self
+            .restore
+            .as_ref()
+            .map_or(&[][..], |state| state.payload());
+        if restored != self.restore.is_some()
+            || count != expected.len()
+            || r.take(count)? != expected
+        {
+            return Err(Error::Protocol(
+                "startup restoration acknowledgement differs from the requested state",
+            ));
+        }
+        Ok(restored)
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
@@ -59,7 +115,7 @@ impl Configuration {
             out.extend((path.len() as u32).to_le_bytes());
             out.extend(path.as_bytes());
         }
-        control(*b"HXVICF02", &out)
+        control(*b"HXVICF03", &out)
     }
     pub fn validate_block(&self, block: &Block, sequence: u64) -> Result<()> {
         self.validate()?;
@@ -111,6 +167,7 @@ pub fn presentation_request(
 pub struct Facts {
     pub algorithmic_latency_frames: u32,
     pub presentation_available: bool,
+    pub restored: bool,
 }
 impl Facts {
     pub fn decode(body: &[u8], config: &Configuration) -> Result<Self> {
@@ -135,10 +192,12 @@ impl Facts {
             1 => true,
             _ => return Err(Error::Protocol("invalid presentation interface fact")),
         };
+        let restored = config.check_restore_ack(&mut r)?;
         r.end()?;
         Ok(Self {
             algorithmic_latency_frames,
             presentation_available,
+            restored,
         })
     }
 }
@@ -155,6 +214,8 @@ pub struct Ready {
     /// capacity before admission; no allocation is sized from it here.
     pub algorithmic_latency_frames: u32,
     pub presentation: Presentation,
+    /// Exact startup request was acknowledged; canonical state remains caller owned.
+    pub restored: bool,
 }
 impl Ready {
     pub fn decode(
@@ -192,6 +253,16 @@ impl Ready {
                 "presentation acknowledgement differs from the requested contributions",
             ));
         }
+        let restored = match r.byte()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::Protocol("invalid final restoration acknowledgement")),
+        };
+        if restored != config.restore.is_some() {
+            return Err(Error::Protocol(
+                "final restoration acknowledgement differs from startup request",
+            ));
+        }
         let component = match r.byte()? {
             0 => false,
             1 => true,
@@ -212,6 +283,7 @@ impl Ready {
             initial_state,
             algorithmic_latency_frames,
             presentation,
+            restored,
         })
     }
 }
@@ -255,7 +327,7 @@ impl Terminal {
 }
 
 pub fn control(magic: [u8; 8], body: &[u8]) -> Result<Vec<u8>> {
-    let limit = if &magic == b"HXVICF02" {
+    let limit = if &magic == b"HXVICF03" {
         CONFIG_LIMIT
     } else {
         CONTROL_LIMIT
