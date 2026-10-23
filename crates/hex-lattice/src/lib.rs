@@ -84,6 +84,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 }
 
 mod instrument;
+mod instrument_gain;
 mod instrument_pair;
 mod instrument_runtime;
 pub use instrument::{
@@ -91,6 +92,9 @@ pub use instrument::{
     NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
     PreparedNativeInstrument, PreparedSharedAnalyticContext, PreparedSharedAnalyticNote,
     PreparedStorageDeclaration, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+};
+pub use instrument_gain::{
+    INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentOccurrenceGain,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,

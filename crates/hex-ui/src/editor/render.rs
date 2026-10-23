@@ -367,6 +367,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
@@ -1173,6 +1174,20 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &ZoomOut, _, cx| {
                 view.zoom_timeline(false);
                 cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::ZoomToFit, window, cx| {
+                if view.zoom_fit_key(false, window, cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|view, _: &super::ZoomBack, window, cx| {
+                if view.zoom_fit_key(true, window, cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|view, _: &FitTimeline, _, cx| {
                 view.fit_timeline();

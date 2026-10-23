@@ -504,15 +504,8 @@ pub(in crate::editor) fn view(
                 cx.notify();
             })),
         )
-        .child(
-            waveform::button("↔", "fit audio events · cmd+0", ("audio-event-fit", 0)).on_click(
-                cx.listener(|view, _, window, cx| {
-                    view.audio_event_focus.focus(window);
-                    view.audio_event_editor.viewport = None;
-                    cx.notify();
-                }),
-            ),
-        )
+        .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, false, cx))
+        .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, true, cx))
         .child(
             div()
                 .flex_1()
