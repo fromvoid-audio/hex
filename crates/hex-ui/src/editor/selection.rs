@@ -69,6 +69,26 @@ impl TrackSelection {
 }
 
 impl super::EditorView {
+    /// Direct lane focus selects one track without changing the independently
+    /// owned cursor/time range or running header-navigation focus transitions.
+    pub(super) fn select_lane_track(&mut self, track: TrackId) {
+        // Time drags update on every frame; rebuild membership only on a change.
+        if self.selected_track == Some(track)
+            && self.track_selection.ids.len() == 1
+            && self.track_selection.contains(track)
+        {
+            return;
+        }
+        if let Some(state) = self.state.as_ref()
+            && self
+                .track_selection
+                .select(&state.project, track, false, false)
+        {
+            self.selected_track = Some(track);
+            self.update_track_selection_status();
+        }
+    }
+
     pub(super) fn update_track_selection_status(&mut self) {
         self.status = match self.selected_track_ids().len() {
             0 => "no tracks selected".into(),
