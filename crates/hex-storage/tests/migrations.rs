@@ -25,6 +25,22 @@ fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
 
+fn assert_centered_fade_defaults(current: &mut Value, old: &Value) {
+    let expected: Vec<_> = old["fade_shapes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| json!({"clip":row["clip"],"in_position":500,"out_position":500}))
+        .collect();
+    assert_eq!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("fade_curve_positions"),
+        Some(json!(expected))
+    );
+}
+
 #[test]
 fn historical_encoders_upgrade_without_losing_any_saved_field() {
     for original in FIXTURES {
@@ -35,6 +51,7 @@ fn historical_encoders_upgrade_without_losing_any_saved_field() {
         let mut current = value(&current_bytes);
         assert_eq!(current["version"], CURRENT_SCHEMA_VERSION);
         current["version"] = old["version"].clone();
+        assert_centered_fade_defaults(&mut current, &old);
         if old.get("arrangement_sections").is_none() {
             assert_eq!(
                 current
@@ -84,7 +101,8 @@ fn supplied_volume_and_section_state_survives_upgrade() {
     for row in old["midi_clip_volumes"]["clips"].as_array_mut().unwrap() {
         row["points"] = json!([{"beat_raw":0,"incoming":0.375,"value":0.375}]);
     }
-    let encoded = value(&encode(&decode(&bytes(&old)).unwrap()).unwrap());
+    let mut encoded = value(&encode(&decode(&bytes(&old)).unwrap()).unwrap());
+    assert_centered_fade_defaults(&mut encoded, &old);
     old["version"] = CURRENT_SCHEMA_VERSION.into();
     assert_eq!(encoded, old);
 }

@@ -764,7 +764,8 @@ impl AudioClipEdit {
             domain.fade.out_end_offset(),
             domain.fade.in_curve(),
             domain.fade.out_curve(),
-        )?;
+        )?
+        .with_curve_positions(domain.fade.in_position(), domain.fade.out_position())?;
         domain.fade_start = 0;
         domain.fade_projection = None;
         self.view_start = start;

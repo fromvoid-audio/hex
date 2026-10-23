@@ -5,6 +5,7 @@ pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod device_assets;
+pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;

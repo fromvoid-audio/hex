@@ -96,7 +96,7 @@ fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_an
     let project = fixture();
     let bytes = hex_storage::encode(&project).unwrap();
     let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 37);
+    assert_eq!(doc["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(doc["arrangement_sections"][0]["name"], "Chorus");
     assert_eq!(doc["arrangement_sections"][0]["color"], "rose");
     assert!(

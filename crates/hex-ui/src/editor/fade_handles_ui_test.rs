@@ -679,3 +679,285 @@ fn lower_source_limits_are_noops_with_and_without_command(cx: &mut TestAppContex
         }
     }
 }
+
+#[gpui::test]
+fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
+    cx: &mut TestAppContext,
+) {
+    for kind in [Handle::InCurve, Handle::OutCurve] {
+        for (dx, dy) in [
+            (9.0, 0.0),
+            (0.0, 8.0),
+            (9.0, 8.0),
+            (0.0, 500.0),
+            (0.0, -500.0),
+            (-500.0, -500.0),
+            (-500.0, 500.0),
+            (500.0, -500.0),
+            (500.0, 500.0),
+        ] {
+            let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+            let mut model = hex_project::Editor::new(project, 8).unwrap();
+            let fade = ClipFade::new(96_000, 0, 24_000, 24_000).unwrap();
+            model
+                .execute(Command::SetClipFadeEnvelope { clip, fade })
+                .unwrap();
+            let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+                cx,
+                model.project().clone(),
+                Arc::default(),
+            );
+            let mut visual = VisualTestContext::from_window(window, cx);
+            key(&mut visual, true, "f");
+            let selector: &'static str =
+                Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+            let target = visual.debug_bounds(selector).unwrap().center();
+            visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+            let to = point(target.x + px(dx), target.y + px(dy));
+            visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let preview = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
+            assert_eq!(
+                (
+                    preview.fade_in(),
+                    preview.fade_out(),
+                    preview.in_start(),
+                    preview.out_end_offset()
+                ),
+                (24_000, 24_000, 0, 0)
+            );
+            let out = kind == Handle::OutCurve;
+            let gain = curve_handle_gain(preview, out);
+            assert!((0.25..=0.75).contains(&gain));
+            let center = visual.debug_bounds(selector).unwrap().center();
+            let lane = editor.read_with(&visual, |v, _| v.active_fade_drag.as_ref().unwrap().lane);
+            let top = lane.top + super::super::clip_name::CLIP_NAME_HEIGHT;
+            let body = lane.height - super::super::clip_name::CLIP_NAME_HEIGHT;
+            assert!((f32::from(center.y) - top) >= body * 0.25 - 1.0);
+            assert!((f32::from(center.y) - top) <= body * 0.75 + 1.0);
+            if dx > 0.0 {
+                assert!(center.x > target.x);
+            }
+            if dx < 0.0 {
+                assert!(center.x < target.x);
+            }
+            if dx.abs() > 100.0 {
+                let endpoints = if out {
+                    [Handle::OutTop, Handle::OutBottom]
+                } else {
+                    [Handle::InTop, Handle::InBottom]
+                };
+                let positions = endpoints.map(|h| {
+                    let name: &'static str =
+                        Box::leak(format!("{}-{}", h.name(), clip.value()).into_boxed_str());
+                    f32::from(visual.debug_bounds(name).unwrap().center().x)
+                });
+                let edge = if dx < 0.0 {
+                    positions[0].min(positions[1])
+                } else {
+                    positions[0].max(positions[1])
+                };
+                assert!(
+                    (f32::from(center.x) - edge).abs() < 1.0,
+                    "diamond reaches the horizontal box edge"
+                );
+            }
+            if dy.abs() > 100.0 {
+                let edge = top + body * if dy < 0.0 { 0.25 } else { 0.75 };
+                assert!(
+                    (f32::from(center.y) - edge).abs() < 1.0,
+                    "diamond reaches the vertical box edge"
+                );
+            }
+            if dy == 0.0 {
+                assert_eq!((preview.in_curve(), preview.out_curve()), (0, 0));
+            }
+            if dx == 0.0 {
+                assert_eq!((preview.in_position(), preview.out_position()), (500, 500));
+            }
+            let frame = if out { 84_000 } else { 12_000 };
+            assert_ne!(preview.gain_at(frame), fade.gain_at(frame));
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
+            model.execute(command).unwrap();
+            assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
+            assert!(model.undo());
+            assert_eq!(model.project().clip(clip).unwrap().retained_fade(), fade);
+            assert!(model.redo());
+            assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
+        }
+    }
+}
+
+#[gpui::test]
+fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let ready = editor.update(&mut *visual, |v, cx| {
+                if v.tick(cx) {
+                    cx.notify();
+                }
+                v.state.is_some() && !v.edit_pending()
+            });
+            visual.run_until_parked();
+            if ready {
+                return;
+            }
+            assert!(Instant::now() < deadline, "real worker setup");
+            std::thread::yield_now();
+        }
+    }
+    let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
+    let path = files.wav("fade.wav", 48_000, 96_000);
+    let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(window, cx);
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Import(path)))
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 24_000,
+            fade_out: 24_000
+        })))
+    });
+    pump(&editor, &mut visual);
+    key(&mut visual, true, "f");
+    let selector: &'static str =
+        Box::leak(format!("fade-out-curve-{}", clip.value()).into_boxed_str());
+    let from = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    let to = point(from.x + px(9.0), from.y + px(8.0));
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds(selector).unwrap();
+    let preview = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let event = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                break event;
+            }
+            editor.update(&mut visual, |v, _| {
+                v.receive(event);
+            });
+        }
+        assert!(Instant::now() < deadline, "real fade terminal");
+        std::thread::yield_now();
+    };
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert_eq!(
+        event.state.project.clip(clip).unwrap().retained_fade(),
+        preview
+    );
+    for _ in 0..3 {
+        editor.update(&mut visual, |v, cx| {
+            v.cancel_fade_gesture(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(held));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_fade.is_some());
+            assert_ne!(
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .clip(clip)
+                    .unwrap()
+                    .retained_fade(),
+                preview
+            );
+            assert_eq!(v.fade_preview(clip), Some(preview));
+        });
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.pending_fade.is_none());
+        assert_eq!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .retained_fade(),
+            preview
+        );
+    });
+    hover_clip(&mut visual, clip);
+    assert_eq!(visual.debug_bounds(selector), Some(held));
+}
+
+#[gpui::test]
+fn real_refusal_retires_frozen_curve_with_its_canonical_state(cx: &mut TestAppContext) {
+    let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 24_000,
+            fade_out: 24_000,
+        })
+        .unwrap();
+    // The rendered fixture has a clip absent from the real empty Service. That
+    // worker must refuse the command; no fabricated completion/state is used.
+    let (window, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(window, cx);
+    key(&mut visual, true, "f");
+    let selector: &'static str =
+        Box::leak(format!("fade-in-curve-{}", clip.value()).into_boxed_str());
+    let from = visual.debug_bounds(selector).unwrap().center();
+    let to = point(from.x + px(9.0), from.y + px(8.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds(selector).unwrap();
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event())
+            && event.request_complete
+        {
+            break event;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real refusal terminal"
+        );
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_some());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(held));
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.pending_fade.is_none() && v.fade_preview(clip).is_none())
+    });
+    assert!(visual.debug_bounds(selector).is_none());
+}
