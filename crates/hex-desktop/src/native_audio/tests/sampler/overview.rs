@@ -321,12 +321,14 @@ fn bounds(
     let grid = visual.debug_bounds("sampler-controls").unwrap();
     assert!(
         overview.left() >= frame.left()
-            && overview.right() <= grid.left()
+            && overview.right() <= frame.right()
+            && overview.bottom() <= grid.top()
             && overview.bottom() <= frame.bottom()
     );
     assert!(grid.right() <= frame.right() && grid.bottom() <= frame.bottom());
-    assert_eq!(f32::from(waveform.size.width), 180.0);
-    assert_eq!(f32::from(waveform.size.height), 96.0);
+    assert!(f32::from(waveform.size.width) >= 900.0);
+    assert!(f32::from(waveform.size.height) >= 96.0);
+    assert!(grid.size.height <= gpui::px(30.0));
     for (selector, value) in [
         ("sampler-source-start", start),
         ("sampler-source-end", end),
@@ -336,7 +338,7 @@ fn bounds(
         let marker = visual.debug_bounds(selector).unwrap();
         let offset = f32::from(marker.left() - waveform.left());
         assert!(
-            (offset - (1.0 + 177.0 * value as f32 / 4.0)).abs() <= 0.5,
+            (offset - (f32::from(waveform.size.width) - 1.0) * value as f32 / 4.0).abs() <= 0.5,
             "{selector} uses original4-frame coordinates, not converted8: {offset}"
         );
         assert!(marker.left() >= waveform.left() && marker.right() <= waveform.right());
