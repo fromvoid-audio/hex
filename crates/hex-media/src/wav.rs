@@ -1,4 +1,18 @@
 //! Shared RIFF/WAVE topology validation and sample conversion.
+//!
+//! Resident import supports mono/stereo at 8–192 kHz: PCM 8/16/24/32-bit,
+//! IEEE float 32/64-bit, extensible PCM/float, 8-bit A-law/mu-law and 4-bit
+//! Microsoft/IMA ADPCM. Seekable readers support the fixed-frame encodings;
+//! ADPCM remains resident-only. Unknown metadata chunks (including BWF/INFO)
+//! are skipped with bounded header work and checked payload/padding extents.
+//! RF64/BW64, big-endian RIFX and other encodings are refused explicitly.
+//!
+//! A legacy producer defect overstates the RIFF container by exactly four bytes.
+//! Only that mismatch may use physical EOF as the scan boundary, and only a
+//! complete chunk chain terminating there succeeds. Chunk sizes, padding, format
+//! and frame validation remain strict; no missing audio bytes are synthesized.
+//! Standard RIFF sizes exclude the first eight bytes; see
+//! <https://learn.microsoft.com/en-us/windows/win32/xaudio2/resource-interchange-file-format--riff->.
 use crate::ImportError;
 use hex_engine::Audio;
 use std::io::{Cursor, Read, Seek, SeekFrom};
@@ -180,6 +194,13 @@ pub(super) fn scan<R: Read + Seek>(
     ]))
     .checked_add(8)
     .ok_or(ImportError::Invalid("RIFF size overflow"))?;
+    let riff_end = if riff_end.checked_sub(file_len) == Some(4) {
+        // The full scan below must prove every payload and pad fits through EOF.
+        // Do not generalize this producer compatibility rule to other overruns.
+        file_len
+    } else {
+        riff_end
+    };
     if riff_end < 12 || riff_end > file_len {
         return Err(ImportError::Invalid("RIFF boundary exceeds input"));
     }

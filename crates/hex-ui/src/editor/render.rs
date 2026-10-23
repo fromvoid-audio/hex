@@ -621,6 +621,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.track_overview_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape"
                     && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
                 {
@@ -803,7 +807,6 @@ impl Render for EditorView {
                     | view.cancel_clip_paint()
                     | view.cancel_section_pointer();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
-                    view.midi_marquee = None;
                     view.midi_selection.clear() | view.clear_midi_time_selection()
                 } else {
                     false
@@ -835,7 +838,6 @@ impl Render for EditorView {
                 view.midi_draw_mode = !view.midi_draw_mode;
                 view.cancel_midi_note_gesture();
                 view.midi_group_gesture = None;
-                view.midi_marquee = None;
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))

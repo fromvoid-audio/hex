@@ -664,6 +664,10 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
             or evidence.get("commit") != candidate
             or evidence["start_tree"].get("content_sha256") != current["content_sha256"]):
         raise DeliveryError("full exact-source local CI evidence is missing, failed, dirty or stale")
+    try:
+        ci.ci_checkpoint.validate_inheritance(runner.root, evidence)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise DeliveryError(f"CI inherited stage evidence is invalid: {error}") from error
     head = current["commit"]
     if head != candidate:
         # A merge commit is eligible only with identical complete Git tree and ancestry.
