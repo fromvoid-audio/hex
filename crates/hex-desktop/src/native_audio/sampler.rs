@@ -125,12 +125,20 @@ impl NativeAudioSink {
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(|policy| {
-                    output
+                    let control = output
                         .publication
                         .control()
-                        .ok_or_else(|| "audio publication endpoint is closed".to_owned())?
+                        .ok_or_else(|| "audio publication endpoint is closed".to_owned())?;
+                    control
                         .configure_device_resource_publication_on_control(
                             policy.resident_native.storage,
+                        )
+                        .map_err(str::to_owned)?;
+                    control
+                        .configure_ordinary_streaming_on_control(
+                            policy.ordinary_domains,
+                            policy.readiness.extents_per_role,
+                            policy.ordinary_stream_metadata_bytes,
                         )
                         .map_err(str::to_owned)
                 });

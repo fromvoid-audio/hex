@@ -38,9 +38,10 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
-    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, ResidentFileInput, ResidentFileMetadata, ResidentFilePublication,
+    ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet, ResidentFreshRuntimeFence,
+    ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -1138,10 +1139,12 @@ impl Service {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new_with_overview_budget(
+                        let Ok(session) = Session::new_with_audio_mode_in_overview_domain(
                             rate,
                             history_capacity,
                             max_resident_frames,
+                            DocumentAudioMode::Resident,
+                            events.ordinary_source_reservation(),
                             overview_budget.clone(),
                         ) else {
                             return;
@@ -1156,12 +1159,16 @@ impl Service {
                                     events.startup_failed(format!(
                                         "native resident reservation unavailable: {reason}"
                                     ));
-                                    let Ok(session) = Session::new_with_overview_budget(
-                                        rate,
-                                        history_capacity,
-                                        max_resident_frames,
-                                        overview_budget.clone(),
-                                    ) else {
+                                    let Ok(session) =
+                                        Session::new_with_audio_mode_in_overview_domain(
+                                            rate,
+                                            history_capacity,
+                                            max_resident_frames,
+                                            DocumentAudioMode::Resident,
+                                            events.ordinary_source_reservation(),
+                                            overview_budget.clone(),
+                                        )
+                                    else {
                                         return;
                                     };
                                     session
@@ -3355,6 +3362,9 @@ fn run_worker(
                                 && let Some(sink) = events.resident_audio()
                             {
                                 let admission = export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }), resident_seek.as_ref(), resident_preview.as_ref());
+                                let allowance = resident_audio::import_frame_allowance(
+                                    &session, sink, admission, resident_snapshot.as_ref())?;
+                                let job = job.with_pcm_frame_allowance(allowance);
                                 return job.run_with_storage_admission_using(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),
@@ -3990,7 +4000,11 @@ fn run_worker(
                         history_capacity,
                         session.max_resident_frames(),
                         mode,
-                        reservation,
+                        reservation.or_else(|| {
+                            (mode == DocumentAudioMode::Resident)
+                                .then(|| events.ordinary_source_reservation())
+                                .flatten()
+                        }),
                         session.overview_budget.clone(),
                     )
                     .and_then(|candidate| match session.native_reservation {
@@ -5358,7 +5372,9 @@ fn run_worker(
                         _ => Err("latest project revision has not compiled".to_owned()),
                     }
                     .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                            || job.prepared.arrangement().contains_streamed_sources()
+                        {
                             job.streamed = Some(streamed_export::StreamedExportJob::capture(
                                 &session,
                                 &state.project,
@@ -5412,7 +5428,9 @@ fn run_worker(
                         _ => Err("latest project revision has not compiled".to_owned()),
                     }
                     .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                            || job.prepared.arrangement().contains_streamed_sources()
+                        {
                             job.streamed = Some(streamed_export::StreamedExportJob::capture(
                                 &session,
                                 &state.project,
@@ -6332,11 +6350,12 @@ fn run_worker(
         }
         if let Some(job) = export_job.as_mut() {
             let streamed = job.streamed.is_some();
+            let verified_only = session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
             if let Err(reason) = export_lane.prepare_job(
                 job,
                 &session,
                 current_sources.as_ref().filter(|_| !streamed),
-                resident_snapshot.as_ref().filter(|_| !streamed).zip(
+                resident_snapshot.as_ref().filter(|_| !verified_only).zip(
                     events
                         .resident_audio()
                         .map(|sink| &*sink as &dyn WorkerAudioSink),
@@ -6510,8 +6529,8 @@ fn run_export_worker(
         let (id, mut event) = {
             let ExportWork::Render(mut job) = work;
             let result = if let Some(streamed) = job.streamed.take() {
-                if job.sources.is_some() || job.resources.is_some() {
-                    Err("export cannot combine streamed and resident source scopes".into())
+                if job.sources.is_some() {
+                    Err("export cannot combine streamed pages with private constructor source scopes".into())
                 } else {
                     let (start, signal, control, overwrite) =
                         job.controlled.take().unwrap_or_else(|| {
@@ -6531,6 +6550,7 @@ fn run_export_worker(
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
                             source: &streamed.source,
                             prepared: &job.prepared,
+                            resources: job.resources.as_ref(),
                             path: &job.path,
                             start,
                             frames: job.frames,
@@ -6664,9 +6684,8 @@ fn import(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6688,13 +6707,6 @@ fn import(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6724,9 +6736,8 @@ fn import_to_track(
     overwrite: bool,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6749,13 +6760,6 @@ fn import_to_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6788,9 +6792,8 @@ fn import_to_new_track(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6822,13 +6825,6 @@ fn import_to_new_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6857,9 +6853,8 @@ fn import_to_session(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6878,13 +6873,6 @@ fn import_to_session(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(

@@ -299,6 +299,18 @@ do not assume double-clicking a sample inserts it into a track.
 and channel information; check duration, placement and playback after importing.
 keep source recordings available with the project.
 
+as projects grow, ordinary audio clips can play directly from their original
+files while retaining their complete duration. single-file and bulk imports keep
+this behavior; a bulk drop remains one undo step. keep those files available for
+playback, save/reopen and export.
+
+file-backed clips support placement, playback, clip gain and ordinary device
+processing. processing that materializes audio, including pitch,
+warp, directed content, source envelopes, finite repeat edits and grouping,
+currently requires resident source audio. an unsupported edit refuses before changing the project or history.
+opening a project keeps its supported resident processing alongside plain
+file-backed clips.
+
 # midi and sampler
 
 press **command+shift+t** to add a track for notes. select the intended track and use
@@ -456,8 +468,8 @@ keep the selected outputs separate. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
-verified streaming projects export through a separate bounded media worker.
-keep original media available until export completes. hex verifies those files
+file-backed audio in ordinary and verified streaming projects uses offline
+media verification during export. keep original media available until export completes. hex verifies those files
 before reading and again before publishing; missing or changed media, unavailable
 pages and cancellation leave the previous destination intact. choose an export
 path separate from the original media. editing or opening another document does

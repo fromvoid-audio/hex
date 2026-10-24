@@ -2057,6 +2057,7 @@ pub use stream_actions::PreparedStreamAction;
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    PreparedPrerollPages,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]

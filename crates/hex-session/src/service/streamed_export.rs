@@ -18,10 +18,13 @@ impl StreamedExportJob {
         revision: u64,
         renderer: Option<StreamedExporter>,
     ) -> Result<Self, String> {
-        let render = renderer.ok_or("offline export is unavailable for verified streaming")?;
-        if session.audio_mode() != DocumentAudioMode::VerifiedStreaming {
-            return Err("verified export document mode changed".into());
-        }
+        let render = renderer.ok_or(
+            if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                "offline export is unavailable for verified streaming"
+            } else {
+                "offline file-backed export is unavailable"
+            },
+        )?;
         Ok(Self {
             // Current canonical worker state, never an audition/preview event.
             source: Arc::new(CanonicalAudioSourceSnapshot::capture(
@@ -39,6 +42,7 @@ impl StreamedExportJob {
 pub struct StreamedExportRequest<'a> {
     pub(super) source: &'a CanonicalAudioSourceSnapshot,
     pub(super) prepared: &'a Arc<PreparedRevision>,
+    pub(super) resources: Option<&'a hex_engine::native_device_resources::PreparedDeviceResources>,
     pub(super) path: &'a Path,
     pub(super) start: u64,
     pub(super) frames: u64,
@@ -49,6 +53,13 @@ pub struct StreamedExportRequest<'a> {
 impl StreamedExportRequest<'_> {
     pub fn source(&self) -> &CanonicalAudioSourceSnapshot {
         self.source
+    }
+    /// Exact compiler scope captured and admitted by the ordinary export lane.
+    /// This borrow grants no native source/readiness or output authority.
+    pub fn resources(
+        &self,
+    ) -> Option<&hex_engine::native_device_resources::PreparedDeviceResources> {
+        self.resources
     }
     pub fn prepared(&self) -> &Arc<PreparedRevision> {
         self.prepared

@@ -69,6 +69,7 @@ mod spectrum_profile;
 mod spectrum_stages;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
+mod ordinary_streaming;
 #[cfg(test)]
 use spectrum_stages::SpectrumStage;
 use spectrum_stages::SpectrumStages;
@@ -232,6 +233,7 @@ pub(crate) struct Publication {
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     section_launch_frame: Option<u64>,
+    streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
 }
 // Exactly one active musical runtime, including the constructor-owned path.
@@ -270,6 +272,9 @@ pub(crate) enum ReturnedPublication {
     Legacy(Publication),
     Candidate(crate::candidate_custody::ReturnedCandidate),
 }
+// A refused queue returns the same fixed 128-byte carrier unchanged. Boxing
+// the error would add a separate failure allocation and ownership container.
+#[allow(clippy::result_large_err)]
 fn enqueue_legacy(
     queue: &mut Producer<QueuedPublication>,
     value: Publication,
@@ -1509,7 +1514,9 @@ impl PublicationControl {
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
-        } else if self.candidate_root.domains_configured() {
+        } else if self.candidate_root.domains_configured()
+            && !self.candidate_root.ordinary_streams_configured()
+        {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.recording_active() {
             Some("finish recording before replacing playback")
@@ -1517,7 +1524,9 @@ impl PublicationControl {
             Some("playback is shutting down")
         } else if playback.sample_rate() != self.rate {
             Some("playback rate differs from device")
-        } else if playback.contains_streamed_sources() {
+        } else if playback.contains_streamed_sources()
+            && (!self.candidate_root.ordinary_streams_configured() || source_context.is_none())
+        {
             Some("streamed playback requires a native media page endpoint")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
@@ -1557,6 +1566,27 @@ impl PublicationControl {
         });
         let mut playback = playback;
         playback.set_device_metering(true);
+        let streams = if self.candidate_root.ordinary_streams_configured() {
+            let Some(context) = source_context else {
+                self.status.publication_pending.store(false, Release);
+                return Err(PublishError {
+                    reason: "ordinary stream context unavailable",
+                    playback,
+                });
+            };
+            match self
+                .candidate_root
+                .prepare_ordinary_streams(&playback, revision, context)
+            {
+                Ok(streams) => Some(streams),
+                Err(reason) => {
+                    self.status.publication_pending.store(false, Release);
+                    return Err(PublishError { reason, playback });
+                }
+            }
+        } else {
+            None
+        };
         let publication = Publication {
             pcm_frames,
             forwarded_pcm,
@@ -1567,9 +1597,11 @@ impl PublicationControl {
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             section_launch_frame: None,
+            streams,
             playback: Box::new(playback),
         };
-        if let Err(publication) = enqueue_legacy(&mut self.publications, publication) {
+        if let Err(mut publication) = enqueue_legacy(&mut self.publications, publication) {
+            publication.release_streams_on_control(&self.candidate_root);
             self.status.publication_pending.store(false, Release);
             return Err(PublishError {
                 reason: "playback publication queue full",
@@ -1634,6 +1666,7 @@ impl PublicationControl {
                     }
                 }
                 ReturnedPublication::Legacy(mut publication) => {
+                    publication.release_streams_on_control(&self.candidate_root);
                     let frames = publication.pcm_frames;
                     let forwarded = publication.forwarded_pcm;
                     if let Some(resources) = self.device_resources.as_mut() {
@@ -2155,6 +2188,24 @@ impl Callback {
     ) -> bool {
         self.candidate_root.same_root(root)
     }
+    pub(crate) fn has_active_ordinary_streams(&self) -> bool {
+        matches!(&self.active, Some(ActivePublication::Legacy(publication)) if publication.streams.is_some())
+    }
+    /// Both callback carriers and the actual stream handle are terminal-owned.
+    /// Release only the ordinary graph's source associations here; its actual
+    /// Playback/resource-book owners still follow their existing destructors.
+    pub(crate) fn release_final_ordinary_streams_on_control(
+        &mut self,
+        authority: &crate::native_callback_owner::FinalReleaseAuthority,
+    ) -> bool {
+        if !authority.matches(self.candidate_root.root_id()) {
+            return false;
+        }
+        if let Some(ActivePublication::Legacy(publication)) = self.active.as_mut() {
+            publication.release_streams_on_control(&self.candidate_root);
+        }
+        true
+    }
     pub(crate) fn has_active_candidate(&self) -> bool {
         matches!(
             self.active,
@@ -2230,6 +2281,9 @@ impl Callback {
         }
         for (from, to) in self.domain_pages.iter_mut().zip(destination) {
             *to = from.take();
+            if let Some(pages) = to.as_ref() {
+                pages.departed_callback();
+            }
         }
         true
     }
@@ -2269,6 +2323,11 @@ impl Callback {
                 self.held_retirement.as_ref(),
                 Some(ReturnedPublication::Legacy(_))
             ) {
+                if let Some(ReturnedPublication::Legacy(publication)) =
+                    self.held_retirement.as_mut()
+                {
+                    publication.release_streams_on_control(&self.candidate_root);
+                }
                 self.terminal_disposal_pending = true;
                 drop(self.held_retirement.take());
                 self.terminal_disposal_pending = false;
@@ -2316,6 +2375,9 @@ impl Callback {
         self.return_publication(ReturnedPublication::Legacy(publication));
     }
     fn return_publication(&mut self, publication: ReturnedPublication) {
+        if let ReturnedPublication::Domain(pages) = &publication {
+            pages.departed_callback();
+        }
         if let Err(PushError::Full(publication)) = self.retired.push(publication) {
             self.held_retirement = Some(publication);
         }
@@ -2478,6 +2540,9 @@ impl Callback {
                         && self.domain_pages[index].is_none()
                     {
                         self.domain_pages[index] = Some(pages);
+                        if let Some(pages) = self.domain_pages[index].as_ref() {
+                            pages.installed_on_callback();
+                        }
                     } else {
                         self.return_publication(ReturnedPublication::Domain(pages));
                     }
@@ -2518,11 +2583,19 @@ impl Callback {
             return;
         }
 
-        self.advance_legacy_publication();
+        self.advance_legacy_publication(None);
         self.consume_commands();
     }
 
-    fn advance_legacy_publication(&mut self) {
+    fn advance_legacy_publication(&mut self, frames: Option<usize>) {
+        if frames.is_none()
+            && self
+                .deferred
+                .as_ref()
+                .is_some_and(|next| next.streams.is_some())
+        {
+            return;
+        }
         if !self.section_publication_due() {
             return;
         }
@@ -2532,6 +2605,25 @@ impl Callback {
         if (self.active.is_none() || !self.retired.is_full())
             && let Some(mut next) = self.deferred.take()
         {
+            if next
+                .fresh_runtime_cancellation
+                .as_ref()
+                .is_some_and(|c| c.decision.load(Acquire) == FRESH_PUBLICATION_CANCELLED)
+            {
+                if let Some(streams) = next.streams.as_mut() {
+                    streams.cancel_install(&mut self.domain_pages);
+                }
+                if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                    cancellation.finish();
+                }
+                self.status.publish_rejected_revision(
+                    next.revision,
+                    PlaybackHandoffRejection::FreshRuntimeCancelled,
+                );
+                self.return_graph(next);
+                self.status.publication_pending.store(false, Release);
+                return;
+            }
             #[cfg(test)]
             let forced_refusal = self.test_transient_handoff_refusals > 0;
             #[cfg(test)]
@@ -2580,6 +2672,101 @@ impl Callback {
                 barrier.wait();
                 barrier.wait();
             }
+            let mut promotions = None;
+            if !forced_refusal && stale_fence.is_none() && next.streams.is_some() {
+                self.cancel_active_stream_action();
+                if let Some(mut active) = self
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::stream_view)
+                {
+                    active.publication_replaces_prewarm(&mut self.domain_pages);
+                }
+                if matches!(
+                    next.policy,
+                    PublicationPolicy::InheritRuntime
+                        | PublicationPolicy::InheritUnderArrangement(_)
+                ) && self
+                    .active
+                    .as_ref()
+                    .and_then(ActivePublication::legacy)
+                    .is_some_and(|old| {
+                        old.source_context.is_none_or(|context| {
+                            context.project_generation != next.control_context_generation
+                        })
+                    })
+                {
+                    self.status.publish_rejected_revision(
+                        next.revision,
+                        PlaybackHandoffRejection::RuntimeFenceChanged,
+                    );
+                    self.return_graph(next);
+                    self.status.publication_pending.store(false, Release);
+                    return;
+                }
+                let previous = if matches!(
+                    next.policy,
+                    PublicationPolicy::InheritRuntime
+                        | PublicationPolicy::InheritUnderArrangement(_)
+                ) {
+                    self.active
+                        .as_mut()
+                        .and_then(ActivePublication::legacy_mut)
+                        .and_then(|old| {
+                            old.source_context
+                                .map(|context| (&mut *old.playback, context, old.revision))
+                        })
+                } else {
+                    None
+                };
+                let prepared = next.streams.as_mut().map(|streams| {
+                    streams.prepare_install(
+                        &mut next.playback,
+                        previous,
+                        &mut self.domain_pages,
+                        self.stream_pending_play.is_some(),
+                        self.stream_prefix,
+                        frames.unwrap_or(0),
+                    )
+                });
+                match prepared {
+                    Some(Ok(Some(_))) => {
+                        let committed = next
+                            .streams
+                            .as_mut()
+                            .map(|streams| streams.prepare_commit(&mut self.domain_pages));
+                        match committed {
+                            Some(Ok(value)) => promotions = Some(value),
+                            _ => {
+                                if let Some(streams) = next.streams.as_mut() {
+                                    streams.cancel_install(&mut self.domain_pages);
+                                }
+                                self.deferred = Some(next);
+                                return;
+                            }
+                        }
+                    }
+                    Some(Ok(None)) => {
+                        self.deferred = Some(next);
+                        return;
+                    }
+                    _ => {
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
+                        if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
+                            cancellation.finish();
+                        }
+                        self.status.publish_rejected_revision(
+                            next.revision,
+                            PlaybackHandoffRejection::StreamedPagesNotReady,
+                        );
+                        self.return_graph(next);
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                }
+            }
             let handoff = if forced_refusal {
                 Some(Err(hex_engine::PlaybackHandoffError::Session(
                     hex_engine::SessionPlaybackError::ReleaseBankFull,
@@ -2611,9 +2798,17 @@ impl Callback {
             };
             match handoff {
                 Some(Err(error)) if error.is_transient() => {
+                    let _promotions = promotions;
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.cancel_install(&mut self.domain_pages);
+                    }
                     self.deferred = Some(next);
                 }
                 Some(Err(error)) => {
+                    let _promotions = promotions;
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.cancel_install(&mut self.domain_pages);
+                    }
                     if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                         cancellation.finish();
                     }
@@ -2639,6 +2834,10 @@ impl Callback {
                         .as_ref()
                         .is_none_or(|cancellation| cancellation.begin_apply());
                     if !applying {
+                        let _promotions = promotions;
+                        if let Some(streams) = next.streams.as_mut() {
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
                         if let Some(cancellation) = next.fresh_runtime_cancellation.as_ref() {
                             cancellation.finish();
                         }
@@ -2659,6 +2858,28 @@ impl Callback {
                     {
                         barrier.wait();
                         barrier.wait();
+                    }
+                    for promotion in promotions.into_iter().flatten().flatten() {
+                        promotion.commit();
+                    }
+                    if let Some(streams) = next.streams.as_mut() {
+                        streams.record_install();
+                    }
+                    if let Some(mut previous) = self
+                        .active
+                        .as_mut()
+                        .and_then(ActivePublication::stream_view)
+                    {
+                        if let Some(mut successor) = next.stream_view() {
+                            if let Some(ticket) =
+                                successor.inherit_schedule_observation(&mut previous)
+                            {
+                                self.status
+                                    .stream_invalidated_schedule
+                                    .store(ticket, Release);
+                            }
+                        }
+                        previous.clear_stream_roles(&mut self.domain_pages);
                     }
                     // A fresh seek keeps its reconstructed transport/DSP
                     // history. Carry only the transient click toggle after
@@ -2754,6 +2975,7 @@ impl Callback {
                     {
                         self.return_graph(previous);
                     }
+                    self.finish_pending_stream_play();
                     if let Some(cancellation) = self
                         .active
                         .as_ref()
@@ -2871,6 +3093,7 @@ impl Callback {
     fn consume_commands(&mut self) {
         if self.streamed_transport_mode() {
             self.consume_stream_commands();
+            self.acknowledge_sampler_edit();
             return;
         }
         // Capture the published queue prefix before clearing the marker. Later
@@ -3028,6 +3251,15 @@ impl Callback {
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if !self.status.closing.load(Acquire)
             && self
+                .deferred
+                .as_ref()
+                .is_some_and(|next| next.streams.is_some())
+        {
+            self.advance_legacy_publication(Some(output.len()));
+        }
+
+        if !self.status.closing.load(Acquire)
+            && self
                 .deferred_eligible
                 .as_ref()
                 .is_some_and(|next| next.streaming_enabled())
@@ -3144,8 +3376,10 @@ impl Callback {
             .then_some(&mut self.native_sources);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let foreign = None;
-        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
-            && active.streaming_enabled()
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
         {
             let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
@@ -3194,8 +3428,10 @@ impl Callback {
             .then_some(&mut self.native_sources);
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         let foreign = None;
-        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
-            && active.streaming_enabled()
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
         {
             let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
@@ -3218,10 +3454,14 @@ impl Callback {
             return Ok(());
         }
         if self.active.is_none()
-            && self
-                .deferred_eligible
+            && (self
+                .deferred
                 .as_ref()
-                .is_some_and(|next| next.streaming_enabled())
+                .is_some_and(|next| next.streams.is_some())
+                || self
+                    .deferred_eligible
+                    .as_ref()
+                    .is_some_and(|next| next.streaming_enabled()))
         {
             output.fill([0.0; 2]);
             streaming::record_outcome(
@@ -6289,6 +6529,7 @@ mod tests {
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
                 section_launch_frame: None,
+                streams: None,
                 playback: Box::new(graph().0),
             }))
             .unwrap();
@@ -6632,6 +6873,7 @@ mod tests {
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
+                    streams: None,
                     playback: Box::new(graph().0),
                 }))
                 .unwrap();
@@ -7334,6 +7576,7 @@ mod tests {
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             section_launch_frame: None,
+            streams: None,
             playback: Box::new(playback),
         }));
         assert!(weak_revision.upgrade().is_some());
@@ -7452,6 +7695,7 @@ mod tests {
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         section_launch_frame: None,
+                        streams: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7530,6 +7774,7 @@ mod tests {
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         section_launch_frame: None,
+                        streams: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7547,6 +7792,7 @@ mod tests {
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             section_launch_frame: None,
+            streams: None,
             playback: Box::new(held),
         }));
         let mut last_ticket = 0;
@@ -7698,6 +7944,7 @@ mod tests {
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
+                    streams: None,
                     playback: Box::new(queued),
                 }))
                 .is_ok()

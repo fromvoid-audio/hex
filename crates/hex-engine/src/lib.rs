@@ -45,7 +45,7 @@ pub use audio_candidate::{
     AudioCandidateEffects, AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation,
     AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
     AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
-    ClaimedAudioCandidateRuntime,
+    ClaimedAudioCandidateRuntime, StreamPlayback,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
@@ -2248,6 +2248,12 @@ impl Project {
         &self.return_buses
     }
 
+    pub(crate) fn streamed_sources(&self) -> impl Iterator<Item = &StreamedSourceMetadata> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(|clip| clip.metadata.as_ref().and_then(|m| m.streamed.as_deref()))
+    }
     /// Whether any clip needs streamed pages to produce audio.
     pub fn contains_streamed_sources(&self) -> bool {
         self.has_streamed_sources
@@ -3393,10 +3399,10 @@ pub use session_inventory::{
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
-    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedStreamAction,
-    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
-    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
-    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedPrerollPages,
+    PreparedStreamAction, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
+    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
+    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
 
 #[cfg(test)]

@@ -593,6 +593,18 @@ impl NativeRetirement {
                     return Err(());
                 }
             }
+            if data.callback.has_active_ordinary_streams() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data.callback.release_final_ordinary_streams_on_control(
+                    &FinalReleaseAuthority {
+                        root: self.root.root_id(),
+                    },
+                ) {
+                    return Err(());
+                }
+            }
             self.states[0] = Disposal::Pending;
             drop(self.data.take());
             self.states[0] = Disposal::Complete;
