@@ -82,6 +82,7 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
     let refused = request(&service, Request::SaveCurrent);
     assert!(refused.save_complete && refused.error.is_some());
     assert!(refused.document_format_upgrade_required);
+    assert!(refused.save_confirmation_required);
     assert_eq!(fs::read(&path).unwrap(), original);
 
     let wrong_document = request(
@@ -137,4 +138,116 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
     assert!(!save_as.document_format_upgrade_required);
     assert_eq!(fs::read(second).unwrap(), original);
     assert_eq!(hex_storage::load(copy).unwrap(), *save_as.state.project);
+}
+
+#[test]
+fn growing_current_document_requires_consent_only_when_crossing_older_reader_limit() {
+    use hex_project::{BeatTime, TrackContentSnapshot};
+    fn large_request(service: &Service, request: Request) -> Event {
+        service.submit(request).unwrap();
+        // Real 8k-clip validation/compilation runs in debug, outside a realtime
+        // callback. Keep a finite deadline without using the tiny-fixture budget.
+        service
+            .events
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap()
+    }
+    let files = Files::new();
+    let path = files.0.join("growing.hex");
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "midi".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let TrackContentSnapshot::Hybrid {
+        midi_clips: clips, ..
+    } = &mut snapshot.tracks[0].content
+    else {
+        panic!("midi")
+    };
+    let seed = clips[0].clone();
+    *clips = (0..4096)
+        .map(|index| {
+            let mut clip = seed.clone();
+            clip.id = index + 10;
+            clip.name = "n".repeat(hex_project::MAX_NAME_BYTES);
+            clip.start_raw = index * BeatTime::ONE.raw();
+            clip
+        })
+        .collect();
+    snapshot.next_id = 4106;
+    let small = Project::from_snapshot(snapshot).unwrap();
+    hex_storage::save_new(&path, &small).unwrap();
+    let original = fs::read(&path).unwrap();
+    assert!(original.len() < hex_storage::LEGACY_READER_DOCUMENT_BYTES);
+    let service = Service::new(48_000, 4, 8_000_000).unwrap();
+    next(&service);
+    let opened = large_request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(!opened.document_format_upgrade_required);
+    let grown = large_request(
+        &service,
+        Request::DuplicateClips {
+            project_generation: 1,
+            revision: opened.state.revision,
+            clips: opened.state.project.tracks()[0]
+                .midi_clips()
+                .iter()
+                .map(|clip| clip.id())
+                .collect(),
+        },
+    );
+    assert!(grown.error.is_none(), "{:?}", grown.error);
+    assert!(
+        hex_storage::encode(&grown.state.project).unwrap().len()
+            > hex_storage::LEGACY_READER_DOCUMENT_BYTES
+    );
+    let refused = large_request(&service, Request::SaveCurrent);
+    assert!(refused.save_complete && refused.save_confirmation_required);
+    assert!(refused.error.is_some());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert!(!hex_storage::recovery_path(&path).unwrap().exists());
+    let stale = large_request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 0,
+            path: path.clone(),
+        },
+    );
+    assert!(stale.error.is_some() && !stale.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    // Failed Save As leaves both the original and its outstanding compatibility
+    // decision intact. Explicit consent still uses the original exact-byte token.
+    let failed = large_request(&service, Request::SaveNew(path.clone()));
+    assert!(failed.error.is_some() && !failed.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let saved = large_request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 1,
+            path: path.clone(),
+        },
+    );
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(!saved.save_confirmation_required);
+    assert_eq!(hex_storage::load(&path).unwrap(), *grown.state.project);
+    assert_eq!(hex_storage::load_recovery(&path).unwrap().project, small);
+    let again = large_request(&service, Request::SaveCurrent);
+    assert!(again.error.is_none() && !again.save_confirmation_required);
+    let copy = files.0.join("large-copy.hex");
+    let copied = large_request(&service, Request::SaveNew(copy.clone()));
+    assert!(copied.error.is_none(), "{:?}", copied.error);
+    assert_eq!(hex_storage::load(copy).unwrap(), *grown.state.project);
 }
