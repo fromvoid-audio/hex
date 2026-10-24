@@ -1006,7 +1006,7 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
     hex_storage::save_new(&path, session.project()).unwrap();
     let loaded = hex_storage::load(&path).unwrap();
     assert_eq!(loaded, resized);
-    let pcm = decode_wav_file(&directory.path().join("cycle.wav"), Limits::new(4096, 64)).unwrap();
+    let pcm = decode_wav_file(directory.path().join("cycle.wav"), Limits::new(4096, 64)).unwrap();
     let reopened = Session::from_loaded(loaded, 8, 64, vec![(asset, pcm)]).unwrap();
     let reopened_graph = reopened.compile().unwrap();
     let mut renderer = hex_engine::Renderer::new(&reopened_graph);
