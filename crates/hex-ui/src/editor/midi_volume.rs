@@ -154,22 +154,25 @@ impl EditorView {
         } else {
             "envelopes"
         };
-        div().children([self.midi_button_with_id(
-            "midi-volume-mode",
-            label,
-            "switch between notes and clip volume envelope",
-            cx.listener(|view, _, window, cx| {
-                view.cancel_midi_note_gesture();
-                view.cancel_midi_audition();
-                view.cancel_computer_keyboard();
-                view.focus.focus(window);
-                view.midi_volume.enabled = !view.midi_volume.enabled;
-                if let Some(graph) = view.midi_volume.graph.clone() {
-                    graph.update(cx, |g, cx| g.cancel(cx));
-                }
-                cx.notify();
-            }),
-        )])
+        div().children([self
+            .midi_button_with_id(
+                "midi-volume-mode",
+                label,
+                "switch between notes and clip volume envelope",
+                cx.listener(|view, _, window, cx| {
+                    view.cancel_midi_note_gesture();
+                    view.cancel_midi_audition();
+                    view.cancel_computer_keyboard();
+                    view.focus.focus(window);
+                    view.midi_volume.enabled = !view.midi_volume.enabled;
+                    if let Some(graph) = view.midi_volume.graph.clone() {
+                        graph.update(cx, |g, cx| g.cancel(cx));
+                    }
+                    cx.notify();
+                }),
+            )
+            .w_auto()
+            .px_2()])
     }
     pub(super) fn cancel_midi_volume_input(&mut self) -> bool {
         self.midi_volume.gesture.take().is_some()
