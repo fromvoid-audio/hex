@@ -34,6 +34,25 @@ pub struct ArrangementEditPosition {
     pub playing: bool,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
+impl ArrangementEditPosition {
+    /// Validate control-side scalar observations. This grants no fence or resource custody.
+    pub fn from_frames(
+        frame: u64,
+        playing: bool,
+        section_loop: Option<(u64, u64)>,
+    ) -> Result<Self, String> {
+        let section_loop = section_loop
+            .map(|(start, end)| {
+                hex_project::LoopRegion::new(start, end, true).map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        Ok(Self {
+            frame,
+            playing,
+            section_loop,
+        })
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
     InheritRuntime,

@@ -8,6 +8,7 @@ pub(super) struct Pending {
     fence: StoppedEditFence,
     output: u64,
     submitted: Option<u64>,
+    allow_playing: bool,
 }
 impl NativeAudioSink {
     pub(super) fn begin_section_edit(
@@ -49,6 +50,7 @@ impl NativeAudioSink {
             fence,
             output,
             submitted: None,
+            allow_playing,
         });
         Ok(())
     }
@@ -68,25 +70,24 @@ impl NativeAudioSink {
         }
         match control.stopped_edit_fence_state(pending.fence) {
             StoppedEditFenceState::Pending => None,
-            StoppedEditFenceState::Refused => {
-                Some(Err("stop playback before reordering sections".into()))
+            StoppedEditFenceState::Refused => Some(Err(if pending.allow_playing {
+                "arrangement playback changed before section edit"
+            } else {
+                "stop playback before resizing or deleting song sections"
             }
+            .into())),
             StoppedEditFenceState::Ready => Some(
                 control
                     .arrangement_edit_position(pending.fence)
                     .zip(control.arrangement_edit_playing(pending.fence))
-                    .map(
-                        |(frame, playing)| hex_session::service::ArrangementEditPosition {
+                    .ok_or_else(|| "arrangement position unavailable".into())
+                    .and_then(|(frame, playing)| {
+                        hex_session::service::ArrangementEditPosition::from_frames(
                             frame,
                             playing,
-                            section_loop: control
-                                .arrangement_edit_section_loop(pending.fence)
-                                .and_then(|(start, end)| {
-                                    hex_project::LoopRegion::new(start, end, true).ok()
-                                }),
-                        },
-                    )
-                    .ok_or_else(|| "arrangement position unavailable".into()),
+                            control.arrangement_edit_section_loop(pending.fence),
+                        )
+                    }),
             ),
         }
     }

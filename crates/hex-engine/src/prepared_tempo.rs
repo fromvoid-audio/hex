@@ -152,7 +152,7 @@ impl PreparedTempoMap {
     }
 
     pub(crate) fn same_map(&self, other: &Self) -> bool {
-        self.canonical == other.canonical
+        self.canonical.proves_same_clock(&other.canonical)
     }
 
     fn max_micro_bpm_in_range(&self, start: BeatTime, end: BeatTime) -> u32 {
