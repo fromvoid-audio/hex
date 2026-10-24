@@ -1074,6 +1074,89 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
 }
 
 #[gpui::test]
+fn protruding_meter_gain_handle_uses_canonical_gesture_and_one_history_step(
+    cx: &mut TestAppContext,
+) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let revision = state.revision;
+    let gain = state
+        .project
+        .device(device)
+        .unwrap()
+        .state()
+        .input_gain_db();
+    let (window, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+    let well_selector = Box::leak(
+        format!(
+            "device-{}-parameter-{}-input-meter",
+            device.value(),
+            hex_engine::DEVICE_INPUT_GAIN.id.value()
+        )
+        .into_boxed_str(),
+    );
+    let handle_selector = Box::leak(format!("{well_selector}-gain-handle").into_boxed_str());
+    let well = visual.debug_bounds(well_selector).unwrap();
+    let handle = visual.debug_bounds(handle_selector).unwrap();
+    let start = point(well.right() + px(1.0), handle.center().y);
+    let moved = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_some());
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .input_gain_db(),
+            gain
+        );
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+            && view.state.as_ref().is_some_and(|state| {
+                state.revision == revision + 1
+                    && state
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .state()
+                        .input_gain_db()
+                        > gain
+            })
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.enqueue(Request::Undo));
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state()
+                    .input_gain_db()
+                    == gain
+            })
+    });
+    visual.run_until_parked();
+    let handle = visual.debug_bounds(handle_selector).unwrap();
+    assert!(handle.right() > well.right());
+}
+
+#[gpui::test]
 fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_pages(
     cx: &mut TestAppContext,
 ) {
@@ -1157,6 +1240,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert_eq!(meter.size.width, px(8.0));
         assert!(meter.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
         assert!(meter.origin.x + meter.size.width <= frame.origin.x + frame.size.width);
+        let handle_selector = Box::leak(format!("{selector}-gain-handle").into_boxed_str());
+        let handle = visual.debug_bounds(handle_selector).expect("gain handle");
+        assert_eq!(handle.right(), meter.right() + px(2.0));
+        assert!(handle.right() <= frame.right());
+        assert!(handle.top() >= meter.top() && handle.bottom() <= meter.bottom());
     }
     let body_selector =
         Box::leak(format!("operator-body-{}", instrument_id.value()).into_boxed_str());
