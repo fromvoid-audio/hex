@@ -130,6 +130,27 @@ fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_an
     );
 }
 #[test]
+fn marker_move_split_roundtrips_without_changing_music_or_processing() {
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let before = editor.project().snapshot();
+    let moving = editor.project().arrangement_sections()[1].id();
+    editor
+        .execute(Command::MoveArrangementSectionMarker {
+            section: moving,
+            start: BeatTime::from_ratio(5, 2).unwrap(),
+        })
+        .unwrap();
+    let after = editor.project().snapshot();
+    assert_eq!(after.arrangement_sections.len(), 3);
+    let mut expected = before;
+    expected.arrangement_sections = after.arrangement_sections.clone();
+    expected.next_id = after.next_id;
+    assert_eq!(after, expected);
+    let bytes = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&bytes).unwrap().snapshot(), after);
+}
+
+#[test]
 fn malformed_missing_overlap_duplicate_ids_and_unbounded_residuals_are_refused() {
     let project = fixture();
     let base: serde_json::Value =

@@ -35,9 +35,10 @@ pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, WorkerAudioSink,
+    ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
+    NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
+    WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -5007,8 +5008,10 @@ fn run_worker(
                 request @ (Request::Undo | Request::Redo)
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
-                        && session
-                            .section_history_requires_stop(matches!(&request, Request::Redo)) =>
+                        && session.section_history_requires_publication(matches!(
+                            &request,
+                            Request::Redo
+                        )) =>
                 {
                     let context = hex_engine::AudioSourceContext {
                         project_generation,

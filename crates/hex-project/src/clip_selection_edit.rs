@@ -509,6 +509,7 @@ impl Command {
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
+            | Self::MoveArrangementSectionMarker { .. }
             | Self::RenameArrangementSection { .. }
             | Self::SetArrangementSectionColor { .. }
             | Self::RemoveArrangementSection(..)

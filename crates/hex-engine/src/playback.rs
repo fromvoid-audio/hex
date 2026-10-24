@@ -848,6 +848,25 @@ impl Playback {
         ))
     }
 
+    /// Prepare an unused interactive candidate retaining a launched section loop.
+    /// This performs no seek or replay; the ordinary callback handoff owns clock/state transfer.
+    pub fn try_from_prepared_section_candidate(
+        prepared_revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, crate::SessionPlaybackError> {
+        let runtime = SessionPlayback::new_section_candidate(
+            Arc::clone(&prepared_revision),
+            resources,
+            region,
+        )?;
+        Ok(Self::from_parts(
+            prepared_revision,
+            Some(Box::new(runtime)),
+            None,
+        ))
+    }
+
     /// Install a completed control-prepared Arrangement preroll without
     /// reconstructing or seeking the runtime. The runtime's exact prepared
     /// revision, clocks and play state are retained as-is. This is still the
