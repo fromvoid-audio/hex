@@ -374,6 +374,10 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
+        super::browser_input::restyle(&self.browser.search, cx);
+        if let Some(input) = &self.tuning.name {
+            super::browser_input::restyle(input, cx);
+        }
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
         self.sync_tuning(cx);

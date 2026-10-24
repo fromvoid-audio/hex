@@ -4086,7 +4086,7 @@ fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &m
     visual.run_until_parked();
     visual.simulate_input("utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "utility");
         let ParameterControl::Float { entity, .. } =
             &view.device_panel.controls[&ParameterKey { device, parameter }]
         else {
@@ -4159,7 +4159,7 @@ fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("escape cmd-f");
     visual.simulate_input("utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility")
+        assert_eq!(view.browser.search.read(cx).text(), "utility")
     });
 }
 

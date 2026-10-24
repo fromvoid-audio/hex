@@ -1,5 +1,10 @@
 //! Named inventory of the library's public visual factories and meaningful variants.
 //! Nonvisual numeric/text/color utilities are exercised through their controls.
+//! Rich menu rows exercise action_surface; device/main status compositions use
+//! the same level_meter gauge. TextInput covers query and source-value policies.
+//! Musical editors and their project-bound hit regions remain with the app;
+//! this catalog mounts their shared controls rather than a competing DAW model.
+use super::workspace::Kind as WorkspaceKind;
 use hex_widgets::{
     DeviceLayout, DeviceSectionSurface, DialLayout, DiscreteControlAppearance as Discrete,
     NumericControlAppearance as Appearance, NumericControlKind as Kind, NumericScale as Scale,
@@ -19,6 +24,7 @@ pub(super) enum Demo {
     Section(u8, DeviceSectionSurface),
     Frame(&'static str),
     Compositions,
+    Workspace(WorkspaceKind),
 }
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Item {
@@ -40,7 +46,6 @@ pub(super) fn inventory() -> Vec<Item> {
         ("compact dial", Appearance::CompactDial),
         ("micro dial", Appearance::MicroDial),
         ("wide micro dial", Appearance::WideMicroDial),
-        ("inline value", Appearance::InlineValue),
     ] {
         add(
             "numeric",
@@ -54,6 +59,13 @@ pub(super) fn inventory() -> Vec<Item> {
         );
     }
     for (name, kind, appearance, layout, scale) in [
+        (
+            "inline value",
+            Kind::HorizontalSlider,
+            Appearance::InlineValue,
+            DialLayout::ReadoutGap,
+            Scale::Linear,
+        ),
         (
             "horizontal slider",
             Kind::HorizontalSlider,
@@ -210,6 +222,44 @@ pub(super) fn inventory() -> Vec<Item> {
     ] {
         add("layout", name, Demo::Frame(name));
     }
+    // Shared text/gauge primitives plus actual app-owned popup/status compositions.
+    // Their fixtures contain only local values and typed UI callbacks.
+    for (name, kind) in [
+        (
+            "text input · value",
+            WorkspaceKind::Text(hex_widgets::TextInputKind::Value),
+        ),
+        (
+            "text input · search",
+            WorkspaceKind::Text(hex_widgets::TextInputKind::Search),
+        ),
+        (
+            "popup menu · choices and swatches",
+            WorkspaceKind::Menu(false),
+        ),
+        ("popup menu · icon grid", WorkspaceKind::Menu(true)),
+        ("level meter", WorkspaceKind::LevelMeter),
+        ("output sample-peak status", WorkspaceKind::OutputMeter),
+        ("scrolling list", WorkspaceKind::ScrollingList),
+    ] {
+        add("workspace", name, Demo::Workspace(kind));
+    }
+    for (name, button) in [
+        ("play button", "play"),
+        ("track activator", "track"),
+        ("stop button", "stop"),
+        ("record button", "record"),
+        ("mute button", "mute"),
+        ("solo button", "solo"),
+        ("arm button", "arm"),
+        ("fold disclosure", "fold"),
+    ] {
+        add(
+            "workspace",
+            name,
+            Demo::Workspace(WorkspaceKind::Button(button)),
+        );
+    }
     add(
         "compositions",
         "device compositions · 12 fixtures",
@@ -217,11 +267,12 @@ pub(super) fn inventory() -> Vec<Item> {
     );
     items
 }
-pub(super) const CATEGORIES: [&str; 6] = [
+pub(super) const CATEGORIES: [&str; 7] = [
     "numeric",
     "discrete",
     "graphics",
     "chrome",
     "layout",
+    "workspace",
     "compositions",
 ];

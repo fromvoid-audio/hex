@@ -174,7 +174,7 @@ fn browser_builtin_source_icons_persist_target_reset_and_compact_geometry(cx: &m
         );
         visual.update(|window, cx| {
             editor.read_with(cx, |view, cx| {
-                assert_eq!(view.browser.search.read(cx).content, "unchanged query");
+                assert_eq!(view.browser.search.read(cx).text(), "unchanged query");
                 assert!(
                     view.browser
                         .search
@@ -380,7 +380,7 @@ fn browser_builtin_source_all_first_and_command_f_uses_existing_global_scope(
             });
             let input = editor.read(cx).browser.search.clone();
             input.update(cx, |input, cx| {
-                assert_eq!(input.content, "kick hats");
+                assert_eq!(input.text(), "kick hats");
                 assert!(input.focus_handle().is_focused(window));
                 assert_eq!(
                     input.selected_text_range(false, window, cx).unwrap().range,

@@ -2826,7 +2826,6 @@ dependencies = [
  "hex-tuning",
  "hex-widgets",
  "serde_json",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -2838,6 +2837,7 @@ name = "hex-widgets"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "unicode-segmentation",
 ]
 
 [[package]]

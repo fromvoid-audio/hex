@@ -557,7 +557,7 @@ fn plus_minus_preserve_text_numeric_piano_and_session_input_and_command_zoom(
             assert_eq!(view.midi_snap_grid, piano_grid);
             assert!(view.last_enqueued_edit.is_none());
             if target == 0 {
-                assert_eq!(view.browser.search.read(cx).content, "+-");
+                assert_eq!(view.browser.search.read(cx).text(), "+-");
             }
         });
         if target == 1 {

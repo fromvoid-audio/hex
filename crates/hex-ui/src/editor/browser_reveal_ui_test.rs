@@ -49,7 +49,7 @@ fn browser_reveal_scrolls_both_directions_and_preserves_sample_and_audition(
                 view.browser.playback_path.clone(),
                 view.browser.playback_phase,
                 view.browser.preview_preparations,
-                view.browser.search.read(cx).content.clone(),
+                view.browser.search.read(cx).text().to_owned(),
                 view.pending_requests.len(),
                 view.pending_audio_commands.len(),
             )
@@ -72,7 +72,7 @@ fn browser_reveal_scrolls_both_directions_and_preserves_sample_and_audition(
                             view.browser.playback_path.clone(),
                             view.browser.playback_phase,
                             view.browser.preview_preparations,
-                            view.browser.search.read(cx).content.clone(),
+                            view.browser.search.read(cx).text().to_owned(),
                             view.pending_requests.len(),
                             view.pending_audio_commands.len()
                         ),
@@ -105,7 +105,7 @@ fn browser_reveal_is_inert_without_a_sample_and_rejects_stale_identity(cx: &mut 
                         .is_focused(window)
                 );
                 assert!(!view.browser.results_focused);
-                assert_eq!(view.browser.search.read(cx).content, "");
+                assert_eq!(view.browser.search.read(cx).text(), "");
             })
         })
         .unwrap();
@@ -192,7 +192,7 @@ fn browser_reveal_resolves_remapped_identity_and_keeps_filters(cx: &mut TestAppC
     visual.run_until_parked();
     click_reveal(visual);
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "loop");
+        assert_eq!(view.browser.search.read(cx).text(), "loop");
         assert_eq!(view.browser_selected_sample(cx), Some(path));
         assert!(view.pending_requests.is_empty());
     });
@@ -202,7 +202,7 @@ fn browser_reveal_resolves_remapped_identity_and_keeps_filters(cx: &mut TestAppC
     visual.run_until_parked();
     click_reveal(visual);
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "missing-sample");
+        assert_eq!(view.browser.search.read(cx).text(), "missing-sample");
         assert!(view.browser_selected_sample(cx).is_none());
     });
 }

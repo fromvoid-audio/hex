@@ -145,7 +145,7 @@ fn folders_drag_to_places_persists_without_import_or_navigation(cx: &mut TestApp
     assert!(saved.additional().contains(&samples.join("outer")));
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.section, BrowserSection::Place(samples.clone()));
-        assert_eq!(view.browser.search.read(cx).content, "");
+        assert_eq!(view.browser.search.read(cx).text(), "");
         assert_eq!(
             before,
             (
@@ -567,7 +567,7 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
             "existing audio cancellation branch must run"
         );
         assert_eq!(
-            view.browser.search.read(cx).content,
+            view.browser.search.read(cx).text(),
             "file",
             "audio cancellation precedes query clearing"
         );
@@ -597,7 +597,7 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
             view.active_native_device_drag.is_none(),
             "existing device cancellation branch must run"
         );
-        assert_eq!(view.browser.search.read(cx).content, "sine");
+        assert_eq!(view.browser.search.read(cx).text(), "sine");
     });
     assert!(!visual.update(|_, cx| cx.has_active_drag()));
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
@@ -606,7 +606,7 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
     assert!(!visual.update(|_, cx| cx.has_active_drag()));
     visual.simulate_keystrokes("escape");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "");
+        assert_eq!(view.browser.search.read(cx).text(), "");
         assert_eq!(
             before,
             (
