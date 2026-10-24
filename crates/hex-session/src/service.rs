@@ -3333,6 +3333,9 @@ fn run_worker(
                                 && let Some(sink) = events.resident_audio()
                             {
                                 let admission = export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }), resident_seek.as_ref(), resident_preview.as_ref());
+                                let allowance = resident_audio::import_frame_allowance(
+                                    &session, sink, admission, resident_snapshot.as_ref())?;
+                                let job = job.with_pcm_frame_allowance(allowance);
                                 return job.run_with_storage_admission_using(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),

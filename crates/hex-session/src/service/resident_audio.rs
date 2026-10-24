@@ -842,34 +842,20 @@ pub(super) fn prepare_bounce_import(
     Ok(snapshot)
 }
 
-#[allow(clippy::too_many_arguments)] // Captured file/destination and current publication union are one synchronous import.
-pub(super) fn import_file(
-    session: &mut Session,
-    path: PathBuf,
-    destination: AudioBatchDestination,
-    overwrite: bool,
-    context: hex_engine::AudioSourceContext,
-    sink: &mut dyn WorkerAudioSink,
+/// Planning hint derived from the same owners as final publication admission.
+/// This permits choosing file backing before allocating a whole decoded source.
+pub(super) fn import_frame_allowance(
+    session: &Session,
+    sink: &dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
-    current: &mut Option<Snapshot>,
-) -> Result<Arc<PreparedRevision>, SessionError> {
-    if !overwrite
-        && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
-            track,
-            scene,
-        }) = destination
-        && session.project().session_cell(track, scene).is_some()
-    {
-        return Err(SessionError::Invalid("session target cell is occupied"));
-    }
-    let allowance = if session.source_plan_reservation().is_some() {
+    current: Option<&Snapshot>,
+) -> Result<u64, SessionError> {
+    Ok(if session.source_plan_reservation().is_some() {
         // Plan before decoding against the same actual native/current/export
         // owners used by final admission, including original sampler banks.
         let native = sink.resident_admission();
-        let current_sets = current.as_ref().map(|snapshot| [&snapshot.resources]);
-        let current_revisions = current
-            .as_ref()
-            .map(|snapshot| [snapshot.prepared.as_ref()]);
+        let current_sets = current.map(|snapshot| [&snapshot.resources]);
+        let current_revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
         let current_view = DeviceResourceAdmission::new(
             current_sets.as_ref().map_or(&[], |sets| sets.as_slice()),
             &[],
@@ -892,7 +878,30 @@ pub(super) fn import_file(
         session
             .max_resident_frames()
             .saturating_sub(session.resident_frames())
-    };
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // Captured file/destination and current publication union are one synchronous import.
+pub(super) fn import_file(
+    session: &mut Session,
+    path: PathBuf,
+    destination: AudioBatchDestination,
+    overwrite: bool,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: &mut Option<Snapshot>,
+) -> Result<Arc<PreparedRevision>, SessionError> {
+    if !overwrite
+        && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
+            track,
+            scene,
+        }) = destination
+        && session.project().session_cell(track, scene).is_some()
+    {
+        return Err(SessionError::Invalid("session target cell is occupied"));
+    }
+    let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
     if let Some(source) = session.plan_file_import_with_allowance(&path, allowance)? {
         let expected = session.project().clone();
         let mut accepted = None;

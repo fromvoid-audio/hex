@@ -880,11 +880,25 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
     // domain and wait forever for its own not-yet-prepared successor.
     let third_path = files.0.join("third.wav");
     std::fs::copy(files.0.join("second.wav"), &third_path).unwrap();
-    let third = h.run(Request::Import(third_path));
-    let (third_audio, _) = h.applied(second_audio);
-    assert_eq!(third.state.project.assets().count(), 3);
-    let fourth = h.run(Request::Import(refused_path));
-    h.applied(third_audio);
+    let (batch, batch_control) = Request::audio_batch(
+        vec![third_path, refused_path],
+        hex_session::import_batch::AudioBatchDestination::NewTracks {
+            before_track: None,
+            start: 0,
+        },
+        hex_session::import_batch_decode::AudioBatchContext {
+            project_generation: 0,
+            revision: second.state.revision,
+            active_gesture: false,
+        },
+    )
+    .unwrap();
+    let fourth = h.run(batch);
+    h.applied(second_audio);
+    assert_eq!(
+        batch_control.progress().phase,
+        hex_session::import_batch_decode::AudioBatchPhase::Completed
+    );
     assert_eq!(fourth.state.project.assets().count(), 4);
     assert!(
         fourth

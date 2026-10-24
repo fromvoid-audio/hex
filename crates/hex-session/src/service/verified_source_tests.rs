@@ -73,6 +73,77 @@ fn verified(snapshot: &CanonicalAudioSourceSnapshot) -> &crate::VerifiedAudioFil
     source
 }
 #[test]
+fn ordinary_batch_exceeds_working_pcm_without_partial_commit_and_keeps_one_undo() {
+    let files = Files::new();
+    let a = files.wav("ordinary-a.wav", 24000, 3, 8192);
+    let b = files.wav("ordinary-b.wav", 48000, 7, -8192);
+    let bad = files.0.join("invalid.wav");
+    fs::write(&bad, b"invalid wave").unwrap();
+    let mut session = Session::new_with_audio_mode(
+        48000,
+        16,
+        4,
+        DocumentAudioMode::Resident,
+        Some(reservation(4)),
+    )
+    .unwrap();
+    let before = session.project().clone();
+    let context = AudioBatchContext {
+        project_generation: 0,
+        revision: 0,
+        active_gesture: false,
+    };
+    let destination = AudioBatchDestination::NewTracks {
+        before_track: None,
+        start: 8,
+    };
+    let rejected =
+        AudioBatchImport::capture(vec![a.clone(), bad], destination, &session, context).unwrap();
+    assert!(rejected.run(&mut session, None, || context).is_err());
+    assert_eq!(session.project(), &before);
+    assert!(session.verified_sources.is_empty());
+    assert!(session.waveforms().is_empty());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(!session.editor.can_undo());
+
+    let batch = AudioBatchImport::capture(vec![a, b], destination, &session, context).unwrap();
+    let control = batch.control();
+    let (_, prepared) = batch.run(&mut session, None, || context).unwrap();
+    assert_eq!(
+        control.progress().phase,
+        crate::import_batch_decode::AudioBatchPhase::Completed
+    );
+    assert_eq!(session.audio_mode(), DocumentAudioMode::Resident);
+    assert!(prepared.arrangement().contains_streamed_sources());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(session.media.is_empty());
+    assert_eq!(session.waveforms().len(), 2);
+    assert_eq!(
+        session
+            .project()
+            .assets()
+            .map(|asset| asset.playback_frames())
+            .collect::<Vec<_>>(),
+        vec![6, 7]
+    );
+    let committed = session.project().clone();
+    let undone = session
+        .undo_prepared_revision(Some(&prepared))
+        .unwrap()
+        .unwrap();
+    assert!(session.project().tracks().is_empty());
+    assert_eq!(session.project().assets().count(), 0);
+    assert_eq!(session.project().sample_rate(), before.sample_rate());
+    assert!(!session.editor.can_undo());
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project(), &committed);
+    assert!(redone.arrangement().contains_streamed_sources());
+}
+
+#[test]
 fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_epoch_and_bounds() {
     let files = Files::new();
     let a = files.wav("a.wav", 24000, 131072, 1000);
