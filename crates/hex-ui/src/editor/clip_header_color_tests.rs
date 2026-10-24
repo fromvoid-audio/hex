@@ -419,3 +419,45 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
         }
     }
 }
+
+#[gpui::test]
+fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_color(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    f.editor.update(&mut visual, |view, cx| {
+        view.selected_clip = None;
+        view.reconcile_clip_selection();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for active in [false, true] {
+        for clip in [f.audio, f.midi] {
+            f.editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(Command::SetClipActive { clip, active })));
+            });
+            pump(&f.editor, &mut visual);
+        }
+        for (clip, flavor, prefix) in [
+            (f.audio, ClipFlavor::Muted, "clip-visual"),
+            (f.midi, ClipFlavor::Accent, "midi-clip-visual"),
+        ] {
+            let expected: gpui::Background = gpui::rgb(theme::clip_activity_fill(
+                ElementColor::Cyan,
+                flavor,
+                false,
+                active,
+            ))
+            .into();
+            assert_eq!(
+                visual.rendered_background(selector(prefix, clip)),
+                Some(expected)
+            );
+            assert_eq!(
+                visual.rendered_background(selector("clip-name", clip)),
+                Some(expected)
+            );
+        }
+    }
+}
