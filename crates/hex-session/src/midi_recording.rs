@@ -5,6 +5,9 @@
 //! ownership. The captured canonical binding refuses source/timing substitution;
 //! the ordinary service still owns prepare-before-commit and one history edit.
 //! Input journals, live monitoring, transport and quantization have other owners.
+mod take;
+pub use take::MidiTake;
+
 use hex_project::{
     BeatTime, ClipId, Command, DeviceId, MidiNoteInsert, MidiSourceIdentity, Project, TempoMap,
     TrackId,
@@ -29,6 +32,7 @@ pub struct RecordedMidiNote {
 /// The source token retains actual canonical backing; one active take owns one
 /// bounded token and tempo map. Arming is transient capture state, not a saved
 /// project field. No source, note, device or clip identity is allocated here.
+#[derive(Debug)]
 pub struct MidiTakeBinding {
     track: TrackId,
     clip: ClipId,
@@ -39,6 +43,7 @@ pub struct MidiTakeBinding {
     start: BeatTime,
     length: BeatTime,
     source_start: BeatTime,
+    playback_offset: BeatTime,
     audible_end: BeatTime,
     first_frame: u64,
     end_frame: u64,
@@ -57,13 +62,17 @@ impl MidiTakeBinding {
             .iter()
             .find(|candidate| candidate.id() == clip)
             .ok_or("midi recording requires an arrangement clip on the armed track")?;
+        if !clip.active() {
+            return Err("midi recording requires an active clip");
+        }
         if clip.looping() || project.loop_region().is_some_and(|region| region.enabled()) {
             return Err("loop recording is not available for this midi recorder");
         }
         if clip
             .source_start()
             .raw()
-            .checked_add(clip.length().raw())
+            .checked_add(clip.playback_offset().raw())
+            .and_then(|start| start.checked_add(clip.length().raw()))
             .is_none_or(|end| end > clip.source().effective_end().raw())
         {
             return Err("midi recording requires the clip to fit its audible source extent");
@@ -95,6 +104,7 @@ impl MidiTakeBinding {
             start: clip.start(),
             length: clip.length(),
             source_start: clip.source_start(),
+            playback_offset: clip.playback_offset(),
             audible_end: clip.source().effective_end(),
             first_frame,
             end_frame,
@@ -105,6 +115,9 @@ impl MidiTakeBinding {
     }
     pub fn clip(&self) -> ClipId {
         self.clip
+    }
+    pub fn instrument(&self) -> DeviceId {
+        self.instrument
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -133,6 +146,11 @@ impl MidiTakeBinding {
             || project.tempo_map() != &self.tempo
             || clip.start() != self.start
             || clip.length() != self.length
+            || !clip.active()
+            || clip.looping()
+            || clip.source_start() != self.source_start
+            || clip.playback_offset() != self.playback_offset
+            || clip.source().effective_end() != self.audible_end
             || project.loop_region().is_some_and(|region| region.enabled())
         {
             return Err("midi recording source or timing changed; retain the take before retrying");
@@ -201,7 +219,13 @@ pub fn finish_take(
             beat.raw()
                 .clamp(binding.start.raw(), clip_end)
                 .checked_sub(binding.start.raw())
-                .and_then(|elapsed| binding.source_start.raw().checked_add(elapsed))
+                .and_then(|elapsed| {
+                    binding
+                        .source_start
+                        .raw()
+                        .checked_add(binding.playback_offset.raw())?
+                        .checked_add(elapsed)
+                })
         };
         let start = source_position(first).ok_or("midi take source position overflow")?;
         let end = source_position(last)

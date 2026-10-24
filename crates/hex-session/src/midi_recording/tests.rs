@@ -269,3 +269,201 @@ fn unsupported_capture_targets_refuse_before_any_note_or_history_edit() {
         assert_eq!(editor.project().snapshot(), before);
     }
 }
+
+#[test]
+fn inactive_or_retrimmed_clip_refuses_and_new_take_maps_playback_offset() {
+    let (project, track, clip) = fixture();
+    let binding = MidiTakeBinding::capture(&project, track, clip).unwrap();
+    let mut editor = Editor::new(project, 8).unwrap();
+    editor
+        .execute(Command::SetClipActive {
+            clip,
+            active: false,
+        })
+        .unwrap();
+    assert!(MidiTakeBinding::capture(editor.project(), track, clip).is_err());
+    assert!(
+        finish_take(
+            editor.project(),
+            &binding,
+            &[note(9_000, 10_000, 60)],
+            12_000
+        )
+        .is_err()
+    );
+    assert!(editor.undo());
+    editor
+        .execute(Command::TrimMidiClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            beat: BeatTime::from_ratio(5, 2).unwrap(),
+        })
+        .unwrap();
+    assert!(
+        finish_take(
+            editor.project(),
+            &binding,
+            &[note(11_000, 12_000, 60)],
+            13_000
+        )
+        .is_err()
+    );
+    let binding = MidiTakeBinding::capture(editor.project(), track, clip).unwrap();
+    let command = finish_take(
+        editor.project(),
+        &binding,
+        &[note(11_000, 12_000, 60)],
+        13_000,
+    )
+    .unwrap()
+    .unwrap();
+    editor.execute(command).unwrap();
+    assert_eq!(
+        editor.project().midi_clip(clip).unwrap().notes()[0].start(),
+        BeatTime::from_ratio(7, 4).unwrap()
+    );
+}
+
+fn capture_source() -> hex_engine::midi_capture::MidiCaptureSource {
+    let input = hex_engine::computer_keyboard::ComputerKeyboardInput::with_output_activation(
+        std::sync::Arc::new(Default::default()),
+    )
+    .unwrap()
+    .with_recording_support()
+    .unwrap();
+    hex_engine::midi_capture::MidiCaptureSource::Computer {
+        activation: input.begin_ordered_keys_on_control().unwrap(),
+        key: 0,
+        press_token: 1,
+    }
+}
+
+#[test]
+fn delivered_short_notes_chords_and_stop_pair_by_occurrence_and_keep_take_until_ack() {
+    use hex_engine::midi_capture::*;
+    let source = capture_source();
+    let mut take = MidiTake::new(
+        8_000,
+        16_000,
+        MidiCaptureClock {
+            content_frame: 8_500,
+            performance_frame: 100,
+        },
+    )
+    .unwrap();
+    let events = [
+        (
+            1,
+            102,
+            MidiCaptureEvent::On {
+                pitch: 60,
+                velocity: 93,
+            },
+        ),
+        (
+            2,
+            103,
+            MidiCaptureEvent::On {
+                pitch: 64,
+                velocity: 37,
+            },
+        ),
+        (1, 104, MidiCaptureEvent::Off),
+        (
+            3,
+            105,
+            MidiCaptureEvent::On {
+                pitch: 60,
+                velocity: 70,
+            },
+        ),
+        (3, 106, MidiCaptureEvent::Off),
+    ];
+    for (occurrence_id, performance_frame, event) in events {
+        take.push(
+            AcceptedMidiNote {
+                source,
+                occurrence_id,
+                performance_frame,
+                event,
+            },
+            8_400 + performance_frame,
+        )
+        .unwrap();
+    }
+    take.finish(MidiCaptureClock {
+        content_frame: 8_512,
+        performance_frame: 112,
+    })
+    .unwrap();
+    assert!(take.complete());
+    assert_eq!(
+        take.notes(),
+        &[
+            RecordedMidiNote {
+                start_frame: 8_502,
+                end_frame: 8_504,
+                pitch: 60,
+                channel: 0,
+                velocity: 93
+            },
+            RecordedMidiNote {
+                start_frame: 8_503,
+                end_frame: 8_512,
+                pitch: 64,
+                channel: 0,
+                velocity: 37
+            },
+            RecordedMidiNote {
+                start_frame: 8_505,
+                end_frame: 8_506,
+                pitch: 60,
+                channel: 0,
+                velocity: 70
+            },
+        ]
+    );
+    let (project, track, clip) = fixture();
+    let binding = MidiTakeBinding::capture(&project, track, clip).unwrap();
+    let replaced = Project::from_snapshot(project.snapshot()).unwrap();
+    assert!(finish_take(&replaced, &binding, take.notes(), 8_512).is_err());
+    assert_eq!(take.notes().len(), 3);
+    assert!(
+        finish_take(&project, &binding, take.notes(), 8_512)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(take.notes().len(), 3);
+}
+
+#[test]
+fn interrupted_or_noncontiguous_delivery_cannot_become_a_complete_take() {
+    use hex_engine::midi_capture::*;
+    let mut take = MidiTake::new(
+        8_000,
+        16_000,
+        MidiCaptureClock {
+            content_frame: 8_500,
+            performance_frame: 100,
+        },
+    )
+    .unwrap();
+    let event = AcceptedMidiNote {
+        source: capture_source(),
+        occurrence_id: 1,
+        performance_frame: 102,
+        event: MidiCaptureEvent::On {
+            pitch: 60,
+            velocity: 93,
+        },
+    };
+    assert!(take.push(event, 8_503).is_err());
+    assert!(
+        take.finish(MidiCaptureClock {
+            content_frame: 8_512,
+            performance_frame: 112
+        })
+        .is_err()
+    );
+    assert!(!take.complete());
+}

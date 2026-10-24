@@ -107,6 +107,7 @@ mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;
+mod midi_recording;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -637,6 +638,7 @@ pub(super) struct EditorView {
     project_tempo_control: Option<tempo_input::Binding>,
     track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
+    midi_recorder: midi_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
@@ -1293,6 +1295,7 @@ impl EditorView {
             project_tempo_control: None,
             track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
+            midi_recorder: midi_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
             selected_clip: None,

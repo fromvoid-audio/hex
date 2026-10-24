@@ -312,7 +312,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == revision)
-            && !self.gain_recorder.blocks_edits()
+            && !(self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
             && !self.opening_project
             && !self.close_prompt_open
             && self.recovery.permits_seek(recovery)

@@ -297,10 +297,10 @@ impl NativeAudioSink {
                     )
                 },
             );
-            let result = control.publish_with_admission_on_control(
+            let result = control.publish_with_admission_and_source_on_control(
                 playback,
                 policy,
-                metadata.context.project_generation,
+                metadata.context,
                 |prospective| admit(&[prospective, retired, pending]),
             );
             return match result {
