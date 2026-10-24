@@ -425,3 +425,70 @@ fn clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body(
         });
     }
 }
+
+#[gpui::test]
+fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_history(
+    cx: &mut TestAppContext,
+) {
+    for warped in [false, true] {
+        let mut f = fixture(cx, false);
+        if warped {
+            let settings = f.editor.read_with(&f.visual, |v, _| {
+                let p = &v.state.as_ref().unwrap().project;
+                hex_project::default_audio_warp(
+                    p.clip(f.clip).unwrap(),
+                    p.tempo_map(),
+                    hex_project::WarpMode::RePitch,
+                )
+                .unwrap()
+            });
+            f.editor.update(&mut f.visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                    clip: f.clip,
+                    settings: Some(settings)
+                })))
+            });
+            pump(&f.editor, &mut f.visual);
+        }
+        let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        f.visual
+            .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&f.editor, &mut f.visual);
+        let before = f.editor.read_with(&f.visual, |v, _| {
+            v.state.as_ref().unwrap().project.snapshot()
+        });
+        let edge = Box::leak(format!("clip-trim-right-{}", f.clip.value()).into_boxed_str());
+        let down = f.visual.debug_bounds(edge).unwrap().center();
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        f.editor.update(&mut f.visual, |v, _| {
+            v.waveform_geometry_cache.borrow_mut().clear()
+        });
+        f.visual.simulate_mouse_down(down, MouseButton::Left, shift);
+        f.visual
+            .simulate_mouse_move(point(down.x + px(12.0), down.y), MouseButton::Left, shift);
+        f.visual.run_until_parked();
+        let target = point(down.x + px(40.0), down.y);
+        f.visual
+            .simulate_mouse_move(target, MouseButton::Left, shift);
+        f.visual.run_until_parked();
+        let held = f.visual.debug_bounds("trim-live-preview").unwrap();
+        f.editor.read_with(&f.visual,|v,_|assert!(v.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
+            p.bounds.right()>=held.right()-px(2.0) && p.ordinates.iter().any(|(lo,hi)| hi-lo>1.0)
+        ),"ordinary Shift-Warp retains accepted processed root peaks on an existing repeat; warped={warped}"));
+        f.visual.simulate_mouse_up(target, MouseButton::Left, shift);
+        f.visual.run_until_parked();
+        assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error)
+        });
+        f.visual.simulate_keystrokes("cmd-z");
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+    }
+}
