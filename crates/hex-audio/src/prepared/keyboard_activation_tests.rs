@@ -166,6 +166,83 @@ fn stop_reconnect_then_physical_press_keeps_the_hardware_output_epoch_live() {
     callback.begin_block();
     control.reclaim();
 }
+
+#[test]
+fn mutable_hardware_short_note_callback_has_zero_total_and_net_allocations() {
+    use hex_engine::computer_keyboard::LiveNoteEvent;
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
+    let metadata = &hex_devices::operator_state::OPERATOR_METADATA;
+    let state = metadata
+        .patch_parameter(
+            &metadata.default_state().unwrap(),
+            ParameterId::from_static(78),
+            ParameterValue::Float(0.4),
+        )
+        .unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "hardware".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    let input = Arc::new(
+        control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_live_notes()
+            .unwrap(),
+    );
+    control
+        .publish(graph(editor.project(), track, Some(&input)))
+        .unwrap();
+    assert_eq!(block(&mut callback), [[0.0; 2]; 64]);
+    let activation = input.begin_live_notes_activation_on_control().unwrap();
+    let live = input.live_notes().unwrap();
+    live.publish(
+        activation,
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 60,
+            velocity: 37,
+        },
+    )
+    .unwrap();
+    live.publish(
+        activation,
+        LiveNoteEvent::NoteOff {
+            channel: 2,
+            pitch: 60,
+            velocity: 0,
+        },
+    )
+    .unwrap();
+    let oracle_input = Arc::new(
+        ComputerKeyboardInput::default()
+            .with_note_audition(&[(60, 37)], 1)
+            .unwrap(),
+    );
+    let mut oracle = graph(editor.project(), track, Some(&oracle_input));
+    oracle_input.trigger_note_audition().unwrap();
+    let mut expected = [[0.0; 2]; 64];
+    for frame in &mut expected {
+        oracle.render(std::slice::from_mut(frame)).unwrap();
+    }
+    assert_eq!(block(&mut callback), expected);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    // Terminal hardware cancellation remains an allocation-free callback path.
+    let _ = live.cancel_activation(activation);
+    block(&mut callback);
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
 #[test]
 fn priority_stop_preserves_only_its_own_output_keyboard_epochs_without_callback_allocation_or_free()
 {
