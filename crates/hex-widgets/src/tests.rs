@@ -295,7 +295,7 @@ fn open_numeric_control_layout(
     (handle, control)
 }
 
-fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
+fn open_micro_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
     let spec = NumericSpec::new(
         0.0,
         1.0,
@@ -304,7 +304,7 @@ fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
         2,
         None::<std::sync::Arc<str>>,
     )
-    .expect("valid MiniDial domain");
+    .expect("valid MicroDial domain");
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     cx.update_window(handle, |_, window, cx| {
@@ -317,8 +317,8 @@ fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
                 0.5,
                 STYLE,
             )
-            .expect("valid MiniDial config")
-            .with_appearance(NumericControlAppearance::MiniDial);
+            .expect("valid MicroDial config")
+            .with_appearance(NumericControlAppearance::MicroDial);
             NumericControl::from_config(cx, config)
         });
         window.replace_root(cx, |_, cx| TestRoot {
@@ -326,30 +326,30 @@ fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
             outside_focus: cx.focus_handle(),
         });
     })
-    .expect("MiniDial test window");
+    .expect("MicroDial test window");
     handle
 }
 
 #[gpui::test]
-fn mini_dial_keeps_compact_bounds_and_shared_numeric_gesture(cx: &mut TestAppContext) {
-    let handle = open_mini_dial(cx);
+fn micro_dial_keeps_compact_bounds_and_shared_numeric_gesture(cx: &mut TestAppContext) {
+    let handle = open_micro_dial(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(gpui::size(px(260.0), px(100.0)));
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
     let dial = visual
         .debug_bounds("test-control")
-        .expect("MiniDial bounds");
+        .expect("MicroDial bounds");
     assert_eq!(dial.size.width, px(crate::MICRO_DIAL_WIDTH));
     assert_eq!(dial.size.height, px(40.0));
     let ring = visual
         .debug_bounds("test-control-knob")
-        .expect("MiniDial ring");
+        .expect("MicroDial ring");
     assert_eq!(ring.size.width, px(18.0));
     assert_eq!(ring.size.height, px(18.0));
     let readout = visual
         .debug_bounds("test-control-value")
-        .expect("MiniDial readout");
+        .expect("MicroDial readout");
     assert_eq!(readout.size.width, px(crate::MICRO_DIAL_WIDTH - 13.0));
     assert_eq!(readout.size.height, px(12.0));
     let label = visual
@@ -1576,7 +1576,6 @@ fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAp
     for appearance in [
         NumericControlAppearance::Standard,
         NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MiniDial,
         NumericControlAppearance::MicroDial,
         NumericControlAppearance::InlineValue,
     ] {
@@ -1707,7 +1706,6 @@ fn numeric_dial_bounds_stay_fixed_through_press_drag_text_and_release(cx: &mut T
     for appearance in [
         NumericControlAppearance::Standard,
         NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MiniDial,
         NumericControlAppearance::MicroDial,
     ] {
         let spec = NumericSpec::new(

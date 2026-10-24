@@ -418,3 +418,93 @@ fn removed_track_retires_selected_lane_paint_after_actual_worker_completion(
     assert!(visual.rendered_background(empty_tint).is_some());
     editor.read_with(&visual, |v, _| assert_eq!(v.selected_track_ids(), [empty]));
 }
+
+#[gpui::test]
+fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut TestAppContext) {
+    use gpui::{MouseButton, point};
+    let (project, source, empty, _) = audio_project();
+    let before = project.snapshot();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = |prefix: &str, id: hex_project::TrackId| {
+        Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str()) as &'static str
+    };
+    for (previous, target, modifiers) in [
+        (source, empty, Modifiers::default()),
+        (
+            empty,
+            source,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        ),
+        (
+            source,
+            empty,
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        ),
+    ] {
+        let header = visual
+            .debug_bounds(selector("track-name", previous))
+            .unwrap();
+        visual.simulate_click(header.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), [previous])
+        });
+        let lane = visual
+            .debug_bounds(selector("arrangement-lane", target))
+            .unwrap();
+        let position = point(
+            lane.left() + lane.size.width * if modifiers.shift { 0.8 } else { 0.7 },
+            lane.center().y,
+        );
+        visual.simulate_mouse_down(position, MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        for released in [false, true] {
+            if released {
+                visual.simulate_mouse_up(position, MouseButton::Left, modifiers);
+                visual.run_until_parked();
+            }
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_track, Some(target));
+                assert_eq!(view.selected_track_ids(), [target]);
+                assert_eq!(
+                    view.cursor_position(),
+                    0,
+                    "lane selection does not seek playback"
+                );
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+                if !modifiers.shift {
+                    assert_eq!(view.edit_cursor.unwrap().track, target);
+                }
+            });
+            for id in [source, empty] {
+                for prefix in [
+                    "selected-track",
+                    "selected-track-lane",
+                    "selected-track-lane-top",
+                    "selected-track-lane-bottom",
+                ] {
+                    let name = selector(prefix, id);
+                    assert_eq!(
+                        visual.debug_bounds(name).is_some(),
+                        id == target,
+                        "{prefix} after release={released}"
+                    );
+                    if id == target && prefix != "selected-track" {
+                        assert!(
+                            visual.rendered_background(name).is_some(),
+                            "completed lane paint"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
