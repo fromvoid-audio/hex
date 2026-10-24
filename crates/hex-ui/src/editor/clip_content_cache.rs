@@ -152,7 +152,8 @@ impl EditorView {
             && self.active_midi_trim_drag.is_none()
             && self.time_range_move_gesture.is_none()
             && self.pending_time_range_move.is_none()
-            && self.arrangement_pan.is_none()
+            // Panning changes the viewport/lane keys on each actual move. A
+            // held pointer alone does not invalidate an otherwise current scene.
             && self.loop_rail_gesture.is_none()
             && !self.theme_settings.open
     }
