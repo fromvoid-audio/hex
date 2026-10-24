@@ -793,7 +793,7 @@ impl PreparedSessionInventory {
             .zip(note_keys_by_track)
             .enumerate()
         {
-            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
+            let enabled = config.config.is_some() && !config.bypassed;
             if unchanged_sources
                 .get(index)
                 .copied()

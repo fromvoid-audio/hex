@@ -47,7 +47,7 @@ fn fixture() -> (Editor, crate::TrackId, ClipId) {
 #[test]
 fn span_activation_preserves_source_law_fresh_ids_and_history() {
     let (mut e, track, clip) = fixture();
-    let before = e.project().snapshot();
+    let mut before = e.project().snapshot();
     let original = e.project().midi_clip(clip).unwrap().clone();
     let frame = |n| e.project().tempo_map().beat_to_frame(b(n)).unwrap();
     let range = TimeRange::new(vec![track], frame(3), frame(8)).unwrap();
@@ -104,6 +104,8 @@ fn span_activation_preserves_source_law_fresh_ids_and_history() {
         Ok(Some(false))
     );
     let after = e.project().snapshot();
+    // History preserves the monotonic ID high-water mark while restoring content.
+    before.next_id = after.next_id;
     assert!(e.undo());
     assert_eq!(e.project().snapshot(), before);
     assert!(e.redo());
@@ -189,4 +191,41 @@ fn offset_left_trim_rewinds_to_origin_then_existing_prefix_law() {
     assert_eq!(rewind.playback_offset(), b(1));
     let before_origin = clip.preview_edge_trim(crate::TrimEdge::Left, b(4)).unwrap();
     assert_eq!(before_origin.playback_offset(), b(0));
+}
+
+#[test]
+fn fragmented_id_exhaustion_is_atomic_and_same_activation_does_not_split() {
+    let (e, track, clip) = fixture();
+    let mut snapshot = e.project().snapshot();
+    snapshot.next_id = u64::MAX - 1;
+    let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+    let range = TimeRange::new(
+        vec![track],
+        e.project().tempo_map().beat_to_frame(b(3)).unwrap(),
+        e.project().tempo_map().beat_to_frame(b(8)).unwrap(),
+    )
+    .unwrap();
+    let before = e.project().snapshot();
+    e.execute(Command::SetTimeRangeActive {
+        range: range.clone(),
+        active: true,
+    })
+    .unwrap();
+    assert_eq!(e.project().snapshot(), before);
+    assert!(!e.can_undo());
+    assert!(
+        e.execute(Command::SetTimeRangeActive {
+            range,
+            active: false
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), before);
+    assert!(!e.can_undo());
+    e.execute(Command::SetClipActive {
+        clip,
+        active: false,
+    })
+    .unwrap();
+    assert_eq!(e.project().clip_active(clip), Some(false));
 }

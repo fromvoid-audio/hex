@@ -1,6 +1,6 @@
 //! Schema40 adds a complete clip-activation inventory and elapsed MIDI playback
-//! windows over frozen schema39. Older readers default all clips active and all
-//! windows to zero; explicit older writers refuse state they cannot represent.
+//! windows over frozen schema39. Decoding supported older schemas defaults all
+//! clips active and elapsed windows to zero; explicit older writers refuse state they cannot represent.
 //! Decoding is in-memory only; existing atomic save custody preserves originals.
 use super::{Project, StorageError};
 use hex_project::{SessionCellContent, SessionCellContentSnapshot, Snapshot, TrackContentSnapshot};

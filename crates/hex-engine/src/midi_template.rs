@@ -900,3 +900,6 @@ fn ceil_div(numerator: u128, denominator: u128) -> Result<u128, MidiTemplateErro
             .ok_or(MidiTemplateError::ArithmeticOverflow)
     }
 }
+
+#[cfg(test)]
+mod window_tests;

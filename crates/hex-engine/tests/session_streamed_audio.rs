@@ -1304,3 +1304,77 @@ fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff
         }]
     );
 }
+
+#[test]
+fn inactive_audio_retains_inventory_but_never_reads_pages_or_requests_demand() {
+    use hex_engine::{LaunchQuantization, SessionPlayback, SessionPlaybackCommand};
+    let initial = project(4094, 4105);
+    let mut editor = Editor::new(initial, 16).unwrap();
+    let clip = editor
+        .project()
+        .session_cells()
+        .iter()
+        .find_map(|c| match c.content() {
+            hex_project::SessionCellContent::Audio(c) => Some(c.id()),
+            _ => None,
+        })
+        .unwrap();
+    let source_asset = editor
+        .project()
+        .assets()
+        .find(|a| a.id().value() == STREAM_ASSET)
+        .unwrap()
+        .id();
+    // The same muted streamed source is authored in Arrangement and Session.
+    let Created::Clip(arrangement) = editor
+        .execute(Command::PlaceClip {
+            track: editor.project().tracks()[0].id(),
+            asset: source_asset,
+            start: 0,
+            duration: 8192,
+            source_offset: 0,
+            source_length: 8192,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::SetClipActive {
+            clip,
+            active: false,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipActive {
+            clip: arrangement,
+            active: false,
+        })
+        .unwrap();
+    let revision = prepared(editor.project(), 71, [0x91; 32]);
+    assert_eq!(revision.session().audio_clips().len(), 1);
+    assert!(!revision.session().audio_clips()[0].active);
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut visits = 0;
+    playback
+        .visit_next_stream_chunk(12, Some(true), &mut |_| {
+            visits += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(visits, 0);
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut pages = MemoryPages::default();
+    let mut output = [[0.0; 2]; 12];
+    playback.render_with_pages(&mut output, &mut pages).unwrap();
+    assert!(pages.requests.is_empty());
+    let expected = (0..12).map(|i| sample(i + 2)).collect::<Vec<_>>();
+    assert_eq!(output.as_slice(), expected.as_slice());
+}

@@ -35,8 +35,7 @@ impl Project {
     /// does not change project state or enumerate repeated note occurrences.
     pub fn time_range_has_active_clips(&self, range: &TimeRange) -> Result<Option<bool>, Invalid> {
         let first = range.validate(self)?;
-        let (left, right) =
-            crate::midi::midi_overwrite_frame_bounds(self.tempo_map(), range.start(), range.end())?;
+        let (left, right) = activation_beats(self.tempo_map(), range)?;
         let mut found = None;
         for track in &self.tracks()[first..first + range.tracks().len()] {
             for clip in track.clips() {
@@ -61,6 +60,18 @@ impl Project {
         }
         Ok(found)
     }
+}
+
+// Fragment edges are projected once from selected project frames. Unlike
+// onset-cell overwrite bounds, these are exact editable placement boundaries.
+fn activation_beats(
+    tempo: &crate::TempoMap,
+    range: &TimeRange,
+) -> Result<(BeatTime, BeatTime), Invalid> {
+    Ok((
+        tempo.frame_to_beat(range.start())?,
+        tempo.frame_to_beat(range.end())?,
+    ))
 }
 
 pub(crate) fn set(project: &mut Project, id: ClipId, active: bool) -> Result<Created, Invalid> {
@@ -156,11 +167,7 @@ pub(crate) fn set_range(
             .filter(|cell| !matches!(cell.content(), SessionCellContent::Stop))
             .count();
     let mut notes = crate::midi::note_count(&candidate);
-    let (left_beat, right_beat) = crate::midi::midi_overwrite_frame_bounds(
-        candidate.tempo_map(),
-        range.start(),
-        range.end(),
-    )?;
+    let (left_beat, right_beat) = activation_beats(candidate.tempo_map(), range)?;
     for index in first..first + range.tracks().len() {
         let original = candidate.tracks[index].content.clone();
         let mut audio = Vec::new();
