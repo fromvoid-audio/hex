@@ -367,6 +367,9 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
