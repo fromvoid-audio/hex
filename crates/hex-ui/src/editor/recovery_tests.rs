@@ -67,7 +67,10 @@ impl WorkerAudioSink for Sink {
             ResidentPublicationPolicy::InstallFreshRuntime => {
                 PublicationPolicy::InstallFreshRuntime
             }
-            ResidentPublicationPolicy::FreshIfUnchanged(expected) => {
+            ResidentPublicationPolicy::FreshIfUnchanged(expected)
+            | ResidentPublicationPolicy::SectionWhenReady {
+                fence: expected, ..
+            } => {
                 let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
                     output_identity == expected.output_identity
                         && actual.expected_active_revision() == expected.active_audio_revision
@@ -79,7 +82,15 @@ impl WorkerAudioSink for Sink {
                         error: "fixture fence changed".into(),
                     });
                 };
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(actual)
+                match policy {
+                    ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
+                        PublicationPolicy::InstallSectionWhenReady {
+                            fence: actual,
+                            quantization,
+                        }
+                    }
+                    _ => PublicationPolicy::InstallFreshRuntimeIfUnchanged(actual),
+                }
             }
             ResidentPublicationPolicy::StoppedArrangement => {
                 return Err(ResidentPublicationRefusal {

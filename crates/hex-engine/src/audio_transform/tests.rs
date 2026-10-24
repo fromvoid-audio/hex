@@ -5,6 +5,9 @@ use hex_project::{
 };
 use std::collections::BTreeMap;
 
+#[path = "tests/view_placement.rs"]
+mod view_placement;
+
 fn fixture(
     looping: bool,
 ) -> (
@@ -937,6 +940,118 @@ fn nested_audio_events_are_exact_through_splits_overwrite_silence_seek_and_block
         render(&prepare(&editor, &media, &context), 0, 8000, 127),
         expected
     );
+}
+
+#[test]
+fn partial_range_clipboard_keeps_gaps_source_offsets_and_one_history_edge() {
+    use hex_project::AudioEventEdit;
+    for mode in [
+        None,
+        Some(WarpMode::RePitch),
+        Some(WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Division(BeatTime::from_raw(
+                BeatTime::ONE.raw() / 4,
+            )),
+            tail: BeatsTail::Forward,
+            decay: 75,
+        }),
+        Some(WarpMode::Tones { grain_ms: 32 }),
+        Some(WarpMode::Texture {
+            grain_ms: 32,
+            fluctuation: 50,
+            seed: 17,
+        }),
+        Some(WarpMode::Complex),
+        Some(WarpMode::ComplexPro {
+            formants: 100,
+            envelope: 128,
+        }),
+    ] {
+        let (mut editor, clip, media) = fixture(true);
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        if let Some(mode) = mode {
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+            let settings = default_audio_warp(
+                editor.project().clip(clip).unwrap(),
+                editor.project().tempo_map(),
+                mode,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        }
+        let context = AudioTransformPreparation::default();
+        let original = editor.project().clone();
+        let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+        let root = editor.project().clip(clip).unwrap().audio_event_root();
+        let eighth = root.domain.clock.length() / 8;
+        let at = |position| root.root_frame_at(position, original.tempo_map()).unwrap() as usize;
+        let (a, b, c, d, e) = (
+            at(eighth),
+            at(2 * eighth),
+            at(3 * eighth),
+            at(4 * eighth),
+            at(5 * eighth),
+        );
+        assert_eq!((a, b, c, d, e), (1000, 2000, 3000, 4000, 5000));
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Delete {
+                    start: 2 * eighth,
+                    end: 4 * eighth,
+                },
+            })
+            .unwrap();
+        let cut = editor.project().clone();
+        let copied = cut
+            .clip(clip)
+            .unwrap()
+            .editable_audio_events()
+            .unwrap()
+            .copy_range(eighth, 3 * eighth);
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Paste {
+                    at: 3 * eighth,
+                    length: 2 * eighth,
+                    events: copied,
+                },
+            })
+            .unwrap();
+        let pasted = editor.project().clone();
+        let mut expected = vec![[0.0; 2]; 8000];
+        expected[..b].copy_from_slice(&baseline[..b]);
+        expected[c..d].copy_from_slice(&baseline[a..b]);
+        expected[e..].copy_from_slice(&baseline[e..]);
+        let prepared = prepare(&editor, &media, &context);
+        assert_eq!(render(&prepared, 0, 8000, 127), expected, "{mode:?}");
+        assert_eq!(
+            render(&prepared, 2993, 2014, 17),
+            expected[2993..5007],
+            "seek and partial blocks"
+        );
+        assert!(editor.undo());
+        assert_eq!(*editor.project(), cut);
+        assert!(editor.redo());
+        assert_eq!(*editor.project(), pasted);
+    }
 }
 
 #[test]
@@ -2053,6 +2168,70 @@ fn warp_map_coalesces_partial_cycles_and_tempo_crossings_but_preserves_authored_
         mapping::prepare_map(&edit, editor.project().tempo_map(), &AtomicBool::new(false)).is_err()
     );
 }
+#[test]
+fn faster_tempo_coalesces_supported_authored_markers_with_exact_root_endpoints() {
+    let (mut editor, clip, _) = fixture(false);
+    let mut settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let tick = BeatTime::ONE.raw() / 8_000;
+    for (source_frame, beat) in [
+        (1, tick),
+        (4_000, BeatTime::ONE.raw() / 2),
+        (4_001, BeatTime::ONE.raw() / 2 + tick),
+        (7_999, BeatTime::ONE.raw() - tick),
+    ] {
+        settings.markers.insert(
+            settings.markers.len() - 1,
+            hex_project::WarpMarker {
+                source_frame,
+                beat: BeatTime::from_raw(beat),
+            },
+        );
+    }
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(480_000_000).unwrap(),
+        })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let (map, _) =
+        mapping::prepare_map(edit, editor.project().tempo_map(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(map.segments().len(), 2);
+    assert_eq!(
+        map.segments()[0],
+        hex_warp::MapSegment {
+            output_start: 0,
+            output_end: 1_000,
+            source_start_q32: 0,
+            source_end_q32: 4_001_i128 << 32,
+        }
+    );
+    assert_eq!(
+        map.segments()[1],
+        hex_warp::MapSegment {
+            output_start: 1_000,
+            output_end: 2_000,
+            source_start_q32: 4_001_i128 << 32,
+            source_end_q32: 8_000_i128 << 32,
+        }
+    );
+    assert_eq!(
+        edit.domain.warp.as_ref().unwrap().markers.len(),
+        6,
+        "quantization must not rewrite authored markers"
+    );
+}
+
 #[test]
 fn warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation() {
     for (middle, pitch) in [

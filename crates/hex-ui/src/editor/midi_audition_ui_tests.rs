@@ -7,8 +7,7 @@ use gpui::{
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::Request;
 use std::sync::Arc;
-const AUDITION: &str =
-    "toggle note audition · selection plays up to 17 notes · physical keyboard takes priority";
+const AUDITION: &str = "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority";
 fn authored(
     cx: &mut TestAppContext,
 ) -> (

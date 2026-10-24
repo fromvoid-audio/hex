@@ -23,6 +23,8 @@ mod audio_batch_tests;
 mod audio_sink;
 mod canonical_audio_source;
 mod comparison_audio;
+#[cfg(test)]
+mod console_track_tests;
 mod export_lane;
 mod resident_audio;
 mod resident_preview;
@@ -129,6 +131,11 @@ pub struct AudioBatchMemberFailure {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiTakeCompletion {
+    pub request_id: u64,
+    pub accepted: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SamplerLoadCompletion {
     pub request_id: u64,
     pub project_generation: u64,
@@ -191,6 +198,8 @@ pub struct Event {
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
     pub sampler_edit_complete: Option<u64>,
     pub computer_keyboard_complete: Option<u64>,
+    /// Exact terminal for a retained MIDI take commit, including refusal.
+    pub midi_take_complete: Option<MidiTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
     /// Correlates one final batch result; contains metadata only, never PCM.
@@ -476,6 +485,24 @@ pub enum Request {
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
     },
+    /// Copy one captured Arrangement source to a new normal Console column.
+    /// Resolve stamps before any gesture barrier, source preparation or history.
+    CopyArrangementClipToConsoleTrack {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::ClipId,
+        before_track: Option<hex_project::TrackId>,
+        scene: hex_project::SessionSceneTarget,
+    },
+    /// Retains the take through preparation; every path echoes request_id.
+    CommitMidiTake {
+        request_id: u64,
+        project_generation: u64,
+        revision: u64,
+        binding: Arc<crate::midi_recording::MidiTakeBinding>,
+        notes: Arc<[crate::midi_recording::RecordedMidiNote]>,
+        stop_frame: u64,
+    },
     ArmGainRecording {
         project_generation: u64,
         revision: u64,
@@ -651,7 +678,8 @@ impl Request {
     pub fn finalizes_parameter_gesture(&self) -> bool {
         matches!(
             self,
-            Request::Undo
+            Request::CommitMidiTake { .. }
+                | Request::Undo
                 | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
@@ -1730,6 +1758,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 computer_keyboard_complete: None,
+                midi_take_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
                 audio_batch_complete: None,
@@ -1764,6 +1793,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             computer_keyboard_complete: None,
+            midi_take_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
             audio_batch_complete: None,
@@ -1937,6 +1967,13 @@ fn run_worker(
                 }
             }
         }
+        let mut midi_take_complete = match &request {
+            Request::CommitMidiTake { request_id, .. } => Some(MidiTakeCompletion {
+                request_id: *request_id,
+                accepted: false,
+            }),
+            _ => None,
+        };
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
@@ -2143,6 +2180,39 @@ fn run_worker(
                     Err("finish or cancel the active gesture before moving clips".into())
                 } else {
                     Ok(command.clone())
+                },
+            ),
+            Request::CopyArrangementClipToConsoleTrack {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                before_track,
+                scene,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console clip insertion canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err(
+                        "finish or cancel the active gesture before inserting a console clip"
+                            .into(),
+                    )
+                } else if session.project().clip(*source).is_some() {
+                    Ok(Command::CopyArrangementAudioClipToNewSessionTrack {
+                        source: *source,
+                        before_track: *before_track,
+                        scene: *scene,
+                    })
+                } else if session.project().midi_clip(*source).is_some() {
+                    Ok(Command::CopyArrangementMidiToNewSessionTrack {
+                        source: *source,
+                        before_track: *before_track,
+                        scene: *scene,
+                    })
+                } else {
+                    Err("arrangement source no longer exists".into())
                 },
             ),
             Request::DuplicateClips {
@@ -2437,6 +2507,7 @@ fn run_worker(
                 Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard {
                         action: TrackClipboardAction::Cut(_)
@@ -2460,6 +2531,7 @@ fn run_worker(
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard { .. }
                     | Request::ReorderTracks { .. }
@@ -2885,6 +2957,9 @@ fn run_worker(
                 }
                 Request::MoveExistingClips { .. } => {
                     error = Some("clip move target was not resolved".into());
+                }
+                Request::CopyArrangementClipToConsoleTrack { .. } => {
+                    error = Some("console clip target was not resolved".into());
                 }
                 Request::DuplicateClips { .. } => {
                     error = Some("clip duplication target was not resolved".into());
@@ -4423,6 +4498,57 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::CommitMidiTake {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    binding,
+                    notes,
+                    stop_frame,
+                    ..
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("midi take refused · project changed; take retained".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some("midi take refused · device edit is still applying".into());
+                    } else {
+                        match crate::midi_recording::finish_take(
+                            session.project(),
+                            &binding,
+                            &notes,
+                            stop_frame,
+                        ) {
+                            Ok(Some(command)) => {
+                                let before = session.project().clone();
+                                match resident_audio::execute_command(
+                                    &mut session, command,
+                                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                    hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) },
+                                    &mut events, &mut resident_snapshot,
+                                    export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
+                                        resident_seek.as_ref(), resident_preview.as_ref()),
+                                ) {
+                                    Ok((result, prepared)) if session.project() != &before => {
+                                        unsaved = true;
+                                        replacement_revision = Some(prepared);
+                                        created = Some(result);
+                                        status = Some("midi take committed".into());
+                                        if let Some(completion) = &mut midi_take_complete { completion.accepted = true; }
+                                    }
+                                    Ok(_) => { status = Some("empty midi take".into()); if let Some(completion) = &mut midi_take_complete { completion.accepted = true; } },
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                }
+                            }
+                            Ok(None) => {
+                                status = Some("empty midi take".into());
+                                if let Some(completion) = &mut midi_take_complete {
+                                    completion.accepted = true;
+                                }
+                            }
+                            Err(reason) => error = Some(reason.into()),
+                        }
+                    }
+                }
                 Request::ArmGainRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -5939,6 +6065,7 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 computer_keyboard_complete,
+                midi_take_complete,
                 tuning_audition_complete,
                 live_expression_complete,
                 audio_batch_complete,
@@ -10714,6 +10841,8 @@ mod service_tests {
 #[cfg(test)]
 #[path = "service/controller_input_tests.rs"]
 mod controller_input_tests;
+#[cfg(test)]
+mod midi_recording_tests;
 
 type TuningInputPublication = (
     Playback,

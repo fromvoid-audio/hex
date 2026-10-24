@@ -1,4 +1,10 @@
 //! Disposable owners for widget events. All edits stop at this view's local values.
+#[path = "rectangle_demo.rs"]
+mod rectangle_demo;
+#[path = "response_demo.rs"]
+mod response_demo;
+#[path = "waveform_demo.rs"]
+mod waveform_demo;
 use super::catalog::{Demo, Item};
 use super::workspace::{self, Workspace};
 use crate::theme;
@@ -6,6 +12,9 @@ use gpui::{
     Context, Div, Entity, Focusable, Render, Subscription, Window, div, prelude::*, px, rgb,
 };
 use hex_widgets::*;
+use rectangle_demo::RectangleDemo;
+use response_demo::ResponseDemo;
+use std::{cell::RefCell, rc::Rc};
 
 pub(super) struct Prepared {
     item: Item,
@@ -23,8 +32,9 @@ pub(super) struct Sample {
     toggle: Entity<Toggle>,
     selector: Entity<Selector>,
     graph: Entity<ResponseGraph>,
-    graph_model: ResponseGraphModel,
-    graph_before: Option<ResponseGraphModel>,
+    response: ResponseDemo,
+    rectangle: Entity<RectangleDemo>,
+    waveform_cache: Rc<RefCell<waveform_demo::Cache>>,
     bars: Entity<BarEditor>,
     values: [f32; 64],
     bars_before: Option<[f32; 64]>,
@@ -66,7 +76,11 @@ impl Sample {
         for (i, initial) in [0.0, 0.5, 1.0].into_iter().enumerate() {
             let config = NumericControlConfig::new(
                 id(&format!("sandbox-number-{i}")),
-                theme::text(["minimum", "middle", "maximum"][i]),
+                theme::text(if matches!(item.demo, Demo::Waveform(_)) {
+                    ["selection start", "amplitude", "selection end"][i]
+                } else {
+                    ["minimum", "middle", "maximum"][i]
+                }),
                 appearance,
                 spec.clone(),
                 spec.from_normalized(initial).map_err(|e| e.to_string())?,
@@ -158,33 +172,35 @@ impl Sample {
             s.status = format!("choice {} · {}", e.index + 1, e.label);
             cx.notify();
         }));
-        let graph_model = ResponseGraphModel {
-            primary: vec![[0.0, 0.3], [0.5, 0.7], [1.0, 0.4]],
-            secondary: vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.5]],
-            analyzer: Some(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 0.1]]),
-            input_analyzer: Some(vec![[0.0, 0.1], [0.5, 0.4], [1.0, 0.0]]),
-            nodes: vec![ResponseGraphNode {
-                id: 1,
-                position: [0.5, 0.7],
-                enabled: true,
-                selected: true,
-            }],
-        };
+        let response = ResponseDemo::new();
         let graph = cx.new(|cx| ResponseGraph::new(cx, format!("{prefix}sandbox-graph"), style));
         if let Err(e) = graph.update(cx, |g, cx| {
             g.set_editable(true, cx);
             g.set_creation_enabled(true);
+            g.set_creation_drag_enabled(true);
             g.set_backspace_removal(true);
             g.set_tab_navigation(true, cx);
             g.set_axes(
                 Some(ResponseGraphAxes {
-                    horizontal: vec![(0.0, theme::text("0")), (1.0, theme::text("1"))],
-                    vertical: vec![(0.0, theme::text("0")), (1.0, theme::text("1"))],
+                    horizontal: [
+                        (20.0_f32, "20 hz"),
+                        (100.0, "100 hz"),
+                        (1000.0, "1 khz"),
+                        (10_000.0, "10 khz"),
+                        (20_000.0, "20 khz"),
+                    ]
+                    .into_iter()
+                    .map(|(hz, label)| ((hz / 20.0).ln() / 1000.0_f32.ln(), theme::text(label)))
+                    .collect(),
+                    vertical: [(0.0, "-12 db"), (0.5, "0 db"), (1.0, "+12 db")]
+                        .into_iter()
+                        .map(|(y, label)| (y, theme::text(label)))
+                        .collect(),
                     right: vec![],
                 }),
                 cx,
             )?;
-            g.set_model(graph_model.clone(), style, cx)
+            g.set_model(response.model.clone(), style, cx)
         }) {
             status = e.into();
         }
@@ -204,6 +220,13 @@ impl Sample {
             s.status = format!("color · #{:06x} · hue {:.1}", e.color.packed(), e.hsv.hue);
             cx.notify();
         }));
+        let rectangle = cx.new(|cx| {
+            RectangleDemo::new(
+                matches!(item.demo, Demo::Rectangle(true)),
+                format!("{prefix}sandbox-rectangle"),
+                cx,
+            )
+        });
         let mut s = Self {
             item,
             prefix,
@@ -211,8 +234,9 @@ impl Sample {
             toggle,
             selector,
             graph,
-            graph_model,
-            graph_before: None,
+            response,
+            rectangle,
+            waveform_cache: Rc::new(RefCell::new(waveform_demo::Cache::default())),
             bars,
             values,
             bars_before: None,
@@ -274,8 +298,15 @@ impl Sample {
             _ => {}
         }
         if e.phase != BarEditorPhase::Cancel {
-            let i = ((e.position[0] * 32.0) as usize).min(31);
-            self.values[i] = e.position[1].clamp(0.0, 1.0);
+            if matches!(e.mode, BarEditorMode::Clear) {
+                let [first, last] = e.columns;
+                if first <= last && last < 32 {
+                    self.values[first..=last].fill(0.0);
+                }
+            } else {
+                let i = ((e.position[0] * 32.0) as usize).min(31);
+                self.values[i] = e.position[1].clamp(0.0, 1.0);
+            }
         }
         if e.phase == BarEditorPhase::Commit {
             self.bars_before = None;
@@ -294,82 +325,44 @@ impl Sample {
         cx.notify();
     }
     fn graph_event(&mut self, e: &ResponseGraphEvent, cx: &mut Context<Self>) {
-        let mut node_id = e.node_id;
-        match e.phase {
-            ResponseGraphPhase::Begin => self.graph_before = Some(self.graph_model.clone()),
-            ResponseGraphPhase::Create if self.graph_model.nodes.len() < 16 => {
-                let Some(id) =
-                    (1..=16).find(|id| self.graph_model.nodes.iter().all(|n| n.id != *id))
-                else {
-                    return;
-                };
-                node_id = id;
-                for n in &mut self.graph_model.nodes {
-                    n.selected = false;
-                }
-                self.graph_model.nodes.push(ResponseGraphNode {
-                    id,
-                    position: e.position,
-                    enabled: true,
-                    selected: true,
-                });
-            }
-            ResponseGraphPhase::Select => {
-                for n in &mut self.graph_model.nodes {
-                    n.selected = n.id == e.node_id;
-                }
-            }
-            ResponseGraphPhase::Remove => self.graph_model.nodes.retain(|n| n.id != e.node_id),
-            ResponseGraphPhase::Change | ResponseGraphPhase::Commit => {
-                if let Some(n) = self
-                    .graph_model
-                    .nodes
-                    .iter_mut()
-                    .find(|n| n.id == e.node_id)
-                {
-                    n.position = e.position;
-                }
-                if e.phase == ResponseGraphPhase::Commit {
-                    self.graph_before = None;
-                }
-            }
-            ResponseGraphPhase::Cancel => {
-                if let Some(before) = self.graph_before.take() {
-                    self.graph_model = before;
-                }
-            }
-            _ => {}
-        }
-        // This fixture is a piecewise-linear editor; production response owners
-        // still supply their own DSP response independently of control nodes.
-        self.graph_model.primary = std::iter::once([0.0, 0.3])
-            .chain(self.graph_model.nodes.iter().map(|node| node.position))
-            .chain(std::iter::once([1.0, 0.4]))
-            .collect();
-        self.graph_model
-            .primary
-            .sort_by(|a, b| a[0].total_cmp(&b[0]));
-        // ResponseGraph requires aligned primary/reference sample counts.
-        // Keep a static midpoint reference at the edited x positions.
-        self.graph_model.secondary = self
-            .graph_model
-            .primary
-            .iter()
-            .map(|[x, _]| [*x, 0.5])
-            .collect();
-        if let Err(e) = self.graph.update(cx, |g, cx| {
-            g.set_model(self.graph_model.clone(), theme::control_style(), cx)
-        }) {
-            self.status = e.into();
+        if !self.enabled {
             return;
         }
-        self.status = format!(
-            "node {} · {:?} · {:.3}, {:.3}",
-            node_id, e.phase, e.position[0], e.position[1]
-        );
+        let Some(node_id) = self.response.event(e) else {
+            self.status = "point edit refused · up to 16 points".into();
+            self.graph.update(cx, |g, cx| g.cancel(cx));
+            cx.notify();
+            return;
+        };
+        let can_create = self.response.can_create();
+        if let Err(error) = self.graph.update(cx, |g, cx| {
+            g.set_creation_enabled(can_create);
+            g.set_model(self.response.model.clone(), theme::control_style(), cx)
+        }) {
+            self.status = error.into();
+            return;
+        }
+        self.status = if let Some(node) = self
+            .response
+            .model
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+        {
+            format!(
+                "node {node_id} · {:?} · {:.0} hz · {:+.1} db",
+                e.phase,
+                response_demo::frequency(node.position[0]),
+                response_demo::gain(node.position[1])
+            )
+        } else {
+            format!("node {node_id} · {:?}", e.phase)
+        };
         cx.notify();
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.rectangle
+            .update(cx, |rectangle, cx| rectangle.cancel(cx));
         if let Some(w) = &self.workspace {
             w.update(cx, |w, cx| w.cancel(cx));
         }
@@ -380,14 +373,16 @@ impl Sample {
         self.bars.update(cx, |b, cx| b.cancel(cx));
         // Restore synchronously before replacing entities/subscriptions on theme
         // changes. Cancel notifications may arrive after that replacement.
-        if let Some(before) = self.graph_before.take() {
-            self.graph_model = before;
+        if self.response.cancel() {
             if let Err(e) = self.graph.update(cx, |g, cx| {
-                g.set_model(self.graph_model.clone(), theme::control_style(), cx)
+                g.set_model(self.response.model.clone(), theme::control_style(), cx)
             }) {
                 self.status = e.into();
             }
         }
+        let can_create = self.enabled && self.response.can_create();
+        self.graph
+            .update(cx, |g, _| g.set_creation_enabled(can_create));
         if let Some(before) = self.bars_before.take() {
             self.values = before;
             if let Err(e) = self
@@ -401,6 +396,8 @@ impl Sample {
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.cancel(cx);
         self.enabled = enabled;
+        self.rectangle
+            .update(cx, |rectangle, cx| rectangle.set_enabled(enabled, cx));
         if let Some(w) = &self.workspace {
             w.update(cx, |w, cx| w.set_enabled(enabled, cx));
         }
@@ -409,7 +406,13 @@ impl Sample {
         }
         self.toggle.update(cx, |t, cx| t.set_enabled(enabled, cx));
         self.selector.update(cx, |s, cx| s.set_enabled(enabled, cx));
-        self.graph.update(cx, |g, cx| g.set_editable(enabled, cx));
+        let can_create = enabled && self.response.can_create();
+        self.graph.update(cx, |g, cx| {
+            g.set_editable(enabled, cx);
+            g.set_creation_enabled(can_create);
+        });
+        self.bars
+            .update(cx, |bars, cx| bars.set_enabled(enabled, cx));
         cx.notify();
     }
     pub fn restyle(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
@@ -429,8 +432,9 @@ impl Sample {
             .update(cx, |t, cx| t.set_external_style(style, cx))?;
         self.selector
             .update(cx, |s, cx| s.set_external_style(style, cx))?;
-        self.graph
-            .update(cx, |g, cx| g.set_model(self.graph_model.clone(), style, cx))?;
+        self.graph.update(cx, |g, cx| {
+            g.set_model(self.response.model.clone(), style, cx)
+        })?;
         // These two widgets have no external style setter. Rebuild only their view
         // entities, preserving authored local values and reconnecting subscriptions.
         let color = self.picker.read(cx).color();
@@ -440,6 +444,8 @@ impl Sample {
         self.bars = cx.new(|cx| BarEditor::new(cx, self.id("sandbox-bars"), style));
         self.bars
             .update(cx, |b, cx| b.set_values(self.values, 32, cx))?;
+        self.bars
+            .update(cx, |bars, cx| bars.set_enabled(self.enabled, cx));
         self.paint_subscriptions.clear();
         self.paint_subscriptions
             .push(cx.subscribe(&self.bars, |s, _, e: &BarEditorEvent, cx| {
@@ -468,6 +474,7 @@ impl Sample {
             }
             Demo::Color => {}
             Demo::Selector(_) => self.selector.focus_handle(cx).focus(window),
+            Demo::Rectangle(_) => self.rectangle.focus_handle(cx).focus(window),
             Demo::Bars => self.bars.focus_handle(cx).focus(window),
             Demo::Graph => self.graph.focus_handle(cx).focus(window),
             _ => {
@@ -503,6 +510,20 @@ impl Sample {
                 theme::device_segment_style(self.actions % 2 == 1),
             ),
             _ => panel_tab(label, self.actions % 2 == 1, s),
+        };
+        let child = if matches!(name, "action" | "device action") {
+            child
+                .id("chrome-action")
+                .debug_selector({
+                    let id = self.id("chrome-action");
+                    move || id.clone()
+                })
+                .when(self.enabled, |button| {
+                    pressed_action_surface(button, theme::action_press_style(theme::action_style()))
+                })
+                .into_any_element()
+        } else {
+            child.into_any_element()
         };
         div().child(
             div()
@@ -577,9 +598,28 @@ impl Sample {
             }
             Demo::Toggle(_) => div().w(px(180.0)).h(px(28.0)).child(self.toggle.clone()),
             Demo::Selector(_) => div().w(px(220.0)).h(px(28.0)).child(self.selector.clone()),
+            Demo::Rectangle(_) => div().w_full().h(px(180.0)).child(self.rectangle.clone()),
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
             Demo::Graph => div().w_full().h(px(220.0)).child(self.graph.clone()),
             Demo::Color => div().w(px(240.0)).h(px(220.0)).child(self.picker.clone()),
+            Demo::Waveform(stereo) => div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(180.0))
+                        .child(waveform_demo::view(
+                            self.id("sandbox-waveform"),
+                            stereo,
+                            std::array::from_fn(|index| self.numbers[index].read(cx).value()),
+                            Rc::clone(&self.waveform_cache),
+                            s,
+                        )),
+                )
+                .child(self.controls()),
             Demo::Curve | Demo::Spectrum => {
                 let amount = self.numbers[1].read(cx).value() as f32 / 100.0;
                 let points = [
@@ -670,12 +710,12 @@ impl Sample {
 impl Render for Sample {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().flex().flex_col().gap(px(12.0)).w_full()
-            .child(theme::text(self.item.name))
+            .child(theme::text(if matches!(self.item.demo, Demo::Graph) { "frequency / gain response shape" } else { self.item.name }))
             .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
-            .child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus"))
-            .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
-            .child(theme::text(if matches!(self.item.demo,Demo::Color|Demo::Bars){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
+            .when(!matches!(self.item.demo, Demo::Graph), |sample| sample.child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus")))
+            .child(theme::text(match self.item.demo {Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Waveform(_)=>"generated peak fixture · selection start / amplitude / selection end · silence and dc regions · read-only display, no audio",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(if matches!(self.item.demo,Demo::Color){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
 
@@ -683,6 +723,124 @@ impl Render for Sample {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn waveform_fixture_edits_amplitude_reuses_range_geometry_and_obeys_disabled_state(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(bind_numeric_control_keys);
+        for stereo in [false, true] {
+            let prepared = Sample::prepare(Item {
+                name: "waveform",
+                category: "graphics",
+                demo: Demo::Waveform(stereo),
+            })
+            .unwrap();
+            let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+            let view = handle.root(cx).unwrap();
+            let mut visual = VisualTestContext::from_window(*handle, cx);
+            visual.update(|window, _| window.activate_window());
+            visual.simulate_resize(gpui::size(px(640.0), px(720.0)));
+            visual.run_until_parked();
+            let retained = |cx: &TestAppContext| {
+                view.read_with(cx, |sample, _| {
+                    sample.waveform_cache.borrow().retained().unwrap()
+                })
+            };
+            let mut previous = retained(cx);
+            assert_eq!(previous.channels().len(), if stereo { 2 } else { 1 });
+            for index in [1, 0] {
+                let before =
+                    view.read_with(cx, |sample, cx| sample.numbers[index].read(cx).value());
+                let selector = if index == 1 {
+                    "sandbox-number-1-value"
+                } else {
+                    "sandbox-number-0-value"
+                };
+                let bounds = visual.debug_bounds(selector).unwrap();
+                visual.simulate_click(bounds.center(), Modifiers::default());
+                // Compact readouts enter text editing on click; leave that draft
+                // before exercising the control's focused numeric arrow action.
+                visual.simulate_keystrokes("escape");
+                visual.simulate_keystrokes("up");
+                visual.run_until_parked();
+                view.read_with(cx, |sample, cx| {
+                    assert!(sample.numbers[index].read(cx).value() > before)
+                });
+                let current = retained(cx);
+                assert_eq!(
+                    std::sync::Arc::ptr_eq(&previous, &current),
+                    index == 0,
+                    "range paint reuses paths; amplitude changes the actual envelope"
+                );
+                previous = current;
+            }
+            let before = view.read_with(cx, |sample, cx| sample.numbers[0].read(cx).value());
+            view.update(cx, |sample, cx| sample.set_enabled(false, cx));
+            visual.simulate_keystrokes("up");
+            visual.run_until_parked();
+            view.read_with(cx, |sample, cx| {
+                assert_eq!(sample.numbers[0].read(cx).value(), before)
+            });
+            assert!(std::sync::Arc::ptr_eq(&previous, &retained(cx)));
+            view.update(cx, |sample, cx| {
+                sample.narrow = true;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("sandbox-waveform").unwrap().size.width <= px(260.0));
+            assert!(!std::sync::Arc::ptr_eq(&previous, &retained(cx)));
+        }
+    }
+    #[gpui::test]
+    fn sandbox_right_drag_clears_skipped_bars_and_disable_survives_restyle(
+        cx: &mut TestAppContext,
+    ) {
+        let item = Item {
+            name: "bar editor",
+            category: "graphics",
+            demo: Demo::Bars,
+        };
+        let handle = cx.add_window(|_, cx| Sample::new(Sample::prepare(item).unwrap(), cx));
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |sample, cx| {
+            sample.values = [0.8; 64];
+            sample.bars.update(cx, |bars, cx| {
+                bars.set_values(sample.values, 32, cx).unwrap()
+            });
+        });
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("sandbox-bars").unwrap();
+        let at = |index: f32| {
+            point(
+                bounds.left() + bounds.size.width * (index + 0.5) / 32.0,
+                bounds.top() + px(2.0),
+            )
+        };
+        visual.simulate_mouse_down(at(3.0), MouseButton::Right, Modifiers::default());
+        view.read_with(cx, |s, _| assert_eq!(s.values[3], 0.0));
+        visual.simulate_mouse_move(at(25.0), Some(MouseButton::Right), Modifiers::default());
+        visual.simulate_mouse_up(at(25.0), MouseButton::Right, Modifiers::default());
+        view.read_with(cx, |s, _| {
+            assert!(s.values[3..=25].iter().all(|v| *v == 0.0));
+            assert_eq!(s.values[2], 0.8);
+            assert_eq!(s.values[26], 0.8);
+        });
+        visual.simulate_mouse_down(at(26.0), MouseButton::Right, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |s, _| assert_eq!(s.values[26], 0.8));
+        view.update(cx, |s, cx| {
+            s.set_enabled(false, cx);
+            s.restyle(cx).unwrap();
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_down(at(26.0), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(at(31.0), MouseButton::Right, Modifiers::default());
+        view.read_with(cx, |s, _| {
+            assert!(s.values[26..32].iter().all(|v| *v == 0.8))
+        });
+    }
+
     #[gpui::test]
     fn inline_value_catalog_entry_has_no_dial(cx: &mut TestAppContext) {
         let item = super::super::catalog::inventory()
@@ -722,31 +880,33 @@ mod tests {
                 plot.bottom() - plot.size.height * y,
             )
         };
-        let before = view.read_with(cx, |s, _| s.graph_model.primary.clone());
+        let before = view.read_with(cx, |s, _| s.response.model.primary.clone());
         visual.simulate_mouse_down(at(0.5, 0.7), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(at(0.65, 0.8), Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         view.read_with(cx, |s, _| {
-            assert_ne!(s.graph_model.primary, before);
+            assert_ne!(s.response.model.primary, before);
             assert!(
-                s.graph_model
+                s.response
+                    .model
                     .primary
-                    .contains(&s.graph_model.nodes[0].position)
+                    .contains(&s.response.model.nodes[0].position)
             );
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        view.read_with(cx, |s, _| assert_eq!(s.graph_model.primary, before));
+        view.read_with(cx, |s, _| assert_eq!(s.response.model.primary, before));
         visual.simulate_mouse_up(at(0.65, 0.8), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_down(at(0.3, 0.2), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(at(0.3, 0.2), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         view.read_with(cx, |s, _| {
-            assert_eq!(s.graph_model.nodes.len(), 2);
+            assert_eq!(s.response.model.nodes.len(), 2);
             assert!(
-                s.graph_model
+                s.response
+                    .model
                     .primary
-                    .contains(&s.graph_model.nodes[1].position)
+                    .contains(&s.response.model.nodes[1].position)
             );
             assert!(s.status.starts_with("node 2"), "{}", s.status);
         });
@@ -755,9 +915,74 @@ mod tests {
         visual.simulate_keystrokes("backspace");
         visual.run_until_parked();
         view.read_with(cx, |s, _| {
-            assert_eq!(s.graph_model.nodes.len(), 1, "{}", s.status);
-            assert_eq!(s.graph_model.primary, before);
+            assert_eq!(s.response.model.nodes.len(), 1, "{}", s.status);
+            assert_eq!(s.response.model.primary, before);
         });
+    }
+
+    #[gpui::test]
+    fn graph_creation_drags_immediately_and_escape_removes_uncommitted_point(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(hex_widgets::bind_response_graph_keys);
+        let prepared = Sample::prepare(Item {
+            name: "response graph",
+            category: "graphics",
+            demo: Demo::Graph,
+        })
+        .unwrap();
+        let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+        handle
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let plot = view.read_with(cx, |s, cx| s.graph.read(cx).plot_bounds().unwrap());
+        let at = |x, y| {
+            point(
+                plot.left() + plot.size.width * x,
+                plot.bottom() - plot.size.height * y,
+            )
+        };
+        visual.simulate_mouse_down(at(0.25, 0.25), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(at(0.7, 0.8), Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            let node = s
+                .response
+                .model
+                .nodes
+                .iter()
+                .find(|node| node.id == 2)
+                .unwrap();
+            assert!((node.position[0] - 0.7).abs() < 1e-4 && (node.position[1] - 0.8).abs() < 1e-4);
+            assert!(s.response.model.primary.contains(&node.position));
+        });
+        visual.simulate_mouse_up(at(0.7, 0.8), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let committed = view.read_with(cx, |s, _| {
+            (
+                s.response.model.nodes.clone(),
+                s.response.model.primary.clone(),
+            )
+        });
+        visual.simulate_mouse_down(at(0.15, 0.6), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.2, 0.65), Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.simulate_mouse_up(at(0.2, 0.65), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_eq!(s.response.model.nodes, committed.0);
+            assert_eq!(s.response.model.primary, committed.1);
+        });
+        view.update(cx, |s, cx| s.set_enabled(false, cx));
+        visual.run_until_parked();
+        visual.simulate_click(at(0.9, 0.2), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| assert_eq!(s.response.model.nodes, committed.0));
     }
 
     #[gpui::test]

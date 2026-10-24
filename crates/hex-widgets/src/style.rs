@@ -1,3 +1,6 @@
+/// Shared boolean-control corner radius, in logical pixels.
+pub const TOGGLE_CORNER_RADIUS: f32 = 2.0;
+
 /// Shared native device outline radius, in logical pixels.
 /// All device frames inherit this token.
 pub const DEVICE_CORNER_RADIUS: f32 = 4.0;
