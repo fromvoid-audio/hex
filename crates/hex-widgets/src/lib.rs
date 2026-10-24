@@ -87,6 +87,7 @@ mod frame_tests;
 #[cfg(test)]
 mod tests;
 
+mod text_caret;
 mod text_input;
 pub use text_input::{
     TextBackspace, TextCopy, TextCut, TextDelete, TextEnd, TextHome, TextInput, TextInputChanged,
