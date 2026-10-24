@@ -330,6 +330,10 @@ impl EditorView {
             self.theme_settings.focus.focus(window);
             return;
         }
+        if self.controller_input_is_open() {
+            self.close_controller_input_menu(window, cx);
+        }
+        self.prepare_controller_settings(cx);
         self.theme_settings.open = true;
         if self.theme_settings.loading {
             self.theme_settings.error = Some("loading theme settings…".into());
@@ -976,6 +980,7 @@ impl EditorView {
             .text_color(rgb(style.text))
             .shadow_lg()
             .child(settings)
+            .child(self.controller_input_settings(cx))
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);

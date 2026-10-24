@@ -23,7 +23,7 @@ impl ComputerKeyboardRuntime {
             },
         )
         .map_err(|_| Invalid("sampler keyboard runtime exceeds its budget"))?;
-        let mut supported = [false; NOTES];
+        let mut supported = SupportedNotes::Computer([false; COMPUTER_NOTES]);
         for (v, velocity) in COMPUTER_KEY_VELOCITIES.into_iter().enumerate() {
             for pitch in 0..128_u8 {
                 supported[v * 128 + usize::from(pitch)] = mutable
@@ -62,6 +62,8 @@ impl ComputerKeyboardRuntime {
             primary: [None; VOICES],
             scratch: [None; VOICES],
             desired: [0; COMPUTER_KEY_COUNT],
+            rejected_desired: [0; COMPUTER_KEY_COUNT],
+            scratch_rejected_desired: [0; COMPUTER_KEY_COUNT],
             activation_epoch: None,
             next_id: 0,
             scratch_next_id: 0,
@@ -75,6 +77,10 @@ impl ComputerKeyboardRuntime {
             faulted: false,
             preserve_on_handoff: false,
             lease_detached: false,
+            live_batch: None,
+            live_consumed: 0,
+            live_activation: None,
+            scratch_live_activation: None,
         }))
     }
     pub(crate) fn current_sampler_preflight_bytes() -> Option<usize> {
