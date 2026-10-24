@@ -120,7 +120,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "↻",
-                    "toggle loop on/off · l or cmd+l sets selection",
+                    "toggle loop · l/w/cmd+l: set selection or toggle existing loop",
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
