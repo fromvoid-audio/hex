@@ -78,7 +78,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button("■", false).id("stop"),
+                    Self::toggle_button("■", false).id("stop"),
                     "stop and return to start · escape",
                 )
                 .on_click(cx.listener(|this, _, _, cx| {

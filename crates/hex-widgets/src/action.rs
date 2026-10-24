@@ -36,6 +36,13 @@ pub fn action_surface(style: ActionStyle) -> Div {
         .text_color(rgb(style.text))
         .hover(move |hover| {
             let hover = hover.bg(rgb(style.hover_background));
+            // Keep the state hue when owners deliberately preserve its fill,
+            // while still giving latched controls visible pointer feedback.
+            let hover = if style.hover_background == style.background {
+                hover.opacity(0.8)
+            } else {
+                hover
+            };
             if let Some(text) = style.hover_text {
                 hover.text_color(rgb(text))
             } else {
