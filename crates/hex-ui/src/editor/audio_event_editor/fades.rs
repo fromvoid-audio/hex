@@ -23,16 +23,22 @@ pub(super) struct FadeGesture {
     pub(super) last_y: f32,
 }
 fn source_window(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<(u64, u64)> {
-    let start = root.root_frame_at(event.source_start, tempo).ok()?;
+    let start = root
+        .event_source_frame_at(event.source, event.source_start, tempo)
+        .ok()?;
     let end = root
-        .root_frame_at(event.source_start.checked_add(event.length())?, tempo)
+        .event_source_frame_at(
+            event.source,
+            event.source_start.checked_add(event.length())?,
+            tempo,
+        )
         .ok()?;
     (start < end).then_some((start, end))
 }
 fn local_shape(root: &AudioClipEdit, event: AudioEvent, tempo: &TempoMap) -> Option<ClipFade> {
     let (start, end) = source_window(root, event, tempo)?;
     if let Some(fade) = event.fade {
-        fade.reproject(|at| root.root_frame_at(at, tempo))
+        fade.reproject(|at| root.event_source_frame_at(event.source, at, tempo))
             .ok()?
             .shape()
             .reanchor(end - start)
@@ -48,11 +54,13 @@ fn destination_frame(
     source_frame: u64,
     subframe: f64,
 ) -> Option<u64> {
-    let raw = root.root_position_at(source_frame, tempo).ok()?;
+    let raw = root
+        .event_source_position_at(event.source, source_frame, tempo)
+        .ok()?;
     let mut relative = i128::from(raw) - i128::from(event.source_start);
     if subframe > 0.0 {
         let next = root
-            .root_position_at(source_frame.checked_add(1)?, tempo)
+            .event_source_position_at(event.source, source_frame.checked_add(1)?, tempo)
             .ok()?;
         relative =
             relative.checked_add(((next.checked_sub(raw)?) as f64 * subframe).round() as i128)?;
@@ -246,7 +254,14 @@ impl EditorView {
                     fade.original.span() - fade.original.out_end_offset()
                 };
                 let Some(last_frame) = root
-                    .root_frame_at(root.domain.clock.length(), state.project.tempo_map())
+                    .event_source_clock(fade.event.source)
+                    .and_then(|clock| {
+                        root.event_source_frame_at(
+                            fade.event.source,
+                            clock.length(),
+                            state.project.tempo_map(),
+                        )
+                    })
                     .ok()
                 else {
                     return;
@@ -254,7 +269,10 @@ impl EditorView {
                 let frame = (i128::from(fade.source_frame_start) + i128::from(relative))
                     .saturating_add(delta.round() as i128)
                     .clamp(0, i128::from(last_frame)) as u64;
-                let Some(raw) = root.root_position_at(frame, state.project.tempo_map()).ok() else {
+                let Some(raw) = root
+                    .event_source_position_at(fade.event.source, frame, state.project.tempo_map())
+                    .ok()
+                else {
                     return;
                 };
                 let at = (i128::from(fade.event.start) + i128::from(raw)
@@ -293,8 +311,12 @@ impl EditorView {
                         } else if at == end {
                             Ok(source_end)
                         } else {
-                            root.root_position_at(at, state.project.tempo_map())
-                                .map(|p| p.clamp(fade.event.source_start, source_end))
+                            root.event_source_position_at(
+                                fade.event.source,
+                                at,
+                                state.project.tempo_map(),
+                            )
+                            .map(|p| p.clamp(fade.event.source_start, source_end))
                         }
                     })
                     .ok()?;
@@ -392,8 +414,10 @@ impl EditorView {
             return Vec::new();
         }
         let projected = event.fade.and_then(|f| {
-            f.reproject(|at| root.root_frame_at(at, state.project.tempo_map()))
-                .ok()
+            f.reproject(|at| {
+                root.event_source_frame_at(event.source, at, state.project.tempo_map())
+            })
+            .ok()
         });
         let (controls, origin) = if held || active {
             (original, source_start)
@@ -415,7 +439,10 @@ impl EditorView {
                         .source_start
                         .checked_add(at.saturating_sub(event.start))
                 })
-                .and_then(|at| root.root_frame_at(at, state.project.tempo_map()).ok())
+                .and_then(|at| {
+                    root.event_source_frame_at(event.source, at, state.project.tempo_map())
+                        .ok()
+                })
                 .map_or(1.0, |at| {
                     projected.map_or(1.0, |f| {
                         at.checked_sub(f.source_start())

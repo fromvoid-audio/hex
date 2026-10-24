@@ -505,6 +505,8 @@ impl Command {
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
             | Self::MoveClipsWithOverwrite { .. }
+            | Self::GroupAudioEventRange { .. }
+            | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
