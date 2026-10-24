@@ -309,6 +309,20 @@ fn copy_original_plugin(source: &std::path::Path, target: &std::path::Path) {
 fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_search(
     cx: &mut TestAppContext,
 ) {
+    browser_vst3_folder_scan(cx, false);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
+#[ignore = "explicit original signed package and owned native fixture roots required"]
+fn browser_vst3_custom_folder_picker_scans_owned_root_and_restores_type_search(
+    cx: &mut TestAppContext,
+) {
+    browser_vst3_folder_scan(cx, true);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
     let app = std::path::PathBuf::from(
         std::env::var_os("HEX_VST3_CATALOG_TEST_APP").expect("explicit signed original package"),
     );
@@ -335,16 +349,31 @@ fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_searc
     }
     editor.update(&mut visual, |view, cx| {
         view.set_plugin_test_app(app, physical.join("browser.json"));
-        view.set_plugin_test_roots(vec![roots, physical.join("missing-standard-root")]);
+        if !custom {
+            view.set_plugin_test_roots(vec![roots.clone(), physical.join("missing-standard-root")]);
+        }
         view.select_browser_source(BrowserSection::Plugins, cx);
         cx.notify();
     });
     visual.run_until_parked();
     let button = visual
-        .debug_bounds("browser-vst3-scan-standard")
-        .expect("rendered standard-folder action");
+        .debug_bounds(if custom {
+            "browser-vst3-scan-custom"
+        } else {
+            "browser-vst3-scan-standard"
+        })
+        .expect("rendered folder action");
     visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+    if custom {
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_paths());
+        assert!(
+            !editor.read_with(&visual, |view, _| view.browser.plugins.busy),
+            "picker alone must not execute foreign code"
+        );
+        visual.simulate_paths_selection(Some(vec![roots]));
+    }
     if !wait_plugin_browser(&mut visual, &editor) {
         std::mem::forget(directory);
         panic!(
@@ -390,6 +419,46 @@ fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_searc
         std::fs::read(physical.join("plugin-catalog.json")).unwrap(),
         stored
     );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
+fn browser_vst3_custom_picker_cancel_and_error_preserve_catalog_without_scanner(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
+    let physical = directory.0.canonicalize().unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        // No package exists: cancellation/error must never try to inspect or run it.
+        view.set_plugin_test_app(physical.join("absent.app"), physical.join("browser.json"));
+        view.apply_plugin_catalog(original_plugin_catalog(physical.join("Original.vst3")), cx);
+        view.select_browser_source(BrowserSection::Plugins, cx);
+        cx.notify();
+    });
+    for error in [false, true] {
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("browser-vst3-scan-custom").unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_paths());
+        if error {
+            visual.simulate_paths_error("original picker failure");
+        } else {
+            visual.simulate_paths_selection(None);
+        }
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, cx| {
+            assert!(!view.browser.plugins.busy);
+            assert!(view.browser.plugins.diagnostics.is_none());
+            assert_eq!(view.browser_visible_plugins(cx).len(), 1);
+            if error {
+                assert_eq!(view.browser.plugins.status, "plugin selection failed");
+            }
+        });
+        assert!(!physical.join("plugin-catalog.json").exists());
+    }
 }
 
 #[gpui::test]
