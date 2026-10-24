@@ -301,6 +301,33 @@ pub(super) struct ReturnEffectTailPlan {
 }
 
 impl ReturnEffectTailPlan {
+    pub(super) fn plan_candidate_origins(
+        &self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+        old: &ReturnEffectTailBank,
+        returns: &[NativeRuntimeChain],
+        main: &NativeRuntimeChain,
+    ) -> Result<(), SessionPlaybackError> {
+        use crate::audio_candidate::groups::Location as L;
+        for (source, target) in self.carry.iter().flatten().copied() {
+            let tail = old
+                .slots
+                .get(source)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            groups.plan(L::ReturnTail(source), L::ReturnTail(target), &tail.chain)?;
+        }
+        for (source, target) in self.capture.iter().flatten().copied() {
+            let chain = returns
+                .get(source)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            groups.plan(L::ReturnChain(source), L::ReturnTail(target), chain)?;
+        }
+        if let Some((target, _, _)) = self.main_capture {
+            groups.plan(L::MainChain, L::ReturnTail(target), main)?;
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preflight(
         old_buses: &[ReturnBus],

@@ -1346,6 +1346,22 @@ impl Playback {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_swap_compensation_origins(
+        &mut self,
+        previous: &mut Self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(usize, Option<usize>), crate::SessionPlaybackError> {
+        let next = self
+            .session_runtime
+            .as_mut()
+            .ok_or(crate::SessionPlaybackError::DeviceRuntime)?;
+        let old = previous
+            .session_runtime
+            .as_mut()
+            .ok_or(crate::SessionPlaybackError::DeviceRuntime)?;
+        next.test_swap_compensation_origins(old, groups)
+    }
     pub(crate) fn inherit_candidate_groups(
         &mut self,
         previous: &mut Self,

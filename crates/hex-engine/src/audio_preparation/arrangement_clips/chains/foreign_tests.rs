@@ -12,6 +12,7 @@ struct Facts {
     identity: ProcessorInstanceIdentity,
     binding: Option<ForeignProcessorBinding>,
     decline: bool,
+    processor_latency: u32,
     calls: std::sync::atomic::AtomicUsize,
 }
 impl NativeDeviceMetadata for Facts {
@@ -70,7 +71,7 @@ impl NativeDeviceDefinition for Facts {
         if self.decline {
             return Ok(None);
         }
-        let mut facts = PreparedForeignProcessor::new(8, 3, 16)?;
+        let mut facts = PreparedForeignProcessor::new(8, self.processor_latency, 16)?;
         if let Some(binding) = self.binding {
             facts = facts.with_binding(binding)?;
         }
@@ -135,6 +136,7 @@ fn setup(location: usize) -> (hex_project::Project, crate::OwnedAudioInputs, Fac
             epoch: 1,
         }),
         decline: false,
+        processor_latency: 3,
         calls: std::sync::atomic::AtomicUsize::new(0),
     };
     (editor.project().clone(), bank, facts)
@@ -788,5 +790,43 @@ fn closed_compensated_foreign_runtime_has_literal_pcm_and_complete_constructor_d
             .recover_inputs_on_control()
             .expect("original bank after actual runtime disposal");
         assert_eq!(inputs.sources.as_ptr(), original);
+    }
+}
+
+// Real closed roots for the lower owning-frontier test. These are engine-only
+// scalar foreign facts, not admitted native sources or a DSP acceptance oracle.
+impl crate::AudioCandidateOwner {
+    pub(crate) fn test_compensation_origin_owner(latency: Option<u32>) -> Self {
+        let (mut project, bank, mut facts) = setup(2);
+        if let Some(latency) = latency {
+            facts.processor_latency = latency;
+        } else {
+            let device = project.main_devices()[0].id();
+            let mut editor = Editor::new(project, 8).unwrap();
+            editor.execute(Command::RemoveDevice(device)).unwrap();
+            project = editor.project().clone();
+        }
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&facts];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_input_on_control(
+                crate::AudioArrangementInput::new(&project, 11, bank)
+                    .with_audio_prepared_revision()
+                    .with_effect_registry(&registry),
+            )
+            .ok()
+            .unwrap();
+        let mut owner = Self::try_new_on_control(custody, token).ok().unwrap();
+        owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                data_rows: 4096,
+                handle_rows: 2048,
+                root_rows: 8,
+                max_retained_bytes: usize::MAX,
+                max_construction_peak_bytes: usize::MAX,
+            })
+            .unwrap();
+        owner
     }
 }

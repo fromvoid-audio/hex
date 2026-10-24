@@ -315,7 +315,7 @@ struct SessionContinuation {
 }
 
 /// Shared conservative owning-location count for fresh closed constructors.
-/// Playback contributes five outer locations and Session two singleton roots.
+/// Playback contributes five outer locations and Session three singleton roots.
 pub(crate) fn candidate_group_reservation(
     tracks: usize,
     returns: usize,
@@ -326,7 +326,7 @@ pub(crate) fn candidate_group_reservation(
         .and_then(|n| n.checked_add(SESSION_TAIL_GROUP_CAPACITY.checked_mul(2)?))
         .and_then(|n| n.checked_add(return_effect_tails::RETURN_EFFECT_TAIL_CAPACITY))
         .and_then(|n| n.checked_add(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS))
-        .and_then(|n| n.checked_add(7))
+        .and_then(|n| n.checked_add(8))
         .ok_or(crate::AudioStorageError::Overflow)
 }
 
@@ -748,21 +748,13 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        // Main remains inline Session storage; the exact fresh chain is
-        // inventoried separately. Native handoff still refuses owning Main/
-        // Return/compensation moves until their origin transfer is closed.
-        let prepared_main = &self.revision.arrangement().main_device_chain;
-        if main_chain.len() != prepared_main.len()
-            || main_chain
-                .storage_view()
-                .entries()
-                .zip(prepared_main.iter())
-                .any(|(actual, prepared)| !actual.matches_prepared_runtime_storage(prepared))
-            || live_expression.is_some()
-            || computer_keyboard.is_some()
-        {
+        // Fresh constructor storage separately validates the Main chain
+        // against prepared metadata. After a real tail move its inline field
+        // is an empty shell, so disposal enumerates owning locations instead.
+        if live_expression.is_some() || computer_keyboard.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
+        let _: &hex_lattice::NativeRuntimeChain = main_chain; // The inline field always exists.
         for index in 0..device_chains.len() {
             visit(0, index, true)?;
         }
@@ -799,6 +791,7 @@ impl SessionPlayback {
         }
         visit(7, 0, true)?; // this exact Session revision handle
         visit(8, 0, compensation.is_some())?;
+        visit(14, 0, true)?; // actual inline Main chain, including an empty shell
         Ok(())
     }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
@@ -1721,25 +1714,6 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        // Fresh construction does not authorize owning moves. The current
-        // origin journal represents Track/Tail chains only; keep Return/Main
-        // and compensation untouched until their transfers are represented.
-        for playback in [&*self, &*previous] {
-            if playback.compensation.is_some()
-                || playback
-                    .main_chain
-                    .storage_view()
-                    .entries()
-                    .next()
-                    .is_some()
-                || playback
-                    .return_chains
-                    .iter()
-                    .any(|chain| chain.storage_view().entries().next().is_some())
-            {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-        }
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || self.current_sampler_console

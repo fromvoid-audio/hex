@@ -708,15 +708,18 @@ fn validate_runtime_groups(
     runtime
         .playback
         .visit_candidate_groups(&mut |kind, member, present| {
-            validate_supported_location(kind, present && kind != 1)?;
-            if kind == 1 && present && groups.get(index).is_none_or(|g| g.origin.is_none()) {
+            validate_supported_location(kind, present && !matches!(kind, 1 | 5))?;
+            if matches!(kind, 1 | 5)
+                && present
+                && groups.get(index).is_none_or(|g| g.origin.is_none())
+            {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
             if groups.get(index).is_none_or(|g| {
                 g.location != (kind, member)
                     || g.present != present
                     || g.closed
-                    || (kind == 1 && present && g.origin.is_none())
+                    || (matches!(kind, 1 | 5) && present && g.origin.is_none())
             }) {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -730,13 +733,13 @@ fn validate_runtime_groups(
 }
 
 // Explicit closed constructor classes permit known fresh chains, sampler and
-// compensation storage. Retained tails and analytic-context fanout remain
-// unsupported; owning compensation moves are refused until origin transfer closes.
+// compensation storage. Fresh tails and analytic-context fanout remain
+// unsupported; retained chain tails require original transfer origins.
 // Enumeration includes
 // every vacant slot; absence is validated, never converted into an owner group.
 fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
     match kind {
-        0 | 2 | 4 | 7 | 8 | 9..=12 => Ok(()),
+        0 | 2 | 4 | 7 | 8 | 9..=12 | 14 => Ok(()),
         1 | 3 | 5 | 6 | 13 if !present => Ok(()),
         1 | 3 | 5 | 6 | 13 => Err(AudioStorageError::UnsupportedGraph),
         _ => Err(AudioStorageError::SourceMismatch),

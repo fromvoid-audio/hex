@@ -680,6 +680,10 @@ impl SignalRuntime {
         }
         Ok(runtime)
     }
+    #[cfg(test)]
+    pub(crate) fn test_input_address(&self) -> usize {
+        self.inputs.as_ptr() as usize
+    }
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
         self.storage_bytes_with_graph(&self.graph)
     }

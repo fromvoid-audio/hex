@@ -110,6 +110,10 @@ impl PublicationControl {
         self.candidate_root
             .native_source_preparation_progress(binding)
     }
+    /// Record retirement of this exact source. Original graph references defer
+    /// endpoint return and worker disposal; a true result needs no retry.
+    /// False records no request: inspect progress and retry a still-live source
+    /// when the control executor is busy. Unknown or terminal bindings refuse.
     pub fn retire_native_source_preparation(&mut self, binding: Binding) -> bool {
         self.candidate_root
             .retire_native_source_preparation(binding)

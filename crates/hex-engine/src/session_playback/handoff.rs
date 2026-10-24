@@ -2742,26 +2742,38 @@ impl SessionPlayback {
             || previous.performance_frame != self.performance_frame
             || timing_changed;
         if let Some(groups) = groups.as_mut() {
-            // This closed class carries only actual Utility chain owners.
-            // Analytic context/instrument/Return-tail moves remain unsupported.
+            // Closed chain owners and compensation swaps use the same actual
+            // origin journal. Analytic/instrument fanout remains unsupported.
             if !self.context_lease_plan.is_empty()
                 || previous.mutable_instruments.iter().any(Option::is_some)
                 || previous
                     .tail_mutable_instruments
                     .iter()
                     .any(Option::is_some)
-                || previous
-                    .return_effect_tails
-                    .slots()
-                    .iter()
-                    .any(Option::is_some)
                 || previous.retained_contexts.iter().any(Option::is_some)
-                || self.compensation.is_some()
-                || previous.compensation.is_some()
             {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
             use crate::audio_candidate::groups::Location as L;
+            return_tail_plan.plan_candidate_origins(
+                groups,
+                &previous.return_effect_tails,
+                &previous.return_chains,
+                &previous.main_chain,
+            )?;
+            if clock_transfer == 2 {
+                let old = previous
+                    .compensation
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let graph = self
+                    .revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                groups.plan_compensation_swap(old, self.compensation.as_ref(), graph)?;
+            }
             for slot in 0..previous.tail_groups.len() {
                 if active_tail_groups.get(slot).copied().unwrap_or(false)
                     && previous.tail_groups[slot].is_some()
@@ -3243,20 +3255,7 @@ impl SessionPlayback {
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
         } else if clock_transfer == 2 {
-            let graph = self
-                .revision
-                .arrangement()
-                .signal_graph
-                .as_ref()
-                .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            std::mem::swap(&mut self.compensation, &mut previous.compensation);
-            if let Some(current) = self.compensation.as_mut() {
-                // Previous still owns its revision's old graph; delay_graph
-                // independently retains the actual ring/plan interpretation.
-                current
-                    .rebind_graph(Arc::clone(graph))
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            }
+            self.swap_compensation_owner(previous)?;
         }
 
         if let Some(groups) = groups {
@@ -3266,6 +3265,66 @@ impl SessionPlayback {
         Ok(report)
     }
 
+    /// Exact owning frontier after the caller has preflighted the mapped
+    /// clock and its origin transfer. The displaced owner stays in previous.
+    fn swap_compensation_owner(&mut self, previous: &mut Self) -> Result<(), SessionPlaybackError> {
+        let graph = self
+            .revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        if previous
+            .compensation
+            .as_ref()
+            .is_none_or(|old| !old.can_rebind_graph(graph))
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        std::mem::swap(&mut self.compensation, &mut previous.compensation);
+        if let Some(current) = self.compensation.as_mut() {
+            current
+                .rebind_graph(Arc::clone(graph))
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn test_swap_compensation_origins(
+        &mut self,
+        previous: &mut Self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(usize, Option<usize>), SessionPlaybackError> {
+        let old = previous
+            .compensation
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let old_address = old.test_input_address();
+        let displaced = self
+            .compensation
+            .as_ref()
+            .map(|current| current.test_input_address());
+        let graph = self
+            .revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        groups.plan_compensation_swap(old, self.compensation.as_ref(), graph)?;
+        self.swap_compensation_owner(previous)?;
+        assert_eq!(
+            self.compensation.as_ref().unwrap().test_input_address(),
+            old_address
+        );
+        assert_eq!(
+            previous
+                .compensation
+                .as_ref()
+                .map(|old| old.test_input_address()),
+            displaced
+        );
+        Ok((old_address, displaced))
+    }
     fn preflight_shared_context_leases(
         &mut self,
         previous: &Self,

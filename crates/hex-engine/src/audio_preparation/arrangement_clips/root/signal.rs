@@ -217,7 +217,7 @@ mod tests {
         );
     }
     #[test]
-    fn fresh_return_and_main_chains_refuse_unrepresented_claimed_handoff() {
+    fn claimed_return_and_main_tail_moves_retain_original_anchor_until_final_disposal() {
         use hex_lattice_contract::NativeDeviceMetadata;
         use hex_project::{Command, Created, Editor};
         if !crate::audio_storage_constructor_layout_supported() {
@@ -227,8 +227,13 @@ mod tests {
             for predecessor_has_chain in [false, true] {
                 let (plain, _) = crate::audio_preparation::tests::fixture(1);
                 let mut editor = Editor::new(plain.clone(), 8).unwrap();
-                let state = hex_devices::utility::UTILITY_DEFINITION
-                    .default_state()
+                let definition = &hex_devices::utility::UTILITY_DEFINITION;
+                let state = definition
+                    .patch_parameter(
+                        &definition.default_state().unwrap(),
+                        hex_devices::utility::parameter::DC_REMOVE,
+                        hex_lattice_contract::ParameterValue::Bool(true),
+                    )
                     .unwrap();
                 if main {
                     editor
@@ -244,6 +249,14 @@ mod tests {
                     else {
                         panic!("return")
                     };
+                    let track = editor.project().tracks()[0].id();
+                    editor
+                        .execute(Command::SetReturnSend {
+                            track,
+                            return_track: id,
+                            gain: 1.0,
+                        })
+                        .unwrap();
                     editor
                         .execute(Command::InsertReturnDevice {
                             return_track: id,
@@ -282,7 +295,7 @@ mod tests {
                         .unwrap();
                     owner.split_constructor_on_control().ok().unwrap()
                 };
-                let (old, old_anchor) = build(
+                let (mut old, old_anchor) = build(
                     if predecessor_has_chain {
                         editor.project()
                     } else {
@@ -298,32 +311,78 @@ mod tests {
                     },
                     12,
                 );
+                old.apply_action(crate::PlaybackAction::Transport(
+                    crate::PlaybackCommand::Play,
+                ))
+                .unwrap();
+                old.render_with_node_signal_observer(&mut [[0.0; 2]; 4], None)
+                    .unwrap();
                 let old_identity = old.identity();
                 let mut previous = Some(old);
                 let mut retired = None;
                 let mut manifest = None;
-                assert!(matches!(
-                    next.try_inherit_and_retire_in_place(
-                        &mut previous,
-                        &mut retired,
-                        &mut manifest
-                    ),
-                    Err(crate::PlaybackHandoffError::Session(
-                        crate::SessionPlaybackError::DeviceRuntime
-                    ))
-                ));
-                assert_eq!(previous.as_ref().unwrap().identity(), old_identity);
-                assert!(retired.is_none() && manifest.is_none());
-                assert!(old_anchor.matches_current(previous.as_ref().unwrap()));
+                next.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut manifest)
+                    .unwrap();
+                assert!(previous.is_none());
+                assert_eq!(retired.as_ref().unwrap().identity(), old_identity);
                 assert!(next_anchor.matches_current(&next));
-                let mut anchors = [Some(old_anchor), Some(next_anchor)];
-                previous
+                next.render_with_node_signal_observer(&mut [[0.0; 2]; 4], None)
+                    .unwrap();
+                let mut anchors = vec![Some(old_anchor), Some(next_anchor)];
+                retired
                     .take()
                     .unwrap()
                     .dispose_on_control()
                     .unwrap()
                     .record_anchor_cells_on_control(&mut anchors)
                     .unwrap();
+                if predecessor_has_chain {
+                    assert!(
+                        anchors[0]
+                            .as_mut()
+                            .unwrap()
+                            .finish_disposal_on_control()
+                            .is_err(),
+                        "actual retained tail keeps the original constructor anchor open"
+                    );
+                }
+                assert_eq!(
+                    manifest.as_ref().unwrap().moved_groups_from(old_identity),
+                    usize::from(predecessor_has_chain)
+                );
+                if predecessor_has_chain {
+                    let (mut third, third_anchor) = build(&plain, 13);
+                    anchors.push(Some(third_anchor));
+                    let mut previous = Some(next);
+                    let mut retired = None;
+                    let mut manifest = None;
+                    third
+                        .try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut manifest)
+                        .unwrap();
+                    assert_eq!(
+                        manifest.as_ref().unwrap().moved_groups_from(old_identity),
+                        1,
+                        "carried tail retains the first constructor origin"
+                    );
+                    retired
+                        .take()
+                        .unwrap()
+                        .dispose_on_control()
+                        .unwrap()
+                        .record_anchor_cells_on_control(&mut anchors)
+                        .unwrap();
+                    assert!(
+                        anchors[0]
+                            .as_mut()
+                            .unwrap()
+                            .finish_disposal_on_control()
+                            .is_err()
+                    );
+                    third
+                        .render_with_node_signal_observer(&mut [[0.0; 2]; 4], None)
+                        .unwrap();
+                    next = third;
+                }
                 next.dispose_on_control()
                     .unwrap()
                     .record_anchor_cells_on_control(&mut anchors)

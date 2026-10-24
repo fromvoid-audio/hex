@@ -26,6 +26,7 @@ struct PreparedFixture {
     binding: Binding,
     unused: Option<Binding>,
     owner: hex_engine::AudioCandidateOwner,
+    project: Project,
     samples: Vec<[f32; 2]>,
 }
 fn fixture(location: usize, bypassed: bool) -> Fixture {
@@ -216,6 +217,7 @@ fn prepared_fixture(location: usize, bypassed: bool) -> PreparedFixture {
         binding,
         unused,
         owner,
+        project: editor.project().clone(),
         samples,
     }
 }
@@ -474,6 +476,7 @@ fn actual_native_graph_admission_retains_original_source_until_anchor_recovery()
                 unused,
                 owner,
                 samples,
+                ..
             } = prepared_fixture(location, bypassed);
             let root = control.native_candidate_root();
             let ticket = control
@@ -644,4 +647,199 @@ fn cancelled_actual_native_graph_holds_endpoint_until_original_report_recovery()
     drop(data);
     drop(errors);
     finish(&mut retirement);
+}
+
+fn replacement_owner(
+    control: &Control,
+    binding: Binding,
+    project: &Project,
+    samples: &[[f32; 2]],
+) -> hex_engine::AudioCandidateOwner {
+    let asset = project.assets().next().unwrap().id();
+    let bank = hex_engine::OwnedAudioInputs::try_new(
+        vec![(
+            asset,
+            hex_engine::OwnedAudioSource::try_resident(48_000, samples.to_vec())
+                .ok()
+                .unwrap(),
+        )],
+        hex_engine::AudioStorageReservation {
+            allocation_items: 1024,
+            handle_obligations: 256,
+            max_prepared_data_bytes: usize::MAX,
+            max_construction_data_bytes: usize::MAX,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap();
+    control
+        .with_native_effect_definition(&[binding], |definition| {
+            let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
+            let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+            let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
+            let token = custody
+                .begin_input_on_control(
+                    hex_engine::AudioArrangementInput::new(project, 12, bank)
+                        .with_audio_prepared_revision()
+                        .with_effect_registry(&registry),
+                )
+                .ok()
+                .unwrap();
+            Ok(
+                hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
+                    .ok()
+                    .unwrap(),
+            )
+        })
+        .unwrap()
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_native_track_return_main_bypass_handoff_keeps_original_endpoint_and_clock() {
+    let _serial = serial();
+    for location in 0..3 {
+        let PreparedFixture {
+            mut control,
+            mut data,
+            errors,
+            mut retirement,
+            binding,
+            unused,
+            owner,
+            project,
+            samples,
+        } = prepared_fixture(location, false);
+        let root = control.native_candidate_root();
+        let first = control
+            .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
+            .unwrap_or_else(|r| panic!("first graph: {}", r.reason));
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 64];
+        let mut second = None;
+        let mut committed = 0;
+        for (block, chunk) in output.chunks_mut(8).enumerate() {
+            if block == 1 {
+                let device = match location {
+                    0 => project.tracks()[0].devices()[0].id(),
+                    1 => project.return_tracks()[0].devices()[0].id(),
+                    _ => project.main_devices()[0].id(),
+                };
+                let mut editor = Editor::new(project.clone(), 8).unwrap();
+                editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: true,
+                    })
+                    .unwrap();
+                let next = replacement_owner(&control, binding, editor.project(), &samples);
+                second = Some(
+                    control
+                        .stage_eligible_audio_candidate(
+                            next,
+                            vec![],
+                            PublicationPolicy::InheritRuntime,
+                            41,
+                        )
+                        .unwrap_or_else(|r| panic!("replacement graph: {}", r.reason)),
+                );
+            }
+            let mut host = [0.0_f32; 16];
+            allocation_free(|| {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    callback.begin_block();
+                    callback.begin_native_effect_callback(8).unwrap();
+                    let rendered = callback.render(chunk);
+                    assert!(rendered.is_ok(), "installed replacement: {rendered:?}");
+                    assert!(crate::device::finish_host_chunk(
+                        callback,
+                        &mut host,
+                        chunk,
+                        2,
+                        &rendered,
+                        committed,
+                        Instant::now()
+                    ));
+                })
+            });
+            assert_eq!(
+                control.status.applied_revision.load(Acquire),
+                if block == 0 { 1 } else { 2 }
+            );
+            committed += 8;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root,binding).unwrap() < committed/8 {
+                assert!(Instant::now()<deadline); std::thread::yield_now();
+            }
+            if block == 1 {
+                let old = crate::prepared::candidate_tests::recover(&mut control, &first);
+                assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
+                drop(old);
+                // Only the current successor references the original source;
+                // asking retirement must still preserve its physical endpoint.
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !control.retire_native_source_preparation(binding) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "original retirement control remained busy"
+                    );
+                    assert!(!matches!(
+                        control.native_source_preparation_progress(binding),
+                        Some(
+                            crate::NativeSourcePreparationProgress::Failed
+                                | crate::NativeSourcePreparationProgress::Complete
+                        )
+                    ));
+                    std::thread::yield_now();
+                }
+            }
+        }
+        let mut expected = [[0.0; 2]; 64];
+        let gain = if location == 1 { 2.0 } else { 1.0 };
+        for (i, frame) in samples.iter().enumerate() {
+            expected[i + 16] = [frame[0] * gain, frame[1] * gain];
+        }
+        assert_eq!(output, expected, "actual handoff location {location}");
+        drop(data);
+        drop(errors);
+        assert!(!retirement.advance().unwrap());
+        retirement = std::thread::spawn(move || {
+            let mut backend = Some(());
+            let mut pending = false;
+            let mut disposed = false;
+            let _ = crate::lifecycle::test_dispose_backend(
+                &mut backend,
+                &mut pending,
+                &mut disposed,
+                &mut retirement,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert!(disposed && backend.is_none());
+            retirement
+        })
+        .join()
+        .unwrap();
+        let current = crate::prepared::candidate_tests::recover(&mut control, &second.unwrap());
+        assert_eq!(
+            current.return_kind,
+            crate::AudioCandidateReturnKind::FinalActive
+        );
+        drop(current);
+        let returned = recover(&mut control, binding);
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+            panic!("actual source")
+        };
+        assert!(disposal.status.success());
+        let terminal = disposal.terminal.unwrap();
+        assert_eq!((terminal.blocks, terminal.frames), (8, 64));
+        if let Some(unused) = unused {
+            let _ = recover(&mut control, unused);
+        }
+        drop(control);
+        finish(&mut retirement);
+    }
 }
