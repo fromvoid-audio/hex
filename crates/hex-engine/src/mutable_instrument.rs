@@ -4,6 +4,9 @@
 //! authored occurrence proof and performance deadlines needed to pair source
 //! spans with checked event IDs across render partitions and graph handoffs.
 
+mod volume;
+pub(crate) use volume::{VolumeLookup, VolumeSlice};
+
 use crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 use crate::midi_template::MidiOccurrenceSuppression;
 use hex_lattice::{
@@ -139,6 +142,8 @@ pub(crate) struct MutableOccurrence {
     pub(crate) gate_end_frame: u64,
     pub(crate) quiet_deadline_frame: u64,
     pub(crate) note_off_sent: bool,
+    /// Fixed left-limit gain survives source/graph retirement without a curve owner.
+    pub(crate) gain_at_end_bits: u64,
 }
 
 /// One source query's maximum admitted sounding intervals. This is shared by
@@ -726,6 +731,34 @@ impl MutableInstrumentTrackRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_inner(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            resources,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Same bounded segment with a borrowed volume lookup.
+    fn process_segment_inner(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        volume: Option<&mut VolumeLookup<'_>>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
         let performance_end = performance_start
@@ -847,6 +880,7 @@ impl MutableInstrumentTrackRuntime {
                 gate_end_frame,
                 quiet_deadline_frame,
                 note_off_sent,
+                gain_at_end_bits: 1.0_f64.to_bits(),
             });
         }
 
@@ -865,13 +899,31 @@ impl MutableInstrumentTrackRuntime {
             };
             (offset, is_on, occurrence_id)
         });
+        let gains = volume::gains_for_segment(
+            &self.pair,
+            &mut self.scratch,
+            events,
+            performance_start,
+            frames.len(),
+            volume,
+        )?;
         let resources = self
             .resources
             .as_ref()
             .map_or(resources, |lease| lease.resources());
-        self.pair
-            .process_block_with_clock(events, frames, clock, resources)
-            .map_err(map_runtime_error)
+        match gains {
+            Some(gains) => self.pair.process_block_with_clock_and_occurrence_gains(
+                events,
+                frames,
+                clock,
+                gains.as_slice(),
+                resources,
+            ),
+            None => self
+                .pair
+                .process_block_with_clock(events, frames, clock, resources),
+        }
+        .map_err(map_runtime_error)
     }
 
     pub(crate) fn commit_block(&mut self) {

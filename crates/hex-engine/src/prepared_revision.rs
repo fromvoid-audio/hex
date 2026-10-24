@@ -899,6 +899,25 @@ impl PreparedRevision {
             )
     }
 
+    /// Indexed membership in the existing prepared descriptor, including empty
+    /// volume curves. Outgoing/deleted sources are distinct from an active
+    /// owner whose explicit volume edit restored unity. No callback model scan.
+    pub(crate) fn arrangement_midi_source_active(
+        &self,
+        track: TrackId,
+        clip: hex_project::ClipId,
+    ) -> bool {
+        self.mutable_track_revision(track)
+            .and_then(|track| {
+                track
+                    .arrangement_midi_sources
+                    .binary_search_by_key(&clip, |source| source.id)
+                    .ok()
+                    .and_then(|index| track.arrangement_midi_sources.get(index))
+            })
+            .is_some_and(|source| source.active)
+    }
+
     /// Exact authored inactivity for an existing prepared MIDI instance. Missing
     /// or deleted clips retain their separate handoff policy. Routed sources
     /// are queried through their destination's canonical descriptor.

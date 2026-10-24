@@ -204,6 +204,7 @@ impl SessionPlayback {
                     )
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
                 note_off_sent: gate <= cut,
+                gain_at_end_bits: 1.0_f64.to_bits(),
             });
             plan.len += 1;
             Ok(())

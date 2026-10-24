@@ -130,6 +130,7 @@ impl Import {
             gate_end_frame,
             quiet_deadline_frame,
             note_off_sent: gate <= cut,
+            gain_at_end_bits: 1.0_f64.to_bits(),
         });
         self.len += 1;
         Ok(())

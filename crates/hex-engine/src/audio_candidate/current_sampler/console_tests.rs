@@ -763,3 +763,6 @@ mod cue;
 
 #[path = "console_tests/source_metadata.rs"]
 mod source_metadata;
+
+#[path = "console_tests/volume.rs"]
+mod volume;

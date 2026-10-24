@@ -1761,7 +1761,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     timing: &'a T,
 }
 
-fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
+fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
     context: MutableInstrumentChunkContext<'_, T>,
     index: usize,
     output: &mut [Frame],
@@ -1914,23 +1914,143 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
         &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
         |s| s,
     );
-    runtime
-        .process_segment_with_resources(
-            routes[index].id,
-            performance_frame,
-            match midi_route.owner {
-                RouteOwner::Arrangement => arrangement_frame,
-                _ => performance_frame,
+    let source_start = match midi_route.owner {
+        RouteOwner::Arrangement => arrangement_frame,
+        _ => performance_frame,
+    };
+    let arrangement_volumes = track.instrument.as_ref().and_then(|i| i.volumes.as_ref());
+    let console = if let RouteOwner::Session { clip, origin } = midi_route.owner {
+        midi.midi_clip_for_track(clip, track_id)
+            .map(|prepared| (clip, origin, prepared))
+    } else {
+        None
+    };
+    let has_program = match midi_route.owner {
+        RouteOwner::Arrangement => arrangement_volumes.is_some(),
+        RouteOwner::Session { .. } => console
+            .as_ref()
+            .is_some_and(|(_, _, prepared)| prepared.volume_program().is_some()),
+        _ => false,
+    };
+    let clock = InstrumentClock {
+        timing,
+        start: performance_frame,
+    };
+    if !has_program && !runtime.has_volume_gain() {
+        return runtime
+            .process_segment_with_resources(
+                track_id,
+                performance_frame,
+                source_start,
+                output,
+                onsets,
+                suppressions,
+                events,
+                Some(&clock),
+                resources,
+            )
+            .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
+    }
+    let console_endpoint = console
+        .as_ref()
+        .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
+        .map(|(origin, program)| {
+            program.finite_endpoint(
+                timing,
+                crate::midi_clip_volume::VolumePlacement::Session { origin },
+            )
+        })
+        .transpose()
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
+        .flatten();
+    let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
+                      performance: u64,
+                      frames: usize| {
+        use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
+        use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
+        let key = signature.key();
+        let unity = |at| VolumeSlice {
+            at,
+            ramp: VolumeRamp {
+                start_frame: 0,
+                end_frame: u64::MAX,
+                start_gain: 1.0,
+                end_gain: 1.0,
+                next_boundary: None,
             },
+        };
+        match midi_route.owner {
+            RouteOwner::Arrangement => {
+                if key.loop_pass != arrangement_loop_pass
+                    || !revision.arrangement_midi_source_active(track_id, key.clip)
+                {
+                    return Ok(None);
+                }
+                let at = performance
+                    .checked_sub(performance_frame)
+                    .and_then(|offset| arrangement_frame.checked_add(offset))
+                    .ok_or(Error::Arithmetic)?;
+                arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
+                    Ok(Some(unity(at))),
+                    |row| {
+                        row.segment_or_hold(timing, at, frames)
+                            .map(|ramp| Some(VolumeSlice { at, ramp }))
+                            .map_err(|_| Error::InvalidSourceSpan)
+                    },
+                )
+            }
+            RouteOwner::Session { clip, origin } => {
+                if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
+                    return Ok(None);
+                }
+                let Some(program) = console
+                    .as_ref()
+                    .and_then(|(_, _, prepared)| prepared.volume_program())
+                else {
+                    return Ok(Some(unity(performance)));
+                };
+                if let Some(endpoint) = console_endpoint.filter(|e| performance >= e.frame) {
+                    return Ok(Some(VolumeSlice {
+                        at: performance,
+                        ramp: VolumeRamp {
+                            start_frame: endpoint.frame,
+                            end_frame: u64::MAX,
+                            start_gain: endpoint.gain,
+                            end_gain: endpoint.gain,
+                            next_boundary: None,
+                        },
+                    }));
+                }
+                program
+                    .segment_at(
+                        timing,
+                        VolumePlacement::Session { origin },
+                        performance,
+                        frames,
+                    )
+                    .map_err(|_| Error::InvalidSourceSpan)?
+                    .map(|ramp| VolumeSlice {
+                        at: performance,
+                        ramp,
+                    })
+                    .map(Some)
+                    .ok_or(Error::InvalidSourceSpan)
+            }
+            RouteOwner::SessionAudio { .. } | RouteOwner::Silence => Ok(None),
+        }
+    };
+    runtime
+        .process_segment_with_volume(
+            track_id,
+            performance_frame,
+            source_start,
             output,
             onsets,
             suppressions,
             events,
-            Some(&InstrumentClock {
-                timing,
-                start: performance_frame,
-            }),
+            Some(&clock),
             resources,
+            &mut lookup,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
