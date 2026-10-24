@@ -42,7 +42,7 @@ impl EditorView {
             return None;
         };
         let Some(row_index) = self.arrangement_row_index(track_index) else {
-            // A canonical loop change can hide an open menu's track. Finalize
+            // A section selection change can hide an open menu's track. Finalize
             // through its existing owner before retiring that input surface.
             if super::device_panel::finalize_send_controls_for_track(self, cx, track_id) {
                 self.send_menu_track = None;
