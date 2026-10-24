@@ -267,6 +267,10 @@ impl Session {
         expected: &Project,
         previous: Option<&hex_engine::PreparedRevision>,
         mut admit: impl FnMut() -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
         use crate::import_batch::AudioBatchDestination;
         admit()?;
@@ -340,6 +344,17 @@ impl Session {
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
+        let candidate_waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|resident| [&resident.source_audio, &resident.audio])
+            .collect::<Vec<_>>();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
         let (_, (created, prepared)) =
             self.editor
                 .execute_audio_imports_prepared(commands, |candidate, results| {
@@ -358,22 +373,28 @@ impl Session {
                         }
                         bank.verified.insert(*asset, source.clone());
                     }
-                    let prepared = Arc::new(prepare_with_waveforms(
-                        candidate,
-                        &bank,
-                        Arc::clone(&table),
-                        previous.map(|p| p.session().as_ref()),
-                        &self.audio_transforms,
-                        &self.audio_clip_waveforms,
-                    )?);
-                    admit()?;
+                    let prepared = prepare(
+                        crate::import_batch::Preparation {
+                            project: candidate,
+                            media: &bank,
+                            native,
+                            table: Arc::clone(&table),
+                            transforms,
+                            waveforms: &candidate_waveforms,
+                            legacy: &legacy,
+                            limits,
+                            max_frames,
+                            shutdown,
+                            previous,
+                        },
+                        &mut admit,
+                    )?;
                     Ok::<_, SessionError>((created, prepared))
                 })?;
-        for (created, source) in created.iter().zip(sources) {
-            if let Created::Imported { asset, .. } = created {
-                self.verified_sources.insert(*asset, source);
-            }
-        }
+        // Preparation/admission finished before canonical commit. Publish only owned moves;
+        // a refused callback leaves both canonical source and display maps untouched.
+        self.verified_sources = bank.verified;
+        *self.audio_clip_waveforms.get_mut() = candidate_waveforms.into_inner();
         self.semantic_source_epoch = epoch;
         Ok((created, prepared))
     }

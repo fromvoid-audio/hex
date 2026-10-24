@@ -730,3 +730,122 @@ fn ordinary_small_reopen_retains_source_planning_for_the_next_complete_drop() {
         DocumentAudioMode::Resident
     );
 }
+
+#[test]
+fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_waveforms() {
+    let files = Files::new();
+    let a = files.wav("accepted.wav", 48_000, 4, 1000);
+    let b = files.wav("replacement.wav", 48_000, 8, 2000);
+    let mut session = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::VerifiedStreaming,
+        Some(reservation(4)),
+    )
+    .unwrap();
+    let source = session.verify_import(a).unwrap();
+    let (created, _) = session
+        .import_verified_revision(
+            source,
+            VerifiedImportDestination::NewTrack {
+                before: None,
+                start: 0,
+            },
+            None,
+        )
+        .unwrap();
+    let hex_project::Created::Imported { track, clip, .. } = created else {
+        panic!("seed import")
+    };
+    // Truthful cached peaks for the existing constant file; this display owner must
+    // survive a replacement whose private prepared waveform map drops that clip.
+    let value = 1000.0 / 32768.0;
+    let waveform = Arc::new(
+        hex_media::waveform::Waveform::from_peaks(
+            4,
+            vec![
+                [hex_media::waveform::Peak {
+                    min: value,
+                    max: value,
+                }; 2],
+            ],
+        )
+        .unwrap(),
+    );
+    session.audio_clip_waveforms.get_mut().insert(
+        clip,
+        AudioClipWaveform {
+            waveform: Arc::clone(&waveform),
+            offset: 0,
+            length: 4,
+            preview_root: None,
+        },
+    );
+    let before = session.project().snapshot();
+    let epoch = session.semantic_source_epoch;
+    let history = (session.can_undo(), session.can_redo());
+    let context = AudioBatchContext {
+        project_generation: 1,
+        revision: 1,
+        active_gesture: false,
+    };
+    let batch = AudioBatchImport::capture(
+        vec![b.clone()],
+        AudioBatchDestination::Track { track, start: 0 },
+        &session,
+        context,
+    )
+    .unwrap();
+    let result = batch.run_with_storage_admission_using(
+        &mut session,
+        None,
+        || context,
+        |_, _| Err(SessionError::Invalid("injected storage refusal")),
+        |_, _| panic!("storage refusal precedes preparation"),
+    );
+    assert!(result.is_err());
+    assert_eq!(session.project().snapshot(), before);
+    let batch = AudioBatchImport::capture(
+        vec![b],
+        AudioBatchDestination::Track { track, start: 0 },
+        &session,
+        context,
+    )
+    .unwrap();
+    let called = std::cell::Cell::new(false);
+    let result = batch.run_with_storage_admission_using(
+        &mut session,
+        None,
+        || context,
+        |_, members| {
+            assert!(members.is_empty());
+            Ok(())
+        },
+        |input, admit| {
+            called.set(true);
+            assert_eq!(input.media.verified.len(), 2);
+            let views = input.waveforms;
+            let prepared = crate::import_batch::prepare_asset_free(input, admit)?;
+            assert!(prepared.contains_streamed_sources());
+            assert!(
+                views.borrow().is_empty(),
+                "candidate replacement has no resident waveform root"
+            );
+            Err(SessionError::Invalid("injected publication refusal"))
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        called.get(),
+        "file-backed batches must honor the caller's preparation hook"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!(session.semantic_source_epoch, epoch);
+    assert_eq!(session.verified_sources.len(), 1);
+    assert_eq!(session.resident_frames(), 0);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
+    let retained = session.audio_clip_waveforms().unwrap();
+    assert_eq!(retained.len(), 1);
+    assert!(Arc::ptr_eq(&retained[&clip].waveform, &waveform));
+}

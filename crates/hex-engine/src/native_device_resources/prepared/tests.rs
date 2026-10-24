@@ -286,6 +286,36 @@ fn registered_sampler_fixture(streamed: bool) {
                 "original-rate sampler, vector and converted clip share the ordinary render kernel"
             );
         }
+        // Resource custody is independent of page readiness. The ordinary book must
+        // admit/retire the scoped graph without treating file extent as resident PCM.
+        let mut book = DeviceResourcePublication::reserve_on_control(limits, 8, 8).unwrap();
+        let actual = match book.publish_on_control(actual, Ok::<_, ()>) {
+            Ok(runtime) => runtime,
+            Err(DeviceResourcePublishError::Resources { reason, .. }) => {
+                panic!("mixed resource admission: {reason:?}")
+            }
+            Err(DeviceResourcePublishError::Publication(())) => panic!("unexpected queue refusal"),
+        };
+        assert_eq!(book.outstanding_leases(), 1);
+        let registered = [book.admission_on_control()];
+        let phase = DeviceResourcePhase {
+            registered: &registered,
+            stores: &[],
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        assert_eq!(
+            inspect_device_resource_union(&phase, &phase, limits)
+                .unwrap()
+                .retained_frames,
+            4,
+            "the registered mixed graph retains only the four original sampler PCM frames"
+        );
+        assert!(book.retire_on_control(Box::new(actual)).is_ok());
+        assert_eq!(book.outstanding_leases(), 0);
         return;
     }
 

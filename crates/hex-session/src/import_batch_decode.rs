@@ -399,7 +399,8 @@ impl AudioBatchImport {
                 )
                 .into());
             }
-            return self.run_verified(session, previous, current);
+            storage(session, &[])?;
+            return self.run_verified(session, previous, current, prepare);
         }
         let mut remaining = self
             .max_resident_frames
@@ -505,6 +506,10 @@ impl AudioBatchImport {
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         current: &mut impl FnMut() -> AudioBatchContext,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
         let mut sources = Vec::new();
         sources
@@ -556,6 +561,7 @@ impl AudioBatchImport {
                 }
                 Ok(())
             },
+            prepare,
         );
         match result {
             Ok(value) => Ok(value),
