@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Context, Render, TestAppContext, VisualTestContext, Window, size};
+use gpui::{Context, Modifiers, Render, TestAppContext, VisualTestContext, Window, size};
 
 const CONTROLS: ControlStyle = ControlStyle {
     background: 0x202020,
@@ -83,12 +83,29 @@ fn mono_and_stereo_meter_colors_follow_dbfs_and_supplied_overload(cx: &mut TestA
     for stereo in [false, true] {
         for (dbfs, clipping, color) in [
             (-30.0, false, STYLE.signal),
-            (-6.000_001, false, STYLE.signal),
-            (-6.0, false, STYLE.near_peak),
+            (-6.0, false, STYLE.signal),
+            (-0.45, false, STYLE.signal),
+            (crate::METER_NEAR_PEAK_DBFS, false, STYLE.near_peak),
             (0.0, false, STYLE.near_peak),
-            (6.0, false, STYLE.near_peak),
+            (6.0, false, STYLE.overload),
             (-12.0, true, STYLE.overload),
         ] {
+            view.update(cx, |view, cx| {
+                let value = channel(-60.0, None, false);
+                view.0 = if stereo {
+                    MeterIndicatorReadout::Stereo([value; 2])
+                } else {
+                    MeterIndicatorReadout::Mono(value)
+                };
+                cx.notify();
+            });
+            visual.run_until_parked();
+            for index in 0..if stereo { 2 } else { 1 } {
+                let above = Box::leak(format!("meter-channel-{index}-above").into_boxed_str());
+                if let Some(cap) = visual.debug_bounds(above) {
+                    visual.simulate_click(cap.center(), Modifiers::default());
+                }
+            }
             view.update(cx, |view, cx| {
                 let value = channel(dbfs, Some(-3.0), clipping);
                 view.0 = if stereo {
@@ -106,10 +123,10 @@ fn mono_and_stereo_meter_colors_follow_dbfs_and_supplied_overload(cx: &mut TestA
                 assert_eq!(visual.rendered_background(fill), Some(rgb(color).into()));
                 assert_eq!(
                     visual.rendered_background(peak),
-                    Some(rgb(STYLE.near_peak).into())
+                    Some(rgb(STYLE.peak).into())
                 );
-                assert_eq!(visual.debug_bounds(above).is_some(), clipping);
-                if clipping {
+                assert_eq!(visual.debug_bounds(above).is_some(), clipping || dbfs > 0.0);
+                if clipping || dbfs > 0.0 {
                     assert_eq!(
                         visual.rendered_background(above),
                         Some(rgb(STYLE.overload).into())

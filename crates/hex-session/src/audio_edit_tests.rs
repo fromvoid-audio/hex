@@ -2,6 +2,55 @@ use super::*;
 use std::sync::atomic::Ordering;
 
 #[test]
+fn bounded_audio_placement_refusal_preserves_session_project_history_and_audio() {
+    let (mut session, clip, previous) = fixture();
+    let before_repeat = session.project().snapshot();
+    let (_, previous) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 12_000,
+                },
+            },
+            Some(&previous),
+        )
+        .unwrap();
+    let before = session.project().snapshot();
+    let history = (session.can_undo(), session.can_redo());
+    let resident_frames = session.resident_frames;
+    let result = session.command_prepared_revision(
+        Command::ResizeAudioClipView {
+            clip,
+            operation: hex_project::AudioViewResizeOperation::OuterEnd {
+                project_frame: hex_project::MAX_AUDIO_DOMAIN_FRAMES + 1,
+            },
+        },
+        Some(&previous),
+    );
+    assert!(result.is_err());
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
+    assert_eq!(session.resident_frames, resident_frames);
+    let undone = session
+        .undo_prepared_revision(Some(&previous))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot(), before_repeat);
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot(), before);
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(redone).unwrap();
+    playback.apply(hex_engine::playback::PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 257];
+    playback.render(&mut output).unwrap();
+    assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+}
+
+#[test]
 fn unresolved_device_asset_resources_refuse_actual_preparation_without_committing_history() {
     use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
     for bypassed in [false, true] {

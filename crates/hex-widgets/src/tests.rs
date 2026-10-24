@@ -2035,6 +2035,7 @@ fn device_meter_colors_follow_samples_and_held_evidence_not_gain_position(cx: &m
             (0.1, 0.2, 0x33bb77, false),
             (crate::METER_NEAR_PEAK_AMPLITUDE, 0.75, 0xffcc33, false),
             (1.0, 1.0, 0xffcc33, false),
+            (0.1, 1.2, 0x33bb77, true),
             (1.01, 1.01, 0xee3344, true),
             (0.1, 1.2, 0x33bb77, true),
         ] {
@@ -2073,6 +2074,14 @@ fn device_meter_colors_follow_samples_and_held_evidence_not_gain_position(cx: &m
                 );
             }
         }
+        let cap = visual.debug_bounds(above).expect("held clipping cap");
+        visual.simulate_click(cap.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            control.read_with(cx, |control, _| control.value()),
+            24.0,
+            "clearing clipping must not edit gain"
+        );
         control.update(cx, |control, cx| {
             control.set_meter_readout(
                 crate::DeviceMeterReadout {
