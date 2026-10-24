@@ -108,7 +108,11 @@ for name, package in packages.items():
             errors.append(f'{name} -> {target}: violates the dependency policy')
         if (target in BOUNDARIES and name not in BOUNDARIES[target]
                 and not (dep['kind'] == 'build'
-                         and name in BUILD_BOUNDARIES.get(target, set()))):
+                         and name in BUILD_BOUNDARIES.get(target, set()))
+                # Only safe CPU-clock probes, never a production audio edge.
+                and not (dep['kind'] == 'dev' and name == 'hex-audio'
+                         and target == 'rustix'
+                         and set(dep.get('features', [])) <= {'std', 'time'})):
             errors.append(f'{name}: {target} belongs in its declared platform/UI boundary')
 if errors:
     print('\n'.join(errors), file=sys.stderr)

@@ -2581,6 +2581,7 @@ dependencies = [
  "hex-tuning",
  "qos-threads",
  "rtrb",
+ "rustix 1.1.5",
 ]
 
 [[package]]

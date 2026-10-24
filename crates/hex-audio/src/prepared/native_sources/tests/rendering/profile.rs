@@ -2,6 +2,12 @@
 //! installed plugin, native window or physical-device deadline acceptance.
 use super::*;
 
+fn thread_cpu_time() -> Duration {
+    rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime)
+        .try_into()
+        .unwrap()
+}
+
 #[test]
 #[ignore = "explicit optimized source-bound native SDK graph measurement"]
 fn actual_native_queued_graph_callback_profile() {
@@ -29,6 +35,8 @@ fn actual_native_queued_graph_callback_profile() {
             .unwrap_or_else(|r| panic!("native profile admission: {}", r.reason));
         control.command(PlaybackCommand::Play).unwrap();
         let mut callback_ns = Vec::with_capacity(MEASURED);
+        let mut callback_cpu_ns = Vec::with_capacity(MEASURED);
+        let mut callback_phase_ns = Vec::with_capacity(MEASURED);
         let mut reply_ns = Vec::with_capacity(MEASURED);
         let mut lateness_ns = Vec::with_capacity(MEASURED);
         let mut gap_ns = Vec::with_capacity(MEASURED);
@@ -50,6 +58,10 @@ fn actual_native_queued_graph_callback_profile() {
                 pending = callback.native_sources.test_pending_requests(binding);
             });
             let pending = pending.unwrap();
+            // CPU-clock calls are outside the measured callback/allocation
+            // scope. Wall time alone cannot distinguish callback work from a
+            // descheduled headless test thread or an OS wait/page fault.
+            let cpu_start = thread_cpu_time();
             let start = Instant::now();
             let gap =
                 previous_start.map_or(Duration::ZERO, |previous| start.duration_since(previous));
@@ -57,11 +69,14 @@ fn actual_native_queued_graph_callback_profile() {
             let lateness = start.saturating_duration_since(target);
             let next_target = target + period;
             let mut delivered = false;
+            let mut phases = [0; 3];
             allocation_free(|| {
                 data.owner_mut().unwrap().run(|callback, _| {
                     callback.begin_block();
                     callback.begin_native_effect_callback(QUANTUM).unwrap();
+                    let prepared = Instant::now();
                     let rendered = callback.render(&mut output);
+                    let rendered_at = Instant::now();
                     let fault = callback.native_sources.test_transport_fault(binding);
                     delivered = crate::device::finish_host_chunk(
                         callback,
@@ -82,9 +97,16 @@ fn actual_native_queued_graph_callback_profile() {
                             lateness.as_nanos(),
                         ));
                     }
+                    let finished = Instant::now();
+                    phases = [
+                        prepared.duration_since(start).as_nanos(),
+                        rendered_at.duration_since(prepared).as_nanos(),
+                        finished.duration_since(rendered_at).as_nanos(),
+                    ];
                 })
             });
             let elapsed = start.elapsed();
+            let cpu_elapsed = thread_cpu_time().checked_sub(cpu_start).unwrap();
             // Stop observing at the next scheduled callback even without a
             // reply. Waiting longer would mask real pipeline deadline faults.
             let dispatched = Instant::now();
@@ -129,6 +151,8 @@ fn actual_native_queued_graph_callback_profile() {
             }
             if block >= WARMUP {
                 callback_ns.push(elapsed.as_nanos());
+                callback_cpu_ns.push(cpu_elapsed.as_nanos());
+                callback_phase_ns.push(phases);
                 reply_ns.push(reply);
                 lateness_ns.push(lateness.as_nanos());
                 gap_ns.push(gap.as_nanos());
@@ -194,7 +218,7 @@ fn actual_native_queued_graph_callback_profile() {
             .collect::<Vec<_>>()
             .join(",");
         println!(
-            "{{\"scope\":\"original-root-native-graph-paced\",\"owner\":{location},\"rate\":48000,\"quantum\":{QUANTUM},\"warmup\":{WARMUP},\"period_ns\":{},\"delivered_blocks\":{delivered_blocks},\"failure\":\"{failure:?}\",\"callback_ns\":{callback_ns:?},\"observed_reply_ns\":[{replies}],\"pacing_lateness_ns\":{lateness_ns:?},\"callback_gap_ns\":{gap_ns:?},\"published_before\":{published_before:?},\"pending_before\":{pending_before:?}}}",
+            "{{\"scope\":\"original-root-native-graph-paced\",\"owner\":{location},\"rate\":48000,\"quantum\":{QUANTUM},\"warmup\":{WARMUP},\"period_ns\":{},\"delivered_blocks\":{delivered_blocks},\"failure\":\"{failure:?}\",\"callback_ns\":{callback_ns:?},\"callback_cpu_ns\":{callback_cpu_ns:?},\"callback_phase_ns\":{callback_phase_ns:?},\"observed_reply_ns\":[{replies}],\"pacing_lateness_ns\":{lateness_ns:?},\"callback_gap_ns\":{gap_ns:?},\"published_before\":{published_before:?},\"pending_before\":{pending_before:?}}}",
             period.as_nanos()
         );
         assert!(
