@@ -66,7 +66,7 @@ pub struct SpectrumTargetControl {
     terminal: Option<TargetError>,
 }
 
-/// Callback-side bounded command receiver and currently selected EQ8 owner.
+/// Callback-side bounded command receiver and admitted visible EQ membership.
 pub struct SpectrumTargetCallback {
     consumer: Consumer<TargetCommand>,
     desired_epoch: Arc<AtomicU64>,

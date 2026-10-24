@@ -222,8 +222,9 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
 
-            view.device_panel.spectrum_result =
-                Some(hex_audio::spectrum_worker::PublishedSpectra {
+            view.device_panel.spectrum_results.insert(
+                target.token,
+                hex_audio::spectrum_worker::PublishedSpectra {
                     input: None,
                     output: hex_audio::spectrum_worker::PublishedSpectrum {
                         stamp: hex_audio::spectrum_worker::SpectrumStamp {
@@ -239,11 +240,12 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                         captured_at: std::time::Instant::now(),
                         processed_at: std::time::Instant::now(),
                     },
-                });
+                },
+            );
             // A backend replacement starts without a selected target. Tick's
             // retirement path clears cached data even before a new frame arrives.
             assert!(view.retire_stale_spectrum_target());
-            assert!(view.device_panel.spectrum_result.is_none());
+            assert!(view.device_panel.spectrum_results.is_empty());
             cx.notify();
         })
         .expect("spectrum target context");

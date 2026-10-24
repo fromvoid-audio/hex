@@ -288,6 +288,16 @@ impl ResponseGraph {
         }
     }
 
+    /// Borrow the accepted output/input analyzer curves in normalized display
+    /// coordinates. This transfers no capture, FFT or project ownership and
+    /// does not expose the separate held node-position gesture.
+    pub fn analyzer_layers(&self) -> (Option<&[[f32; 2]]>, Option<&[[f32; 2]]>) {
+        (
+            self.model.analyzer.as_deref(),
+            self.model.input_analyzer.as_deref(),
+        )
+    }
+
     pub fn set_model(
         &mut self,
         model: ResponseGraphModel,
