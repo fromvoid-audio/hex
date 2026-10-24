@@ -12,7 +12,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -25,10 +25,17 @@ const COMMITTING: u8 = 2;
 const FINISHED: u8 = 3;
 
 /// UI/control owner. Dropping a view requests cancellation without waiting.
-pub struct Cancellation(Arc<AtomicU8>);
+struct Operation {
+    phase: AtomicU8,
+    scanner_started: AtomicBool,
+}
+pub struct Cancellation(Arc<Operation>);
 impl Default for Cancellation {
     fn default() -> Self {
-        Self(Arc::new(AtomicU8::new(RUNNING)))
+        Self(Arc::new(Operation {
+            phase: AtomicU8::new(RUNNING),
+            scanner_started: AtomicBool::new(false),
+        }))
     }
 }
 impl Cancellation {
@@ -39,9 +46,15 @@ impl Cancellation {
     pub fn cancel(&self) -> bool {
         matches!(
             self.0
+                .phase
                 .compare_exchange(RUNNING, CANCELLED, Ordering::AcqRel, Ordering::Acquire),
             Ok(_) | Err(CANCELLED)
         )
+    }
+    /// Historical observation of this operation's actual outer scanner spawn.
+    /// This proves neither current liveness nor native child entry/retirement.
+    pub fn has_started_scanner(&self) -> bool {
+        self.0.scanner_started.load(Ordering::Acquire)
     }
 }
 impl Drop for Cancellation {
@@ -49,19 +62,21 @@ impl Drop for Cancellation {
         let _ = self.cancel();
     }
 }
-pub struct Token(Arc<AtomicU8>);
+pub struct Token(Arc<Operation>);
 impl Token {
     fn cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire) == CANCELLED
+        self.0.phase.load(Ordering::Acquire) == CANCELLED
     }
     fn begin_publication(&self) -> Result<bool, String> {
-        match self
-            .0
-            .compare_exchange(RUNNING, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
-        {
+        match self.0.phase.compare_exchange(
+            RUNNING,
+            COMMITTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
             Ok(_) => Ok(true),
             Err(CANCELLED) => {
-                self.0.store(COMMITTING, Ordering::Release);
+                self.0.phase.store(COMMITTING, Ordering::Release);
                 Ok(false)
             }
             Err(_) => Err("scan publication state invalid".into()),
@@ -70,7 +85,7 @@ impl Token {
 }
 impl Drop for Token {
     fn drop(&mut self) {
-        self.0.store(FINISHED, Ordering::Release);
+        self.0.phase.store(FINISHED, Ordering::Release);
     }
 }
 
@@ -231,6 +246,7 @@ fn discover_inner(
         .map_err(|e| format!("scanner start failed: {e}"))?;
     *chain_retired = false;
     diagnostics.scanner_started = true;
+    token.0.scanner_started.store(true, Ordering::Release);
     let started = Instant::now();
     let mut out = Vec::new();
     let mut err = Vec::new();

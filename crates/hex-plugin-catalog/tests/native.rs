@@ -183,7 +183,21 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
         let result = worker::scan(&catalog, &package, selected, token);
         let _ = sender.send(result);
     });
-    std::thread::sleep(Duration::from_millis(200));
+    let started_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !owner.has_started_scanner() {
+        if let Ok(early) = receiver.try_recv() {
+            thread.join().unwrap();
+            panic!(
+                "scan ended before actual scanner spawn: {}; {:?}",
+                early.status, early.diagnostics
+            );
+        }
+        assert!(
+            std::time::Instant::now() < started_deadline,
+            "actual outer scanner spawn"
+        );
+        std::thread::yield_now();
+    }
     if !owner.cancel() {
         let early = receiver
             .recv_timeout(Duration::from_secs(1))
