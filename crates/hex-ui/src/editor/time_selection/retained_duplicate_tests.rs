@@ -4,7 +4,7 @@ use crate::editor::test_environment::Environment;
 use gpui::{
     AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size,
 };
-use hex_project::{BeatTime, ClipId};
+use hex_project::{BeatTime, ClipId, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
 use hex_session::service::Service;
 use std::{sync::Arc, time::Duration};
 
@@ -1009,6 +1009,30 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
             pump(&editor, &mut visual);
         }
         if reversed {
+            let source_length = editor.read_with(&visual, |view, _| {
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .midi_clip(clip)
+                    .unwrap()
+                    .source_length()
+            });
+            let volume = MidiClipVolume::new(
+                vec![
+                    MidiClipVolumePoint::linear(BeatTime::ZERO, MidiClipGain::new(0.25).unwrap()),
+                    MidiClipVolumePoint::linear(source_length, MidiClipGain::new(0.75).unwrap()),
+                ],
+                source_length,
+            )
+            .unwrap();
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume
+                })));
+            });
+            pump(&editor, &mut visual);
             editor.update(&mut visual, |view, _| {
                 assert!(view.enqueue(Request::Edit(Command::ReverseClips(vec![clip]))));
             });

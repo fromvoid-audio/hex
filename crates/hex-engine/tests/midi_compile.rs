@@ -10,7 +10,8 @@ use hex_engine::{
 use hex_lattice::NativeDeviceDefinition;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
-    BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
+    BeatTime, Command, Created, Editor, MidiClipGain, MidiClipVolume, MidiClipVolumePoint,
+    MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -1433,11 +1434,33 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
                 velocity: 100,
             })
             .unwrap();
+        if tail && rate == 44_100 {
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![
+                            MidiClipVolumePoint::linear(
+                                BeatTime::ZERO,
+                                MidiClipGain::new(0.25).unwrap(),
+                            ),
+                            MidiClipVolumePoint::linear(
+                                beat(4, 1),
+                                MidiClipGain::new(0.75).unwrap(),
+                            ),
+                        ],
+                        beat(4, 1),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
         if reversed {
             editor.execute(Command::ReverseClips(vec![clip])).unwrap();
         }
         let mut before = editor.project().snapshot();
         let source_notes = editor.project().midi_clip(clip).unwrap().notes().to_vec();
+        let source_volume = editor.project().midi_clip(clip).unwrap().volume().clone();
         assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
         editor
             .execute(Command::CopyTimeRangeTo {
@@ -1457,6 +1480,10 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
         assert_eq!(
             editor.project().midi_clip(clip).unwrap().notes(),
             source_notes
+        );
+        assert_eq!(
+            editor.project().midi_clip(clip).unwrap().volume(),
+            &source_volume
         );
         let after = editor.project().snapshot();
         // Undo restores complete musical state while the identity allocator
