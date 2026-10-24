@@ -2659,6 +2659,25 @@ fn section_reorder_prepares_sounding_cross_track_audio_and_loop_midi_with_bounda
         96_000
     );
     assert!(editor.project().clip(clip).is_some());
+    // The live publication law reconciles the edited program at the actual
+    // boundary, including an already sounding MIDI note and its release owner.
+    let mut previous =
+        crate::playback::Playback::try_from_prepared_with_session(Arc::new(original)).unwrap();
+    previous.apply(crate::PlaybackCommand::Seek(9_000));
+    previous.apply(crate::PlaybackCommand::Play);
+    previous.render(&mut [[0.0; 2]; 63]).unwrap();
+    let position = previous.position();
+    let mut next =
+        crate::playback::Playback::try_from_prepared_with_session(Arc::new(prepared)).unwrap();
+    next.try_inherit_runtime_from(&mut previous).unwrap();
+    assert!(next.playing());
+    assert_eq!(next.position(), position);
+    let mut sounding = [[0.0; 2]; 127];
+    next.render(&mut sounding).unwrap();
+    assert!(sounding.iter().any(|frame| frame[0] != 0.0));
+    next.apply(crate::PlaybackCommand::Stop);
+    next.render(&mut sounding).unwrap();
+    assert_eq!(sounding, [[0.0; 2]; 127]);
 }
 
 #[test]

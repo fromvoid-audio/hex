@@ -23,20 +23,19 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::MergeArrangementSections(_)
     )
 }
-fn stopped_frame(
+fn edit_position(
     sink: &mut dyn WorkerAudioSink,
     context: hex_engine::AudioSourceContext,
     shutdown: &AtomicBool,
-) -> Result<u64, SessionError> {
-    sink.begin_section_edit(context)
+    allow_playing: bool,
+) -> Result<ArrangementEditPosition, SessionError> {
+    sink.begin_section_edit(context, allow_playing)
         .map_err(SessionError::NativeAudio)?;
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         if shutdown.load(Ordering::Acquire) || Instant::now() >= deadline {
             sink.cancel_section_edit();
-            return Err(SessionError::Invalid(
-                "stopped section edit cancelled or timed out",
-            ));
+            return Err(SessionError::Invalid("section edit cancelled or timed out"));
         }
         if let Some(result) = sink.section_edit_ready() {
             return result.map_err(|reason| {
@@ -59,7 +58,7 @@ pub(super) fn command(
     resident: &mut Option<resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
-    let structural = command.requires_stopped_section_edit();
+    let structural = command.requires_section_publication();
     let no_op = match &command {
         Command::ReorderSectionBefore { section, before } => session
             .project()
@@ -105,11 +104,21 @@ pub(super) fn command(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let frame = stopped_frame(sink, source_context, &shutdown)?;
-    let result = session.stopped_section_snapshot(
+    let position = edit_position(
+        sink,
+        source_context,
+        &shutdown,
+        matches!(
+            &command,
+            Command::ReorderSectionBefore { .. }
+                | Command::ReorderSectionAfter { .. }
+                | Command::DuplicateArrangementSection(_)
+        ),
+    )?;
+    let result = session.section_snapshot(
         Some(command),
         false,
-        frame,
+        position,
         context,
         sink,
         admission,
@@ -148,11 +157,11 @@ pub(super) fn history(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let frame = stopped_frame(sink, source_context, &shutdown)?;
-    match session.stopped_section_snapshot(
+    let position = edit_position(sink, source_context, &shutdown, true)?;
+    match session.section_snapshot(
         None,
         redo,
-        frame,
+        position,
         context,
         sink,
         admission,

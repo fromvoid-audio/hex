@@ -27,11 +27,20 @@ pub struct ResidentFreshRuntimeFence {
     pub route_generation: u64,
     pub admitted_command_ticket: u64,
 }
+/// One callback-observed source and transport witness under the arrangement gate.
+#[derive(Clone, Copy, Debug)]
+pub struct ArrangementEditPosition {
+    pub frame: u64,
+    pub playing: bool,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
     InheritRuntime,
-    /// The sink owns the shared stopped gate through exact callback installation.
-    StoppedArrangement,
+    /// The sink owns the shared arrangement gate through exact callback installation.
+    /// A playing witness inherits the actual boundary runtime; a stopped witness
+    /// installs its prepared musical cursor.
+    ArrangementEdit,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
     /// New/Open only: admit one exact pending owner before canonical generation replacement.
@@ -129,11 +138,12 @@ pub trait WorkerAudioSink: Send {
     fn begin_section_edit(
         &mut self,
         _context: hex_engine::AudioSourceContext,
+        _allow_playing: bool,
     ) -> Result<(), String> {
-        Err("native stopped arrangement edits are unavailable".into())
+        Err("native arrangement edits are unavailable".into())
     }
-    /// Callback-observed stopped frame. None means the command prefix is pending.
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    /// Callback-observed transport. None means the command prefix is pending.
+    fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
         None
     }
     /// Precommit cancellation only. Accepted publication retains its gate.

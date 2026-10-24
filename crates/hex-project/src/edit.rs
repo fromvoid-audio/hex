@@ -2746,9 +2746,9 @@ impl Project {
 }
 
 impl Command {
-    /// Structural section edits use stopped resident preparation/publication.
+    /// Structural section edits use fenced resident preparation/publication.
     /// Metadata edits and marker merging do not alter musical material.
-    pub fn requires_stopped_section_edit(&self) -> bool {
+    pub fn requires_section_publication(&self) -> bool {
         matches!(
             self,
             Self::ReorderSectionBefore { .. }

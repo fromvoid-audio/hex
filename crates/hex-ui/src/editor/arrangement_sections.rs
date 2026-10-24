@@ -600,19 +600,6 @@ impl EditorView {
             } else if marker_only {
                 Mode::Move(id)
             } else {
-                if !launch_eligible
-                    && self
-                        .audio
-                        .as_ref()
-                        .and_then(|audio| audio.control.status())
-                        .is_some_and(|status| {
-                            status.playing.load(std::sync::atomic::Ordering::Acquire)
-                        })
-                {
-                    self.select_section_metadata(Some(id));
-                    self.error = Some("stop playback before reordering sections".into());
-                    return true;
-                }
                 Mode::Reorder(id)
             }
         } else {
@@ -728,15 +715,6 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
-                if g.capture.displaced(4.0)
-                    && self.audio_status().is_some_and(|status| {
-                        status.playing.load(std::sync::atomic::Ordering::Acquire)
-                    })
-                {
-                    self.error = Some("stop playback before reordering sections".into());
-                    self.sections.gesture = Some(g);
-                    return true;
-                }
                 // Structural destinations are fixed edges, independent of grid snap.
                 // A click must never move music, even when it snaps outside its marker.
                 let raw_beat = self.section_pointer(x, y, true).unwrap_or(beat);
@@ -2513,6 +2491,44 @@ mod tests {
             assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
             assert!(view.latched_seek_intent.is_none());
             assert!(!view.section_autoplay);
+        });
+        // Turning autoplay off must still leave ordinary section dragging
+        // available on an actually playing output.
+        editor.update(cx, |view, _| {
+            view.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(hex_engine::PlaybackCommand::Play)
+                .unwrap();
+        });
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let end = editor.read_with(cx, |view, _| position(view, 11));
+        visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.audio_status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
+            let gesture = view
+                .sections
+                .gesture
+                .as_ref()
+                .expect("live reorder capture");
+            assert!(matches!(
+                gesture.command,
+                Some(Command::ReorderSectionAfter { .. })
+                    | Some(Command::ReorderSectionBefore { .. })
+            ));
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.state.as_ref().unwrap().project, source);
+        });
+        editor.update(cx, |view, _| {
+            view.cancel_section_pointer();
         });
     }
 

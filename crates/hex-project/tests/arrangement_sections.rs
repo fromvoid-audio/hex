@@ -1294,7 +1294,7 @@ fn shared_seam_preserves_outer_span_and_markers_or_clears_only_crossed_music_ato
                 boundary,
                 marker_only,
             };
-            assert_eq!(command.requires_stopped_section_edit(), !marker_only);
+            assert_eq!(command.requires_section_publication(), !marker_only);
             let preview = editor
                 .project()
                 .preview_arrangement_section_edit(&command)
@@ -1493,7 +1493,7 @@ fn marker_split_preserves_music_and_left_identity_with_one_history_step() {
         section: id,
         at: b(3),
     };
-    assert!(!command.requires_stopped_section_edit());
+    assert!(!command.requires_section_publication());
     let preview = editor
         .project()
         .preview_arrangement_section_edit(&command)

@@ -45,8 +45,7 @@ fn add(
     (event, id)
 }
 #[test]
-fn resident_sections_reproject_stopped_cursor_and_history_and_refuse_stale_playing_or_failed_edits()
-{
+fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let mut h = ResidentHarness::new();
     let initial = h.next();
@@ -209,7 +208,7 @@ fn resident_sections_reproject_stopped_cursor_and_history_and_refuse_stale_playi
         .command(PlaybackCommand::Play)
         .unwrap();
     h.render();
-    let refused = run_callback(
+    let tempo_refused = run_callback(
         &mut h,
         section_request(
             redone.state.revision,
@@ -220,15 +219,15 @@ fn resident_sections_reproject_stopped_cursor_and_history_and_refuse_stale_playi
         ),
     );
     assert!(
-        refused
+        tempo_refused
             .error
             .as_ref()
-            .is_some_and(|e| e.contains("stop playback")),
+            .is_some_and(|e| e.contains("tempo changes")),
         "{:?}",
-        refused.error
+        tempo_refused.error
     );
-    assert_eq!(refused.state.project.snapshot(), after);
-    assert_eq!(refused.state.revision, redone.state.revision);
+    assert_eq!(tempo_refused.state.project.snapshot(), after);
+    assert_eq!(tempo_refused.state.revision, redone.state.revision);
     h.audio
         .as_mut()
         .unwrap()
@@ -358,7 +357,7 @@ fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
 #[test]
 fn structural_section_splices_use_stopped_publication_and_preserve_failed_history() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
-    for kind in 0..5 {
+    for kind in [0, 1, 3, 4] {
         let mut h = ResidentHarness::new();
         let initial = h.next();
         assert!(initial.error.is_none());
@@ -395,7 +394,6 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
                 length: BeatTime::from_quarters(3).unwrap(),
             },
             1 => Command::DeleteArrangementSection(section),
-            2 => Command::DuplicateArrangementSection(section),
             3 => Command::ResizeArrangementSectionBoundary {
                 left: section,
                 right: adjacent.unwrap(),
@@ -458,4 +456,171 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
         assert_eq!(redone.state.project.snapshot(), after);
         h.applied(applied);
     }
+}
+
+/// Native worker, prospective admission, publication and callback stay real.
+/// Every render also probes zero total and signed-net callback allocations.
+#[test]
+fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_refusal() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_000_000);
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let path = files.wav(48_000, 960_000);
+    let mut bytes = fs::read(&path).unwrap();
+    let mut frames = Vec::with_capacity(960_000);
+    for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+        let value: i16 = match i {
+            0..48_000 => 8192,
+            48_000..96_000 => 16384,
+            _ => -8192,
+        };
+        sample.copy_from_slice(&value.to_le_bytes());
+        frames.push([f32::from(value) / 32768.0; 2]);
+    }
+    fs::write(&path, bytes).unwrap();
+    let imported = h.run(Request::Import(path));
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    (applied, _) = h.applied(applied);
+    let audio = hex_engine::Audio::new(48_000, frames).unwrap();
+    let asset = imported.state.project.tracks()[0].clips()[0].asset();
+    let media = std::collections::BTreeMap::from([(asset, audio)]);
+    let (first, intro) = add(&mut h, imported.state.revision, "intro", 0, 2);
+    (applied, _) = h.applied(applied);
+    let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    (applied, _) = h.applied(applied);
+    // Reproduce the user's "section launch applied" predecessor, whose loop
+    // exists only in the actual runtime, never in the saved project.
+    let loop_region = hex_project::LoopRegion::new(0, 48_000, true).unwrap();
+    let mut intent = h.seek_intent(1, event.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: loop_region,
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok());
+    (applied, _) = h.applied(applied);
+    assert!(event.state.project.loop_region().is_none());
+    assert!(h.render().iter().all(|f| f[0] != 0.0));
+    for command in [
+        Command::ReorderSectionAfter {
+            section: intro,
+            after: chorus,
+        },
+        Command::ReorderSectionBefore {
+            section: intro,
+            before: chorus,
+        },
+        Command::DuplicateArrangementSection(intro),
+    ] {
+        let before = event.state.project.snapshot();
+        let revision = event.state.revision;
+        let position = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire);
+        event = run_callback(&mut h, section_request(revision, command.clone()));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        (applied, _) = h.applied(applied);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert!(
+            status.position.load(Acquire) > position,
+            "must inherit the advancing installation cursor"
+        );
+        let cursor = status.position.load(Acquire);
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &event.state.project,
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut oracle =
+            hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
+        oracle.apply(PlaybackCommand::Seek(cursor));
+        oracle.apply(PlaybackCommand::Play);
+        let mut expected = [[0.0; 2]; 64];
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            h.render(),
+            expected,
+            "installed arrangement must sound at the actual cursor"
+        );
+        let after = event.state.project.snapshot();
+        assert_ne!(after, before);
+        event = run_callback(&mut h, Request::Undo);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        (applied, _) = h.applied(applied);
+        let mut restored = event.state.project.snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        event = run_callback(&mut h, Request::Redo);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert_eq!(event.state.project.snapshot(), after);
+        (applied, _) = h.applied(applied);
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+        assert!(h.render().iter().all(|f| f[0] != 0.0));
+        h.refuse.store(true, std::sync::atomic::Ordering::Release);
+        let refused = run_callback(
+            &mut h,
+            section_request(
+                event.state.revision,
+                Command::DuplicateArrangementSection(intro),
+            ),
+        );
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project.snapshot(), after);
+        assert_eq!(refused.state.revision, event.state.revision);
+        h.refuse.store(false, std::sync::atomic::Ordering::Release);
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        );
+    }
+    for _ in 0..800 {
+        h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert!(
+        status.position.load(Acquire) < loop_region.end(),
+        "live section edits must keep the launched loop"
+    );
+    assert!(
+        event.state.project.loop_region().is_none(),
+        "the launched loop stays transient"
+    );
 }

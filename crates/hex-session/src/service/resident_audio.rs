@@ -286,7 +286,7 @@ impl Inputs<'_> {
                 gain_recording_track: None,
                 requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
             },
-            ResidentPublicationPolicy::StoppedArrangement,
+            ResidentPublicationPolicy::ArrangementEdit,
             selected.allowance()?,
         )?;
         selected.cancel_retired_from(&previous);
@@ -316,10 +316,29 @@ impl Inputs<'_> {
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = Playback::try_from_prepared_with_device_resources(
-            Arc::clone(&snapshot.prepared),
-            &snapshot.resources,
-        )
+        self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, None)
+    }
+    #[allow(clippy::too_many_arguments)] // One existing publication path with an optional transient clock.
+    fn publish_tagged_with_loop(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        section_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let mut playback = match section_loop {
+            Some(region) => Playback::try_from_prepared_section_candidate(
+                Arc::clone(&snapshot.prepared),
+                &snapshot.resources,
+                region,
+            ),
+            None => Playback::try_from_prepared_with_device_resources(
+                Arc::clone(&snapshot.prepared),
+                &snapshot.resources,
+            ),
+        }
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
@@ -766,11 +785,13 @@ enum Transition {
     MidiCommand(Box<Command>),
     SectionCommand {
         command: Box<Command>,
-        cursor: hex_project::BeatTime,
+        cursor: Option<hex_project::BeatTime>,
+        section_loop: Option<(hex_project::BeatTime, hex_project::BeatTime)>,
     },
     SectionHistory {
         redo: bool,
-        cursor: hex_project::BeatTime,
+        cursor: Option<hex_project::BeatTime>,
+        section_loop: Option<(hex_project::BeatTime, hex_project::BeatTime)>,
     },
 }
 
@@ -1252,7 +1273,7 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
-    pub(super) fn section_history_requires_stop(&self, redo: bool) -> bool {
+    pub(super) fn section_history_requires_publication(&self, redo: bool) -> bool {
         self.editor
             .inspect_history(redo, |source, target| {
                 source.arrangement_sections() != target.arrangement_sections()
@@ -1263,23 +1284,41 @@ impl Session {
             .unwrap_or(false)
     }
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn stopped_section_snapshot(
+    pub(super) fn section_snapshot(
         &mut self,
         command: Option<Command>,
         redo: bool,
-        frame: u64,
+        position: ArrangementEditPosition,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
-        let cursor = self.project().tempo_map().frame_to_beat(frame)?;
+        let cursor = if position.playing {
+            None
+        } else {
+            Some(self.project().tempo_map().frame_to_beat(position.frame)?)
+        };
+        let section_loop = position
+            .section_loop
+            .map(|region| -> Result<_, SessionError> {
+                Ok((
+                    self.project().tempo_map().frame_to_beat(region.start())?,
+                    self.project().tempo_map().frame_to_beat(region.end())?,
+                ))
+            })
+            .transpose()?;
         let transition = match command {
             Some(command) => Transition::SectionCommand {
                 command: Box::new(command),
                 cursor,
+                section_loop,
             },
-            None => Transition::SectionHistory { redo, cursor },
+            None => Transition::SectionHistory {
+                redo,
+                cursor,
+                section_loop,
+            },
         };
         self.resident_transition(transition, context, sink, admission, current, None)
     }
@@ -1431,9 +1470,18 @@ impl Session {
         let waveforms = &self.audio_clip_waveforms;
         let stopped_cursor = match &transition {
             Transition::SectionCommand { cursor, .. }
-            | Transition::SectionHistory { cursor, .. } => Some(*cursor),
+            | Transition::SectionHistory { cursor, .. } => *cursor,
             _ => None,
         };
+        let section_loop = match &transition {
+            Transition::SectionCommand { section_loop, .. }
+            | Transition::SectionHistory { section_loop, .. } => *section_loop,
+            _ => None,
+        };
+        let section_transition = matches!(
+            &transition,
+            Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
+        );
         let prepare = |source: &Project, project: &Project| {
             let mut snapshot =
                 inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
@@ -1447,6 +1495,44 @@ impl Session {
             };
             if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
+            } else if section_transition {
+                // Existing live compensation/active-loop gates cannot rebind a
+                // changed tempo map. Refuse before canonical history/publication,
+                // rather than committing a candidate the callback must reject.
+                if source.tempo_map() != project.tempo_map() {
+                    return Err(SessionError::Invalid(
+                        "live section edits across tempo changes require stopped playback",
+                    ));
+                }
+                // Keep the launched loop at its musical timeline range. A section
+                // move changes the music under that range, never teleports transport.
+                let region = section_loop
+                    .map(|(start, end)| -> Result<_, SessionError> {
+                        Ok(hex_project::LoopRegion::new(
+                            project.tempo_map().beat_to_frame(start)?,
+                            project.tempo_map().beat_to_frame(end)?,
+                            true,
+                        )?)
+                    })
+                    .transpose()?;
+                let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
+                inputs.publish_tagged_with_loop(
+                    &mut snapshot,
+                    project,
+                    sink,
+                    ResidentPublicationMetadata {
+                        context,
+                        device_preview: None,
+                        tuning_preview: None,
+                        seek_request: None,
+                        stopped_restore: false,
+                        computer_keyboard_request: None,
+                        gain_recording_track: None,
+                        requires_preroll,
+                    },
+                    ResidentPublicationPolicy::ArrangementEdit,
+                    region,
+                )?;
             } else {
                 inputs.publish(&mut snapshot, project, sink, context)?;
             }

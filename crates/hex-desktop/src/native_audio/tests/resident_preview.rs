@@ -68,10 +68,16 @@ impl WorkerAudioSink for ResidentSink {
             }
         });
     }
-    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        self.inner.begin_section_edit(context)
+    fn begin_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+        allow_playing: bool,
+    ) -> Result<(), String> {
+        self.inner.begin_section_edit(context, allow_playing)
     }
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
         self.inner.section_edit_ready()
     }
     fn cancel_section_edit(&mut self) {
