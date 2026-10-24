@@ -1,13 +1,20 @@
 //! Real rendered keys and lane edits through the ordinary worker/receipt owner.
 use super::*;
 use crate::editor::loop_selection_ui_test::{click, fixture, pump};
-use gpui::{MouseButton, TestAppContext, VisualTestContext, point, px};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 fn selector(prefix: &str, id: u64) -> &'static str {
     Box::leak(format!("{prefix}-{id}").into_boxed_str())
 }
 
+fn toggle_toolbar(visual: &mut VisualTestContext) {
+    let button = visual.debug_bounds("automation-view-toggle").unwrap();
+    visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+}
+
 #[gpui::test]
-fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edits(
+fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edits(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
@@ -36,7 +43,7 @@ fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edit
             .rendered_background(selector("clip-name", clip.value()))
             .unwrap()
     });
-    visual.simulate_keystrokes("a");
+    toggle_toolbar(&mut visual);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(v.automation_view.enabled);
@@ -53,6 +60,7 @@ fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edit
     }
     for key in [
         "0",
+        "a",
         "cmd-d",
         "cmd-e",
         "b",
@@ -99,7 +107,7 @@ fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edit
         });
     }
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
-    visual.simulate_keystrokes("a");
+    toggle_toolbar(&mut visual);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(!v.automation_view.enabled);
@@ -124,7 +132,7 @@ fn foreground_mode_blocks_single_clip_nudge_and_trim_with_root_or_header_focus(
     for clip in [audio, midi] {
         click(&mut visual, clip, false);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        visual.simulate_keystrokes("a");
+        toggle_toolbar(&mut visual);
         for header in [false, true] {
             if header {
                 visual.update(|window, cx| {
@@ -157,7 +165,7 @@ fn foreground_mode_blocks_single_clip_nudge_and_trim_with_root_or_header_focus(
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
         visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
-        visual.simulate_keystrokes("a");
+        toggle_toolbar(&mut visual);
     }
 }
 
@@ -169,7 +177,7 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     click(&mut visual, audio, false);
-    visual.simulate_keystrokes("a");
+    toggle_toolbar(&mut visual);
     visual.run_until_parked();
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()
@@ -217,7 +225,8 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     });
     assert_eq!(visual.debug_bounds(marker), Some(held));
     let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
-    visual.simulate_keystrokes("a a");
+    toggle_toolbar(&mut visual);
+    toggle_toolbar(&mut visual);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         let state = v.state.as_ref().unwrap();
@@ -259,7 +268,9 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
 }
 
 #[gpui::test]
-fn a_preserves_typing_midi_and_held_edits_and_toolbar_is_explicit(cx: &mut TestAppContext) {
+fn activation_keys_preserve_typing_midi_and_held_edits_and_toolbar_is_explicit(
+    cx: &mut TestAppContext,
+) {
     let (handle, editor, audio, _, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -348,7 +359,7 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     click(&mut visual, audio, false);
-    visual.simulate_keystrokes("a");
+    toggle_toolbar(&mut visual);
     visual.run_until_parked();
     let track = editor.read_with(&visual, |v, _| {
         v.state.as_ref().unwrap().project.tracks()[0].id()
