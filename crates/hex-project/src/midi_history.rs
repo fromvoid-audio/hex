@@ -844,6 +844,7 @@ fn matching_clip_shell(
                     .zip(b.midi_clips().iter().find(|c| c.id == clip))
                     .is_some_and(|(a, b)| {
                         let MidiClip {
+                            content_view,
                             active,
                             playback_offset,
                             name,
@@ -854,7 +855,8 @@ fn matching_clip_shell(
                             source: _,
                             volume,
                         } = a;
-                        active == &b.active
+                        content_view == &b.content_view
+                            && active == &b.active
                             && playback_offset == &b.playback_offset
                             && name == &b.name
                             && flavor == &b.flavor

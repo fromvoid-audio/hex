@@ -166,13 +166,14 @@ fn validate_copy(clip: &hex_project::Clip, occurrence: AudioViewOccurrence) -> R
     Ok(())
 }
 
-fn occurrence_edit(
+pub(super) fn occurrence_edit(
     edit: &AudioClipEdit,
     occurrence: AudioViewOccurrence,
     preparation: &AudioTransformPreparation,
     current_tempo: &hex_project::TempoMap,
 ) -> Result<AudioClipEdit, Invalid> {
     let mut root = edit.clone();
+    root.content_view = None;
     root.view_start = 0;
     root.view_end = root.domain.clock.length();
     root.placement = None;
@@ -196,7 +197,7 @@ fn occurrence_edit(
     Ok(root)
 }
 
-fn placed_clip(audio: Audio, clip: &hex_project::Clip) -> Result<Clip, Invalid> {
+pub(super) fn placed_clip(audio: Audio, clip: &hex_project::Clip) -> Result<Clip, Invalid> {
     Clip::region(
         audio,
         clip.start(),

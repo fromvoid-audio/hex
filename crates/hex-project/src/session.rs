@@ -297,6 +297,14 @@ pub(crate) fn apply(
             Ok(Created::SessionClip(id))
         }
         Command::CopyArrangementMidiToSession { source, scene } => {
+            if project
+                .midi_clip(source)
+                .is_some_and(|clip| clip.content_view().is_some())
+            {
+                return Err(Invalid(
+                    "directed arrangement midi cannot yet transfer to an ongoing session clip; use a forward clip",
+                ));
+            }
             let (track, source_note_count) = project
                 .tracks
                 .iter()

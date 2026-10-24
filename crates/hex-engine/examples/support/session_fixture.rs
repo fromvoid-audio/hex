@@ -58,6 +58,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -165,6 +166,7 @@ pub fn finite_oracle(
                 return Err("oracle source is not midi".into());
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: clip.source.one_shot_boundary,
