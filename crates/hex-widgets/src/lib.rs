@@ -11,7 +11,7 @@
 mod action;
 pub use action::{action, action_surface, round_action_surface};
 mod bar_editor;
-pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
+pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 mod color_picker;
 mod curve;
 mod device_meters;
