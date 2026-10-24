@@ -2164,4 +2164,47 @@ mod tests {
             "hex preparation evidence: actual_slot_destructor_panic; supported-controls=completed; destructor-count=1"
         );
     }
+    #[test]
+    fn grouped_origins_recover_original_bank_after_late_alias_failure_or_cancel() {
+        use hex_project::{Command, Editor};
+        assert!(crate::pcm_arc::native_layout_known());
+        for fail in [false, true] {
+            let (project, bank) = fixture(2);
+            let identity = bank.test_bank_identity();
+            let source = bank
+                .source_token(project.assets().next().unwrap().id())
+                .unwrap();
+            let ids = project.tracks()[0]
+                .clips()
+                .iter()
+                .map(|clip| clip.id())
+                .collect();
+            let mut editor = Editor::new(project, 8).unwrap();
+            editor.execute(Command::GroupClips(ids)).unwrap();
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            custody.fail_after = fail.then_some(0);
+            let token = custody
+                .begin_arrangement_on_control(editor.project(), 1, bank)
+                .unwrap_or_else(|_| panic!("grouped preflight"));
+            assert!(custody.slots[0].prepared_origin.is_some());
+            assert!(custody.slots[0].owner.is_some());
+            assert_eq!(custody.resident_pcm_capacity_frames().unwrap(), 24);
+            if fail {
+                assert_eq!(custody.phase(), AudioPreparationPhase::Cleaning);
+            } else {
+                assert_eq!(custody.phase(), AudioPreparationPhase::ArrangementSources);
+                assert!(custody.cancel(&token));
+            }
+            let caller = std::thread::current().id();
+            custody.slots[0].probe = Some(DropProbe(Some(Box::new(move || {
+                assert_eq!(std::thread::current().id(), caller);
+            }))));
+            custody.cleanup_on_control();
+            assert!(custody.slots[0].prepared_origin.is_none());
+            assert!(custody.slots[0].owner.is_none());
+            let recovered = custody.recover_on_control(&token).unwrap();
+            assert_eq!(recovered.test_bank_identity(), identity);
+            assert!(recovered.source_view(&source).is_ok());
+        }
+    }
 }
