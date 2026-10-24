@@ -29,6 +29,7 @@ mod audio_events;
 mod project_tempo;
 mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+pub use track_order::TrackReorderSelection;
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;

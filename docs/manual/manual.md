@@ -109,6 +109,11 @@ right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
 
+shift-click ordinary track headers to select a range; command-click toggles
+individual members. drag any selected track name to reorder the selection as
+one block, keeping its order and content. dragging an unselected name moves
+that track alone. one undo restores the previous order.
+
 drag the bottom edge of a track header to resize that row. hold **option** while
 resizing to give all ordinary tracks the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.
