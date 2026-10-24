@@ -138,6 +138,10 @@ clip bounces include instrument and effect release tails. a time selection rende
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
+stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
+a fresh playback state so live release voices cannot duplicate the baked tails.
+undo and redo of an in-place bounce use the same stopped-edit rule.
+
 bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. in-place bounce removes the baked devices, so it
 refuses if that would change unselected material or a tail would overlap it; use

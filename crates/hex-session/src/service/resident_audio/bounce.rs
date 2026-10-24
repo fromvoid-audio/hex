@@ -126,9 +126,36 @@ pub(in crate::service) fn bounce_arrangement(
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
 ) -> Result<(Created, Arc<PreparedRevision>), String> {
+    if in_place
+        && current.as_ref().is_some_and(|s| {
+            s.inputs.keyboard.is_some()
+                || s.inputs.audition.is_some()
+                || s.inputs.expression.is_some()
+        })
+    {
+        return Err("disable live midi input and audition before bouncing in place".into());
+    }
+    // Reuse the native stopped fence, never inherit outgoing voices that are
+    // now represented by the baked PCM. Command-B retains original ownership.
+    let stopped = if in_place {
+        Some(
+            crate::service::stopped_arrangement::acquire(
+                sink,
+                hex_engine::AudioSourceContext {
+                    editor_revision: context.editor_revision.saturating_sub(1),
+                    ..context
+                },
+                &session.shutdown,
+                Some(control),
+            )
+            .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
     let sink = std::cell::RefCell::new(sink);
     let captured = target.clone();
-    let (created, snapshot) = session.bounce_arrangement_using(
+    let result = session.bounce_arrangement_using(
         target,
         in_place,
         directory,
@@ -201,12 +228,13 @@ pub(in crate::service) fn bounce_arrangement(
                         let mut sink = sink
                             .try_borrow_mut()
                             .map_err(|_| SessionError::Invalid("bounce sink already borrowed"))?;
-                        prepare_import(
+                        prepare_bounce_import(
                             input,
                             context,
                             &mut **sink,
                             admission,
                             current.as_ref(),
+                            stopped,
                             &mut || {
                                 control.seal_prepared_adoption().map_err(|_| {
                                     SessionError::Invalid("bounce cancelled before adoption")
@@ -217,8 +245,64 @@ pub(in crate::service) fn bounce_arrangement(
                 )
                 .map_err(|e| e.to_string())
         },
-    )?;
+    );
+    if result.is_err() && stopped.is_some() {
+        sink.try_borrow_mut()
+            .map_err(|_| "bounce cancellation sink already borrowed")?
+            .cancel_section_edit();
+    }
+    let (created, snapshot) = result?;
     let prepared = Arc::clone(&snapshot.prepared);
     *current = Some(snapshot);
     Ok((created, prepared))
+}
+
+/// Undo and Redo of in-place bakes have the same live-voice replacement boundary.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::service) fn bounce_history(
+    session: &mut Session,
+    redo: bool,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: &mut Option<Snapshot>,
+) -> Result<Option<Arc<PreparedRevision>>, SessionError> {
+    if current.as_ref().is_some_and(|s| {
+        s.inputs.keyboard.is_some() || s.inputs.audition.is_some() || s.inputs.expression.is_some()
+    }) {
+        return Err(SessionError::Invalid(
+            "disable live midi input and audition before bounce history",
+        ));
+    }
+    let frame = crate::service::stopped_arrangement::acquire(
+        sink,
+        hex_engine::AudioSourceContext {
+            editor_revision: context.editor_revision.saturating_sub(1),
+            ..context
+        },
+        &session.shutdown,
+        None,
+    )?;
+    match session.stopped_bounce_history_snapshot(
+        redo,
+        frame,
+        context,
+        sink,
+        admission,
+        current.as_ref(),
+    ) {
+        Ok(Some((_, snapshot))) => {
+            let prepared = Arc::clone(&snapshot.prepared);
+            *current = Some(snapshot);
+            Ok(Some(prepared))
+        }
+        Ok(None) => {
+            sink.cancel_section_edit();
+            Ok(None)
+        }
+        Err(error) => {
+            sink.cancel_section_edit();
+            Err(error)
+        }
+    }
 }

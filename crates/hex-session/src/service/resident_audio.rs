@@ -11,7 +11,7 @@ use hex_engine::native_device_resources::{
 
 mod bounce;
 mod runtime_inputs;
-pub(super) use bounce::{bounce_arrangement, bounce_clip};
+pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
@@ -235,14 +235,29 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         cursor: hex_project::BeatTime,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let destination = project.tempo_map().beat_to_frame(cursor)?;
+        self.publish_stopped_at_frame(
+            snapshot,
+            project,
+            sink,
+            context,
+            project.tempo_map().beat_to_frame(cursor)?,
+        )
+    }
+    fn publish_stopped_at_frame(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+        destination: u64,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let mut playback = if snapshot.prepared.arrangement_seek_requires_preroll() {
             let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                 Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
                 hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
-            ).map_err(|error| SessionError::NativeAudio(format!("section stopped preparation refused: {error:?}")))?;
+            ).map_err(|error| SessionError::NativeAudio(format!("stopped arrangement preparation refused: {error:?}")))?;
             Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
-                SessionError::NativeAudio(format!("section stopped runtime refused: {error:?}"))
+                SessionError::NativeAudio(format!("stopped arrangement runtime refused: {error:?}"))
             })?
         } else {
             // Stateless arrangements need no replay. Preserve the raw stopped
@@ -258,14 +273,14 @@ impl Inputs<'_> {
                 ))
                 .map_err(|error| {
                     SessionError::NativeAudio(format!(
-                        "section stopped positioning refused: {error:?}"
+                        "stopped arrangement positioning refused: {error:?}"
                     ))
                 })?;
             playback
         };
         if playback.position() != destination || playback.playing() {
             return Err(SessionError::Invalid(
-                "section edit cannot retain the stopped musical cursor",
+                "arrangement edit cannot retain the stopped cursor",
             ));
         }
         let previous = snapshot.inputs.clone();
@@ -669,6 +684,19 @@ pub(super) fn prepare_import(
     current: Option<&Snapshot>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
+    prepare_bounce_import(input, context, sink, admission, current, None, admit)
+}
+/// An in-place bounce uses the already-acquired stopped lease and a fresh
+/// reconstructed runtime, so carried live voices cannot duplicate baked tails.
+pub(super) fn prepare_bounce_import(
+    input: crate::import_batch::Preparation<'_>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+    stopped: Option<u64>,
+    admit: &mut dyn FnMut() -> Result<(), SessionError>,
+) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
@@ -691,7 +719,11 @@ pub(super) fn prepare_import(
         input.waveforms,
     )?;
     admit()?;
-    inputs.publish(&mut snapshot, input.project, sink, context)?;
+    if let Some(frame) = stopped {
+        inputs.publish_stopped_at_frame(&mut snapshot, input.project, sink, context, frame)?;
+    } else {
+        inputs.publish(&mut snapshot, input.project, sink, context)?;
+    }
     Ok(snapshot)
 }
 
@@ -771,6 +803,10 @@ enum Transition {
     SectionHistory {
         redo: bool,
         cursor: hex_project::BeatTime,
+    },
+    BounceHistory {
+        redo: bool,
+        frame: u64,
     },
 }
 
@@ -1252,6 +1288,24 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
+    pub(super) fn stopped_bounce_history_snapshot(
+        &mut self,
+        redo: bool,
+        frame: u64,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        self.resident_transition(
+            Transition::BounceHistory { redo, frame },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )
+    }
     pub(super) fn section_history_requires_stop(&self, redo: bool) -> bool {
         self.editor
             .inspect_history(redo, |source, target| {
@@ -1429,6 +1483,10 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
+        let stopped_bounce_frame = match &transition {
+            Transition::BounceHistory { frame, .. } => Some(*frame),
+            _ => None,
+        };
         let stopped_cursor = match &transition {
             Transition::SectionCommand { cursor, .. }
             | Transition::SectionHistory { cursor, .. } => Some(*cursor),
@@ -1445,7 +1503,9 @@ impl Session {
             } else {
                 context
             };
-            if let Some(cursor) = stopped_cursor {
+            if let Some(frame) = stopped_bounce_frame {
+                inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
+            } else if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
             } else {
                 inputs.publish(&mut snapshot, project, sink, context)?;
@@ -1461,7 +1521,9 @@ impl Session {
                 .editor
                 .execute_midi_prepared_transition(*command, prepare)
                 .map(Some),
-            Transition::History { redo } | Transition::SectionHistory { redo, .. } => {
+            Transition::History { redo }
+            | Transition::SectionHistory { redo, .. }
+            | Transition::BounceHistory { redo, .. } => {
                 let result = if redo {
                     self.editor.redo_prepared_transition(prepare)
                 } else {

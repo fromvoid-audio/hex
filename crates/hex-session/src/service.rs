@@ -29,6 +29,7 @@ mod export_lane;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
+mod stopped_arrangement;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
@@ -2285,6 +2286,11 @@ fn run_worker(
                     || control.is_cancelled()
                 {
                     Some("bounce cancelled · target changed".into())
+                } else if compiled
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.gain_recording_track().is_some())
+                {
+                    Some("finish gain recording before bouncing".into())
                 } else if pending_sampler_parameter.is_some()
                     || device_gesture.snapshot().is_some()
                     || tuning_gesture.snapshot().is_some()
@@ -4900,6 +4906,53 @@ fn run_worker(
                         }
                         Ok(_) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session
+                            .editor
+                            .next_history_requires_stopped_bounce(matches!(
+                                &request,
+                                Request::Redo
+                            )) =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            resident_audio::bounce_history(
+                                &mut session,
+                                matches!(request, Request::Redo),
+                                context,
+                                sink,
+                                admission,
+                                &mut resident_snapshot,
+                            )
+                        });
+                    match result {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("bounce history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 request @ (Request::Undo | Request::Redo)

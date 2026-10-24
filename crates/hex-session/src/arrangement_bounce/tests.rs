@@ -179,11 +179,19 @@ fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_
             pcm(reopened.compile_prepared_revision(None).unwrap(), 80_000),
             pcm(session.compile_prepared_revision(None).unwrap(), 80_000)
         );
+        assert_eq!(
+            session.editor.next_history_requires_stopped_bounce(false),
+            inplace
+        );
         let after = session.project().clone();
         assert!(session.undo());
         assert_eq!(
             session.project().snapshot().tracks,
             original.snapshot().tracks
+        );
+        assert_eq!(
+            session.editor.next_history_requires_stopped_bounce(true),
+            inplace
         );
         assert!(session.redo());
         assert_eq!(session.project().snapshot().tracks, after.snapshot().tracks);
@@ -399,6 +407,7 @@ fn multi_track_failure_and_cancellation_after_render_preserve_the_entire_transac
 fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
     let folder = Folder::new();
     let (mut session, track, clip) = fixture();
+    let expected = pcm(session.compile_prepared_revision(None).unwrap(), 80_000);
     let Created::Clip(other) = session
         .command(Command::PlaceMidiClip {
             track,
@@ -480,6 +489,18 @@ fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
         before.track(track).unwrap()
     );
     let audio = &session.project().tracks()[1].clips()[0];
+    let samples = session.audio(audio.asset()).unwrap().frames();
+    let expected = &expected[audio.start() as usize..(audio.start() + audio.duration()) as usize];
+    let maximum = samples
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        maximum < 1e-5,
+        "unrelated track/bus processing is not baked: {maximum}"
+    );
     assert!(
         audio.start() + audio.duration() < 72_000,
         "unselected later note is excluded"
