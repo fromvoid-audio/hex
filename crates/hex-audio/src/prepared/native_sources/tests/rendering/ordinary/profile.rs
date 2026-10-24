@@ -23,7 +23,8 @@ fn actual_native_ordinary_graph_callback_profile() {
         f.control.command(PlaybackCommand::Play).unwrap();
         let mut wall = Vec::with_capacity(N);
         let mut cpu = Vec::with_capacity(N);
-        let mut replies = Vec::with_capacity(N);
+        let mut late_starts = 0;
+        let mut max_start_lateness = Duration::ZERO;
         let mut failure = None;
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -39,6 +40,9 @@ fn actual_native_ordinary_graph_callback_profile() {
                     let mut delivered = false;
                     let cpu_start = cpu_time();
                     let start = Instant::now();
+                    let lateness = start.saturating_duration_since(target);
+                    max_start_lateness = max_start_lateness.max(lateness);
+                    late_starts += usize::from(lateness >= period);
                     allocation_free(|| {
                         f.data.owner_mut().unwrap().run(|callback, _| {
                             callback.begin_block();
@@ -53,15 +57,10 @@ fn actual_native_ordinary_graph_callback_profile() {
                     let elapsed = start.elapsed().as_nanos();
                     let cpu_elapsed = cpu_time().checked_sub(cpu_start).unwrap().as_nanos();
                     let dispatched = Instant::now();
-                    let reply = loop {
-                        if !delivered { break None; }
-                        if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, f.binding).unwrap()
-                            > block_index as u64 {
-                            break Some(dispatched.elapsed().as_nanos());
-                        }
-                        if Instant::now() >= next_target { break None; }
-                        std::thread::yield_now();
-                    };
+                    // The transport consumes reply sequence n-2 at callback n.
+                    // Enforce that real host boundary below; requiring reply n
+                    // before callback n+1 invents a one-quantum deadline. Do not
+                    // wait for a worker between callbacks or delay its consumer.
                     let correct = output.iter().enumerate().all(|(index, actual)| {
                         let at = block_index * Q + index;
                         let expected = if (2 * Q..2 * Q + 32).contains(&at) {
@@ -70,7 +69,7 @@ fn actual_native_ordinary_graph_callback_profile() {
                         } else { [0.0; 2] };
                         *actual == expected
                     });
-                    if !delivered || !correct || reply.is_none() {
+                    if !delivered || !correct {
                         // A normal headless thread can itself start late. Keep
                         // that observation separate from callback CPU and the
                         // actual paired worker's publication/transport state.
@@ -84,18 +83,22 @@ fn actual_native_ordinary_graph_callback_profile() {
                             start.saturating_duration_since(target).as_nanos(),
                             next_target.checked_duration_since(dispatched).map(|duration| duration.as_nanos()),
                             crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, f.binding));
-                        failure = Some((block_index, delivered, correct, reply));
+                        failure = Some((block_index, delivered, correct));
                         break;
                     }
                     if block_index >= WARM {
                         wall.push(elapsed);
                         cpu.push(cpu_elapsed);
-                        replies.push(reply.unwrap());
                     }
                     target = next_target;
                 }
             }).join().unwrap();
         });
+        if failure.is_none() {
+            // The final two replies have no consumer in this finite workload.
+            // Observe their actual completion on control outside measurement.
+            replacement::wait_for_blocks(&root, f.binding, (WARM + N) as u64);
+        }
         let returned = dispose(f);
         assert!(returned.error.is_none());
         assert_eq!(failure, None, "ordinary native profile failure");
@@ -106,12 +109,12 @@ fn actual_native_ordinary_graph_callback_profile() {
         );
         wall.sort_unstable();
         cpu.sort_unstable();
-        replies.sort_unstable();
         println!(
-            "ordinary native profile location={location} rate=48000 quantum={Q} warmup={WARM} measured={N} wall_ns[p50,p99,max]={:?} cpu_ns[p50,p99,max]={:?} reply_ns[p50,p99,max]={:?}",
+            "ordinary native profile location={location} rate=48000 quantum={Q} warmup={WARM} measured={N} wall_ns[p50,p99,max]={:?} cpu_ns[p50,p99,max]={:?} pipeline_frames={} late_starts={late_starts} max_start_lateness_ns={}",
             [wall[N / 2], wall[N * 99 / 100], wall[N - 1]],
             [cpu[N / 2], cpu[N * 99 / 100], cpu[N - 1]],
-            [replies[N / 2], replies[N * 99 / 100], replies[N - 1]]
+            Q * 2,
+            max_start_lateness.as_nanos()
         );
     }
 }
