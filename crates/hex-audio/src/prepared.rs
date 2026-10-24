@@ -258,6 +258,11 @@ impl ActivePublication {
 }
 enum QueuedPublication {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    NativeEpoch {
+        target: crate::candidate_custody::NativeEpochTarget,
+        fence: StoppedEditFence,
+    },
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
@@ -1505,7 +1510,9 @@ impl PublicationControl {
         forwarded_pcm: bool,
         source_context: Option<hex_engine::AudioSourceContext>,
     ) -> Result<u64, PublishError> {
-        let reason = if self.status.sampler_edit.active()
+        let reason = if self.status.sampler_edit.native_epoch_active() {
+            Some("native epoch excludes unrelated graph publication")
+        } else if self.status.sampler_edit.active()
             && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
                 if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
         {
@@ -1635,7 +1642,7 @@ impl PublicationControl {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
-        self.status.sampler_edit.retire_abort_on_control();
+        self.status.retire_stopped_edit_on_control();
         let mut count = 0;
         for _ in 0..RETIRED {
             let publication = self
@@ -2303,19 +2310,27 @@ impl Callback {
                     .take()
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
-                        self.publications.pop().ok().map(|queued| match queued {
-                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                            QueuedPublication::Native(endpoint) => {
-                                ReturnedPublication::Native(endpoint)
-                            }
-                            QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
-                            QueuedPublication::Eligible(value) => {
-                                ReturnedPublication::Eligible(value.reject_before_install())
-                            }
-                            QueuedPublication::Legacy(value) => ReturnedPublication::Legacy(value),
-                            QueuedPublication::Candidate(value) => {
-                                ReturnedPublication::Candidate(value.reject_before_install())
-                            }
+                        self.publications.pop().ok().and_then(|queued| {
+                            Some(match queued {
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                QueuedPublication::NativeEpoch { .. } => return None,
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                QueuedPublication::Native(endpoint) => {
+                                    ReturnedPublication::Native(endpoint)
+                                }
+                                QueuedPublication::Domain(pages) => {
+                                    ReturnedPublication::Domain(pages)
+                                }
+                                QueuedPublication::Eligible(value) => {
+                                    ReturnedPublication::Eligible(value.reject_before_install())
+                                }
+                                QueuedPublication::Legacy(value) => {
+                                    ReturnedPublication::Legacy(value)
+                                }
+                                QueuedPublication::Candidate(value) => {
+                                    ReturnedPublication::Candidate(value.reject_before_install())
+                                }
+                            })
                         })
                     });
             }
@@ -2462,6 +2477,8 @@ impl Callback {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::NativeEpoch { .. } => return,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         QueuedPublication::Native(endpoint) => {
                             self.return_publication(ReturnedPublication::Native(endpoint));
                             return;
@@ -2524,6 +2541,12 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                QueuedPublication::NativeEpoch { target, fence } => {
+                    self.consume_commands();
+                    self.return_native_epoch_runtime(target, fence);
+                    return;
+                }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 QueuedPublication::Native(endpoint) => {
                     if let Err(endpoint) = self

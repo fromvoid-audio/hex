@@ -8,10 +8,12 @@ use hex_lattice::{
 use hex_project::{Command, Created, Editor, Project};
 
 mod deadlines;
+mod epoch;
 #[cfg(not(debug_assertions))]
 mod profile;
 mod reorder;
 mod replacement;
+mod stream_refusal;
 
 fn close_backend(
     data: Guard<NativeCallbackOwner>,
@@ -704,6 +706,34 @@ fn replacement_preparation(
     project: &Project,
     samples: &[[f32; 2]],
 ) -> crate::AudioCandidateTicket {
+    replacement_preparation_inner(control, bindings, project, samples, None, vec![], None)
+}
+fn replacement_epoch_preparation(
+    control: &mut Control,
+    bindings: &[Binding],
+    project: &Project,
+    samples: &[[f32; 2]],
+    fence: StoppedEditFence,
+) -> crate::AudioCandidateTicket {
+    replacement_preparation_inner(
+        control,
+        bindings,
+        project,
+        samples,
+        Some(fence),
+        vec![],
+        None,
+    )
+}
+fn replacement_preparation_inner(
+    control: &mut Control,
+    bindings: &[Binding],
+    project: &Project,
+    samples: &[[f32; 2]],
+    fence: Option<StoppedEditFence>,
+    domains: Vec<crate::AudioCandidateDomainToken>,
+    streamed: Option<hex_engine::StreamedSourceMetadata>,
+) -> crate::AudioCandidateTicket {
     let quote = control
         .with_native_effect_definition(bindings, |definition| {
             let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
@@ -724,7 +754,7 @@ fn replacement_preparation(
                     .storage_reservation(std::mem::size_of_val(samples))
                     .unwrap(),
             },
-            vec![],
+            domains,
         )
         .unwrap_or_else(|refusal| {
             panic!("reserved replacement: {} quote {quote:?}", refusal.reason)
@@ -754,7 +784,11 @@ fn replacement_preparation(
                 token,
                 bindings,
                 |cell, effects| {
-                    cell.copy_resident_source_on_control(asset, &source)?;
+                    if let Some(metadata) = streamed.as_ref() {
+                        cell.add_streamed_source_on_control(metadata.clone())?;
+                    } else {
+                        cell.copy_resident_source_on_control(asset, &source)?;
+                    }
                     effects
                         .prepare(
                             cell,
@@ -773,9 +807,20 @@ fn replacement_preparation(
         crate::AudioCandidatePreparationProgress::Ready,
         "actual reserved preparation: {preparation_error:?}"
     );
-    let ticket = control
-        .stage_audio_candidate_preparation(token, 41)
-        .unwrap();
+    let ticket = if let Some(fence) = fence {
+        assert!(
+            control
+                .stage_audio_candidate_preparation(token, 41)
+                .is_err()
+        );
+        control
+            .stage_native_epoch_preparation(token, fence)
+            .unwrap()
+    } else {
+        control
+            .stage_audio_candidate_preparation(token, 41)
+            .unwrap()
+    };
     assert!(
         control
             .prepare_audio_candidate_with_native_sources_on_control(token, bindings, |_, _| {

@@ -116,6 +116,16 @@ impl Custody {
                     | AudioCandidateReturnKind::FinalActive => {
                         state.manifest.is_none() && state.covering_successor.is_none()
                     }
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    AudioCandidateReturnKind::StoppedForNativeEpoch => {
+                        state.manifest.is_none()
+                            && state.covering_successor.is_none()
+                            && state
+                                .runtime
+                                .as_ref()
+                                .and_then(|r| r.status())
+                                .is_some_and(|s| !s.playing)
+                    }
                     AudioCandidateReturnKind::Replaced => state
                         .manifest
                         .as_ref()

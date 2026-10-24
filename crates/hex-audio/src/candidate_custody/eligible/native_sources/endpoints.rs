@@ -31,6 +31,9 @@ pub(crate) struct NativeEndpointBank {
     routing: [usize; MAX_SOURCES],
     routing_len: usize,
     cycle: NativeEffectCycle,
+    // Set only by an exact stopped active-runtime return. Consumed by the
+    // first live constructor-paired endpoint after every old endpoint returned.
+    epoch_returned: bool,
 }
 impl NativeEndpointBank {
     pub(crate) fn new() -> Result<Self, &'static str> {
@@ -47,6 +50,7 @@ impl NativeEndpointBank {
             routing: [0; MAX_SOURCES],
             routing_len: 0,
             cycle: NativeEffectCycle::default(),
+            epoch_returned: false,
         })
     }
     pub(crate) fn data_quote() -> Option<usize> {
@@ -66,6 +70,12 @@ impl NativeEndpointBank {
             return Err(endpoint);
         };
         if self.cycle.active()
+            || !endpoint
+                .0
+                .callback
+                .as_ref()
+                .is_some_and(NativeEffectEntry::has_live_epoch)
+            || (self.cycle.revoked() && (!self.epoch_returned || self.routing_len != 0))
             || self.entries.get(index).is_none_or(Option::is_some)
             || self.routing_len == MAX_SOURCES
         {
@@ -82,6 +92,12 @@ impl NativeEndpointBank {
             .copy_within(position..self.routing_len, position + 1);
         self.routing[position] = index;
         self.routing_len += 1;
+        if self.cycle.revoked() {
+            // This is a new cohort built from actual returned predecessors and
+            // a live constructor pair, never reuse of a revoked old transport.
+            self.cycle = NativeEffectCycle::default();
+        }
+        self.epoch_returned = false;
         self.entries[index] = Some(endpoint);
         Ok(())
     }
@@ -107,6 +123,13 @@ impl NativeEndpointBank {
     }
     pub(crate) fn has_endpoints(&self) -> bool {
         self.routing_len != 0
+    }
+    pub(crate) fn request_epoch_return(&mut self) {
+        self.reject_rendering();
+        for endpoint in self.entries.iter().flatten() {
+            endpoint.0.signal.store(true, Ordering::Release);
+        }
+        self.epoch_returned = true;
     }
     pub(crate) fn extract(
         &mut self,
