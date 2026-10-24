@@ -123,9 +123,23 @@ impl MidiSourcePlayback {
     /// Source phase at an elapsed clip beat, independent of note content. An
     /// ongoing Session loop can repeat beyond `arrangement_duration`; finite
     /// placement consumers must check their placement duration separately.
+    /// Ongoing loops reduce retained offsets and elapsed time without overflowing.
     /// One-shot sources return `None` at their exclusive end. No note is chased.
     pub fn source_phase_at_elapsed(self, elapsed: BeatTime) -> Option<BeatTime> {
-        let raw = self.playback_offset.raw().checked_add(elapsed.raw())?;
+        let raw = match self.playback_offset.raw().checked_add(elapsed.raw()) {
+            Some(raw) => raw,
+            None => {
+                // Only ongoing queries can exceed the validated finite window.
+                // Retain the ordinary 64-bit path; normalize this larger loop
+                // clock before narrowing back to a representable source phase.
+                let (start, end) = self.loop_range?;
+                let raw = u128::from(self.playback_offset.raw()) + u128::from(elapsed.raw());
+                let first_pass = u128::from(end.raw() - self.source_start.raw());
+                let phase = u128::from(start.raw())
+                    + (raw - first_pass) % u128::from(end.raw() - start.raw());
+                return u64::try_from(phase).ok().map(BeatTime::from_raw);
+            }
+        };
         if let Some((start, end)) = self.loop_range {
             let first_pass = end.raw() - self.source_start.raw();
             let phase = if raw < first_pass {
