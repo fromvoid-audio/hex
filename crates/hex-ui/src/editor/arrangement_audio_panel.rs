@@ -180,6 +180,7 @@ pub(super) fn view(
             .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
             .tooltip(|_, cx| {
                 cx.new(|_| super::waveform::ClipTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     name: "source view unavailable for grouped audio".into(),
                 })
                 .into()
