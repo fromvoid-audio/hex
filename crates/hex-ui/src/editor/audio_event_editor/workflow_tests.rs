@@ -435,7 +435,7 @@ fn released_event_move_keeps_completed_paint_until_its_real_worker_terminal(
         Arc::clone(&v.state.as_ref().unwrap().project)
     });
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(b.left() + b.size.width * 0.125, b.center().y + px(12.0));
+    let down = point(b.left() + b.size.width * 0.125, b.top() + px(26.0));
     let up = point(b.left() + b.size.width * 0.5, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
