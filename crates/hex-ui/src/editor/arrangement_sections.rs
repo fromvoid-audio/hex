@@ -337,7 +337,7 @@ impl EditorView {
         self.time_selection_project_scope = false;
         self.cancel_time_selection_gesture();
     }
-    fn section_has_focus(&self, window: &Window) -> bool {
+    pub(super) fn section_has_focus(&self, window: &Window) -> bool {
         self.mode == EditorMode::Arrangement
             && self.focus.is_focused(window)
             // Q may retain section IDs while a painted range owns keyboard

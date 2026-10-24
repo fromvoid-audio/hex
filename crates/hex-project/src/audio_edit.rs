@@ -519,6 +519,22 @@ impl AudioClipEdit {
             }
             audio_projection_frame(frozen, *reference_start_raw)?;
         }
+        if domain
+            .events
+            .as_ref()
+            .is_some_and(|events| !events.sources.is_empty())
+            && (!matches!(domain.clock, AudioDomainClock::Frames(_))
+                || !matches!(self.timing, AudioClipTiming::Frames)
+                || domain.pitch_cents != 0
+                || domain.warp_enabled
+                || !domain.source_gain.is_empty()
+                || domain.looping
+                || domain.source_phase != 0)
+        {
+            return Err(Invalid(
+                "grouped audio retains independent processing roots; musical anchoring, pitch and source processing are unsupported",
+            ));
+        }
         if let Some(events) = &domain.events {
             events.validate(domain.clock.length())?;
         }

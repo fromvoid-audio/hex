@@ -8,8 +8,16 @@
 //! musical full-root work each cap at 16777216; at most 8192 occurrences are
 //! admitted before PCM allocation. Unsupported streamed placement preparation
 //! refuses without changing project or media. Ordinary crops keep their path.
+//! Grouped frame events resolve every retained root before PCM work. Each source
+//! keeps its captured tempo, finite placement and fade/gain order. The container
+//! and summed child finite/full-root work share the 16777216-frame cap; source
+//! count is bounded by MAX_AUDIO_EVENTS and placement by 8192 occurrences. All
+//! child PCM/conversion identities participate in the group cache key. Streamed
+//! roots and outer pitch/warp/source processing refuse before history commit.
 mod budget;
 mod events;
+mod group;
+pub(crate) use group::GroupSource;
 mod mapping;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
@@ -100,6 +108,12 @@ enum EntryKey {
         domain: Arc<AudioClipDomain>,
         tempo: Option<Arc<hex_project::TempoMap>>,
         origin: i128,
+    },
+    Group {
+        edit: AudioClipEdit,
+        start: u64,
+        duration: u64,
+        sources: Vec<(Audio, u32, u32)>,
     },
     View {
         edit: AudioClipEdit,
@@ -429,6 +443,7 @@ impl AudioTransformPreparation {
         self.hits.set(self.hits.get().saturating_add(1));
         Ok(Some(audio))
     }
+    #[cfg(test)]
     fn prepare_audio(
         &self,
         project: &CanonicalProject,
@@ -436,12 +451,21 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: &Audio,
     ) -> Result<Audio, Invalid> {
+        self.prepare_audio_at_tempo(project.tempo_map(), edit, asset, source)
+    }
+    fn prepare_audio_at_tempo(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: &Audio,
+    ) -> Result<Audio, Invalid> {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let (_, length, _, _) = edit.projected_domain(project.tempo_map())?;
+        let (_, length, _, _) = edit.projected_domain(tempo_map)?;
         let tempo = if edit.reference_start_raw().is_some() {
-            Some(self.shared_tempo(edit.processing_tempo(project.tempo_map()))?)
+            Some(self.shared_tempo(edit.processing_tempo(tempo_map))?)
         } else {
             None
         };
@@ -518,7 +542,7 @@ impl AudioTransformPreparation {
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(edit, project.tempo_map(), &self.shutdown)?;
+        let (map, attacks) = mapping::prepare_map(edit, tempo_map, &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -553,16 +577,10 @@ impl AudioTransformPreparation {
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames =
-                events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
+            rendered.frames = events::compose(&rendered.frames, edit, tempo_map, &self.shutdown)?;
         }
         drop(scratch_reservation);
-        mapping::apply_fade(
-            &mut rendered.frames,
-            edit,
-            project.tempo_map(),
-            &self.shutdown,
-        )?;
+        mapping::apply_fade(&mut rendered.frames, edit, tempo_map, &self.shutdown)?;
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
@@ -616,16 +634,25 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Option<Clip>, Invalid> {
+        self.compile_clip_at_tempo(project.tempo_map(), clip, asset, source)
+    }
+    fn compile_clip_at_tempo(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+    ) -> Result<Option<Clip>, Invalid> {
         let Some(edit) = clip.audio_edit() else {
             return direct_clip(clip, source).map(Some);
         };
-        edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        edit.validate(clip, tempo_map, asset.playback_frames())?;
         if edit.placement.is_some() {
             return self
-                .compile_view(project, clip, edit, asset, source)
+                .compile_view(tempo_map, clip, edit, asset, source)
                 .map(Some);
         }
-        let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map())?;
+        let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
         let domain = &edit.domain;
         let direct = domain.events.is_none()
             && domain.pitch_cents == 0
@@ -680,7 +707,7 @@ impl AudioTransformPreparation {
                 "audio events, pitch, warp, source-envelope and fade preparation currently require resident audio; streamed source changes were not committed",
             ));
         };
-        let audio = self.prepare_audio(project, edit, asset, source)?;
+        let audio = self.prepare_audio_at_tempo(tempo_map, edit, asset, source)?;
         Clip::region(
             audio,
             clip.start(),

@@ -523,6 +523,14 @@ pub enum Command {
     DuplicateClip(ClipId),
     /// Copy a frozen whole-clip selection after its complete extent, atomically.
     DuplicateClips(Vec<ClipId>),
+    /// Wrap one same-track, same-kind selection atomically; never replace nonselected material.
+    GroupClips(Vec<ClipId>),
+    /// Extract a selected root-local audio span into one clip, retaining outer fragments.
+    GroupAudioEventRange {
+        clip: ClipId,
+        start: u64,
+        end: u64,
+    },
     /// Split a clip at an absolute timeline frame.
     SplitClip {
         clip: ClipId,
@@ -1808,6 +1816,10 @@ impl Project {
                 crate::session::apply(self, session_command)
             }
             Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
+            Command::GroupClips(clips) => crate::clip_consolidate::apply(self, clips),
+            Command::GroupAudioEventRange { clip, start, end } => {
+                crate::clip_consolidate::event_range(self, clip, start, end)
+            }
             Command::DuplicateClip(clip) => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = original
@@ -2433,7 +2445,7 @@ impl Project {
                     .tracks
                     .iter()
                     .flat_map(Track::clips)
-                    .any(|c| c.asset == id)
+                    .any(|c| c.referenced_assets().any(|asset| asset == id))
                     || self.session.cells.iter().any(|cell| matches!(&cell.content, crate::SessionCellContent::Audio(clip) if clip.asset == id))
                 {
                     return Err(Invalid("media is still referenced by a clip"));

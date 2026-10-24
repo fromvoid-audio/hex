@@ -27,8 +27,11 @@ pub use arrangement_sections::{
 };
 mod audio_events;
 mod project_tempo;
+mod retained_audio;
 mod track_order;
-pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+pub use audio_events::{
+    AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
+};
 pub use track_order::TrackSelectionIds;
 mod audio_edit;
 mod clip_activation;
@@ -53,6 +56,7 @@ pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;
 pub use track_clipboard::TrackClipboard;
 mod clip_clipboard;
+mod clip_consolidate;
 mod clip_copy;
 mod clip_duplicate;
 mod clip_group;

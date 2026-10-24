@@ -10,6 +10,7 @@ pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
+pub(crate) mod grouped_audio;
 mod host_gain;
 pub(crate) mod legacy;
 pub(crate) mod legacy_early;

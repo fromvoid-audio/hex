@@ -15,7 +15,7 @@ const MAX_VIEW_OCCURRENCES: u64 = 8_192;
 impl AudioTransformPreparation {
     pub(super) fn compile_view(
         &self,
-        project: &CanonicalProject,
+        tempo_map: &hex_project::TempoMap,
         clip: &hex_project::Clip,
         edit: &AudioClipEdit,
         asset: &Asset,
@@ -24,7 +24,7 @@ impl AudioTransformPreparation {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let projection = AudioViewProjection::new(clip, project.tempo_map())?;
+        let projection = AudioViewProjection::new(clip, tempo_map)?;
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
             || projection.occurrence_count() > MAX_VIEW_OCCURRENCES
         {
@@ -37,10 +37,10 @@ impl AudioTransformPreparation {
                 "finite audio placement preparation currently requires resident audio; source changes were not committed",
             ));
         };
-        let tempo = self.shared_tempo(project.tempo_map())?;
+        let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio) = self.lookup_key(source, asset, |key| {
             matches!(key, EntryKey::View { edit: retained, tempo, start, duration }
-                if retained == edit && tempo.as_ref() == project.tempo_map()
+                if retained == edit && tempo.as_ref() == tempo_map
                     && *start == clip.start() && *duration == clip.duration())
         })? {
             return placed_clip(audio, clip);
@@ -84,8 +84,8 @@ impl AudioTransformPreparation {
             let root = if let Some(root) = frame_root.as_ref() {
                 root
             } else {
-                let root_edit = occurrence_edit(edit, occurrence, self, project.tempo_map())?;
-                let prepared = self.prepare_audio(project, &root_edit, asset, source)?;
+                let root_edit = occurrence_edit(edit, occurrence, self, tempo_map)?;
+                let prepared = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
                 frame_root = Some(prepared);
                 frame_root
                     .as_ref()
@@ -141,7 +141,10 @@ impl AudioTransformPreparation {
     }
 }
 
-fn validate_copy(clip: &hex_project::Clip, occurrence: AudioViewOccurrence) -> Result<(), Invalid> {
+pub(super) fn validate_copy(
+    clip: &hex_project::Clip,
+    occurrence: AudioViewOccurrence,
+) -> Result<(), Invalid> {
     let source = occurrence
         .root_end
         .checked_sub(occurrence.root_start)
@@ -196,7 +199,7 @@ fn occurrence_edit(
     Ok(root)
 }
 
-fn placed_clip(audio: Audio, clip: &hex_project::Clip) -> Result<Clip, Invalid> {
+pub(super) fn placed_clip(audio: Audio, clip: &hex_project::Clip) -> Result<Clip, Invalid> {
     Clip::region(
         audio,
         clip.start(),

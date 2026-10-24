@@ -1004,6 +1004,7 @@ impl Project {
                 comparison.validate(device.state())?;
             }
         }
+        project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
         for track in &project.tracks {
             for clip in track.clips() {

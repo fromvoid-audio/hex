@@ -1,7 +1,7 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
-    FitTimeline, ImportAudio, InsertTimeSelection, LoopSelection, MergeSections, MidiOctaveDown,
+    FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
     MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
     PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
@@ -1084,8 +1084,18 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &MergeSections, window, cx| {
-                if !view.merge_sections(window) {
+            .on_action(cx.listener(|view, _: &GroupSelection, window, cx| {
+                if view.audio_event_focus.is_focused(window) {
+                    view.event_group_selected();
+                } else if view.section_has_focus(window) {
+                    if !view.merge_sections(window) {
+                        cx.propagate();
+                    }
+                } else if view.mode == super::EditorMode::Arrangement
+                    && view.focus.is_focused(window)
+                {
+                    view.group_selected_clips(window);
+                } else {
                     cx.propagate();
                 }
                 cx.notify();

@@ -1,0 +1,302 @@
+//! Transactional grouping at canonical clip/source/history boundaries.
+use hex_project::{BeatTime, ClipId, Command, Created, Editor, Project, TrackId};
+fn b(n: u64) -> BeatTime {
+    BeatTime::from_quarters(n).unwrap()
+}
+fn track(e: &mut Editor) -> TrackId {
+    let Created::Track(id) = e
+        .execute(Command::AddTrack {
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    id
+}
+fn midi(e: &mut Editor, t: TrackId, start: u64) -> ClipId {
+    let Created::Clip(id) = e
+        .execute(Command::PlaceMidiClip {
+            track: t,
+            start: b(start),
+            length: b(2),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    e.execute(Command::AddMidiNote {
+        clip: id,
+        start: BeatTime::ZERO,
+        duration: b(1),
+        pitch: 60,
+        channel: 2,
+        velocity: 93,
+    })
+    .unwrap();
+    id
+}
+fn audio_fixture() -> (Editor, TrackId, Vec<ClipId>) {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let mut clips = Vec::new();
+    for (i, start) in [0, 200, 400].into_iter().enumerate() {
+        let Created::Asset(asset) = e
+            .execute(Command::AddAsset {
+                path: format!("source-{i}.wav").into(),
+                sample_rate: 48_000,
+                frames: 1000,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        let Created::Clip(id) = e
+            .execute(Command::PlaceClip {
+                track: t,
+                asset,
+                start,
+                duration: 100,
+                source_offset: 17,
+                source_length: 100,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        clips.push(id);
+    }
+    (Editor::new(e.project().clone(), 16).unwrap(), t, clips)
+}
+#[test]
+fn midi_group_materializes_loops_and_gaps_with_one_history_edge_and_fresh_ids() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let a = midi(&mut e, t, 2);
+    let c = midi(&mut e, t, 6);
+    e.execute(Command::SetMidiClipSource {
+        clip: a,
+        source_length: b(2),
+        source_start: BeatTime::ZERO,
+        loop_start: BeatTime::ZERO,
+        loop_end: b(1),
+        looping: true,
+        length: b(2),
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    let old_ids: Vec<_> = e.project().tracks()[0]
+        .midi_clips()
+        .iter()
+        .flat_map(|c| c.notes().iter().map(|n| n.id()))
+        .collect();
+    let Created::Clip(id) = e.execute(Command::GroupClips(vec![c, a])).unwrap() else {
+        panic!()
+    };
+    let group = e.project().midi_clip(id).unwrap();
+    assert_eq!((group.start(), group.length()), (b(2), b(6)));
+    assert!(!group.looping());
+    assert!(group.volume().points().is_empty());
+    assert_eq!(
+        group
+            .notes()
+            .iter()
+            .map(|n| (n.start(), n.duration()))
+            .collect::<Vec<_>>(),
+        vec![(b(0), b(1)), (b(1), b(1)), (b(4), b(1))]
+    );
+    assert!(group.notes().iter().all(|n| !old_ids.contains(&n.id())));
+    let after = e.project().snapshot();
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+#[test]
+fn grouping_refusals_preserve_ids_history_and_nonselected_material() {
+    let (mut e, t, clips) = audio_fixture();
+    let before = e.project().snapshot();
+    for ids in [
+        vec![],
+        vec![clips[0]],
+        vec![clips[0], clips[0]],
+        vec![clips[0], clips[2]],
+    ] {
+        assert!(e.execute(Command::GroupClips(ids)).is_err());
+        assert_eq!(e.project().snapshot(), before);
+        assert!(!e.can_undo());
+    }
+    let other = track(&mut e);
+    let m = midi(&mut e, other, 10);
+    let state = e.project().snapshot();
+    assert!(e.execute(Command::GroupClips(vec![clips[0], m])).is_err());
+    assert_eq!(e.project().snapshot(), state);
+    e.execute(Command::MoveMidiClip {
+        clip: m,
+        track: t,
+        start: b(10),
+    })
+    .unwrap();
+    let state = e.project().snapshot();
+    assert!(e.execute(Command::GroupClips(vec![clips[0], m])).is_err());
+    assert_eq!(e.project().snapshot(), state);
+}
+#[test]
+fn audio_group_retains_all_dependencies_and_can_regroup_neutral_containers() {
+    let (mut e, _, clips) = audio_fixture();
+    let last = e.project().clip(clips[2]).unwrap().clone();
+    let Created::Clip(id) = e.execute(Command::GroupClips(clips[..2].to_vec())).unwrap() else {
+        panic!()
+    };
+    let group = e.project().clip(id).unwrap();
+    assert_eq!((group.start(), group.duration()), (0, 300));
+    let events = group.audio_events();
+    assert_eq!(events.sources.len(), 2);
+    assert_eq!(
+        events
+            .events
+            .iter()
+            .map(|e| (e.start, e.end))
+            .collect::<Vec<_>>(),
+        vec![(0, 100), (200, 300)]
+    );
+    assert_eq!(e.project().clip(clips[2]).unwrap(), &last);
+    for asset in group.referenced_assets().collect::<Vec<_>>() {
+        assert!(e.execute(Command::RemoveAsset(asset)).is_err());
+    }
+    let source_length = group.source_length();
+    let unchanged = e.project().snapshot();
+    assert!(
+        e.execute(Command::TrimClip {
+            clip: id,
+            start: 0,
+            duration: 300,
+            source_offset: 1,
+            source_length: source_length - 1,
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), unchanged);
+    assert!(
+        e.execute(Command::EditAudioEvents {
+            clip: id,
+            operation: hex_project::AudioEventEdit::Paste {
+                at: 0,
+                length: 10,
+                events: vec![hex_project::AudioEvent {
+                    id: 1,
+                    source: 0,
+                    start: 0,
+                    end: 10,
+                    source_start: 0
+                }],
+            }
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), unchanged);
+    assert!(
+        e.execute(Command::GroupClips(vec![clips[0], clips[1]]))
+            .is_err()
+    );
+    assert_eq!(e.project().snapshot(), unchanged);
+    let Created::Clip(regrouped) = e.execute(Command::GroupClips(vec![id, clips[2]])).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        e.project()
+            .clip(regrouped)
+            .unwrap()
+            .audio_events()
+            .sources
+            .len(),
+        3
+    );
+    assert_eq!(
+        Project::from_snapshot(e.project().snapshot()).unwrap(),
+        *e.project()
+    );
+}
+#[test]
+fn lower_audio_range_preserves_outer_fragments_and_is_one_undo() {
+    let (mut e, _, clips) = audio_fixture();
+    let before = e.project().snapshot();
+    let Created::Clip(center) = e
+        .execute(Command::GroupAudioEventRange {
+            clip: clips[0],
+            start: 20,
+            end: 70,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let center = e.project().clip(center).unwrap();
+    assert_eq!((center.start(), center.duration()), (20, 50));
+    assert!(center.audio_edit().is_some());
+    assert_eq!(e.project().tracks()[0].clips().len(), 5);
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+}
+
+#[test]
+fn midi_group_preserves_volume_seams_and_refuses_unbounded_loop_expansion() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let t = track(&mut e);
+    let a = midi(&mut e, t, 0);
+    let c = midi(&mut e, t, 4);
+    for (clip, left, right) in [(a, 0.25, 1.5), (c, 0.75, 0.5)] {
+        e.execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: MidiClipVolume::new(
+                vec![
+                    MidiClipVolumePoint::linear(b(0), MidiClipGain::new(left).unwrap()),
+                    MidiClipVolumePoint::linear(b(2), MidiClipGain::new(right).unwrap()),
+                ],
+                b(2),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    }
+    let originals = [
+        e.project().midi_clip(a).unwrap().clone(),
+        e.project().midi_clip(c).unwrap().clone(),
+    ];
+    let Created::Clip(id) = e.execute(Command::GroupClips(vec![a, c])).unwrap() else {
+        panic!()
+    };
+    let group = e.project().midi_clip(id).unwrap();
+    for original in originals {
+        for raw in [0, 1 << 30, 1 << 31, 1 << 32, (2 << 32) - 1] {
+            let local = BeatTime::from_raw(raw);
+            assert_eq!(
+                group
+                    .volume()
+                    .gain_at(BeatTime::from_raw(original.start().raw() + raw)),
+                original.volume().gain_at(local)
+            );
+        }
+    }
+    assert!(e.undo());
+    e.execute(Command::SetMidiClipSource {
+        clip: a,
+        source_length: b(2),
+        source_start: b(0),
+        loop_start: b(0),
+        loop_end: BeatTime::from_raw(1),
+        looping: true,
+        length: b(2),
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    assert!(e.execute(Command::GroupClips(vec![a, c])).is_err());
+    assert_eq!(e.project().snapshot(), before);
+}

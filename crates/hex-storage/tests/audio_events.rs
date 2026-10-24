@@ -90,9 +90,11 @@ fn event_serialization_respects_the_existing_document_byte_limit() {
     let mut root = editor.project().clip(clip).unwrap().audio_event_root();
     std::sync::Arc::make_mut(&mut root.domain).events =
         Some(std::sync::Arc::new(hex_project::AudioEvents {
+            sources: Vec::new(),
             next_id: 1025,
             events: (0..1024)
                 .map(|i| hex_project::AudioEvent {
+                    source: 0,
                     id: i + 1,
                     start: i * 2,
                     end: i * 2 + 1,

@@ -5,6 +5,9 @@ use hex_project::{
 };
 use std::collections::BTreeMap;
 
+#[path = "tests/group.rs"]
+mod group;
+
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 

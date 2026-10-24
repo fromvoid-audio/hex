@@ -91,6 +91,20 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+with the computer midi keyboard off, select two or more clips on one arrange
+track and press **g** to group them. select only audio clips or only midi clips.
+hex keeps gaps and refuses a group that would cover unselected material. midi
+clips become one finite midi clip with their played notes and volume curves.
+audio clips become events inside one clip; original files and source processing
+remain retained. grouped audio keeps its source timing at the grouping tempo.
+use undo to restore the original clips in one step. grouped audio is supported
+by prepared rendering; native audio playback remains unavailable.
+
+in the lower audio editor, **g** makes the selected event or time span its own
+clip and keeps the material on either side. select one visible, nonrepeating
+span. text fields, device controls and the piano editor keep their own key input;
+when the computer midi keyboard is enabled, **g** plays its note.
+
 changing the project bpm keeps clips at their musical start positions. audio with
 warp off keeps its natural playback speed. if a faster bpm makes an audio tail
 reach the next clip on that track, hex crops that tail at the next start. original

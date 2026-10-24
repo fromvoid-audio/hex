@@ -123,6 +123,7 @@ impl Editor {
         let result = candidate.apply(command)?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
+        candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
@@ -229,6 +230,7 @@ impl Editor {
         }
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
+        candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;

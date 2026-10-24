@@ -34,6 +34,10 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("grouped_audio"),
+        Some(json!([]))
+    );
     let mut activation: Vec<Value> = old["tracks"]
         .as_array()
         .unwrap()
