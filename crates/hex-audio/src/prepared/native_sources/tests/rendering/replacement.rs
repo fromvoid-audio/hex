@@ -25,6 +25,7 @@ fn actual_native_replacement_selects_new_source_or_preserves_original_on_refusal
             .unwrap_or_else(|r| panic!("first graph: {}", r.reason));
         control.command(PlaybackCommand::Play).unwrap();
         let mut successor = None;
+        let mut reintroduced = None;
         let mut output = [[0.0; 2]; 64];
         for (block, chunk) in output.chunks_mut(8).enumerate() {
             if block == 1 {
@@ -78,6 +79,17 @@ fn actual_native_replacement_selects_new_source_or_preserves_original_on_refusal
                     replacement_preparation(&mut control, &[next], editor.project(), &samples),
                 ));
             }
+            if block == 2 && location == 2 {
+                // The original A is still processing its retained tail while
+                // current B runs. A new graph cannot reintroduce that exact A
+                // endpoint as current, even though it is a live Root source.
+                reintroduced = Some(replacement_preparation(
+                    &mut control,
+                    &[binding],
+                    &project,
+                    &samples,
+                ));
+            }
             let mut host = [0.0_f32; 16];
             allocation_free(|| {
                 data.owner_mut().unwrap().run(|callback, _| {
@@ -120,6 +132,17 @@ fn actual_native_replacement_selects_new_source_or_preserves_original_on_refusal
                 let refused = crate::prepared::candidate_tests::recover(
                     &mut control,
                     &successor.as_ref().unwrap().1,
+                );
+                assert_eq!(
+                    refused.return_kind,
+                    crate::AudioCandidateReturnKind::NeverInstalled
+                );
+                drop(refused);
+            }
+            if block == 2 && location == 2 {
+                let refused = crate::prepared::candidate_tests::recover(
+                    &mut control,
+                    reintroduced.as_ref().unwrap(),
                 );
                 assert_eq!(
                     refused.return_kind,
@@ -179,7 +202,11 @@ fn actual_native_replacement_selects_new_source_or_preserves_original_on_refusal
     }
 }
 
-fn wait_for_blocks(root: &crate::candidate_custody::CandidateRoot, binding: Binding, blocks: u64) {
+pub(super) fn wait_for_blocks(
+    root: &crate::candidate_custody::CandidateRoot,
+    binding: Binding,
+    blocks: u64,
+) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
         root, binding,

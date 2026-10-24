@@ -364,6 +364,37 @@ impl ReturnEffectTailPlan {
         }
         Ok(())
     }
+    /// Check only the ranges this plan will actually render. An inactive
+    /// retained prefix still owns backing, but must not reserve its endpoint
+    /// against the current chain. This is refusal-only, never source admission.
+    pub(super) fn validate_retained_foreign_sources(
+        &self,
+        old: &ReturnEffectTailBank,
+        returns: &[NativeRuntimeChain],
+        main: &NativeRuntimeChain,
+        mut validate: impl FnMut(&NativeRuntimeChain, usize) -> Result<(), SessionPlaybackError>,
+    ) -> Result<(), SessionPlaybackError> {
+        for (source, _) in self.carry.iter().flatten() {
+            let tail = old
+                .slots
+                .get(*source)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            validate(&tail.chain, tail.active_start())?;
+        }
+        for (source, _) in self.capture.iter().flatten() {
+            validate(
+                returns
+                    .get(*source)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                0,
+            )?;
+        }
+        if let Some((_, start, _)) = self.main_capture {
+            validate(main, start)?;
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preflight(
         old_buses: &[ReturnBus],

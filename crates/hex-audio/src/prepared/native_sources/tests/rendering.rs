@@ -10,6 +10,7 @@ use hex_project::{Command, Created, Editor, Project};
 mod deadlines;
 #[cfg(not(debug_assertions))]
 mod profile;
+mod reorder;
 mod replacement;
 
 fn close_backend(
@@ -728,11 +729,12 @@ fn replacement_preparation(
         .unwrap_or_else(|refusal| {
             panic!("reserved replacement: {} quote {quote:?}", refusal.reason)
         });
-    // A binding with a different epoch cannot select the original source. The
-    // refusal must not consume the reserved destination or invoke its compiler.
+    // A binding from another Root cannot select any source here. Incrementing
+    // an epoch would accidentally select a real coexisting replacement with
+    // the same device identity. Refusal must leave this destination untouched.
     if let Some(binding) = bindings.first() {
         let stale = Binding {
-            epoch: binding.epoch + 1,
+            root: binding.root.checked_add(1).unwrap(),
             ..*binding
         };
         assert!(

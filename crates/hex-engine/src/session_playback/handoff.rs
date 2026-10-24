@@ -1,6 +1,49 @@
 use super::*;
 use crate::MidiTiming;
 
+/// One physical foreign endpoint cannot process both current input and an old
+/// tail in the same callback. Fresh local scalar history cannot reset or clone
+/// that external source. Compare exact bindings, including root and epoch,
+/// before accepting the transition; no resource or DSP owner moves here.
+fn validate_foreign_tail_sources(
+    candidate: &SessionPlayback,
+    tail: &hex_lattice::NativeRuntimeChain,
+    start: usize,
+) -> Result<(), SessionPlaybackError> {
+    if start > tail.len() {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
+    for entry in tail.storage_view().entries().skip(start) {
+        let Some(prepared) = entry.foreign_processor() else {
+            continue;
+        };
+        let binding = prepared
+            .binding()
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let arrangement = candidate.revision.arrangement();
+        if arrangement
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                arrangement
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(arrangement.main_device_chain.iter())
+            .any(|node| {
+                matches!(&node.definition,
+                Some(hex_lattice::PreparedProcessorFactory::Foreign(current))
+                    if current.binding() == Some(binding))
+            })
+        {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+    }
+    Ok(())
+}
+
 fn validate_tail_suffix(
     chain: &hex_lattice::NativeRuntimeChain,
     suffix_start: usize,
@@ -2729,6 +2772,43 @@ impl SessionPlayback {
                 entry.order,
             )
         });
+
+        return_tail_plan.validate_retained_foreign_sources(
+            &previous.return_effect_tails,
+            &previous.return_chains,
+            &previous.main_chain,
+            |chain, start| validate_foreign_tail_sources(self, chain, start),
+        )?;
+        for (slot, active) in active_tail_groups.iter().copied().enumerate() {
+            if active {
+                let chain = previous
+                    .tail_groups
+                    .get(slot)
+                    .and_then(Option::as_ref)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let start = previous
+                    .tail_suffix_starts
+                    .get(slot)
+                    .copied()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                validate_foreign_tail_sources(self, chain, start)?;
+            }
+        }
+        for (index, slot) in old_track_tail_slots.iter().enumerate() {
+            if slot.is_some() {
+                let chain = previous
+                    .device_chains
+                    .get(index)
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let start = old_track_tail_metadata
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .0;
+                validate_foreign_tail_sources(self, chain, start)?;
+            }
+        }
 
         // Check every candidate history copy against the final tail-retention
         // plan before any runtime owner is moved or mutated.

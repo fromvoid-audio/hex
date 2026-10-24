@@ -245,8 +245,10 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
                     revision: 0,
                     control_context_generation: 0,
                     explicit_control_context: false,
+                    source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
+                    section_launch_frame: None,
                     playback: Box::new(graph),
                 }))
                 .is_ok()
