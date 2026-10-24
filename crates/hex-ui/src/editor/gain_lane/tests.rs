@@ -479,11 +479,17 @@ mod native {
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("125%");
+        visual.simulate_keystrokes("a");
         visual.run_until_parked();
-        entity.update(&mut visual, |view, _| {
+        entity.update(&mut visual, |view, cx| {
+            assert!(!view.automation_view.enabled);
+            assert!(view.gain_numeric_editing(cx));
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.gain_lane.selected, Some(BeatTime::from_raw(2)));
         });
+        // The text editor owns the typed a; replace that invalid numeric text.
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("125%");
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {

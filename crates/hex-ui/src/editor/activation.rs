@@ -24,7 +24,11 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !is_activation_key(event)
+        if (event.keystroke.key == "a" && self.mode == EditorMode::Arrangement)
+            || (self.automation_view.enabled
+                && self.mode == EditorMode::Arrangement
+                && self.focus.is_focused(window))
+            || !is_activation_key(event)
             || self.sections.naming()
             || self.changelog.is_open()
             || self.track_name.is_editing()
