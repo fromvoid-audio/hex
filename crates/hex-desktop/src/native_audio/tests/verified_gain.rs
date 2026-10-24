@@ -175,6 +175,32 @@ fn verified_gain_case(session: bool) {
     for _ in 0..4 {
         assert!(h.render().iter().flatten().all(|sample| *sample == 0.0));
     }
+    // A constant Arrangement source could otherwise hide a lost Console owner.
+    // Verify the actual route on every gain/terminal publication as well as PCM.
+    let wait = |h: &Harness, after, gain| {
+        let actual = wait_gain(h, after, gain);
+        if let Some(clip) = session_clip {
+            let mut routes = [hex_audio::prepared::SessionRouteEntry::default(); 1];
+            let snapshot = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .session_routes(&mut routes)
+                .unwrap();
+            assert_eq!(snapshot.audio_revision, actual.audio_revision);
+            assert_eq!(snapshot.count, 1);
+            assert_eq!(routes[0].track_id, track.value());
+            assert_eq!(
+                routes[0].owner,
+                hex_audio::prepared::SessionRouteOwner::Session {
+                    clip_id: clip.value()
+                }
+            );
+        }
+        actual
+    };
     let key = GestureKey {
         generation: applied.context.project_generation,
         token: 1,
@@ -206,7 +232,7 @@ fn verified_gain_case(session: bool) {
     assert_eq!(preview.state.project, canonical.state.project);
     assert_eq!(preview.state.revision, canonical.state.revision);
     assert_eq!(preview.state.unsaved, canonical.state.unsaved);
-    let mut applied = wait_gain(&h, applied.audio_revision, 1.0);
+    let mut applied = wait(&h, applied.audio_revision, 1.0);
     report_timing(session, "zero-to-positive", began_at);
     let initial_preview = h
         .observation
@@ -228,7 +254,7 @@ fn verified_gain_case(session: bool) {
         assert!(changed.gesture_ack.as_ref().unwrap().accepted);
         assert_eq!(changed.state.project, canonical.state.project);
         assert_eq!(changed.state.revision, canonical.state.revision);
-        applied = wait_gain(&h, applied.audio_revision, gain);
+        applied = wait(&h, applied.audio_revision, gain);
     }
     // Fill native publication capacity while the callback is deliberately idle.
     // Logical changes stay bounded/coalesced; the final absolute value must win.
@@ -243,7 +269,7 @@ fn verified_gain_case(session: bool) {
         assert_eq!(changed.state.project, canonical.state.project);
     }
     let final_gain = 35.0 / 64.0;
-    applied = wait_gain(&h, applied.audio_revision, final_gain);
+    applied = wait(&h, applied.audio_revision, final_gain);
     report_timing(session, "32-change-idle-callback-backlog", backlog_at);
     canonical = h.run(Request::Edit(hex_project::Command::RenameTrack {
         track,
@@ -262,7 +288,7 @@ fn verified_gain_case(session: bool) {
             .gain(),
         final_gain
     );
-    applied = wait_gain(&h, applied.audio_revision, final_gain);
+    applied = wait(&h, applied.audio_revision, final_gain);
     let old_preview = h
         .observation
         .lock()
@@ -275,7 +301,7 @@ fn verified_gain_case(session: bool) {
     assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);
     assert_eq!(cancelled.state.project, canonical.state.project);
     assert_eq!(cancelled.state.can_undo, canonical.state.can_undo);
-    applied = wait_gain(&h, applied.audio_revision, 0.0);
+    applied = wait(&h, applied.audio_revision, 0.0);
     report_timing(session, "cancel", cancel_at);
     let old_terminal = h
         .observation
@@ -302,7 +328,7 @@ fn verified_gain_case(session: bool) {
         value: ParameterValue::Float(2.0),
     }));
     assert!(changed.gesture_ack.as_ref().unwrap().accepted);
-    applied = wait_gain(&h, applied.audio_revision, 2.0);
+    applied = wait(&h, applied.audio_revision, 2.0);
     h.observation.lock().unwrap().replay_verified_gain = Some(old_terminal);
     stable_gain(&h, applied, 2.0);
     let commit_at = Instant::now();
@@ -314,13 +340,13 @@ fn verified_gain_case(session: bool) {
     assert!(committed.gesture_ack.as_ref().unwrap().accepted);
     assert_eq!(committed.state.revision, canonical.state.revision + 1);
     assert_eq!(committed.state.project.track(track).unwrap().gain(), 2.0);
-    applied = wait_gain(&h, applied.audio_revision, 2.0);
+    applied = wait(&h, applied.audio_revision, 2.0);
     report_timing(session, "commit", commit_at);
     let undo = h.run(Request::Undo);
     assert_eq!(undo.state.project, canonical.state.project);
-    applied = wait_gain(&h, applied.audio_revision, 0.0);
+    applied = wait(&h, applied.audio_revision, 0.0);
     let redone = h.run(Request::Redo);
-    applied = wait_gain(&h, applied.audio_revision, 2.0);
+    applied = wait(&h, applied.audio_revision, 2.0);
     assert_eq!(applied.context, h.context.unwrap());
 
     let third = GestureKey { token: 3, ..key };
@@ -333,7 +359,7 @@ fn verified_gain_case(session: bool) {
         sequence: 1,
         value: ParameterValue::Float(0.5),
     }));
-    applied = wait_gain(&h, applied.audio_revision, 0.5);
+    applied = wait(&h, applied.audio_revision, 0.5);
     let invalid = h.run(Request::DeviceGesture(GestureRequest::Commit {
         key: third,
         sequence: 2,
@@ -346,7 +372,7 @@ fn verified_gain_case(session: bool) {
     );
     assert_eq!(invalid.state.project, redone.state.project);
     assert_eq!(invalid.state.revision, redone.state.revision);
-    applied = wait_gain(&h, applied.audio_revision, 2.0);
+    applied = wait(&h, applied.audio_revision, 2.0);
     let fourth = GestureKey { token: 4, ..key };
     h.run(Request::DeviceGesture(GestureRequest::Begin {
         key: fourth,
@@ -357,7 +383,7 @@ fn verified_gain_case(session: bool) {
         sequence: 1,
         value: ParameterValue::Float(0.75),
     }));
-    wait_gain(&h, applied.audio_revision, 0.75);
+    wait(&h, applied.audio_revision, 0.75);
     let removed = h.run(Request::Edit(hex_project::Command::RemoveTrack(track)));
     assert!(removed.state.project.track(track).is_none());
     assert!(removed.active_device_gesture.is_none());
