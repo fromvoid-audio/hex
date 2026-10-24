@@ -192,10 +192,14 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
                 early.status, early.diagnostics
             );
         }
-        assert!(
-            std::time::Instant::now() < started_deadline,
-            "actual outer scanner spawn"
-        );
+        if std::time::Instant::now() >= started_deadline {
+            fixture.1.store(true, Ordering::Release);
+            let _ = owner.cancel();
+            panic!(
+                "scanner spawn not observed; cancellation requested; fixture retained at {:?}",
+                fixture.0
+            );
+        }
         std::thread::yield_now();
     }
     if !owner.cancel() {
@@ -245,6 +249,45 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
             .unwrap()
             .contains("cancelled")
     );
+}
+
+#[test]
+#[ignore = "explicit original signed package and native fixtures required"]
+fn native_deadline_report_is_retained_without_promoting_metadata() {
+    let fixture = Fixture::new();
+    let owner = Cancellation::default();
+    let update = worker::scan(
+        &fixture.catalog(),
+        &app(),
+        module("entry-hang"),
+        owner.token(),
+    );
+    let observed = update
+        .diagnostics
+        .as_ref()
+        .expect("actual deadline observations");
+    let report: hex_plugin_scan::macos::report::Report = serde_json::from_slice(&observed.report)
+        .unwrap_or_else(|e| panic!("{e}; {} ; {observed:?}", update.status));
+    assert!(
+        observed.scanner_started && observed.scanner_exit.is_some(),
+        "{observed:?}"
+    );
+    assert_eq!(
+        report.interruption.as_deref(),
+        Some("deadline exceeded"),
+        "{observed:?}"
+    );
+    assert!(
+        report.cleanup.direct_reaped && !report.cleanup.pending && !report.cleanup.custody_lost,
+        "{observed:?}"
+    );
+    assert!(
+        report.discovery.is_none(),
+        "deadline never grants accepted discovery"
+    );
+    let catalog = Catalog::load(&fixture.catalog()).unwrap();
+    assert!(catalog.entries[0].last_good.is_none());
+    assert!(catalog.entries[0].failure.is_some());
 }
 
 #[test]

@@ -24,11 +24,11 @@ const CANCELLED: u8 = 1;
 const COMMITTING: u8 = 2;
 const FINISHED: u8 = 3;
 
-/// UI/control owner. Dropping a view requests cancellation without waiting.
 struct Operation {
     phase: AtomicU8,
     scanner_started: AtomicBool,
 }
+/// UI/control owner. Dropping a view requests cancellation without waiting.
 pub struct Cancellation(Arc<Operation>);
 impl Default for Cancellation {
     fn default() -> Self {
