@@ -40,6 +40,7 @@ impl From<&Device> for PreparedDeviceIdentity {
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedArrangementMidiSource {
+    content_view: Option<hex_project::ContentWindow>,
     active: bool,
     playback_offset: hex_project::BeatTime,
     id: hex_project::ClipId,
@@ -943,6 +944,7 @@ impl PreparedRevision {
         let new = find(new, key.clip)?;
         (old.active
             && new.active
+            && old.content_view == new.content_view
             && old.source == new.source
             && old.start == new.start
             && old.playback_offset == new.playback_offset
@@ -1074,6 +1076,7 @@ fn prepare_mutable_track_revisions(
                 .checked_add(clip.length().raw())
                 .ok_or(Invalid("midi descriptor end overflow"))?;
             arrangement_midi_sources.push(PreparedArrangementMidiSource {
+                content_view: clip.content_view(),
                 active: clip.active(),
                 playback_offset: clip.playback_offset(),
                 id: clip.id(),

@@ -64,6 +64,9 @@ impl MidiTakeBinding {
             .iter()
             .find(|candidate| candidate.id() == clip)
             .ok_or("midi recording requires an arrangement clip on the armed track")?;
+        if clip.content_view().is_some() {
+            return Err("midi recording into a directed clip is not available; use a forward clip");
+        }
         if !clip.active() {
             return Err("midi recording requires an active clip");
         }
@@ -224,6 +227,7 @@ impl MidiTakeBinding {
             .instrument()
             .is_none_or(|device| device.id() != self.instrument || device.bypassed())
             || clip.source_identity() != self.source
+            || clip.content_view().is_some()
             || project.sample_rate() != self.sample_rate
             || project.tempo_map() != &self.tempo
             || clip.start() != self.start

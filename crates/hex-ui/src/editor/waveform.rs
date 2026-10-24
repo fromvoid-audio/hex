@@ -73,6 +73,71 @@ pub(super) fn preview_waveform_view_cached(
         if !Arc::ptr_eq(&old.domain, &edit.domain) {
             return None;
         }
+        if let (Some(before), Some(after)) = (old.content_view, edit.content_view) {
+            let prepared = prepared?;
+            if prepared.offset != 0
+                || prepared.length != original.duration()
+                || u64::try_from(prepared.waveform.source_frames).ok()? != original.duration()
+                || before.window.reversed != after.window.reversed
+            {
+                return None;
+            }
+            let a = hex_project::AudioViewProjection::new(original, tempo).ok()?;
+            let b = hex_project::AudioViewProjection::new(preview, tempo).ok()?;
+            // Retain accepted finite output. Never treat its already-directed
+            // PCM peaks as the full forward processing root a second time.
+            let same_base = before.base_view_start == after.base_view_start
+                && before.base_view_end == after.base_view_end
+                && before.base_placement == after.base_placement;
+            let linear = before.base_placement.is_none() && after.base_placement.is_none();
+            if !(same_base || linear) || a.root_origin() != b.root_origin() {
+                return None;
+            }
+            let displacement = b.base_reference_start() - a.base_reference_start();
+            let elapsed = if before.window.reversed {
+                i128::from(before.window.end) - i128::from(after.window.end) - displacement
+            } else {
+                i128::from(after.window.start) + displacement - i128::from(before.window.start)
+            };
+            let current = |clip: &Clip, edit: &hex_project::AudioClipEdit| {
+                edit.reference_start_raw()
+                    .unwrap_or(i128::from(clip.start()))
+            };
+            if current(preview, edit) - current(original, old) != elapsed {
+                return None;
+            }
+            let (timeline_origin, root_offset) = if elapsed >= 0 {
+                let elapsed = u64::try_from(elapsed).ok()?;
+                if elapsed >= before.window.length().ok()? {
+                    return None;
+                }
+                (
+                    preview.start(),
+                    a.frame_at_elapsed(elapsed)
+                        .ok()?
+                        .checked_sub(original.start())?,
+                )
+            } else {
+                // Outward extension has no accepted peaks outside this range.
+                // Keep the known finite PCM visible at its existing position.
+                (original.start(), 0)
+            };
+            return Some(timeline_waveform_view_cached(
+                Arc::clone(&prepared.waveform),
+                WaveformMapping::Prepared {
+                    timeline_origin,
+                    root_offset,
+                    gain: preview.gain(),
+                },
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            ));
+        }
+        if old.content_view.is_some() || edit.content_view.is_some() {
+            return None;
+        }
         let (old_origin, old_length, old_offset, _) = old.projected_domain(tempo).ok()?;
         let (origin, length, offset, end) = edit.projected_domain(tempo).ok()?;
         let prepared = prepared?;

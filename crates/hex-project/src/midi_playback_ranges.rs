@@ -16,6 +16,14 @@ impl MidiSourcePlayback {
         }
         let first = range.start.raw().min(self.arrangement_duration.raw());
         let last = range.end.raw().min(self.arrangement_duration.raw());
+        let (first, last) = if self.reversed {
+            (
+                self.arrangement_duration.raw() - last,
+                self.arrangement_duration.raw() - first,
+            )
+        } else {
+            (first, last)
+        };
         let ranges = crate::source_ranges::source_ranges(
             u128::from(self.playback_offset.raw()) + u128::from(first),
             u128::from(self.playback_offset.raw()) + u128::from(last),
