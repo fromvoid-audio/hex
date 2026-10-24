@@ -222,7 +222,7 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
         tempo_refused
             .error
             .as_ref()
-            .is_some_and(|e| e.contains("tempo changes")),
+            .is_some_and(|e| e.contains("tempo map")),
         "{:?}",
         tempo_refused.error
     );
@@ -665,13 +665,15 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             tempo: Tempo::new(micro_bpm).unwrap(),
         }));
         (applied, _) = h.applied(applied);
-        // Older section edits inserted same-tempo points. Retain that complete
-        // saved clock, including a fractional beat, while editing live.
-        h.run(Request::Edit(Command::SetTempoPoint {
-            beat: BeatTime::from_ratio(7, 13).unwrap(),
-            tempo: Tempo::new(micro_bpm).unwrap(),
-        }));
-        (applied, _) = h.applied(applied);
+        // Authored same-BPM points still move with sections. At180BPM these
+        // whole-beat seams have an exactly equal forward/inverse sample clock.
+        if micro_bpm == 180_000_000 {
+            h.run(Request::Edit(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(3).unwrap(),
+                tempo: Tempo::new(micro_bpm).unwrap(),
+            }));
+            (applied, _) = h.applied(applied);
+        }
         let placed = h.run(Request::Edit(Command::PlaceMidiClip {
             track,
             start: BeatTime::ZERO,

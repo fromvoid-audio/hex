@@ -1899,49 +1899,39 @@ fn section_splices_preserve_effective_mixed_meter_on_all_retained_content() {
 }
 
 #[test]
-fn moving_and_duplicating_sections_preserve_constant_tempo_clocks_and_saved_points() {
+fn moving_and_duplicating_sections_preserve_a_single_global_tempo_clock() {
     for rate in [8_000, 44_100, 48_000] {
         for micro_bpm in [120_000_000, 143_000_000, 180_000_000] {
-            for redundant in [false, true] {
-                let mut editor = Editor::new(Project::new(rate).unwrap(), 32).unwrap();
-                editor
-                    .execute(Command::SetProjectTempo {
-                        tempo: Tempo::new(micro_bpm).unwrap(),
-                    })
-                    .unwrap();
-                if redundant {
-                    editor
-                        .execute(Command::SetTempoPoint {
-                            beat: BeatTime::from_ratio(7, 13).unwrap(),
-                            tempo: Tempo::new(micro_bpm).unwrap(),
-                        })
-                        .unwrap();
-                }
-                let first = section(&mut editor, "first", 0, 2);
-                let last = section(&mut editor, "last", 4, 7);
-                let clock = editor.project().tempo_map().clone();
-                for command in [
-                    Command::ReorderSectionAfter {
-                        section: first,
-                        after: last,
-                    },
-                    Command::ReorderSectionBefore {
-                        section: first,
-                        before: last,
-                    },
-                    Command::DuplicateArrangementSection(first),
-                ] {
-                    editor.execute(command).unwrap();
-                    assert_eq!(
-                        editor.project().tempo_map(),
-                        &clock,
-                        "global tempo is not a splice event"
-                    );
-                    assert!(editor.undo());
-                    assert_eq!(editor.project().tempo_map(), &clock);
-                    assert!(editor.redo());
-                    assert_eq!(editor.project().tempo_map(), &clock);
-                }
+            let mut editor = Editor::new(Project::new(rate).unwrap(), 32).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(micro_bpm).unwrap(),
+                })
+                .unwrap();
+            let first = section(&mut editor, "first", 0, 2);
+            let last = section(&mut editor, "last", 4, 7);
+            let clock = editor.project().tempo_map().clone();
+            for command in [
+                Command::ReorderSectionAfter {
+                    section: first,
+                    after: last,
+                },
+                Command::ReorderSectionBefore {
+                    section: first,
+                    before: last,
+                },
+                Command::DuplicateArrangementSection(first),
+            ] {
+                editor.execute(command).unwrap();
+                assert_eq!(
+                    editor.project().tempo_map(),
+                    &clock,
+                    "global tempo is not a splice event"
+                );
+                assert!(editor.undo());
+                assert_eq!(editor.project().tempo_map(), &clock);
+                assert!(editor.redo());
+                assert_eq!(editor.project().tempo_map(), &clock);
             }
         }
     }

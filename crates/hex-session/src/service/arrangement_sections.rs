@@ -71,6 +71,12 @@ pub(super) fn command(
         _ => false,
     };
     if no_op {
+        if events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && let Some(current) = resident.as_ref()
+        {
+            return session.section_noop_revision(command, current);
+        }
         return session.command_prepared_revision(command, previous);
     }
     if !structural {

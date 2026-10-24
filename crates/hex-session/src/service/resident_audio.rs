@@ -1273,6 +1273,25 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
+    /// Validate a structural no-op without invoking the resource-free legacy
+    /// compiler on private sampler sources. The existing admitted prepared owner
+    /// remains authoritative; neither publication nor history is created.
+    pub(super) fn section_noop_revision(
+        &mut self,
+        command: Command,
+        current: &Snapshot,
+    ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+        self.editor
+            .execute_prepared_transition(command, |source, target| {
+                if source != target {
+                    return Err(SessionError::Invalid(
+                        "section no-op changed canonical state",
+                    ));
+                }
+                Ok(Arc::clone(&current.prepared))
+            })
+    }
+
     pub(super) fn section_history_requires_publication(&self, redo: bool) -> bool {
         self.editor.next_section_history_requires_publication(redo)
             || self
@@ -1501,9 +1520,9 @@ impl Session {
                 // Existing live compensation/active-loop gates cannot rebind a
                 // changed tempo map. Refuse before canonical history/publication,
                 // rather than committing a candidate the callback must reject.
-                if source.tempo_map() != project.tempo_map() {
+                if !source.tempo_map().proves_same_clock(project.tempo_map()) {
                     return Err(SessionError::Invalid(
-                        "live section edits across tempo changes require stopped playback",
+                        "live section edits that change the tempo map require stopped playback",
                     ));
                 }
                 // Keep the launched loop at its musical timeline range. A section
