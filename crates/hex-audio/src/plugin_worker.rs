@@ -30,6 +30,35 @@ struct State {
     native_error: Option<hex_plugin_host::Error>,
 }
 impl State {
+    fn prepare_transport(&mut self) -> Result<(), Fault> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        return self.prepare_transport_with(|| {
+            qos_threads::set_current_thread(qos_threads::Qos::High)
+                .map_err(|error| std::io::Error::from_raw_os_error(error.errno()))
+        });
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        Ok(())
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn prepare_transport_with(
+        &mut self,
+        set_class: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<(), Fault> {
+        if matches!(self.processor, Some(Processor::Native(_))) {
+            // The copied bridge is latency-sensitive IPC, not a real-time DSP
+            // callback. Request macOS user-initiated QoS once on this joining
+            // worker; retain its original source on any scheduling refusal.
+            if let Err(error) = set_class() {
+                self.native_error = Some(hex_plugin_host::Error::IoAt(
+                    "native transport scheduling",
+                    error,
+                ));
+                self.worker.revoke();
+                return Err(Fault::Protocol);
+            }
+        }
+        Ok(())
+    }
     fn process(&mut self, block: Block) -> Result<Block, Fault> {
         match self.processor.as_mut() {
             Some(Processor::Function(process)) => process(block),
@@ -186,11 +215,30 @@ fn spawn_transport(
         })
 }
 fn transport_runner(
+    guard: crate::native_callback_owner::Guard<State>,
+    published: Arc<AtomicU64>,
+) -> impl FnOnce() -> Completion + Send + 'static {
+    transport_runner_with_setup(guard, published, State::prepare_transport)
+}
+fn transport_runner_with_setup(
     mut guard: crate::native_callback_owner::Guard<State>,
     published: Arc<AtomicU64>,
+    setup: fn(&mut State) -> Result<(), Fault>,
 ) -> impl FnOnce() -> Completion + Send + 'static {
     move || {
         let mut fault = None;
+        match guard.owner_mut() {
+            Some(state) => {
+                if let Err(error) = setup(state) {
+                    return Completion { fault: Some(error) };
+                }
+            }
+            None => {
+                return Completion {
+                    fault: Some(Fault::Protocol),
+                };
+            }
+        }
         loop {
             let Some(state) = guard.owner_mut() else {
                 fault = Some(Fault::Protocol);

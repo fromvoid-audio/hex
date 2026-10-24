@@ -61,6 +61,8 @@ DEV_ALLOWED = {
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
+              # Safe macOS joining-transport scheduling, never callback calls.
+              'qos-threads': {'hex-audio'},
               # Source/scanner identities and bounded control-side hashes of
               # the engine's actual retained PCM bank; never callback DSP.
               'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},

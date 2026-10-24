@@ -20,6 +20,10 @@ hex-stream = { path = "../hex-stream" }
 cpal = "=0.17.3"
 rtrb = "=0.3.4"
 
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# Safe per-thread scheduling request; no callback calls or extra worker owner.
+qos-threads = "=0.1.3"
+
 [dev-dependencies]
 hex-plugin-host = { path = "../hex-plugin-host", features = ["test-support"] }
 # Real provider/pair allocation probes only; no production device dependency.

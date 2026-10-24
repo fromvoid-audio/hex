@@ -7,6 +7,8 @@
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
 //! rtrb for bounded ownership queues. hex-plugin-host supplies the copied transport
 //! and source-bound native client; native ABI remains in its external helper.
+//! qos-threads provides a safe macOS scheduling request for the joining native
+//! transport worker only; it grants no real-time or physical deadline guarantee.
 //! hex-plugin-scan supplies only the checked instance-build provenance accepted by that client.
 //! hex-lattice supplies the borrowed foreign node/factory contracts; hex-plugin-state
 //! and hex-lattice-contract validate the exact native effect configuration.

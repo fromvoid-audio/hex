@@ -60,6 +60,57 @@ pub(crate) fn original_instance_for_binding(binding: Binding) -> hex_plugin_host
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_transport_scheduling_refusal_revokes_without_processing_or_losing_source() {
+    let instance = original_instance();
+    let child = instance.child_id_on_control().unwrap();
+    let (mut worker, mut callback) =
+        NativeWorker::start_retained_with(instance, |guard, published| {
+            let run = transport_runner_with_setup(guard, published, |state| {
+                state.prepare_transport_with(|| Err(std::io::Error::from_raw_os_error(1)))
+            });
+            let capture_data_bytes = std::mem::size_of_val(&run);
+            thread::Builder::new()
+                .spawn(run)
+                .map(|join| SpawnedTransport {
+                    join,
+                    capture_data_bytes,
+                })
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !worker.reaper.is_finished() {
+        assert!(std::time::Instant::now() < deadline);
+        thread::yield_now();
+    }
+    assert_eq!(worker.published_blocks_on_control(), 0);
+    assert!(matches!(
+        callback.stage(&[[0.25; 2]; 8], &[], &mut [[0.0; 2]; 8]),
+        Err(Fault::Revoked)
+    ));
+    assert_eq!(worker.reaper.join_on_control(), Err(Fault::Protocol));
+    let state = worker.reaper.worker.as_ref().unwrap();
+    let Some(Processor::Native(actual)) = state.processor.as_ref() else {
+        panic!("original native source remains in the joining owner");
+    };
+    assert_eq!(actual.child_id_on_control(), Some(child));
+    assert_eq!(actual.completed_blocks_on_control(), 0);
+    let retired = worker.retire_on_control().unwrap();
+    let Some(hex_plugin_host::Error::IoAt("native transport scheduling", error)) = retired.failure
+    else {
+        panic!("actual scheduling cause must survive native cancellation and reap");
+    };
+    assert_eq!(error.raw_os_error(), Some(1));
+    assert!(retired.native.terminal.is_none());
+    assert!(worker.owns_callback(&callback));
+    assert!(
+        callback
+            .stage(&[[0.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .is_err()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap() {
     for cancelled in 0..3 {
         let instance = original_instance();
