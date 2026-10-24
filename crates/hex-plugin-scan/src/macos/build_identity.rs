@@ -1,7 +1,7 @@
 //! Caller-selected local helper-build provenance, checked before every spawn.
 //! This receipt is a trust root supplied by the caller, not an attestation.
 use super::{
-    identity::{read_file, relative_file},
+    identity::{MAX_PATH_BYTES, read_file, relative_file},
     macho::{self, Image, Role},
 };
 use crate::{MAX_BINARY, PUBLIC_SDK, SDK, hash};
@@ -16,6 +16,10 @@ const APP: &str = "hex-vst3-host.app";
 const HELPER: &str = "hex-vst3-host.app/Contents/MacOS/hex-vst3-factory-scan";
 const INSTANCE_APP: &str = "hex-vst3-instance.app";
 const INSTANCE_HELPER: &str = "hex-vst3-instance.app/Contents/MacOS/hex-vst3-instance";
+mod inventory;
+use inventory::{MAX_MEMBERS, inventory};
+mod storage;
+pub use storage::BuildStorage;
 
 #[derive(Clone, Copy, Debug)]
 enum HelperRole {
@@ -144,55 +148,6 @@ fn native_source() -> String {
         .collect()
 }
 
-fn inventory(root: &Path, app: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut pending = vec![(root.join(app), 0_usize)];
-    let mut files = BTreeMap::new();
-    let mut members = 0_usize;
-    let mut total = 0_u64;
-    while let Some((path, depth)) = pending.pop() {
-        if depth != 0 {
-            members += 1;
-        }
-        if members > 256 || depth > 32 {
-            return Err("helper bundle member/depth bound".into());
-        }
-        let meta =
-            fs::symlink_metadata(&path).map_err(|e| format!("helper member missing: {e}"))?;
-        if meta.file_type().is_symlink() {
-            return Err("linked helper member refused".into());
-        }
-        if meta.is_dir() {
-            for member in
-                fs::read_dir(&path).map_err(|e| format!("helper enumeration failed: {e}"))?
-            {
-                let member = member.map_err(|e| format!("helper enumeration failed: {e}"))?;
-                if pending.len() >= 256 {
-                    return Err("helper directory bound".into());
-                }
-                pending.push((member.path(), depth + 1));
-            }
-        } else if meta.is_file() {
-            let bytes = read_file(&path, MAX_BINARY)?;
-            total = total
-                .checked_add(bytes.len() as u64)
-                .ok_or("helper size overflow")?;
-            if total > 32 * 1024 * 1024 {
-                return Err("helper bundle byte bound".into());
-            }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| "helper root mismatch")?
-                .to_str()
-                .ok_or("helper member encoding refused")?
-                .to_owned();
-            files.insert(relative, hash(&bytes));
-        } else {
-            return Err("nonregular helper member refused".into());
-        }
-    }
-    Ok(files)
-}
-
 #[derive(Clone, Debug)]
 pub struct Build {
     pub helper: PathBuf,
@@ -248,13 +203,13 @@ impl Build {
         let declared = data["bundle_files"]
             .as_object()
             .ok_or("helper inventory missing")?;
-        if declared.is_empty() || declared.len() > 256 {
+        if declared.is_empty() || declared.len() > MAX_MEMBERS {
             return Err("helper inventory bound".into());
         }
         let mut files = BTreeMap::new();
         for (name, value) in declared {
             let digest = value.as_str().ok_or("helper file digest missing")?;
-            if name.len() > 4096
+            if name.len() > MAX_PATH_BYTES
                 || digest.len() != 64
                 || !digest
                     .bytes()

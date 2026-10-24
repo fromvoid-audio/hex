@@ -681,7 +681,7 @@ fn real_immutable_quantum_adapter_has_exact_two_quantum_positions_and_rejects_ho
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presentation() {
     let case = Case::new();
-    let pending = Pending::prepare(
+    let mut pending = Pending::prepare(
         &build(),
         source(),
         options().preparation,
@@ -689,6 +689,31 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
         case.setup(0),
     )
     .unwrap();
+    let storage = pending.retained_storage_on_control().unwrap();
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (2, 2));
+    assert_eq!(
+        storage.inventory_node_lifetime_bound,
+        pending
+            .build
+            .retained_storage()
+            .unwrap()
+            .inventory_node_lifetime_bound
+    );
+    let capacity = pending.source.bundle.supplied_path.capacity();
+    pending.source.bundle.supplied_path.reserve(333);
+    let expanded = pending.retained_storage_on_control().unwrap();
+    assert_eq!(
+        expanded.data_bytes - storage.data_bytes,
+        pending.source.bundle.supplied_path.capacity() - capacity
+    );
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(pending.retained_storage_on_control(), Some(expanded));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
     assert_eq!(
         pending.facts(),
         Facts {
@@ -1151,12 +1176,21 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     .unwrap();
     assert!(pending.facts().restored);
     assert_eq!(pending.facts().algorithmic_latency_frames, 0);
+    let pending_storage = pending.retained_storage_on_control().unwrap();
+    assert_eq!(pending_storage.shared_groups, 3);
+    let provenance_bytes = pending.source.metadata_backing().unwrap()
+        + pending.build.retained_storage().unwrap().data_bytes;
     let mut instance = pending
         .complete_on_control(Some(options().presentation))
         .unwrap();
     assert!(instance.ready().restored);
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
     let storage = instance.retained_storage_on_control().unwrap();
+    assert_eq!(
+        storage.data_bytes,
+        pending_storage.data_bytes - provenance_bytes
+            + instance.ready.initial_state.payload().len()
+    );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (4, 4));
     assert_eq!(
         storage.data_bytes,
