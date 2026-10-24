@@ -131,7 +131,7 @@ impl EditorView {
             .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
                 cx.stop_propagation();
                 if !header && frame.current(view, window) { view.drop_console_arrangement_clip(drag, target, cx); }
-                else { view.clear_clip_drag(drag.project_generation, drag.clip); view.error = Some("clip drop canceled · console layout changed or no scene target".into()); cx.notify(); }
+                else { view.retire_console_clip_drag(drag); view.error = Some("clip drop canceled · console layout changed or no scene target".into()); cx.notify(); }
             }))
             .on_drop(cx.listener(move |view, drag: &NativeDeviceDrag, window, cx| {
                 cx.stop_propagation();
@@ -145,7 +145,8 @@ impl EditorView {
             }))
     }
     pub(super) fn console_column_clip_valid(&self, drag: &ClipDrag) -> bool {
-        self.drag_start_is_current(drag)
+        self.console_clip_drag_owned(drag)
+            && self.drag_start_is_current(drag)
             && drag.group.borrow().ids.len() <= 1
             && self
                 .state

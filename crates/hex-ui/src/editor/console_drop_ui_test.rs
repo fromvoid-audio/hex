@@ -66,7 +66,9 @@ fn fixture(
             name: "first".into(),
         }),
     ] {
-        editor.update(cx, |view, _| assert!(view.enqueue(request)));
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(request), "request refused: {:?}", view.error)
+        });
         receive_worker(&editor, cx);
     }
     let (track, scene, path) = editor.update(cx, |view, cx| {
@@ -238,7 +240,9 @@ fn restored(actual: &hex_project::Project, expected: &hex_project::Project, fron
 }
 
 fn history(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, request: Request) {
-    editor.update(cx, |view, _| assert!(view.enqueue(request)));
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(request), "request refused: {:?}", view.error)
+    });
     receive_worker(editor, cx);
 }
 
@@ -1181,6 +1185,8 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, track, scene, path) = fixture(cx);
+    // Let the real asynchronous import-preference load finish before admission.
+    VisualTestContext::from_window(handle, cx).run_until_parked();
     history(
         &editor,
         cx,
@@ -1235,6 +1241,66 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
     );
     editor.read_with(cx, |view, _| {
         assert!(view.active_clip_drag.is_none());
-        assert!(view.error.is_some());
+        assert!(
+            view.error
+                .as_ref()
+                .unwrap()
+                .contains("processed arrangement audio")
+        );
     });
+}
+
+#[gpui::test]
+fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, scene, _) = fixture(cx);
+    let source = arrangement_midi_source(cx, &editor, track);
+    let before = project(&editor, cx);
+    let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
+    let old = editor.read_with(&visual, |view, _| view.active_clip_drag.clone().unwrap());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(
+        point(px(8.0), px(8.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
+    let fresh = editor.read_with(&visual, |view, _| view.active_clip_drag.clone().unwrap());
+    assert!(!std::rc::Rc::ptr_eq(&old.group, &fresh.group));
+    // Deliver an older receiver's payload after a new real pointer capture.
+    // Same clip/generation/revision does not transfer ownership to that receiver.
+    editor.update(cx, |view, cx| {
+        view.drop_console_arrangement_clip(
+            &old,
+            hex_session::import_batch::ConsoleDestination::NewTrack {
+                before_track: Some(track),
+                scene: hex_project::SessionSceneTarget::Existing(scene),
+            },
+            cx,
+        )
+    });
+    editor.read_with(cx, |view, _| {
+        let active = view
+            .active_clip_drag
+            .as_ref()
+            .expect("stale Console release must preserve newer pointer capture");
+        assert!(std::rc::Rc::ptr_eq(&active.group, &fresh.group));
+        assert_eq!(
+            view.worker_requests_pending, 0,
+            "stale receiver must not admit a duplicate birth"
+        );
+    });
+    assert_eq!(project(&editor, cx), before);
+    let at = bounds(
+        &mut visual,
+        format!("console-column-before-{}-{}", track.value(), scene.value()),
+    )
+    .center();
+    release(&mut visual, at);
+    receive_worker(&editor, cx);
+    let after = project(&editor, cx);
+    assert_eq!(after.tracks().len(), 2);
+    history(&editor, cx, Request::Undo);
+    restored(&project(&editor, cx), &before, after.next_identity());
 }
