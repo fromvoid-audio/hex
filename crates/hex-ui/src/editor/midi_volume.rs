@@ -154,22 +154,25 @@ impl EditorView {
         } else {
             "envelopes"
         };
-        div().children([self.midi_button_with_id(
-            "midi-volume-mode",
-            label,
-            "switch between notes and clip volume envelope",
-            cx.listener(|view, _, window, cx| {
-                view.cancel_midi_note_gesture();
-                view.cancel_midi_audition();
-                view.cancel_computer_keyboard();
-                view.focus.focus(window);
-                view.midi_volume.enabled = !view.midi_volume.enabled;
-                if let Some(graph) = view.midi_volume.graph.clone() {
-                    graph.update(cx, |g, cx| g.cancel(cx));
-                }
-                cx.notify();
-            }),
-        )])
+        div().children([self
+            .midi_button_with_id(
+                "midi-volume-mode",
+                label,
+                "switch between notes and clip volume envelope",
+                cx.listener(|view, _, window, cx| {
+                    view.cancel_midi_note_gesture();
+                    view.cancel_midi_audition();
+                    view.cancel_computer_keyboard();
+                    view.focus.focus(window);
+                    view.midi_volume.enabled = !view.midi_volume.enabled;
+                    if let Some(graph) = view.midi_volume.graph.clone() {
+                        graph.update(cx, |g, cx| g.cancel(cx));
+                    }
+                    cx.notify();
+                }),
+            )
+            .w_auto()
+            .px_2()])
     }
     pub(super) fn cancel_midi_volume_input(&mut self) -> bool {
         self.midi_volume.gesture.take().is_some()
@@ -276,9 +279,10 @@ impl EditorView {
         let grid = self.midi_snap_grid;
         let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
-            .h(px(28.0))
+            .min_h(px(28.0))
             .flex_shrink_0()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .px_1()
@@ -340,7 +344,17 @@ impl EditorView {
                 }),
             )])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, false, cx))
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, true, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, true, cx));
+        // Reserve feedback height even before a point is selected: revealing or
+        // changing a value must not move the graph under a captured pointer.
+        let feedback = div()
+            .h(px(22.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_1()
+            .text_xs()
             .child(theme::text(format!("{} points", volume.points().len())))
             .children(
                 point_values(&volume, self.midi_volume.selected).map(|values| {
@@ -360,6 +374,7 @@ impl EditorView {
                 .flex_col()
                 .debug_selector(|| "midi-volume-editor".into())
                 .child(toolbar)
+                .child(feedback)
                 .child(div().flex_1().min_h_0().child(graph)),
         )
     }
