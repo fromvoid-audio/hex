@@ -284,6 +284,14 @@ pub(in crate::editor) fn view(
                     .cursor(gpui::CursorStyle::ResizeRightBracket),
             );
         }
+        element = element.children(view.event_fade_elements(
+            &root,
+            *event,
+            visible_start,
+            visible_end,
+            local.length,
+            cx,
+        ));
         body = body.child(element);
     }
     // One bounded grid above the opaque event bodies, using the same light
@@ -517,17 +525,40 @@ pub(in crate::editor) fn view(
                 cx.notify();
             }),
         )
-        .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
-            if event.pressed_button == Some(MouseButton::Left)
-                && view.audio_event_editor.gesture.is_some()
-            {
-                view.event_update_pointer(f32::from(event.position.x), event.modifiers.platform);
-                cx.notify();
-            }
-        }))
+        .on_mouse_move(
+            cx.listener(|view, event: &gpui::MouseMoveEvent, window, cx| {
+                if view.update_audio_event_fade_pointer(
+                    event.position,
+                    event.modifiers.platform,
+                    window,
+                    cx,
+                ) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.pressed_button == Some(MouseButton::Left)
+                    && view.audio_event_editor.gesture.is_some()
+                {
+                    view.event_update_pointer(
+                        f32::from(event.position.x),
+                        event.modifiers.platform,
+                    );
+                    cx.notify();
+                }
+            }),
+        )
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(|view, event: &gpui::MouseUpEvent, _, cx| {
+            cx.listener(|view, event: &gpui::MouseUpEvent, window, cx| {
+                if view.finish_audio_event_fade_pointer(
+                    event.position,
+                    event.modifiers.platform,
+                    window,
+                    cx,
+                ) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.audio_event_editor.gesture.is_none() {
                     return;
                 }
