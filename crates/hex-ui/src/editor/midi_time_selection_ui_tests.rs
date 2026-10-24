@@ -34,7 +34,7 @@ fn assert_visible(
     let color: gpui::Background = gpui::Hsla::from(gpui::rgb(crate::theme::color(
         crate::theme::PaletteRole::Secondary,
     )))
-    .opacity(0.13)
+    .opacity(crate::theme::TIME_SELECTION_OPACITY)
     .into();
     let scale = visual.update(|window, _| window.scale_factor());
     for selector in ["midi-source-ruler", "midi-note-roll"] {

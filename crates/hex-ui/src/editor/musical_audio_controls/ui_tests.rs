@@ -16,21 +16,53 @@ const CHOICES: [&str; 6] = [
 
 #[gpui::test]
 fn selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats(cx: &mut TestAppContext) {
-    let (handle, editor, _, clip, paths) = bounded_audio_detail_fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    paths.assert_bounded(&editor, cx);
-    let toggle = visual
-        .debug_bounds("audio-clip-warp-toggle")
-        .expect("visible warp toggle");
-    let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
-    assert!(toggle.origin.y >= sidebar.origin.y && toggle.bottom() <= sidebar.bottom());
-    visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) })
-            if *id == clip && settings.mode == modes()[0]));
-    });
+    for (enabled, width) in [
+        (false, 880.0),
+        (true, 880.0),
+        (false, 1_280.0),
+        (true, 1_280.0),
+    ] {
+        let (handle, editor, _, clip, paths) = bounded_audio_detail_fixture(cx);
+        if enabled {
+            prepare_beats_fixture(&editor, clip, cx);
+        }
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(width), px(540.0)));
+        visual.run_until_parked();
+        paths.assert_bounded(&editor, cx);
+        let toggle = visual
+            .debug_bounds("audio-clip-warp-toggle")
+            .expect("visible warp toggle");
+        let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
+        assert!(toggle.origin.y >= sidebar.origin.y && toggle.bottom() <= sidebar.bottom());
+        assert!(toggle.origin.x >= sidebar.origin.x && toggle.right() <= sidebar.right());
+        assert!(
+            toggle.size.width >= px(32.0) && toggle.size.width <= px(64.0),
+            "warp label needs a compact readable button: {toggle:?}"
+        );
+        assert!(
+            visual
+                .debug_bounds("audio-clip-warp-toggle-indicator")
+                .is_none(),
+            "warp must use the labeled button rather than an unlabeled square"
+        );
+        let style = theme::control_style();
+        let expected: gpui::Background =
+            rgb(if enabled { style.accent } else { style.surface }).into();
+        assert_eq!(
+            visual.rendered_background("audio-clip-warp-toggle"),
+            Some(expected)
+        );
+        visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            if enabled {
+                assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: None }) if *id == clip));
+            } else {
+                assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) }) if *id == clip && settings.mode == modes()[0]));
+            }
+        });
+    }
 }
 #[gpui::test]
 fn algorithm_picker_dispatches_direct_choice_without_resetting_current_settings(

@@ -992,7 +992,7 @@ fn meter_label(position: MeterPosition) -> String {
         format!("{}.{}", position.bar(), position.beat())
     } else {
         let tenths = (u128::from(fraction) * 10 / u128::from(BeatTime::ONE.raw())) as u8;
-        format!("{}.{}+{}", position.bar(), position.beat(), tenths)
+        format!("{}.{}.{}", position.bar(), position.beat(), tenths)
     }
 }
 
@@ -1557,6 +1557,56 @@ mod tests {
             SnapGrid::Quarter.snap_frame(&project, u64::MAX, viewport, 640.0),
             None
         );
+    }
+
+    #[test]
+    fn ruler_subdivision_labels_use_dots_without_changing_positions() {
+        let common = hex_project::MeterMap::common_time();
+        for (beat, expected) in [
+            (BeatTime::ZERO, "1.1"),
+            (BeatTime::from_quarters(2).unwrap(), "1.3"),
+            (BeatTime::from_ratio(21, 8).unwrap(), "1.3.6"),
+            (BeatTime::from_ratio(1, 64).unwrap(), "1.1.0"),
+            (BeatTime::from_quarters(4).unwrap(), "2.1"),
+        ] {
+            assert_eq!(super::meter_label(common.position(beat).unwrap()), expected);
+        }
+        let meter = hex_project::MeterMap::new(vec![
+            hex_project::MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME),
+            hex_project::MeterPoint::new(
+                BeatTime::from_ratio(3, 2).unwrap(),
+                Meter::new(3, 8).unwrap(),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            super::meter_label(meter.position(BeatTime::from_ratio(3, 2).unwrap()).unwrap()),
+            "2.1"
+        );
+        assert_eq!(
+            super::meter_label(
+                meter
+                    .position(BeatTime::from_ratio(17, 8).unwrap())
+                    .unwrap()
+            ),
+            "2.2.1"
+        );
+        let project = Project::new(48_000).unwrap();
+        let coarse = ruler_ticks(&project, Viewport::fit(960_000), 600.0);
+        assert!(coarse.iter().all(|tick| tick.label.split('.').count() == 2));
+        let fine = ruler_ticks(
+            &project,
+            Viewport {
+                start: 60_000,
+                length: 12_000,
+            },
+            600.0,
+        );
+        assert!(
+            fine.iter()
+                .any(|tick| tick.frame == 63_000 && tick.label == "1.3.6")
+        );
+        assert!(fine.iter().all(|tick| !tick.label.contains('+')));
     }
 
     #[test]
