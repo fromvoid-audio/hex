@@ -309,6 +309,46 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    /// Quote resource-free observation metadata for this actual runtime, including a
+    /// transient section's effective MIDI timing. Does not acquire graph resources.
+    pub fn observation_storage_quote_on_control(&self) -> Result<usize, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_deref()
+            .ok_or(Invalid("playback revision unavailable"))?;
+        crate::PreparedPlaybackObservation::storage_quote(
+            revision,
+            crate::session_inventory::EffectiveSessionMidi::new(
+                revision.session(),
+                self.session_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.midi_admission.as_ref()),
+            ),
+        )
+    }
+    /// Capture gates from the installed candidate's immutable runtime metadata,
+    /// preserving the original revision/resource identity and existing control custody.
+    pub fn prepare_observation_on_control(
+        &self,
+    ) -> Result<crate::PreparedPlaybackObservation, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_deref()
+            .ok_or(Invalid("playback revision unavailable"))?;
+        let runtime = self.session_runtime.as_ref();
+        crate::PreparedPlaybackObservation::prepare_effective(
+            revision,
+            crate::session_inventory::EffectiveSessionMidi::new(
+                revision.session(),
+                runtime.and_then(|runtime| runtime.midi_admission.as_ref()),
+            ),
+            runtime.map_or_else(
+                || revision.session().periodic_tempo(),
+                |runtime| runtime.periodic_tempo(),
+            ),
+            runtime.is_none() && revision.session().periodic_tempo_error().is_some(),
+        )
+    }
     pub(crate) fn device_resource_leases(
         &self,
     ) -> impl Iterator<Item = &crate::native_device_resources::PreparedDeviceResourceLease> {
@@ -1050,7 +1090,10 @@ impl Playback {
                 revision.session().timing(),
                 revision.session().meter_map(),
                 start,
-                self.project.loop_region(),
+                self.session_runtime.as_ref().map_or_else(
+                    || self.project.loop_region(),
+                    |runtime| runtime.loop_region(),
+                ),
                 output,
             );
         }
@@ -1083,6 +1126,28 @@ impl Playback {
             .map_or(self.performance_frame, |runtime| {
                 runtime.performance_frame()
             })
+    }
+
+    /// Callback-owned boundary for a prepared section seek. The caller keeps
+    /// the current graph rendering until this frame, then installs the fresh
+    /// preroll candidate using ordinary seek discontinuity semantics.
+    pub fn section_launch_frame(
+        &self,
+        quantization: crate::LaunchQuantization,
+    ) -> Result<u64, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("section launch requires prepared session timing"))?
+            .scheduled_at(quantization)
+            .map(|(frame, _)| frame)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    /// Actual graph-local audition loop; independent of the saved loop marker.
+    pub fn section_loop(&self) -> Option<hex_project::LoopRegion> {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.transient_loop)
     }
 
     /// True after the legacy monotonic clock reached its representable limit.

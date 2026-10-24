@@ -571,6 +571,7 @@ impl ResidentHarness {
             project_revision: revision,
             destination_frame: 129,
             start_playing: true,
+            section: None,
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity: control.output_identity().unwrap(),
                 active_audio_revision: fence.expected_active_revision(),

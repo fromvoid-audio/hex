@@ -3191,6 +3191,7 @@ pub mod live_expression;
 mod midi_activity;
 mod playback_observation;
 pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
+mod launch_quantization;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;

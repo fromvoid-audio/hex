@@ -57,6 +57,7 @@ mod project_spectrum_tests;
 mod runtime_view;
 mod sampler_edit;
 mod sampler_keyboard;
+mod section_launch;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod streaming;
@@ -218,6 +219,7 @@ pub(crate) struct Publication {
     source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    section_launch_frame: Option<u64>,
     playback: Box<Playback>,
 }
 // Exactly one active musical runtime, including the constructor-owned path.
@@ -277,9 +279,26 @@ pub enum PublicationPolicy {
     /// Install only if the active runtime, route generation, and command prefix
     /// still match the caller's control-side capture.
     InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
+    /// A prepared section seek waits on the predecessor's musical clock.
+    /// The first ready callback selects the next grid boundary. Installation
+    /// uses ordinary seek/reset semantics, retaining the candidate's DSP clock.
+    InstallSectionWhenReady {
+        fence: FreshRuntimeFence,
+        quantization: hex_engine::LaunchQuantization,
+    },
     /// Authored structural edit: the shared stopped gate remains held until exact
     /// installation. Stop keeps priority; Play cannot run on the old graph.
     InstallUnderStoppedArrangement(StoppedEditFence),
+}
+
+impl PublicationPolicy {
+    fn fresh_fence(self) -> Option<FreshRuntimeFence> {
+        match self {
+            Self::InstallFreshRuntimeIfUnchanged(fence)
+            | Self::InstallSectionWhenReady { fence, .. } => Some(fence),
+            _ => None,
+        }
+    }
 }
 
 const FRESH_PUBLICATION_PENDING: u32 = 0;
@@ -1563,13 +1582,12 @@ impl PublicationControl {
             });
         }
         let revision = self.revision + 1;
-        let cancellation = matches!(policy, PublicationPolicy::InstallFreshRuntimeIfUnchanged(_))
-            .then(|| {
-                Arc::new(FreshRuntimeCancellation {
-                    revision,
-                    decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
-                })
-            });
+        let cancellation = policy.fresh_fence().is_some().then(|| {
+            Arc::new(FreshRuntimeCancellation {
+                revision,
+                decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
+            })
+        });
         let mut playback = playback;
         playback.set_device_metering(true);
         let publication = Publication {
@@ -1581,6 +1599,7 @@ impl PublicationControl {
             source_context,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
+            section_launch_frame: None,
             playback: Box::new(playback),
         };
         if let Err(publication) = enqueue_legacy(&mut self.publications, publication) {
@@ -2475,6 +2494,14 @@ impl Callback {
             return;
         }
 
+        self.advance_legacy_publication();
+        self.consume_commands();
+    }
+
+    fn advance_legacy_publication(&mut self) {
+        if !self.section_publication_due() {
+            return;
+        }
         // A candidate with a transient release-capacity refusal remains owned
         // here while the previous runtime continues to render and drain tails.
         // The queue gate prevents a second graph from being admitted meanwhile.
@@ -2490,7 +2517,8 @@ impl Callback {
             #[cfg(not(test))]
             let forced_refusal = false;
             let stale_fence = match next.policy {
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence) => {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+                | PublicationPolicy::InstallSectionWhenReady { fence, .. } => {
                     let active_revision = self
                         .active
                         .as_ref()
@@ -2520,6 +2548,7 @@ impl Callback {
                 && matches!(
                     next.policy,
                     PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                        | PublicationPolicy::InstallSectionWhenReady { .. }
                 )
                 && let Some(barrier) = self.test_after_fresh_fence_validation.take()
             {
@@ -2536,6 +2565,7 @@ impl Callback {
                 next.policy,
                 PublicationPolicy::InstallFreshRuntime
                     | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                    | PublicationPolicy::InstallSectionWhenReady { .. }
                     | PublicationPolicy::InstallUnderStoppedArrangement(_)
             ) {
                 None
@@ -2573,6 +2603,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                            | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(barrier) = self.test_before_fresh_runtime_apply.take()
                     {
                         barrier.wait();
@@ -2592,13 +2623,13 @@ impl Callback {
                         );
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);
-                        self.consume_commands();
                         return;
                     }
                     #[cfg(test)]
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                            | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(barrier) = self.test_after_fresh_runtime_apply_decision.take()
                     {
                         barrier.wait();
@@ -2610,6 +2641,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                            | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(previous) =
                         self.active.as_ref().and_then(ActivePublication::legacy)
                         && next.control_context_generation == previous.control_context_generation
@@ -2690,7 +2722,6 @@ impl Callback {
                         Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
                     ) {
                         self.return_graph(next);
-                        self.consume_commands();
                         return;
                     }
                     if let Some(ActivePublication::Legacy(previous)) =
@@ -2715,7 +2746,6 @@ impl Callback {
                 }
             }
         }
-        self.consume_commands();
     }
 
     fn apply_processor_audition_boundary(&mut self) {
@@ -2982,7 +3012,9 @@ impl Callback {
         if !output.is_empty() {
             self.prepare_midi_recording_quantum(output.len());
         }
-        self.render_project(output)?;
+        if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
+            self.render_project(output)?;
+        }
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
@@ -6129,6 +6161,7 @@ mod tests {
                 source_context: None,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
+                section_launch_frame: None,
                 playback: Box::new(graph().0),
             }))
             .unwrap();
@@ -6471,6 +6504,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
+                    section_launch_frame: None,
                     playback: Box::new(graph().0),
                 }))
                 .unwrap();
@@ -7093,6 +7127,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
+            section_launch_frame: None,
             playback: Box::new(playback),
         }));
         assert!(weak_revision.upgrade().is_some());
@@ -7210,6 +7245,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
+                        section_launch_frame: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7287,6 +7323,7 @@ mod tests {
                         source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
+                        section_launch_frame: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7303,6 +7340,7 @@ mod tests {
             source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
+            section_launch_frame: None,
             playback: Box::new(held),
         }));
         let mut last_ticket = 0;
@@ -7453,6 +7491,7 @@ mod tests {
                     source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
+                    section_launch_frame: None,
                     playback: Box::new(queued),
                 }))
                 .is_ok()

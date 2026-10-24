@@ -42,11 +42,7 @@ impl SessionPlayback {
             && !self.linear_arrangement_export
             && !self.current_sampler_console
             && !self.revision.contains_streamed_sources()
-            && self
-                .revision
-                .arrangement()
-                .loop_region()
-                .is_none_or(|region| !region.enabled())
+            && self.loop_region().is_none()
             && self.computer_keyboard_latency_supported()
     }
     pub(super) fn begin_midi_capture_render(&mut self, frames: usize) {

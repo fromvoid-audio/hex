@@ -33,14 +33,8 @@ pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
 };
-const QUARTER_RAW: u64 = 1_u64 << 32;
-const FOUR_QUARTERS_RAW: u64 = QUARTER_RAW * 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LaunchQuantization {
-    Immediate,
-    FourQuarter,
-}
+pub use crate::launch_quantization::LaunchQuantization;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPlaybackCommand {
@@ -374,6 +368,9 @@ pub struct SessionPlayback {
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
+    /// Graph-local section audition; expires when the source graph is replaced.
+    pub(crate) transient_loop: Option<hex_project::LoopRegion>,
+    pub(crate) midi_admission: Option<crate::session_inventory::PreparedSessionMidiAdmission>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
     historical_floor: Option<BeatTime>,
@@ -704,6 +701,8 @@ impl SessionPlayback {
             compensation,
             device_metering: _,
             revision: _,
+            transient_loop: _,
+            midi_admission: _,
             periodic_tempo: _,
             anchor: _,
             historical_floor: _,
@@ -1166,6 +1165,34 @@ impl SessionPlayback {
         linear_arrangement_export: bool,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_policy_scoped_and_loop(revision, linear_arrangement_export, resources, None)
+    }
+
+    fn new_with_policy_and_loop(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_policy_scoped_and_loop(
+            revision,
+            linear_arrangement_export,
+            resources,
+            transient_loop,
+        )
+    }
+
+    fn new_with_policy_scoped_and_loop(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, SessionPlaybackError> {
         if revision.device_resource_scope != resources.map(|resources| resources.id()) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "device resource set differs from prepared revision",
@@ -1188,14 +1215,43 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionTrackMismatch);
         }
-        if !linear_arrangement_export && let Some(error) = revision.session().periodic_tempo_error()
+        if !linear_arrangement_export
+            && transient_loop.is_none()
+            && let Some(error) = revision.session().periodic_tempo_error()
         {
             return Err(SessionPlaybackError::SessionTempoUnavailable(error));
         }
-        let periodic_tempo = if linear_arrangement_export {
+        let periodic_tempo = if let Some(region) = transient_loop {
+            if linear_arrangement_export {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
+            Some(
+                PreparedPeriodicSessionTempo::prepare(revision.session().timing(), region)
+                    .map_err(SessionPlaybackError::SessionTempoUnavailable)?,
+            )
+        } else if linear_arrangement_export {
             None
         } else {
             revision.session().periodic_tempo()
+        };
+        let midi_admission = if let Some(region) = transient_loop {
+            let _ = Self::section_runtime_allowance(&revision, region)?;
+            let base = preroll::arrangement_runtime_storage_preflight_bytes(&revision)
+                .ok_or(SessionPlaybackError::Allocation)?;
+            revision
+                .session()
+                .prepare_section_admission(
+                    crate::MidiTiming::max_micro_bpm(&base_timing_for(
+                        revision.session(),
+                        periodic_tempo,
+                    )),
+                    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+                        .checked_sub(base)
+                        .ok_or(SessionPlaybackError::Allocation)?,
+                )
+                .map_err(|error| SessionPlaybackError::MutableInstrumentDiagnostic(error.0))?
+        } else {
+            None
         };
 
         let mutable_arrangement_source_loop = linear_arrangement_export
@@ -1206,9 +1262,8 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
         }
         if !linear_arrangement_export
-            && let Some(region) = revision
-                .arrangement()
-                .loop_region()
+            && let Some(region) = transient_loop
+                .or_else(|| revision.arrangement().loop_region())
                 .filter(|region| region.enabled())
         {
             for track in arrangement_tracks {
@@ -1436,6 +1491,7 @@ impl SessionPlayback {
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
                 revision: &revision,
+                midi_admission: midi_admission.as_ref(),
                 analytic_import: &analytic_import,
                 device_chains: &device_chains,
                 return_chains: &return_chains,
@@ -1479,6 +1535,8 @@ impl SessionPlayback {
             compensation,
             device_metering: false,
             revision,
+            transient_loop,
+            midi_admission,
             periodic_tempo,
             anchor: None,
             historical_floor: None,
@@ -1526,8 +1584,34 @@ impl SessionPlayback {
         })
     }
 
+    /// Structural work admitted for the actual runtime's Session MIDI templates.
+    /// This is a guard envelope, not a measured physical CPU budget.
+    pub fn session_work_envelope(&self) -> crate::SessionWorkEnvelope {
+        crate::session_inventory::EffectiveSessionMidi::new(
+            self.revision.session(),
+            self.midi_admission.as_ref(),
+        )
+        .work()
+    }
+
+    pub(crate) fn periodic_tempo(&self) -> Option<PreparedPeriodicSessionTempo> {
+        self.periodic_tempo
+    }
+
     pub fn performance_frame(&self) -> u64 {
         self.performance_frame
+    }
+
+    /// One active loop law for rendering, demand, gate admission and capture.
+    /// A transient section loop never changes the immutable saved revision.
+    pub(crate) fn loop_region(&self) -> Option<hex_project::LoopRegion> {
+        if self.linear_arrangement_export {
+            None
+        } else {
+            self.transient_loop
+                .or_else(|| self.revision.arrangement().loop_region())
+                .filter(|region| region.enabled())
+        }
     }
 
     /// Exact immutable graph retained by this runtime.
@@ -1772,7 +1856,14 @@ impl SessionPlayback {
                     launch_frame: frame,
                 }
             }
-            RouteTarget::Session(clip) if self.revision.session().midi_clip(clip).is_some() => {
+            RouteTarget::Session(clip)
+                if crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip(clip)
+                .is_some() =>
+            {
                 RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(beat),

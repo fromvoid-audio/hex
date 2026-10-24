@@ -497,6 +497,30 @@ mod tests {
         assert_eq!(keyboard.capture_render(1).unwrap().unwrap().events.len(), 3);
     }
     #[test]
+    fn section_runtime_loop_refuses_capture_without_changing_saved_loop() {
+        let (project, track, clock, input, _) = setup(false);
+        assert!(project.loop_region().is_none());
+        let runtime = crate::SessionPlayback::prepare_section_arrangement_preroll(
+            crate::computer_keyboard::tests::prepared(&project),
+            None,
+            hex_project::LoopRegion::new(0, 24_000, true).unwrap(),
+            0,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let mut playback = crate::Playback::from_interactive_arrangement_preroll(runtime).unwrap();
+        playback
+            .prepare_computer_keyboard(&project, track, Arc::clone(&input))
+            .unwrap();
+        let keys = input.begin_ordered_keys_on_control().unwrap();
+        assert!(
+            playback
+                .arm_midi_capture(binding(&project, track, &input, keys), &clock)
+                .is_err()
+        );
+        assert!(!input.is_cancelled());
+    }
+    #[test]
     fn invalid_admission_and_capture_faults_preserve_monitoring() {
         let (project, track, clock, input, mut runtime) = setup(false);
         let keys = input.begin_ordered_keys_on_control().unwrap();
