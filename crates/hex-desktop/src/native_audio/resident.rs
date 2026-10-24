@@ -252,30 +252,6 @@ impl NativeAudioSink {
         } else {
             None
         };
-        let section_loop = playback.section_loop();
-        if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
-            match self.current_runtime_loop(metadata.context) {
-                Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
-                Ok(_) => {
-                    return Err(ResidentPublicationRefusal {
-                        playback,
-                        error: "resident runtime changed during preparation".into(),
-                    });
-                }
-                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
-            }
-        } else if matches!(policy, ResidentPublicationPolicy::InheritRuntime) {
-            match self.current_runtime_loop(metadata.context) {
-                Ok(Some(actual)) if actual.section_loop.is_some() || section_loop.is_some() => {
-                    return Err(ResidentPublicationRefusal {
-                        playback,
-                        error: "resident audition loop requires an applied witness".into(),
-                    });
-                }
-                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
-                _ => {}
-            }
-        }
         self.resident.reap_observations();
         let existing = self.resident.observations.iter().position(|row| {
             row.as_ref()
@@ -303,6 +279,30 @@ impl NativeAudioSink {
                 playback,
                 error: "audio publication observation is waiting for capacity".into(),
             });
+        }
+        let section_loop = playback.section_loop();
+        if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
+            match self.current_runtime_loop(metadata.context) {
+                Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
+                Ok(_) => {
+                    return Err(ResidentPublicationRefusal {
+                        playback,
+                        error: "resident runtime changed during preparation".into(),
+                    });
+                }
+                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+            }
+        } else if matches!(policy, ResidentPublicationPolicy::InheritRuntime) {
+            match self.current_runtime_loop(metadata.context) {
+                Ok(Some(actual)) if actual.section_loop.is_some() || section_loop.is_some() => {
+                    return Err(ResidentPublicationRefusal {
+                        playback,
+                        error: "resident audition loop requires an applied witness".into(),
+                    });
+                }
+                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                _ => {}
+            }
         }
         if replacing_document
             && !self.desired.as_ref().is_some_and(|source| {
