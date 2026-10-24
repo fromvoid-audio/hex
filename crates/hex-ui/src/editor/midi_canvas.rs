@@ -1676,6 +1676,7 @@ impl EditorView {
                     "toggle source looping · disabled loop markers are retained",
                     "toggle source looping · disabled loop markers are retained",
                 ))]);
+        let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
             .h(px(28.0))
             .flex_shrink_0()
@@ -1683,7 +1684,7 @@ impl EditorView {
             .items_center()
             .gap_1()
             .px_1()
-            .child(self.volume_mode_button(cx))
+            .child(mode_control)
             .child(theme::text("piano roll"))
             .children([self.midi_button(
                 grid.label(),

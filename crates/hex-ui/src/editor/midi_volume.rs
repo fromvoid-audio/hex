@@ -227,6 +227,7 @@ impl EditorView {
         let generation = self.project_generation;
         let revision = self.state.as_ref()?.revision;
         let grid = self.midi_snap_grid;
+        let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
             .h(px(28.0))
             .flex_shrink_0()
@@ -234,7 +235,7 @@ impl EditorView {
             .items_center()
             .gap_1()
             .px_1()
-            .child(self.volume_mode_button(cx))
+            .child(mode_control)
             .child(theme::text("clip volume"))
             .children([self.midi_button(
                 grid.label(),
