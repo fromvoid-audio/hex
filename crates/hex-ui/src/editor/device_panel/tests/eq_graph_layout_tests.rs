@@ -538,6 +538,73 @@ fn eq_long_numbers_channel_names_and_cut_slopes_fit_and_edit_through_real_contro
 }
 
 #[gpui::test]
+fn visible_eq_capture_survives_focus_on_another_visible_eq(cx: &mut TestAppContext) {
+    let (service, _, track, first) = fixture(false);
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(EQ_TYPE_ID),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let second = state.project.track(track).unwrap().devices()[1].id();
+    let original = state.project.clone();
+    let (handle, editor, _root) = bounded_window(cx, service, state, track);
+    let (control, mut callback) = hex_audio::spectrum_target::channel();
+    editor.update(cx, |v, cx| {
+        v.device_panel.eq_spectrum.test_channel = Some(control);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(3200.0), px(650.0)));
+    visual.run_until_parked();
+    let focus = editor.update(cx, |v, cx| v.device_panel.chain_window.focus(first, cx));
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    let first_target = editor.read_with(cx, |v, _| {
+        v.device_panel
+            .eq_spectrum
+            .test_channel
+            .as_ref()
+            .unwrap()
+            .desired()
+            .unwrap()
+    });
+    assert_eq!(first_target.identity.device_id, first.value());
+    callback.begin_block();
+    let focus = editor.update(cx, |v, cx| v.device_panel.chain_window.focus(second, cx));
+    visual.update(|window, _| focus.focus(window));
+    for _ in 0..2 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        for device in [first, second] {
+            let graph = visual
+                .debug_bounds(selector("eq-response", device))
+                .unwrap();
+            assert!(graph.left() >= px(0.0) && graph.right() <= viewport.width);
+        }
+        editor.read_with(cx, |v, _| {
+            assert_eq!(v.device_panel.selected_device, Some(second));
+            assert_eq!(v.state.as_ref().unwrap().project, original);
+            assert_eq!(
+                v.device_panel
+                    .eq_spectrum
+                    .test_channel
+                    .as_ref()
+                    .unwrap()
+                    .desired(),
+                Some(first_target),
+                "focus must not replace another visible eq's live capture"
+            );
+        });
+    }
+}
+
+#[gpui::test]
 fn eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_channel(
     cx: &mut TestAppContext,
 ) {

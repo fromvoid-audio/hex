@@ -41,9 +41,12 @@ fn clear_status(view: &mut EditorView) -> bool {
 fn target_error_message(error: TargetError) -> &'static str {
     match error {
         TargetError::OutputClosed => "spectrum unavailable: audio output is closed",
-        TargetError::InvalidDevice | TargetError::InvalidOwner | TargetError::WrongDeviceType => {
-            "spectrum unavailable: selected eq target is invalid"
-        }
+        TargetError::InvalidDevice
+        | TargetError::InvalidOwner
+        | TargetError::WrongDeviceType
+        | TargetError::TooManyTargets
+        | TargetError::DuplicateTarget
+        | TargetError::InconsistentContext => "spectrum unavailable: selected eq target is invalid",
         TargetError::InvalidActivationFloor => "spectrum waits for a valid audio publication",
         TargetError::UnsupportedSampleRate(_) => {
             "spectrum unavailable: unsupported audio sample rate"
