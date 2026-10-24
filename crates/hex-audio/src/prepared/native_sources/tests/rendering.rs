@@ -13,6 +13,7 @@ struct Fixture {
     errors: Guard<ErrorCallbackOwner>,
     retirement: NativeRetirement,
     binding: Binding,
+    unused: Option<Binding>,
     runtime: hex_engine::ClaimedAudioCandidateRuntime,
     anchors: [Option<hex_engine::AudioCandidateAnchors>; 1],
     samples: Vec<[f32; 2]>,
@@ -53,7 +54,7 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let (mut control, data, errors, retirement, binding) = setup_for_identity(identity);
+    let (mut control, mut data, errors, retirement, binding) = setup_for_identity(identity);
     let state = control.native_source_prepared_state(binding).unwrap();
     let command = match location {
         0 => Command::InsertDevice {
@@ -152,13 +153,34 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
     runtime
         .apply_action(hex_engine::PlaybackAction::Transport(PlaybackCommand::Play))
         .unwrap();
+    // Install the greater binding first, then insert the real graph's source
+    // before it. The retained source must stay unvisited and return with0 DSP.
+    let unused = (location == 2 && !bypassed).then(|| {
+        let unused = source(
+            &mut control,
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 500).unwrap(),
+        );
+        control.publish_native_source_endpoint(unused).unwrap();
+        allocation_free(|| {
+            data.owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        unused
+    });
     control.publish_native_source_endpoint(binding).unwrap();
+    allocation_free(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+        })
+    });
     Fixture {
         control,
         data,
         errors,
         retirement,
         binding,
+        unused,
         runtime,
         anchors: [Some(anchor)],
         samples,
@@ -174,12 +196,26 @@ fn dispose(mut f: Fixture, expected_blocks: u64) {
     anchor.finish_disposal_on_control().unwrap();
     assert!(anchor.recover_inputs_on_control().is_some());
     assert!(f.control.retire_native_source_preparation(f.binding));
+    if let Some(unused) = f.unused {
+        assert!(f.control.retire_native_source_preparation(unused));
+    }
     allocation_free(|| {
         f.data
             .owner_mut()
             .unwrap()
             .run(|callback, _| callback.begin_block())
     });
+    if f.unused.is_some() {
+        // The real return queue has one cell. Drain the first original return
+        // before asking the callback to return the second retained endpoint.
+        f.control.reclaim();
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+    }
     let returned = recover(&mut f.control, f.binding);
     let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
         panic!("native reap")
@@ -191,6 +227,24 @@ fn dispose(mut f: Fixture, expected_blocks: u64) {
         (expected_blocks, expected_blocks * 8)
     );
     assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    if let Some(unused) = f.unused {
+        // The first return removed the smaller route; the remaining original
+        // owner still occupies its real sparse cell and has no fabricated work.
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        let returned = recover(&mut f.control, unused);
+        let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+            panic!("unused native reap")
+        };
+        assert!(disposal.status.success());
+        let terminal = disposal.terminal.unwrap();
+        assert_eq!((terminal.blocks, terminal.frames), (0, 0));
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    }
     drop(f.control);
     drop(f.data);
     drop(f.errors);
@@ -268,6 +322,12 @@ fn actual_root_endpoint_bank_renders_closed_track_return_main_at_final_host_acce
                             callback.native_sources.test_committed_frames(f.binding),
                             Some(committed + chunk.len() as u64)
                         );
+                        if let Some(unused) = f.unused {
+                            assert_eq!(
+                                callback.native_sources.test_committed_frames(unused),
+                                Some(0)
+                            );
+                        }
                     })
                 });
                 for (actual, expected) in host[..chunk.len() * 2].chunks_exact(2).zip(chunk.iter())
