@@ -114,6 +114,19 @@ individual members. drag any selected track name to reorder the selection as
 one block, keeping its order and content. dragging an unselected name moves
 that track alone. one undo restores the previous order.
 
+with an arrange track header focused, **command+c** copies all selected tracks,
+**command+x** cuts them, **command+v** pastes after the selected block, and
+**command+d** duplicates it. empty tracks are included, and sparse selections
+keep their project order. each cut, paste or duplicate has one undo step.
+right-click a track header for these actions or **duplicate tracks without clips**:
+this keeps the mixer, gain automation and complete device chain, including a/b
+settings, while omitting both arrange and console clips. full copies include both
+clip workspaces. original media stays shared; copied tracks and devices have new
+identities. internal routes follow the copied group, and external inputs remain
+connected. duplication preserves outside tracks' existing midi source choices.
+track and clip/time clipboards are separate and clear when another project opens.
+
+
 drag the bottom edge of a track header to resize that row. hold **option** while
 resizing to give all ordinary tracks the same height. at the minimum height, rows
 keep their names and clip titles; expand them to use the mixer and fade controls.

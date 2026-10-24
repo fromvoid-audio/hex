@@ -8,7 +8,7 @@ fn reorder(event: &Event, track: TrackId, before: Option<TrackId>) -> Request {
     Request::ReorderTracks {
         project_generation: 0,
         revision: event.state.revision,
-        tracks: hex_project::TrackReorderSelection::new(&[track]).unwrap(),
+        tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
         before,
     }
 }
@@ -152,7 +152,7 @@ fn native_reorder_case(group: bool) {
         Request::ReorderTracks {
             project_generation: 0,
             revision: original.state.revision,
-            tracks: hex_project::TrackReorderSelection::new(&[midi, audio]).unwrap(),
+            tracks: hex_project::TrackSelectionIds::new(&[midi, audio]).unwrap(),
             before: None,
         }
     } else {
@@ -189,7 +189,7 @@ fn native_reorder_case(group: bool) {
         Request::ReorderTracks {
             project_generation: 0,
             revision: moved.state.revision,
-            tracks: hex_project::TrackReorderSelection::new(&[midi, audio]).unwrap(),
+            tracks: hex_project::TrackSelectionIds::new(&[midi, audio]).unwrap(),
             before: Some(empty),
         }
     } else {

@@ -153,6 +153,9 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_clipboard;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_clipboard_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_compact_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -474,6 +477,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new(
             "+",
@@ -718,6 +722,10 @@ pub(super) struct EditorView {
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
+    pending_track_clipboard: Option<track_clipboard::Pending>,
+    // Input context only: a committed cut can remove its focused header.
+    // The next real selection intent or document generation invalidates it.
+    track_clipboard_context: Option<(u64, u64)>,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
     pending_clip_move: Option<pending_clip_move::Pending>,
@@ -1360,6 +1368,8 @@ impl EditorView {
             pending_open_mode: None,
             requested_audio_mode: None,
             duplicate_intent: DuplicateIntent::default(),
+            pending_track_clipboard: None,
+            track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
             pending_clip_move: None,

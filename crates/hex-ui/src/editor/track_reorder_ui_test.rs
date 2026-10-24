@@ -52,7 +52,7 @@ fn fixture(
     visual.run_until_parked();
     (visual, editor, ids)
 }
-fn bounds(visual: &mut VisualTestContext, id: TrackId) -> gpui::Bounds<gpui::Pixels> {
+pub(super) fn bounds(visual: &mut VisualTestContext, id: TrackId) -> gpui::Bounds<gpui::Pixels> {
     visual
         .debug_bounds(Box::leak(
             format!("track-name-{}", id.value()).into_boxed_str(),
@@ -105,7 +105,7 @@ fn live_fixture(
 ) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
     live_tracks(cx, 4, false)
 }
-fn live_tracks(
+pub(super) fn live_tracks(
     cx: &mut TestAppContext,
     count: usize,
     notes: bool,
@@ -169,7 +169,7 @@ fn live_tracks(
     visual.run_until_parked();
     (visual, editor, ids)
 }
-fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
+pub(super) fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
     editor.update(visual, |v, cx| {
         let event = next(&v.service);
         assert!(event.error.is_none(), "{:?}", event.error);

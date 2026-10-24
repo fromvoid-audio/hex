@@ -1153,6 +1153,12 @@ impl Render for EditorView {
                 {
                     return;
                 }
+                if view
+                    .track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate)
+                {
+                    cx.notify();
+                    return;
+                }
                 if view.duplicate_section(window) {
                     cx.notify();
                     return;

@@ -8,6 +8,11 @@ pub(super) struct TrackSelection {
 }
 
 impl TrackSelection {
+    /// Replace with the authoritative ordered births from a committed snapshot.
+    pub(super) fn replace(&mut self, ids: &[TrackId]) {
+        self.ids = ids.iter().copied().collect();
+        self.anchor = ids.first().copied();
+    }
     pub(super) fn contains(&self, track: TrackId) -> bool {
         self.ids.contains(&track)
     }
