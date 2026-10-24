@@ -77,7 +77,11 @@ pub(super) fn prepare_map(
             let position = cycle * u128::from(unit) + u128::from(marker.beat.raw());
             if position >= u128::from(phase_beat) {
                 let local = position - u128::from(phase_beat);
-                if local <= u128::from(span.raw()) {
+                if local == 0 {
+                    boundaries[0].1 = true;
+                } else if local == u128::from(span.raw()) {
+                    boundaries[1].1 = true;
+                } else if local < u128::from(span.raw()) {
                     push(&mut boundaries, local as u64, true)?;
                 }
             }
