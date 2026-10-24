@@ -7,10 +7,13 @@ use crate::device_gesture::{GestureKey, GesturePhase, GestureTarget, ParameterVa
 pub struct VerifiedTrackGainSource {
     canonical: Arc<CanonicalAudioSourceSnapshot>,
     preview: Option<(DevicePreviewIdentity, Arc<Project>)>,
-    terminal: Option<GestureKey>,
+    terminal: Option<(GestureKey, u64)>,
 }
 impl VerifiedTrackGainSource {
-    pub(super) fn capture(event: &Event) -> Result<Option<Self>, SessionError> {
+    pub(super) fn capture(
+        event: &Event,
+        previous_gain: Option<(GestureKey, u64)>,
+    ) -> Result<Option<Self>, SessionError> {
         let Some(canonical) = event
             .state
             .canonical_audio_source
@@ -28,6 +31,10 @@ impl VerifiedTrackGainSource {
             let identity = preview.identity;
             let gain = preview.state.project.track(track).map(|track| track.gain());
             if identity.project_generation != canonical.context().project_generation
+                || identity.key.generation != canonical.context().project_generation
+                || identity.key.token == 0
+                || preview.state.revision != event.state.revision
+                || preview.state.canonical_audio_source.is_some()
                 || identity.canonical_revision != event.state.revision
                 || event.state.audio_authoring_revision(canonical.context())
                     != Some(event.state.revision)
@@ -45,8 +52,15 @@ impl VerifiedTrackGainSource {
                 terminal: None,
             }));
         }
+        // A refused/future Cancel is not a terminal proof. The prior delivered
+        // actor snapshot establishes that this worker actually owned the key.
+        let Some((owned_key, owned_sequence)) = previous_gain else {
+            return Ok(None);
+        };
         let Some(ack) = event.gesture_ack.as_ref().filter(|ack| {
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel)
+                && ack.key == owned_key
+                && ack.key.token != 0
                 && ack.key.generation == canonical.context().project_generation
                 && !event
                     .active_device_gesture
@@ -57,7 +71,7 @@ impl VerifiedTrackGainSource {
         Ok(Some(Self {
             canonical: Arc::clone(canonical),
             preview: None,
-            terminal: Some(ack.key),
+            terminal: Some((ack.key, owned_sequence)),
         }))
     }
     pub fn canonical(&self) -> &Arc<CanonicalAudioSourceSnapshot> {
@@ -67,7 +81,10 @@ impl VerifiedTrackGainSource {
         self.preview.as_ref().map(|(identity, _)| *identity)
     }
     pub fn terminal_key(&self) -> Option<GestureKey> {
-        self.terminal
+        self.terminal.map(|(key, _)| key)
+    }
+    pub fn terminal_sequence(&self) -> Option<u64> {
+        self.terminal.map(|(_, sequence)| sequence)
     }
     fn project(&self) -> &Project {
         self.preview.as_ref().map_or_else(
@@ -174,8 +191,10 @@ mod tests {
     }
     #[test]
     fn typed_projection_preserves_actual_canonical_source_and_refuses_changed_identity() {
-        let (_service, _initial, mut changed, cancelled, key) = fixture();
-        let source = VerifiedTrackGainSource::capture(&changed).unwrap().unwrap();
+        let (service, _initial, mut changed, cancelled, key) = fixture();
+        let source = VerifiedTrackGainSource::capture(&changed, None)
+            .unwrap()
+            .unwrap();
         let track = changed.state.project.tracks()[0].id();
         assert!(Arc::ptr_eq(
             source.canonical(),
@@ -185,13 +204,31 @@ mod tests {
         assert_eq!(changed.state.project.track(track).unwrap().gain(), 1.0);
         assert_eq!(source.preview_identity().unwrap().key, key);
         changed.device_preview.as_mut().unwrap().identity.sequence += 1;
-        assert!(VerifiedTrackGainSource::capture(&changed).is_err());
-        let terminal = VerifiedTrackGainSource::capture(&cancelled)
+        assert!(VerifiedTrackGainSource::capture(&changed, None).is_err());
+        let terminal = VerifiedTrackGainSource::capture(&cancelled, Some((key, 1)))
             .unwrap()
             .unwrap();
         assert_eq!(terminal.terminal_key(), Some(key));
         assert!(terminal.preview_identity().is_none());
         assert_eq!(terminal.project(), cancelled.state.project.as_ref());
+        assert_eq!(terminal.terminal_sequence(), Some(1));
+        let future = send(
+            &service,
+            Request::DeviceGesture(crate::device_gesture::GestureRequest::Cancel {
+                key: GestureKey { token: 99, ..key },
+            }),
+        );
+        assert!(!future.gesture_ack.as_ref().unwrap().accepted);
+        assert!(
+            VerifiedTrackGainSource::capture(&future, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            VerifiedTrackGainSource::capture(&future, Some((key, 1)))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[derive(Default)]

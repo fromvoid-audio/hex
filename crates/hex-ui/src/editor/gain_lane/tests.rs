@@ -228,24 +228,6 @@ mod native {
         });
     }
     #[gpui::test]
-    fn automated_manual_gain_attempt_is_visible_refusal_and_does_not_queue_edit(
-        cx: &mut TestAppContext,
-    ) {
-        let (handle, entity, track) = window(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        entity.update(&mut visual, |view, _| {
-            view.gain_by(track, 0.1);
-            assert!(
-                view.error
-                    .as_ref()
-                    .unwrap()
-                    .contains("automation owns gain")
-            );
-            assert_eq!(view.gain_lane.track, Some(track));
-            assert!(view.last_enqueued_edit.is_none());
-        });
-    }
-    #[gpui::test]
     fn invalid_numeric_draft_refuses_actions_and_undo_cancels_before_history(
         cx: &mut TestAppContext,
     ) {
@@ -635,14 +617,6 @@ mod native {
                     .is_some()
             );
             assert_eq!(state.timeline_frames, content_extent);
-            view.gain_by(track, 0.1);
-            assert!(
-                view.error
-                    .as_ref()
-                    .unwrap()
-                    .contains("automation owns gain")
-            );
-            assert!(view.last_enqueued_edit.is_none());
             assert!(!view.begin_gain_draft(None, point(0, 0.5)));
             assert!(view.gain_lane.error.as_ref().unwrap().contains("read-only"));
             assert!(

@@ -106,7 +106,9 @@ impl NativeAudioSink {
             let previous = self.gain_watermark.filter(|old| old.key == key);
             self.gain_watermark = Some(GainWatermark {
                 key,
-                sequence: previous.map_or(0, |old| old.sequence),
+                sequence: previous
+                    .map_or(0, |old| old.sequence)
+                    .max(source.terminal_sequence().unwrap_or(0)),
                 authoring_revision: previous.map_or(canonical.context().editor_revision, |old| {
                     old.authoring_revision
                 }),

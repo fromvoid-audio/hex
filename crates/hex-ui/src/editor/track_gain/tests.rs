@@ -50,6 +50,19 @@ fn actor_fixture_with_environment(
     Entity<EditorView>,
     [TrackId; 2],
 ) {
+    actor_fixture_in_mode(cx, environment, hex_session::DocumentAudioMode::Resident)
+}
+
+fn actor_fixture_in_mode(
+    cx: &mut TestAppContext,
+    environment: Arc<super::super::test_environment::Environment>,
+    mode: hex_session::DocumentAudioMode,
+) -> (
+    BrowserDirectory,
+    VisualTestContext,
+    Entity<EditorView>,
+    [TrackId; 2],
+) {
     use hex_project::Created;
     use hex_session::service::{Request, Service};
     fn receive(service: &Service) -> hex_session::service::Event {
@@ -68,6 +81,23 @@ fn actor_fixture_with_environment(
     cx.update(bind_editor_keys);
     let service = Service::new(48_000, 32, 0).unwrap();
     receive(&service);
+    if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        service
+            .submit(Request::NewWithAudioMode {
+                mode,
+                reservation: Some(hex_session::SourcePlanReservation {
+                    reader: hex_media::VerifiedWavReaderLimits::new(
+                        hex_media::WavReaderLimits::new(64 * 1024 * 1024, 8_000_000, 32, 4096),
+                        1024 * 1024,
+                    ),
+                    max_retained_sources: 1,
+                    max_path_bytes: 1024 * 1024,
+                    max_manifest_bytes: 1024 * 1024,
+                }),
+            })
+            .unwrap();
+        assert!(receive(&service).error.is_none());
+    }
     let mut tracks = Vec::new();
     let mut state = None;
     for gain in [0.5, 1.5] {
@@ -99,6 +129,15 @@ fn actor_fixture_with_environment(
             });
             editor.update(cx, |view, cx| {
                 browser.assert_owned(view);
+                view.project_generation = state
+                    .as_ref()
+                    .unwrap()
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .context()
+                    .project_generation;
+                view.document_audio_mode = mode;
                 view.state = state;
                 view.selected_track = Some(tracks[1]);
                 cx.notify();
@@ -205,46 +244,82 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
 }
 
 #[gpui::test]
-fn verified_streaming_keeps_explicit_functional_gain_controls(cx: &mut TestAppContext) {
-    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
-    editor.update(cx, |view, cx| {
-        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds(Box::leak(
-                format!("track-volume-{}", track.value()).into_boxed_str()
-            ))
-            .is_none()
+fn verified_track_volume_drag_uses_actor_and_keeps_return_gain_explicit(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture_in_mode(
+        cx,
+        super::super::test_environment::Environment::new().unwrap(),
+        hex_session::DocumentAudioMode::VerifiedStreaming,
     );
-    let up = bounds(&mut visual, "track-gain-up", track).center();
-    visual.simulate_mouse_down(up, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let rail = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+        ))
+        .expect("verified track volume mounts the shared numeric slider");
+    let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.state
-            .as_ref()
-            .unwrap()
-            .project
-            .track(track)
-            .unwrap()
-            .gain()
-            > 0.5
-            && view.worker_requests_pending == 0
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    let held = editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track, Some(other));
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.project.track(track).unwrap().gain(), 0.5);
+        assert_eq!(state.project.track(other).unwrap().gain(), 1.5);
+        let hex_session::device_gesture::ParameterValue::Float(value) =
+            view.device_gesture.snapshot().unwrap().value
+        else {
+            panic!("gain");
+        };
+        assert!(value > 0.5);
+        value
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, cx| {
+            assert!(
+                (view
+                    .track_gain_controls
+                    .bindings
+                    .get(&track)
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .value()
+                    - f64::from(held))
+                .abs()
+                    < 0.000001
+            );
+        });
+    }
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.state
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision + 1);
+        assert_eq!(state.project.track(track).unwrap().gain(), held);
+        assert_eq!(state.project.track(other).unwrap().gain(), 1.5);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo));
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
                 .as_ref()
                 .unwrap()
                 .project
-                .track(other)
+                .track(track)
                 .unwrap()
-                .gain(),
-            1.5
-        );
-        assert!(view.device_gesture.snapshot().is_none());
+                .gain()
+                == 0.5
     });
     editor.update(cx, |view, _| {
         view.enqueue(hex_session::service::Request::Edit(
@@ -518,11 +593,19 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
     }
 }
 
-fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
+fn automation_readout_owns_gain(
+    cx: &mut TestAppContext,
+    recorded: bool,
+    mode: hex_session::DocumentAudioMode,
+) {
     use hex_project::{
         BeatTime, GainInterpolation, GainPoint, GainTouchContext, GainTouchSpan, GainTouchStep,
     };
-    let (_browser, mut visual, editor, [track, _]) = actor_fixture(cx);
+    let (_browser, mut visual, editor, [track, _]) = actor_fixture_in_mode(
+        cx,
+        super::super::test_environment::Environment::new().unwrap(),
+        mode,
+    );
     let command = if recorded {
         Command::SpliceGainTouch {
             track,
@@ -600,12 +683,22 @@ fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
 
 #[gpui::test]
 fn header_volume_automation_envelope_shows_auto_without_edit(cx: &mut TestAppContext) {
-    automation_readout_owns_gain(cx, false);
+    automation_readout_owns_gain(cx, false, hex_session::DocumentAudioMode::Resident);
 }
 
 #[gpui::test]
 fn header_volume_recorded_touch_lane_shows_auto_without_edit(cx: &mut TestAppContext) {
-    automation_readout_owns_gain(cx, true);
+    automation_readout_owns_gain(cx, true, hex_session::DocumentAudioMode::Resident);
+}
+
+#[gpui::test]
+fn verified_header_volume_automation_envelope_refuses_drag(cx: &mut TestAppContext) {
+    automation_readout_owns_gain(cx, false, hex_session::DocumentAudioMode::VerifiedStreaming);
+}
+
+#[gpui::test]
+fn verified_header_volume_recorded_touch_lane_refuses_drag(cx: &mut TestAppContext) {
+    automation_readout_owns_gain(cx, true, hex_session::DocumentAudioMode::VerifiedStreaming);
 }
 
 #[gpui::test]

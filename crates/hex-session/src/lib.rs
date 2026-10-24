@@ -1028,8 +1028,10 @@ impl Session {
             .map(|(_, prepared)| prepared)
     }
 
-    /// Prepare a static track-gain overlay through the existing resident preview
-    /// path. Only accepted coalesced changes prepare; canonical history is untouched.
+    /// Prepare absolute track-gain metadata through the shared preview compiler.
+    /// Canonical history stays untouched. In verified mode this logical artifact
+    /// grants no native pages or freshness: the worker separately pairs the gain
+    /// Project with its actual canonical source for the existing native constructor.
     pub fn preview_track_gain(
         &self,
         track: hex_project::TrackId,

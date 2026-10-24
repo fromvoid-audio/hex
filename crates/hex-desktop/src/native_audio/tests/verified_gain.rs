@@ -45,6 +45,11 @@ fn actual_native_harness() -> Harness {
 
 #[test]
 fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
+    for session in [false, true] {
+        verified_gain_case(session);
+    }
+}
+fn verified_gain_case(session: bool) {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let files = Files::new();
     let path = files.wav(48_000, 480_000);
@@ -64,17 +69,109 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
         AudioSourceBinding::VerifiedFile(_)
     ));
     let track = imported.state.project.tracks()[0].id();
+    let session_clip = if session {
+        let scene = h
+            .run(Request::Edit(hex_project::Command::AddScene {
+                name: "gain".into(),
+            }))
+            .state
+            .project
+            .scenes()[0]
+            .id();
+        let source = imported.state.project.track(track).unwrap().clips()[0].id();
+        let copied = h.run(Request::Edit(
+            hex_project::Command::CopyArrangementAudioClipToSession { source, scene },
+        ));
+        let hex_project::SessionCellContent::Audio(clip) =
+            copied.state.project.session_cells()[0].content()
+        else {
+            panic!("audio cue");
+        };
+        Some(clip.id())
+    } else {
+        None
+    };
     let mut canonical = h.run(Request::Edit(hex_project::Command::Gain {
         track,
         gain: 0.0,
     }));
     let applied = h.applied(h.context.unwrap());
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
+    if let Some(clip) = session_clip {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(h.render().iter().flatten().all(|sample| *sample == 0.0));
+            let mut routes = [hex_audio::prepared::SessionRouteEntry::default(); 1];
+            if h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .session_routes(&mut routes)
+                .is_some_and(|snapshot| snapshot.count == 1)
+                && routes[0].owner
+                    == (hex_audio::prepared::SessionRouteOwner::Session {
+                        clip_id: clip.value(),
+                    })
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "actual verified Session route did not launch: rejected={:?}, consumed={}, scheduled={}, active={}, playing={}",
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .rejected_action(),
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .consumed_command
+                    .load(Acquire),
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .stream_scheduled_command
+                    .load(Acquire),
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .stream_activated_command
+                    .load(Acquire),
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(Acquire)
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    } else {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
     for _ in 0..4 {
         assert!(h.render().iter().flatten().all(|sample| *sample == 0.0));
     }
@@ -91,6 +188,7 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
         "{:?}",
         began.gesture_ack
     );
+    let began_at = Instant::now();
     let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
         key,
         sequence: 1,
@@ -109,6 +207,7 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     assert_eq!(preview.state.revision, canonical.state.revision);
     assert_eq!(preview.state.unsaved, canonical.state.unsaved);
     let mut applied = wait_gain(&h, applied.audio_revision, 1.0);
+    report_timing(session, "zero-to-positive", began_at);
     let initial_preview = h
         .observation
         .lock()
@@ -133,6 +232,7 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     }
     // Fill native publication capacity while the callback is deliberately idle.
     // Logical changes stay bounded/coalesced; the final absolute value must win.
+    let backlog_at = Instant::now();
     for sequence in 4..=35 {
         let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
             key,
@@ -144,6 +244,7 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     }
     let final_gain = 35.0 / 64.0;
     applied = wait_gain(&h, applied.audio_revision, final_gain);
+    report_timing(session, "32-change-idle-callback-backlog", backlog_at);
     canonical = h.run(Request::Edit(hex_project::Command::RenameTrack {
         track,
         name: "rebased source".into(),
@@ -169,11 +270,13 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
         .received_verified_gain
         .clone()
         .unwrap();
+    let cancel_at = Instant::now();
     let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
     assert!(cancelled.gesture_ack.as_ref().unwrap().accepted);
     assert_eq!(cancelled.state.project, canonical.state.project);
     assert_eq!(cancelled.state.can_undo, canonical.state.can_undo);
     applied = wait_gain(&h, applied.audio_revision, 0.0);
+    report_timing(session, "cancel", cancel_at);
     let old_terminal = h
         .observation
         .lock()
@@ -184,6 +287,10 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     h.observation.lock().unwrap().replay_verified_gain = Some(Arc::clone(&old_preview));
     stable_gain(&h, applied, 0.0);
 
+    let refused_future = h.run(Request::DeviceGesture(GestureRequest::Cancel {
+        key: GestureKey { token: 99, ..key },
+    }));
+    assert!(!refused_future.gesture_ack.as_ref().unwrap().accepted);
     let second = GestureKey { token: 2, ..key };
     h.run(Request::DeviceGesture(GestureRequest::Begin {
         key: second,
@@ -198,6 +305,7 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     applied = wait_gain(&h, applied.audio_revision, 2.0);
     h.observation.lock().unwrap().replay_verified_gain = Some(old_terminal);
     stable_gain(&h, applied, 2.0);
+    let commit_at = Instant::now();
     let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
         key: second,
         sequence: 1,
@@ -207,12 +315,54 @@ fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
     assert_eq!(committed.state.revision, canonical.state.revision + 1);
     assert_eq!(committed.state.project.track(track).unwrap().gain(), 2.0);
     applied = wait_gain(&h, applied.audio_revision, 2.0);
+    report_timing(session, "commit", commit_at);
     let undo = h.run(Request::Undo);
     assert_eq!(undo.state.project, canonical.state.project);
     applied = wait_gain(&h, applied.audio_revision, 0.0);
-    h.run(Request::Redo);
+    let redone = h.run(Request::Redo);
     applied = wait_gain(&h, applied.audio_revision, 2.0);
     assert_eq!(applied.context, h.context.unwrap());
+
+    let third = GestureKey { token: 3, ..key };
+    h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key: third,
+        target: GestureTarget::TrackGain { track },
+    }));
+    h.run(Request::DeviceGesture(GestureRequest::Change {
+        key: third,
+        sequence: 1,
+        value: ParameterValue::Float(0.5),
+    }));
+    applied = wait_gain(&h, applied.audio_revision, 0.5);
+    let invalid = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        key: third,
+        sequence: 2,
+        value: ParameterValue::Float(f32::NAN),
+    }));
+    assert!(!invalid.gesture_ack.as_ref().unwrap().accepted);
+    assert!(
+        invalid.active_device_gesture.is_none(),
+        "retired refusal has an owned terminal"
+    );
+    assert_eq!(invalid.state.project, redone.state.project);
+    assert_eq!(invalid.state.revision, redone.state.revision);
+    applied = wait_gain(&h, applied.audio_revision, 2.0);
+    let fourth = GestureKey { token: 4, ..key };
+    h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key: fourth,
+        target: GestureTarget::TrackGain { track },
+    }));
+    h.run(Request::DeviceGesture(GestureRequest::Change {
+        key: fourth,
+        sequence: 1,
+        value: ParameterValue::Float(0.75),
+    }));
+    wait_gain(&h, applied.audio_revision, 0.75);
+    let removed = h.run(Request::Edit(hex_project::Command::RemoveTrack(track)));
+    assert!(removed.state.project.track(track).is_none());
+    assert!(removed.active_device_gesture.is_none());
+    let empty_current = h.applied(h.context.unwrap());
+    stable_gain(&h, empty_current, 0.0);
 
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,
@@ -290,4 +440,15 @@ fn stable_gain(h: &Harness, applied: hex_audio::prepared::AppliedAudioSource, ga
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+// Observational headless timing only: includes worker polling and 1ms fixture
+// sleeps, not UI input latency or a physical audio-device deadline.
+fn report_timing(session: bool, phase: &str, start: Instant) {
+    eprintln!(
+        "verified_gain_timing route={} phase={phase} elapsed_us={} sample_rate=48000 block_frames=64 optimized={} physical_audio=false",
+        if session { "session" } else { "arrangement" },
+        start.elapsed().as_micros(),
+        !cfg!(debug_assertions)
+    );
 }
