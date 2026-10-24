@@ -25,7 +25,9 @@ pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
     SectionReorderPreview, SectionSplicePreview,
 };
+mod audio_event_fade;
 mod audio_events;
+pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
 mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};

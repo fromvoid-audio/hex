@@ -611,3 +611,343 @@ fn cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_m
     );
     assert!(pasted.clip(clip).is_some());
 }
+
+#[gpui::test]
+fn held_f_shows_event_fade_controls_without_outer_clip_edits(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, _) = open(cx);
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let click = point(bounds.center().x, bounds.bottom() - px(12.0));
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_none());
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("f").unwrap(),
+        is_held: false,
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("audio-event-fade-in-top-1").is_some(),
+        "held F must expose the real event fade-in control"
+    );
+    assert!(
+        visual.debug_bounds("audio-event-fade-out-top-1").is_some(),
+        "held F must expose the real event fade-out control"
+    );
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("f").unwrap(),
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_none());
+    assert!(visual.debug_bounds("audio-event-fade-out-top-1").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(v.last_enqueued_edit.is_none());
+    });
+}
+
+fn fade_key(visual: &mut VisualTestContext, down: bool) {
+    let key = gpui::Keystroke::parse("f").unwrap();
+    if down {
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: key,
+            is_held: false,
+        });
+    } else {
+        visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
+    }
+    visual.run_until_parked();
+}
+fn focus_events(visual: &mut VisualTestContext) {
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let at = point(bounds.center().x, bounds.bottom() - px(12.0));
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+}
+#[gpui::test]
+fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    focus_events(&mut visual);
+    fade_key(&mut visual, true);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = visual
+        .debug_bounds("audio-event-fade-in-top-1")
+        .unwrap()
+        .center();
+    let target = point(down.x + px(64.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-fade-in-top-1").unwrap();
+    assert!(held.center().x > down.x + px(20.0));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(matches!(
+            v.audio_event_editor.gesture.as_ref().unwrap().operation,
+            Some(AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(_)
+            })
+        ));
+    });
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    fade_key(&mut visual, false);
+    repaint(&mut visual, &editor);
+    assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.gesture.is_none());
+        assert!(v.audio_event_editor.pending.is_some());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    visual.simulate_keystrokes("escape");
+    repaint(&mut visual, &editor);
+    assert_eq!(
+        visual.debug_bounds("audio-event-fade-in-top-1"),
+        Some(held),
+        "admitted fade survives input cancellation"
+    );
+    pump(&editor, &mut visual);
+    repaint(&mut visual, &editor);
+    let accepted = editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert!(v.audio_event_editor.pending.is_none());
+        let event = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events[0];
+        assert!(event.fade.unwrap().shape().fade_in() > 0);
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
+    });
+    let at = visual
+        .debug_bounds("audio-event-fade-in-top-1")
+        .unwrap()
+        .center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: at,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    repaint(&mut visual, &editor);
+    assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .audio_events()
+                .events[0]
+                .fade
+                .is_none()
+        )
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted)
+    });
+}
+#[gpui::test]
+fn event_fade_escape_blur_stale_and_nonfinite_capture_never_commit(cx: &mut TestAppContext) {
+    for cancel in 0..4 {
+        let (_files, mut visual, editor, _) = open(cx);
+        focus_events(&mut visual);
+        fade_key(&mut visual, true);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let down = visual
+            .debug_bounds("audio-event-fade-out-top-1")
+            .unwrap()
+            .center();
+        let target = point(down.x - px(64.0), down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.audio_event_editor
+                    .gesture
+                    .as_ref()
+                    .unwrap()
+                    .operation
+                    .is_some()
+            )
+        });
+        match cancel {
+            0 => visual.simulate_keystrokes("escape"),
+            1 => visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window)),
+            2 => editor.update(&mut visual, |v, cx| {
+                v.project_generation += 1;
+                cx.notify();
+            }),
+            _ => visual.update(|window, cx| {
+                editor.update(cx, |v, cx| {
+                    assert!(v.update_audio_event_fade_pointer(
+                        point(px(f32::NAN), target.y),
+                        false,
+                        window,
+                        cx
+                    ));
+                })
+            }),
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        fade_key(&mut visual, false);
+        repaint(&mut visual, &editor);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before,
+                "cancel {cancel}"
+            );
+            assert!(
+                v.audio_event_editor.gesture.is_none() && v.audio_event_editor.pending.is_none(),
+                "cancel {cancel}: held={} pending={} last={:?}",
+                v.audio_event_editor.gesture.is_some(),
+                v.audio_event_editor.pending.is_some(),
+                v.last_enqueued_edit
+            );
+            assert!(v.last_enqueued_edit.is_none());
+        });
+        assert!(visual.debug_bounds("audio-event-fade-out-top-1").is_none());
+    }
+}
+
+#[gpui::test]
+fn event_fade_warped_moved_source_uses_local_clock_after_zoom_and_pan(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    editor.update(&mut visual, |v, _| {
+        let settings = hex_project::default_audio_warp(
+            v.state.as_ref().unwrap().project.clip(clip).unwrap(),
+            v.state.as_ref().unwrap().project.tempo_map(),
+            hex_project::WarpMode::RePitch,
+        )
+        .unwrap();
+        assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings)
+        })));
+    });
+    pump(&editor, &mut visual);
+    let length = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_event_root()
+            .domain
+            .clock
+            .length()
+    });
+    assert!(length > 96_000, "fixture must use Q32.32 beats");
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: length / 2 },
+    );
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Move {
+            event: 1,
+            start: length / 2,
+        },
+    );
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.viewport = Some(crate::editor::viewport::Viewport {
+            start: 24_000,
+            length: 72_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    focus_events(&mut visual);
+    fade_key(&mut visual, true);
+    let before = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .clone()
+    });
+    let down = visual
+        .debug_bounds("audio-event-fade-in-top-1")
+        .unwrap()
+        .center();
+    let target = point(down.x + px(48.0), down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let held = visual.debug_bounds("audio-event-fade-in-top-1").unwrap();
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    fade_key(&mut visual, false);
+    assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
+    pump(&editor, &mut visual);
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let current = v.state.as_ref().unwrap().project.clip(clip).unwrap();
+        assert_eq!(
+            (current.start(), current.duration()),
+            (before.start(), before.duration())
+        );
+        assert_eq!(
+            current.audio_event_root().domain.warp,
+            before.audio_event_root().domain.warp
+        );
+        let event = current.audio_events().events[0];
+        assert_eq!((event.start, event.source_start), (length / 2, 0));
+        let fade = event.fade.unwrap();
+        assert_eq!(fade.source_start(), 0);
+        assert_eq!(fade.shape().span(), length / 2);
+        assert!(fade.shape().fade_in() > 0);
+    });
+    assert_eq!(visual.debug_bounds("audio-event-fade-in-top-1"), Some(held));
+}
+#[gpui::test]
+fn event_fade_f_respects_computer_keyboard_and_search_focus(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, _) = open(cx);
+    focus_events(&mut visual);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = true);
+    fade_key(&mut visual, true);
+    assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_none());
+    fade_key(&mut visual, false);
+    editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = false);
+    visual.simulate_keystrokes("cmd-f");
+    fade_key(&mut visual, true);
+    assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_none());
+    fade_key(&mut visual, false);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}

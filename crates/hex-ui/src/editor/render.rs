@@ -617,6 +617,11 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     cx.notify();
                 }
+                if event.keystroke.key == "f" && view.audio_event_editor.fade_key_held {
+                    view.audio_event_editor.fade_key_held = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
                 if event.keystroke.key == "f" && view.fade_key_held {
                     view.fade_key_held = false;
                     cx.notify();

@@ -1,6 +1,8 @@
 use crate::Invalid;
 
-/// Sample-coordinate fade domain, independent of source looping.
+/// Bounded discrete-coordinate fade geometry and gain law, independent of source
+/// looping. Arrangement gains use sample frames. AudioEventFade uses this shape
+/// to validate source-clock distances, then projects to sample frames before gain.
 /// Splits retain this domain; explicit trims reanchor it. Each ramp has an
 /// independent vertical rational bend and horizontal position. The horizontal
 /// value moves a C1 monotone time mapping through half progress; the rational

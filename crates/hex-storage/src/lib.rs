@@ -163,6 +163,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::audio_events::require_legacy_compatible(project)?;
     schema::clip_activation::require_legacy_compatible(project)?;
     if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)
         || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)) {

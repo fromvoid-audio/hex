@@ -1,4 +1,5 @@
 //! Clip-local waveform editing. Only selection, viewport and previews live here.
+mod fades;
 mod pending;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
@@ -23,6 +24,7 @@ pub(super) struct State {
     selected: Option<u64>,
     range: Option<(u64, u64)>,
     grid: SnapGrid,
+    pub(super) fade_key_held: bool,
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
@@ -61,6 +63,7 @@ enum Kind {
     Move(AudioEvent),
     Leading(AudioEvent),
     Trailing(AudioEvent),
+    Fade(fades::FadeGesture),
 }
 
 impl EditorView {
@@ -297,6 +300,10 @@ impl EditorView {
         self.event_position_from_project_frame(&root, frame)
     }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
+        if let Some(Kind::Fade(fade)) = self.audio_event_editor.gesture.as_ref().map(|g| g.kind) {
+            self.event_update_fade_pointer(x, fade.last_y, platform);
+            return;
+        }
         if !self.event_context_current() || self.edit_pending() {
             self.audio_event_editor.gesture = None;
             return;
@@ -385,6 +392,7 @@ impl EditorView {
                     end: event.end,
                 });
             }
+            Kind::Fade(_) => return,
             Kind::Trailing(event) => {
                 let end = position.clamp(event.start + 1, root.view_end.max(event.start + 1));
                 gesture.operation = Some(AudioEventEdit::Trim {
