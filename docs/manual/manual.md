@@ -256,8 +256,8 @@ density and later input changes cannot alter the retained take. finish or discar
 the take before changing its input setting. monitoring remains immediate at the
 recorder's stated next-block timing; quantization moves authored note starts when
 the take commits. played musical note lengths are preserved, with cropping at the
-clip end. a final-frame note remains positive and audible. off preserves original
-timing. the take is still one undo/redo edit.
+clip end and a one-output-frame minimum for notes moved across tempo changes.
+a final-frame note retains a valid output interval. off preserves original timing. the take is still one undo/redo edit.
 
 ## record midi notes
 

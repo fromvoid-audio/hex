@@ -144,6 +144,73 @@ impl MidiTakeBinding {
         self.end_frame
     }
 
+    fn quantize_span(
+        &self,
+        first: BeatTime,
+        last: BeatTime,
+        clip_end: u64,
+    ) -> Result<(BeatTime, BeatTime), &'static str> {
+        if self.input_grid.is_off() {
+            return Ok((first, last));
+        }
+        let first = first.raw().clamp(self.start.raw(), clip_end);
+        let last = last.raw().clamp(self.start.raw(), clip_end);
+        let duration = last
+            .checked_sub(first)
+            .filter(|duration| *duration > 0)
+            .ok_or("recorded midi note has no positive audible duration")?;
+        let snapped = self
+            .input_grid
+            .snap_beat(&self.tempo, BeatTime::from_raw(first))
+            .map_err(|_| "midi input grid cannot project this note")?;
+        // A nearest landmark at the exclusive edge must leave a valid final
+        // output frame. The clip's validated extent guarantees nonzero bounds.
+        let latest = self
+            .tempo
+            .frame_to_beat(self.end_frame - 1)
+            .map_err(|_| "midi input grid cannot project the clip edge")?
+            .raw()
+            .max(self.start.raw())
+            .min(clip_end - 1);
+        let start = snapped.raw().clamp(self.start.raw(), latest);
+        let mut end = start
+            .checked_add(duration)
+            .map_or(clip_end, |end| end.min(clip_end));
+        let start_frame = self
+            .tempo
+            .beat_to_frame(BeatTime::from_raw(start))
+            .map_err(|_| "quantized midi onset exceeds frame range")?;
+        if self
+            .tempo
+            .beat_to_frame(BeatTime::from_raw(end))
+            .map_err(|_| "quantized midi end exceeds frame range")?
+            <= start_frame
+        {
+            // Moving across a faster tempo seam can shrink a positive musical
+            // duration below one frame. Extend only that otherwise invalid gate.
+            let next = start_frame
+                .checked_add(1)
+                .filter(|frame| *frame <= self.end_frame)
+                .ok_or("quantized midi note has no output frame inside the clip")?;
+            end = self
+                .tempo
+                .frame_to_beat(next)
+                .map_err(|_| "quantized midi duration cannot be projected")?
+                .raw()
+                .min(clip_end);
+        }
+        if end <= start
+            || self
+                .tempo
+                .beat_to_frame(BeatTime::from_raw(end))
+                .map_err(|_| "quantized midi end exceeds frame range")?
+                <= start_frame
+        {
+            return Err("quantized midi note has no positive output duration");
+        }
+        Ok((BeatTime::from_raw(start), BeatTime::from_raw(end)))
+    }
+
     fn validate(&self, project: &Project) -> Result<(), &'static str> {
         let owner = project
             .track(self.track)
@@ -230,34 +297,7 @@ pub fn finish_take(
             .raw()
             .checked_add(binding.length.raw())
             .ok_or("midi recording clip end overflow")?;
-        let (first, last) = if binding.input_grid.is_off() {
-            (first, last)
-        } else {
-            let first = first.raw().clamp(binding.start.raw(), clip_end);
-            let last = last.raw().clamp(binding.start.raw(), clip_end);
-            let duration = last
-                .checked_sub(first)
-                .filter(|duration| *duration > 0)
-                .ok_or("recorded midi note has no positive audible duration")?;
-            let snapped = binding
-                .input_grid
-                .snap_beat(&binding.tempo, BeatTime::from_raw(first))
-                .map_err(|_| "midi input grid cannot project this note")?;
-            // Keep a final-frame onset audible when nearest snapping reaches
-            // the exclusive clip edge. Preserve its musical length otherwise.
-            let latest = binding
-                .tempo
-                .frame_to_beat(binding.end_frame - 1)
-                .map_err(|_| "midi input grid cannot project the clip edge")?
-                .raw()
-                .max(binding.start.raw())
-                .min(clip_end - 1);
-            let start = snapped.raw().clamp(binding.start.raw(), latest);
-            let end = start
-                .checked_add(duration)
-                .map_or(clip_end, |end| end.min(clip_end));
-            (BeatTime::from_raw(start), BeatTime::from_raw(end))
-        };
+        let (first, last) = binding.quantize_span(first, last, clip_end)?;
         let source_position = |beat: BeatTime| {
             beat.raw()
                 .clamp(binding.start.raw(), clip_end)
