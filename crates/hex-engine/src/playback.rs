@@ -1158,6 +1158,18 @@ impl Playback {
         self.project.sample_rate()
     }
 
+    /// Control-side immutable prepared source facts; these are not page or
+    /// native publication authority. Legacy graphs without a complete prepared
+    /// revision return an explicit refusal rather than incomplete dependencies.
+    pub fn streamed_sources_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = &crate::StreamedSourceMetadata>, Invalid> {
+        Ok(self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("prepared source inventory unavailable"))?
+            .streamed_sources())
+    }
     /// Whether any Arrangement or Session source needs the streamed page
     /// provider. Cached by the prepared revision, not rescanned per block.
     pub fn contains_streamed_sources(&self) -> bool {
@@ -1897,6 +1909,17 @@ impl Playback {
             .ok_or(Invalid("candidate session runtime unavailable"))?
             .visit_next_stream_chunk(maximum_frames, playing, visit)
     }
+    pub(crate) fn visit_ordinary_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("ordinary session runtime unavailable"))?
+            .visit_ordinary_stream_chunk(maximum_frames, playing, visit)
+    }
     pub(crate) fn preview_stream_handoff(
         &mut self,
         previous: &mut Self,
@@ -1908,6 +1931,19 @@ impl Playback {
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
         next.preview_stream_handoff(old, maximum_frames, playing, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
+    pub(crate) fn preview_ordinary_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
+        next.preview_stream_handoff_with_scope(old, maximum_frames, playing, visit, true)
             .map_err(PlaybackHandoffError::Session)
     }
     /// Render through the same Arrangement loop segmentation or mixed Session

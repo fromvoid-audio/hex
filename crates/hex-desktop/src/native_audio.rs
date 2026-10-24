@@ -21,6 +21,7 @@ use std::sync::{
 };
 
 mod resident;
+mod resident_files;
 mod sampler;
 mod section_edit;
 #[cfg(all(test, feature = "allocation-probe"))]
@@ -789,8 +790,58 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
+        if !self.worker_owned_resident_graphs {
+            return None;
+        }
+        self.policy
+            .as_ref()
+            .ok()
+            .map(|_| AudioPolicy::source_reservation())
+    }
+
+    fn prepare_resident_file_metadata(
+        &mut self,
+        input: hex_session::service::ResidentFileInput<'_>,
+    ) -> Result<Option<hex_session::service::ResidentFileMetadata>, String> {
+        if input.files.is_empty() {
+            return Ok(None);
+        }
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            if let Some(domain) = self.domains.iter().flatten().find(|domain| {
+                domain.ready
+                    && !domain.retiring
+                    && domain.sources.covers_files(&input, domain.token, control)
+            }) {
+                return domain.sources.file_metadata(&input).map(Some);
+            }
+        }
+        let catalog = self.next_catalog;
+        self.next_catalog = catalog
+            .checked_add(1)
+            .ok_or("source generation exhausted")?;
+        DomainSources::capture_files(&input, catalog)?
+            .file_metadata(&input)
+            .map(Some)
+    }
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(crate::streamed_export::render)
+    }
+    fn resident_file_seek_preparer(
+        &self,
+    ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
+        Some(crate::streamed_export::prepare_resident_seek)
+    }
+    fn resident_file_seek_storage_bytes(
+        &self,
+        prepared: &hex_engine::PreparedRevision,
+        sources: &hex_session::service::ResidentFileSet,
+    ) -> Result<usize, String> {
+        crate::streamed_export::resident_seek_storage_bytes(prepared, sources)
     }
 
     fn resident_runtime_loop(
@@ -831,6 +882,95 @@ impl WorkerAudioSink for NativeAudioSink {
             policy,
             metadata_limit,
             admit,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Same graph custody, with borrowed factual file inputs.
+    fn publish_resident_with_files(
+        &mut self,
+        playback: hex_engine::playback::Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
+        metadata: hex_session::service::ResidentPublicationMetadata,
+        policy: hex_session::service::ResidentPublicationPolicy,
+        metadata_limit: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+        files: Option<hex_session::service::ResidentFilePublication<'_>>,
+    ) -> Result<
+        hex_session::service::ResidentPublicationAcceptance,
+        hex_session::service::ResidentPublicationRefusal,
+    > {
+        if let Some(files) = files.as_ref() {
+            // Authoring aliases can advance the canonical revision while
+            // retaining this exact compiler/source set. File capture counters
+            // are provenance, not job freshness; existing publication fences
+            // own the latter. Match the real immutable graph dependencies.
+            let matches_sources =
+                playback
+                    .streamed_sources_on_control()
+                    .is_ok_and(|mut sources| {
+                        sources.all(|source| {
+                            files
+                                .sources
+                                .metadata()
+                                .sources()
+                                .get(&source.key().asset())
+                                .is_some_and(|captured| captured.as_ref() == source)
+                        })
+                    });
+            if files.sources.context().project_generation != metadata.context.project_generation
+                || !matches_sources
+            {
+                return Err(hex_session::service::ResidentPublicationRefusal {
+                    playback,
+                    error: "ordinary file publication source scope differs".into(),
+                });
+            }
+            if self.output.is_some()
+                && !matches!(
+                    policy,
+                    hex_session::service::ResidentPublicationPolicy::ReplaceDocument
+                )
+            {
+                loop {
+                    if files.shutdown.load(Acquire)
+                        || files.cancel.is_some_and(|cancel| cancel.load(Acquire))
+                    {
+                        self.retire_resident_files(files.sources);
+                        return Err(hex_session::service::ResidentPublicationRefusal {
+                            playback,
+                            error: "ordinary file publication cancelled".into(),
+                        });
+                    }
+                    match self.poll_resident_files(files.sources) {
+                        Ok(true) => break,
+                        Ok(false) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                        Err(error) => {
+                            return Err(hex_session::service::ResidentPublicationRefusal {
+                                playback,
+                                error,
+                            });
+                        }
+                    }
+                }
+            }
+        } else if playback.contains_streamed_sources() {
+            return Err(hex_session::service::ResidentPublicationRefusal {
+                playback,
+                error: "ordinary file publication facts missing".into(),
+            });
+        }
+        self.publish_resident_graph(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            metadata_limit,
+            admit,
+            files.as_ref().map(|files| files.sources),
         )
     }
     fn poll_resident_pending(

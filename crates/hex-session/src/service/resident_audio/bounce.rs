@@ -16,8 +16,8 @@ pub(in crate::service) fn bounce_clip(
         clip,
         directory,
         |session, project| {
-            let sink = sink
-                .try_borrow()
+            let mut sink = sink
+                .try_borrow_mut()
                 .map_err(|_| "bounce sink already borrowed")?;
             let inputs = session
                 .resident_seek_inputs(admission, current.as_ref(), None)
@@ -25,11 +25,12 @@ pub(in crate::service) fn bounce_clip(
             let mut isolated = inputs
                 .prepare(
                     project,
-                    &**sink,
+                    &mut **sink,
                     &session.media_bank(),
                     session.sine_table(),
                     &session.audio_transforms,
                     &session.audio_clip_waveforms,
+                    context,
                 )
                 .map_err(|e| e.to_string())?;
             // Offline conversion is authored synthesis only. No monitor selection is attached.
@@ -161,8 +162,8 @@ pub(in crate::service) fn bounce_arrangement(
         directory,
         control,
         |session, project, allowance_frames| {
-            let sink = sink
-                .try_borrow()
+            let mut sink = sink
+                .try_borrow_mut()
                 .map_err(|_| "bounce sink already borrowed")?;
             let inputs = session
                 .resident_seek_inputs(admission, current.as_ref(), None)
@@ -172,11 +173,12 @@ pub(in crate::service) fn bounce_arrangement(
             let mut isolated = inputs
                 .prepare(
                     project,
-                    &**sink,
+                    &mut **sink,
                     &session.media_bank(),
                     session.sine_table(),
                     &session.audio_transforms,
                     &waveforms,
+                    context,
                 )
                 .map_err(|e| e.to_string())?;
             isolated.inputs = RuntimeInputs::default();

@@ -1699,6 +1699,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap()
     else {
@@ -1742,6 +1743,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InstallFreshRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap()
     else {
@@ -1761,6 +1763,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation is waiting"));
@@ -1843,6 +1846,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
                 ResidentPublicationPolicy::InheritRuntime,
                 0,
                 &mut admit,
+                None,
             )
             .unwrap();
         assert!(matches!(
@@ -1872,6 +1876,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation retirement is waiting"));
@@ -1884,7 +1889,8 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             second_metadata,
             ResidentPublicationPolicy::InheritRuntime,
             0,
-            &mut admit
+            &mut admit,
+            None,
         )
         .unwrap(),
         ResidentPublicationAcceptance::Submitted { .. }
