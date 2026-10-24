@@ -1036,7 +1036,6 @@ impl EditorView {
                 let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
-
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -3160,7 +3159,6 @@ impl EditorView {
         let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
-
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
