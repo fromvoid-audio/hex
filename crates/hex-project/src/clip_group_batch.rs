@@ -10,6 +10,9 @@ type Interval = (u64, u64);
 struct Row {
     frames: Vec<Interval>,
     beats: Vec<Interval>,
+    // Bounded by the same incoming cuts. Distinguish frame-derived starts from
+    // exact beat edits when choosing a newly clipped prefix's beat endpoint.
+    frame_cut_starts: Vec<u64>,
     audio: Vec<Clip>,
     midi: Vec<MidiClip>,
 }
@@ -171,6 +174,7 @@ pub(super) fn apply_with_cuts(
         push(&mut rows[index].frames, (start, end))?;
         if left < right {
             push(&mut rows[index].beats, (left.raw(), right.raw()))?;
+            push(&mut rows[index].frame_cut_starts, left.raw())?;
         }
     }
     // All incoming ownership is part of the final count, before any fragments.
@@ -215,11 +219,16 @@ pub(super) fn apply_with_cuts(
         }
         if beats.0 < beats.1 {
             push(&mut row.beats, (beats.0.raw(), beats.1.raw()))?;
+            if matches!(member.content, ClipGroupContent::Audio(_)) {
+                push(&mut row.frame_cut_starts, beats.0.raw())?;
+            }
         }
     }
     for (original_row, row) in project.tracks.iter().zip(&mut rows) {
         union(&mut row.frames);
         union(&mut row.beats);
+        row.frame_cut_starts.sort_unstable();
+        row.frame_cut_starts.dedup();
         for original in original_row.clips() {
             if !copy && selected.contains(&original.id()) {
                 continue;
@@ -273,18 +282,35 @@ pub(super) fn apply_with_cuts(
                 .is_some_and(|(start, _)| *start == original.start().raw());
             if prefix {
                 let mut clip = original.clone();
-                clip.length = BeatTime::from_raw(pieces[0].1 - pieces[0].0);
+                let mut end = pieces[0].1;
+                if row.frame_cut_starts.binary_search(&end).is_ok() {
+                    // The conservative cut start is the last beat rounding to
+                    // this frame. A note starting in that same frame must not
+                    // acquire a zero-frame gate in the retained prefix. Use
+                    // the first beat of this frame, preserving the frame edge
+                    // and every authored source note. Untouched clips never
+                    // enter this branch; exact beat edits retain their law.
+                    let frame = tempo.beat_to_frame(BeatTime::from_raw(end))?;
+                    end = u64::try_from(tempo.beat_lower_bound_for_frame(frame)?)
+                        .map_err(|_| Invalid("midi frame prefix exceeds beat range"))?;
+                }
+                clip.length = BeatTime::from_raw(
+                    end.checked_sub(pieces[0].0)
+                        .filter(|length| *length > 0)
+                        .ok_or(Invalid("midi frame prefix collapsed"))?,
+                );
                 count.clip(clip.notes().len())?;
                 push(&mut row.midi, clip)?;
             }
             let materialized = &pieces[usize::from(prefix)..];
             if !materialized.is_empty() {
                 count.enumerate(original)?;
-                for (index, mut clip) in
+                let fragments = if row.frame_cut_starts.is_empty() {
                     crate::midi::materialize_overwrite_ranges(original, materialized)?
-                        .into_iter()
-                        .enumerate()
-                {
+                } else {
+                    crate::midi::materialize_overwrite_frame_ranges(original, materialized, tempo)?
+                };
+                for (index, mut clip) in fragments.into_iter().enumerate() {
                     clip.id = if !prefix && index == 0 {
                         original.id()
                     } else {

@@ -18,7 +18,10 @@ fn beat(num: u64, den: u64) -> BeatTime {
     BeatTime::from_ratio(num, den).unwrap()
 }
 fn setup() -> (Editor, hex_project::TrackId) {
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    setup_at_rate(48_000)
+}
+fn setup_at_rate(sample_rate: u32) -> (Editor, hex_project::TrackId) {
+    let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 16).unwrap();
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
@@ -396,6 +399,40 @@ fn zero_frame_note_is_explicitly_refused() {
     assert_eq!(
         compile::project(editor.project(), &BTreeMap::new()).unwrap_err(),
         Invalid("midi note duration quantizes to zero frames")
+    );
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(1, 2),
+            duration: BeatTime::from_raw(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    // Force right-remainder materialization without clipping this second
+    // authored gate. Frame editing must not turn invalid source data into
+    // silently accepted playback by filtering every zero-frame note.
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 10_000, 10_720).unwrap(),
+            track,
+            frame: 0,
+        })
+        .unwrap();
+    let notes = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .flat_map(|clip| clip.notes())
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].duration(), BeatTime::from_raw(1));
+    assert_eq!(
+        midi_events(editor.project()),
+        Err(Invalid("midi note duration quantizes to zero frames"))
     );
 }
 
@@ -1347,11 +1384,41 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
 
 #[test]
 fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() {
-    for (note_start, selection_end, destination, remaining) in [
-        (BeatTime::ONE, 48_000, 48_000, vec![]),
-        (BeatTime::ZERO, 12_000, 36_000, vec![24_000, 36_000]),
+    for (rate, bpm, tail) in [
+        (48_000, 120_000_000, false),
+        (48_000, 120_000_000, true),
+        (48_000, 143_000_000, false),
+        (48_000, 143_000_000, true),
+        (44_100, 143_000_000, false),
+        (44_100, 143_000_000, true),
     ] {
-        let (mut editor, track) = setup();
+        let (mut editor, track) = setup_at_rate(rate);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(bpm).unwrap(),
+            })
+            .unwrap();
+        let one = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        let two = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(beat(2, 1))
+            .unwrap();
+        let (note_start, selection_end, destination, remaining) = if tail {
+            (
+                BeatTime::ZERO,
+                one / 2,
+                two - one / 2,
+                vec![one, two - one / 2],
+            )
+        } else {
+            (BeatTime::ONE, two, two, vec![])
+        };
         let clip = add_clip(&mut editor, track, BeatTime::ONE, beat(4, 1));
         editor
             .execute(Command::AddMidiNote {
@@ -1363,7 +1430,8 @@ fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() 
                 velocity: 100,
             })
             .unwrap();
-        let before = editor.project().snapshot();
+        let mut before = editor.project().snapshot();
+        let source_notes = editor.project().midi_clip(clip).unwrap().notes().to_vec();
         assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
         editor
             .execute(Command::CopyTimeRangeTo {
@@ -1379,11 +1447,55 @@ fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() 
             remaining
         );
         compile::project(editor.project(), &BTreeMap::new()).unwrap();
+        assert_eq!(
+            editor.project().midi_clip(clip).unwrap().notes(),
+            source_notes
+        );
         let after = editor.project().snapshot();
+        // Undo restores complete musical state while the identity allocator
+        // retains its documented high-water mark to prevent ID reuse.
+        assert!(after.next_id >= before.next_id);
+        before.next_id = after.next_id;
         assert!(editor.undo());
         assert_eq!(editor.project().snapshot(), before);
         assert!(editor.redo());
         assert_eq!(editor.project().snapshot(), after);
         assert_eq!(midi_events(editor.project()).unwrap(), events);
     }
+}
+
+#[test]
+fn frame_range_copy_keeps_a_touching_midi_source_exact() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(
+        &mut editor,
+        track,
+        BeatTime::ZERO,
+        BeatTime::from_raw(BeatTime::ONE.raw() + 1),
+    );
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let original = editor.project().midi_clip(clip).unwrap().clone();
+    let events = midi_events(editor.project()).unwrap();
+    editor
+        .execute(Command::CopyTimeRangeTo {
+            range: hex_project::TimeRange::new(vec![track], 48_000, 72_000).unwrap(),
+            track,
+            frame: 24_000,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().midi_clip(clip).unwrap(),
+        &original,
+        "a clip ending in the cut's first frame has no frame overlap"
+    );
+    assert_eq!(midi_events(editor.project()).unwrap(), events);
 }

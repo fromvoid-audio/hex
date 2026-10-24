@@ -958,3 +958,130 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
         assert_eq!(view.normalized_time_selection().as_ref(), Some(&source));
     });
 }
+
+#[gpui::test]
+fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker(
+    cx: &mut TestAppContext,
+) {
+    for drag in [false, true] {
+        let (mut visual, editor, environment, tracks, clips) = fixture(cx);
+        let clip = clips[0];
+        let note = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_clip(clip)
+                .unwrap()
+                .notes()[0]
+                .id()
+        });
+        for command in [
+            Command::UpdateMidiNotes {
+                clip,
+                notes: vec![hex_project::MidiNoteUpdate {
+                    note,
+                    start: BeatTime::ONE,
+                    duration: BeatTime::ONE,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                }],
+            },
+            Command::MoveMidiClip {
+                clip,
+                track: tracks[0],
+                start: BeatTime::ONE,
+            },
+        ] {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        let before = editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.snap_grid = super::super::musical_time::SnapGrid::Quarter;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let range = pointer_range_frames(&mut visual, &editor, &tracks[..1], 0, 48_000);
+        assert_eq!((range.start(), range.end()), (0, 48_000));
+        if drag {
+            let row = lane(&mut visual, tracks[0]);
+            let a = point(
+                row.origin.x + row.size.width * (16_000.0 / 384_000.0),
+                row.origin.y + row.size.height * 0.15,
+            );
+            let b = point(a.x + row.size.width * (48_000.0 / 384_000.0), a.y);
+            let option = Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(a, MouseButton::Left, option);
+            visual.simulate_mouse_move(b, Some(MouseButton::Left), option);
+            let destination = editor.read_with(&visual, |view, _| {
+                let preview = view.time_range_move_display().expect("held range copy");
+                assert!(preview.copy_modifier);
+                (preview.destination_start, preview.destination_end)
+            });
+            assert_eq!(destination, (48_000, 96_000));
+            visual.simulate_mouse_up(b, MouseButton::Left, option);
+        } else {
+            visual.simulate_keystrokes("cmd-d");
+        }
+        for expected in [(48_000, 96_000), (96_000, 144_000)] {
+            if expected.0 == 96_000 {
+                visual.simulate_keystrokes("cmd-d");
+            }
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert!(view.error.is_none(), "drag={drag}: {:?}", view.error);
+                let range = view
+                    .normalized_time_selection()
+                    .expect("accepted copied range");
+                assert_eq!((range.start(), range.end()), expected);
+                assert_eq!(range.tracks(), &tracks[..1]);
+                assert!(view.pending_time_range_move.is_none());
+                assert!(view.selected_clip.is_none());
+                assert_eq!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .midi_clip(clip)
+                        .unwrap()
+                        .notes()[0]
+                        .id(),
+                    note
+                );
+            });
+        }
+        let after = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        let saved = environment.root().join("frame-range-copy.hex");
+        let project = hex_project::Project::from_snapshot(after.clone()).unwrap();
+        hex_storage::save_new(&saved, &project).unwrap();
+        assert_eq!(hex_storage::load(&saved).unwrap().snapshot(), after);
+        for _ in 0..2 {
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |view, _| {
+            let mut expected = before;
+            expected.next_id = after.next_id;
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected);
+        });
+        for _ in 0..2 {
+            visual.simulate_keystrokes("cmd-shift-z");
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
