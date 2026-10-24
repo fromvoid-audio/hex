@@ -147,6 +147,7 @@ impl EditorView {
                     self.project_generation,
                     &state,
                     self.arrangement_focus_ranges(),
+                    self.arrangement_revealed_track(),
                 ),
                 empty_viewport,
                 self.track_header_width(),
@@ -217,6 +218,7 @@ impl EditorView {
                 self.project_generation,
                 &state,
                 self.arrangement_focus_ranges(),
+                self.arrangement_revealed_track(),
             ),
             viewport,
             self.track_header_width(),
@@ -789,7 +791,6 @@ impl EditorView {
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
                     .child(theme::text("main"))
-                    .children([self.section_focus_toggle(cx)])
                     .child(div().flex_1())
                     .children([self.main_track_controls(cx)]),
             )

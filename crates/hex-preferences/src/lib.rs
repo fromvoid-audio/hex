@@ -14,6 +14,12 @@ pub use audio_import::{
     save_audio_import_preferences,
 };
 
+mod midi_input;
+pub use midi_input::{
+    MidiInputPort, MidiInputPreferences, load_midi_input_preferences, midi_input_preferences_path,
+    save_midi_input_preferences,
+};
+
 mod project_directory;
 pub use project_directory::{load_project_directory, save_project_directory};
 

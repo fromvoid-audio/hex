@@ -1,6 +1,6 @@
 use super::{clip_drag_ui_test::editor_window, refresh::AudioFrame};
 use crate::output_meter::{HEIGHT, MeterInput, WIDTH, readout};
-use gpui::{TestAppContext, VisualTestContext, px, size};
+use gpui::{Modifiers, TestAppContext, VisualTestContext, px, size};
 use hex_audio::prepared::Status;
 use hex_project::Project;
 use std::sync::{Arc, atomic::Ordering::Relaxed};
@@ -36,8 +36,8 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
         (0.0, 0.000_001_f32, "last l -inf r <-60 dbfs", 0.0, false),
         (0.1, 1.0, "last l -20.0 r 0.0 dbfs", 16.0 * 2.0 / 3.0, false),
         (2.0, 0.5, "last l +6.0! r -6.0 dbfs", 16.0, true),
-        (0.0, 0.0, "last l -inf r -inf dbfs", 0.0, false),
-        (f32::NAN, -1.0, "last l invalid r invalid dbfs", 0.0, false),
+        (0.0, 0.0, "last l -inf r -inf dbfs", 0.0, true),
+        (f32::NAN, -1.0, "last l invalid r invalid dbfs", 0.0, true),
     ] {
         status.peak_left.store(left.to_bits(), Relaxed);
         status.peak_right.store(right.to_bits(), Relaxed);
@@ -65,6 +65,20 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
             above
         );
     }
+    let revision_before = editor.read_with(cx, |view, _| view.state().map(|state| state.revision));
+    let cap = visual
+        .debug_bounds("output-meter-left-above")
+        .expect("held clipping warning");
+    visual.simulate_click(cap.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("output-meter-left-above").is_none());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state().map(|state| state.revision), revision_before);
+        assert_eq!(
+            readout(view.output_meter_frame.unwrap().meter_input()),
+            "last l invalid r invalid dbfs"
+        );
+    });
     status.render_fault.store(true, Relaxed);
     let frame = AudioFrame::capture(&status);
     editor.update(cx, |view, cx| {

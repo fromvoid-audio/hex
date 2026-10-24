@@ -90,6 +90,7 @@ impl super::EditorView {
                 .select(&state.project, track, false, false)
         {
             self.selected_track = Some(track);
+            self.arrangement_focus.observe_active_track(Some(track));
             self.update_track_selection_status();
         }
     }
@@ -143,11 +144,17 @@ impl super::EditorView {
 
 /// Keep a valid selected clip attached to its canonical owner after edits,
 /// undo, redo or worker-side project changes.
+/// An explicitly empty clip selection stays empty across acknowledgements;
+/// only a stale non-empty selection falls back to another clip.
+/// Initial project population is handled separately by the view owner.
 pub(super) fn reconcile(
     project: &Project,
     current_track: Option<TrackId>,
     current_clip: Option<ClipId>,
 ) -> (Option<TrackId>, Option<ClipId>) {
+    if current_track.is_none() && current_clip.is_none() {
+        return (None, None);
+    }
     if let Some(clip_id) = current_clip
         && let Some(track) = project.tracks().iter().find(|track| {
             track.clips().iter().any(|clip| clip.id() == clip_id)
@@ -163,6 +170,9 @@ pub(super) fn reconcile(
     let track = current_track
         .filter(|id| project.track(*id).is_some())
         .or_else(|| project.tracks().first().map(|track| track.id()));
+    if current_clip.is_none() {
+        return (track, None);
+    }
     let clip = track.and_then(|id| {
         let track = project.track(id)?;
         track
@@ -292,6 +302,11 @@ mod tests {
             reconcile(editor.project(), Some(source), Some(clip)),
             (Some(source), Some(clip))
         );
+        assert_eq!(
+            reconcile(editor.project(), Some(source), None),
+            (Some(source), None)
+        );
+        assert_eq!(reconcile(editor.project(), None, None), (None, None));
         editor
             .execute(Command::MoveClip {
                 clip,

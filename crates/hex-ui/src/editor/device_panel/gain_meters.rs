@@ -142,6 +142,7 @@ pub(super) fn render(
             "{side} peak {} dbfs · gain {gain:+.2} db\ndrag to adjust · shift for fine · double-click to reset",
             peak_db(held[index])
         )));
+        let colors = theme::meter_colors();
         let readout = hex_widgets::DeviceMeterReadout {
             height: DEVICE_FRAME_HEIGHT,
             index,
@@ -149,9 +150,9 @@ pub(super) fn render(
             levels,
             held,
             tooltips,
-            signal: theme::color(theme::PaletteRole::Secondary),
-            warning: theme::color(theme::PaletteRole::Primary),
-            clipping: 0xe34b4b,
+            signal: colors.signal,
+            warning: colors.near_peak,
+            clipping: colors.clipping,
         };
         if let Some(ParameterControl::Float { entity, .. }) = view.device_panel.controls.get(&key) {
             entity.update(cx, |numeric, cx| numeric.set_meter_readout(readout, cx));

@@ -5,10 +5,10 @@ use hex_project::Command;
 use hex_session::service::Request;
 
 impl EditorView {
-    /// Existing Command-L action now owns the complete Arrangement selection.
+    /// Command-L applies the contextual action to the complete Arrangement selection.
     pub(super) fn set_loop_from_clip(&mut self, window: &Window) {
         if self.mode == EditorMode::Arrangement && self.loop_shortcut_context(window) {
-            self.set_selection_loop();
+            self.apply_selection_loop();
         }
     }
 
@@ -21,7 +21,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement {
             self.toggle_loop();
         } else {
-            self.set_selection_loop();
+            self.apply_selection_loop();
         }
     }
 
@@ -38,7 +38,7 @@ impl EditorView {
             && !self.export_dialog_open
     }
 
-    fn set_selection_loop(&mut self) {
+    fn apply_selection_loop(&mut self) {
         if self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.scrub_active()
@@ -58,7 +58,13 @@ impl EditorView {
             self.error = Some("finish the current edit before setting the loop".into());
             return;
         }
+        let existing = self.state.as_ref().and_then(|s| s.project.loop_region());
         match self.selection_loop_bounds() {
+            Ok(Some((start, end)))
+                if existing.is_some_and(|r| (r.start(), r.end()) == (start, end)) =>
+            {
+                self.toggle_loop();
+            }
             Ok(Some((start, end))) => {
                 self.enqueue(Request::Edit(Command::SetLoopRegion {
                     start,
@@ -66,6 +72,7 @@ impl EditorView {
                     enabled: true,
                 }));
             }
+            Ok(None) if existing.is_some() => self.toggle_loop(),
             Ok(None) => {}
             Err(error) => self.error = Some(error.into()),
         }

@@ -266,7 +266,10 @@ impl NativeAudioSink {
                         error: "document replacement must retain before output teardown".into(),
                     });
                 }
-                ResidentPublicationPolicy::FreshIfUnchanged(expected) => {
+                ResidentPublicationPolicy::FreshIfUnchanged(expected)
+                | ResidentPublicationPolicy::SectionWhenReady {
+                    fence: expected, ..
+                } => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
                         expected.output_identity == output_identity
                             && expected.active_audio_revision == actual.expected_active_revision()
@@ -278,7 +281,19 @@ impl NativeAudioSink {
                             error: "audio runtime changed while preparing graph".into(),
                         });
                     };
-                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntimeIfUnchanged(actual)
+                    match policy {
+                        ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
+                            hex_audio::prepared::PublicationPolicy::InstallSectionWhenReady {
+                                fence: actual,
+                                quantization,
+                            }
+                        }
+                        _ => {
+                            hex_audio::prepared::PublicationPolicy::InstallFreshRuntimeIfUnchanged(
+                                actual,
+                            )
+                        }
+                    }
                 }
             };
             let retired = self
@@ -297,10 +312,10 @@ impl NativeAudioSink {
                     )
                 },
             );
-            let result = control.publish_with_admission_on_control(
+            let result = control.publish_with_admission_and_source_on_control(
                 playback,
                 policy,
-                metadata.context.project_generation,
+                metadata.context,
                 |prospective| admit(&[prospective, retired, pending]),
             );
             return match result {
@@ -348,7 +363,11 @@ impl NativeAudioSink {
                 error: "active audio publication endpoint is closed".into(),
             });
         }
-        if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_)) {
+        if matches!(
+            policy,
+            ResidentPublicationPolicy::FreshIfUnchanged(_)
+                | ResidentPublicationPolicy::SectionWhenReady { .. }
+        ) {
             return Err(ResidentPublicationRefusal {
                 playback,
                 error: "fresh runtime publication requires its original active output".into(),
