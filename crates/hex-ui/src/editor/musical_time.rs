@@ -992,7 +992,7 @@ fn meter_label(position: MeterPosition) -> String {
         format!("{}.{}", position.bar(), position.beat())
     } else {
         let tenths = (u128::from(fraction) * 10 / u128::from(BeatTime::ONE.raw())) as u8;
-        format!("{}.{}+{}", position.bar(), position.beat(), tenths)
+        format!("{}.{}.{}", position.bar(), position.beat(), tenths)
     }
 }
 
@@ -1592,7 +1592,7 @@ mod tests {
             "2.2.1"
         );
         let project = Project::new(48_000).unwrap();
-        let coarse = ruler_ticks(&project, Viewport::fit(96_000), 600.0);
+        let coarse = ruler_ticks(&project, Viewport::fit(960_000), 600.0);
         assert!(coarse.iter().all(|tick| tick.label.split('.').count() == 2));
         let fine = ruler_ticks(
             &project,
