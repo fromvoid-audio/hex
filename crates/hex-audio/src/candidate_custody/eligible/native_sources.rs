@@ -142,7 +142,9 @@ impl Bank {
                 slot.retiring = true;
                 // A fully constructed effect retires through its existing
                 // joining worker/SDK stop. In-flight preparation cancels now.
-                if slot.processor.is_none() {
+                if slot.processor.is_none() || slot.phase == Phase::Failed {
+                    // Failed/unwound custody cannot enter normal retirement;
+                    // wake its original guardian without releasing any owner.
                     *target = slot.request_cancellation();
                 }
             }

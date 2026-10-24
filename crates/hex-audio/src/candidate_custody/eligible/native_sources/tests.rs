@@ -960,3 +960,52 @@ fn native_pool_reserves_handles_before_allocating_and_keeps_them_while_vacant() 
         assert!(root.complete());
     }
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn failed_effect_requests_original_cancellation_without_claiming_disposal() {
+    use std::io::Write;
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    root.start_native_effect(binding).unwrap();
+    let descriptor = lock(&root.bank).sources.slots[0]
+        .cancellation
+        .as_ref()
+        .unwrap()
+        .descriptor_lifetime_probe_on_control()
+        .upgrade()
+        .unwrap();
+    // Use the actual production failure transition after real SDK/worker
+    // construction. Failed custody cannot use the normal retirement path.
+    root.fail_native_source(0);
+    let mut writer = descriptor.as_ref();
+    let error = writer
+        .write(&[0])
+        .expect_err("failed source must shut down its original cancellation socket");
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::NotConnected
+    ));
+    assert_eq!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Failed)
+    );
+    assert!(root.recover_native_source(binding).is_none());
+    assert!(!root.complete(), "cancellation is not a disposal receipt");
+    assert!(matches!(
+        root.work.try_lock().unwrap().sources.cells[0].owner,
+        Some(Owner::Effect(_))
+    ));
+    // This isolated fixture finally destroys its original owners on control;
+    // no graph/native-output disposal or reusable source was manufactured.
+}
