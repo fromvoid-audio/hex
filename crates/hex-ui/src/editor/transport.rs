@@ -30,20 +30,29 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
-            .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
+            .child(
+                self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx)
+                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+            )
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
                 |view, window, cx| view.export_dialog(window, cx),
                 cx,
             ))
-            .child(self.icon(
-                if playing { "Ⅱ" } else { "▶" },
-                "play or pause · space",
-                TogglePlay,
-                cx,
-            ))
-            .child(self.icon("■", "stop · escape", Stop, cx))
+            .child(
+                self.icon(
+                    if playing { "Ⅱ" } else { "▶" },
+                    "play or pause · space",
+                    TogglePlay,
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+            )
+            .child(
+                self.icon("■", "stop · escape", Stop, cx)
+                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+            )
             .child(
                 self.control_icon(
                     "●",
@@ -54,6 +63,7 @@ impl EditorView {
                     },
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(
                     if self.midi_recorder.blocks_edits() {
                         theme::PaletteRole::Primary
@@ -80,6 +90,7 @@ impl EditorView {
                     |view, _, _| view.toggle_section_autoplay(),
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "section-autoplay-toggle".into())
                 .text_color(rgb(theme::color(if self.section_autoplay {
                     theme::PaletteRole::Primary
@@ -97,6 +108,7 @@ impl EditorView {
                     |view, window, cx| view.toggle_computer_keyboard(window, cx),
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(if self.computer_keyboard.enabled {
                     theme::PaletteRole::Primary
                 } else {
@@ -110,6 +122,7 @@ impl EditorView {
                     |view, _, _| view.toggle_metronome(),
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .opacity(if self.metronome_pending() { 0.45 } else { 1.0 })
                 .text_color(rgb(theme::color(if self.metronome_enabled() {
                     theme::PaletteRole::Primary
@@ -124,6 +137,7 @@ impl EditorView {
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(
                     if self
                         .state()
@@ -200,6 +214,7 @@ impl EditorView {
                     |view, _, _| view.set_mode(EditorMode::Arrangement),
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(if self.mode == EditorMode::Arrangement {
                     theme::color(theme::PaletteRole::SecondaryText)
                 } else {
@@ -213,6 +228,7 @@ impl EditorView {
                     |view, _, _| view.set_mode(EditorMode::Session),
                     cx,
                 )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(if self.mode == EditorMode::Session {
                     theme::color(theme::PaletteRole::SecondaryText)
                 } else {
@@ -442,7 +458,7 @@ impl EditorView {
     }
 
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        hex_widgets::action(theme::text(self.snap_grid.label()), theme::action_style())
+        hex_widgets::toggle_action(theme::text(self.snap_grid.label()), theme::action_style())
             .id("clip move snap grid")
             .debug_selector(|| "arranger-snap-toggle".to_owned())
             .w(px(68.0))

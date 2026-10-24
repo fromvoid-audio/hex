@@ -273,11 +273,7 @@ impl gpui::Render for Toggle {
                 5.0
             }))
             .items_center()
-            .rounded(px(if self.appearance == ToggleAppearance::CompactButton {
-                1.5
-            } else {
-                2.0
-            }))
+            .rounded(px(crate::TOGGLE_CORNER_RADIUS))
             .bg(rgb(
                 if matches!(
                     self.appearance,
@@ -296,6 +292,7 @@ impl gpui::Render for Toggle {
                 self.style.surface
             }))
             .track_focus(&self.focus)
+            .when(self.enabled, |root| root.hover(|hover| hover.opacity(0.8)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_key_down(cx.listener(Self::key_down))
             .cursor(if self.enabled {
@@ -393,6 +390,7 @@ impl gpui::Render for Toggle {
                     div()
                         .debug_selector(|| format!("{}-indicator", self.id))
                         .size(px(marker_size))
+                        .rounded(px(crate::TOGGLE_CORNER_RADIUS))
                         .border_1()
                         .border_color(rgb(if self.focus.is_focused(window) {
                             self.style.accent
@@ -463,7 +461,7 @@ impl gpui::Render for Toggle {
                 .child(
                     div()
                         .size(px(12.0))
-                        .rounded(px(2.0))
+                        .rounded(px(crate::TOGGLE_CORNER_RADIUS))
                         .border_1()
                         .border_color(rgb(self.style.border))
                         .bg(rgb(state_color)),

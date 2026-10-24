@@ -472,7 +472,7 @@ fn frozen_crop_can_move_and_extend_left_into_negative_reference_then_thaw() {
 }
 
 #[test]
-fn retained_warped_sections_refuse_global_rebase_before_prepare_without_losing_redo() {
+fn retained_warped_sections_follow_global_tempo_with_atomic_preparation_and_history() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     audio(&mut editor, 0, Some(true));
     let mut add = |start, end| {
@@ -506,14 +506,49 @@ fn retained_warped_sections_refuse_global_rebase_before_prepare_without_losing_r
             Command::SetProjectTempo { tempo: bpm(60) },
             |_| {
                 prepared = true;
-                Ok(())
+                Err::<(), _>(hex_project::Invalid("injected preparation refusal"))
             },
         )
         .unwrap_err();
-    assert!(error.0.contains("rebase"));
-    assert!(!prepared);
+    assert_eq!(error.0, "injected preparation refusal");
+    assert!(prepared);
     assert_eq!(editor.project(), &before);
     assert!(editor.can_redo());
+    editor
+        .execute(Command::SetProjectTempo { tempo: bpm(180) })
+        .unwrap();
+    let changed = editor.project().clone();
+    for old in before.tracks()[0].clips() {
+        let current = changed.clip(old.id()).unwrap();
+        let old_edit = old.audio_edit().unwrap();
+        let edit = current.audio_edit().unwrap();
+        assert!(old_edit.processing_projection.is_some());
+        assert!(edit.processing_projection.is_none());
+        assert_eq!(
+            (edit.placement_start_offset, edit.placement_end_offset),
+            (0, 0)
+        );
+        assert!(Arc::ptr_eq(&edit.domain, &old_edit.domain));
+        assert_eq!(
+            (edit.view_start, edit.view_end, &edit.timing),
+            (old_edit.view_start, old_edit.view_end, &old_edit.timing)
+        );
+        let start = edit.live_musical_start().unwrap();
+        let end = BeatTime::from_raw(start.raw() + edit.view_end - edit.view_start);
+        assert_eq!(
+            current.start(),
+            changed.tempo_map().beat_to_frame(start).unwrap()
+        );
+        assert_eq!(
+            current.start() + current.duration(),
+            changed.tempo_map().beat_to_frame(end).unwrap()
+        );
+    }
+    assert!(!editor.can_redo());
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &changed);
     // Redundant equal-tempo cut anchors do not prevent a legal current-format
     // retained state from having a single-point map. Its exact no-op is allowed.
     let mut single = before.snapshot();
