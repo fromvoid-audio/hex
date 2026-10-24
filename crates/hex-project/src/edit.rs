@@ -287,6 +287,11 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    /// Insert complete captured tracks in canonical order with fresh identities.
+    PasteTracks {
+        clipboard: std::sync::Arc<crate::TrackClipboard>,
+        before: Option<TrackId>,
+    },
     /// Paste complete clips, retaining relative timing and stable multi-track owners.
     PasteClips {
         clipboard: std::sync::Arc<crate::ClipClipboard>,
@@ -400,6 +405,13 @@ pub enum Command {
         track: TrackId,
         before: Option<TrackId>,
     },
+    /// Move complete selected ordinary tracks as one block in canonical order.
+    /// A selected anchor or an already-adjacent block is a no-op. Identity-owned
+    /// content, routing and automation remain attached; one history edit owns it.
+    MoveTracksBefore {
+        tracks: crate::TrackSelectionIds,
+        before: Option<TrackId>,
+    },
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
@@ -420,7 +432,8 @@ pub enum Command {
         gain: f32,
     },
     /// Replace all project tempo points and retain musical clip onsets.
-    /// Unwarped audio keeps its source processing and natural frame duration.
+    /// Audio keeps its source processing; colliding tails are non-destructively
+    /// cropped at the next placed clip's onset, preserving all clip identities.
     SetProjectTempo {
         tempo: crate::Tempo,
     },
@@ -915,6 +928,11 @@ pub struct MidiNoteInsert {
 pub enum Created {
     ArrangementSection(crate::SectionId),
     Track(TrackId),
+    /// Inclusive track-only ID range born in one atomic paste.
+    Tracks {
+        first: TrackId,
+        last: TrackId,
+    },
     ReturnTrack(ReturnId),
     Device(DeviceId),
     Asset(AssetId),
@@ -2088,6 +2106,9 @@ impl Project {
                 })
             }
             Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
+            Command::MoveTracksBefore { tracks, before } => {
+                self.move_tracks_before(&tracks, before)
+            }
             Command::RemoveTracks(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
                     return Err(Invalid("track removal needs a bounded selection"));
@@ -2470,6 +2491,9 @@ impl Project {
                 let track = insert_track_before(self, name, before_track)?;
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
+            }
+            Command::PasteTracks { clipboard, before } => {
+                crate::track_clipboard::paste(self, &clipboard, before)
             }
             Command::PasteClips {
                 clipboard,

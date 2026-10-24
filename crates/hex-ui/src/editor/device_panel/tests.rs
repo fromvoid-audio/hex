@@ -1307,15 +1307,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         let knob = Box::leak(
             format!("device-{}-parameter-{level_id}-knob", instrument_id.value()).into_boxed_str(),
         );
-        let bounds = visual.debug_bounds(knob).expect("shell MiniDial");
+        let bounds = visual.debug_bounds(knob).expect("shell MicroDial");
         assert!(
             bounds.size.width >= px(18.0),
-            "MiniDial ring width: {:?}",
+            "MicroDial ring width: {:?}",
             bounds.size
         );
         assert!(
             bounds.size.height >= px(18.0),
-            "MiniDial ring height: {:?}",
+            "MicroDial ring height: {:?}",
             bounds.size
         );
     }
@@ -4086,7 +4086,7 @@ fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &m
     visual.run_until_parked();
     visual.simulate_input("utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "utility");
         let ParameterControl::Float { entity, .. } =
             &view.device_panel.controls[&ParameterKey { device, parameter }]
         else {
@@ -4159,7 +4159,7 @@ fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("escape cmd-f");
     visual.simulate_input("utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility")
+        assert_eq!(view.browser.search.read(cx).text(), "utility")
     });
 }
 
@@ -4602,10 +4602,23 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     assert!(menu.origin.x >= window.origin.x && menu.origin.y >= window.origin.y);
     assert!(menu.origin.x + menu.size.width <= window.origin.x + window.size.width);
     assert!(menu.origin.y + menu.size.height <= window.origin.y + window.size.height);
+    assert!(
+        value.size.width >= px(46.0),
+        "numeric value retains its minimum hit width"
+    );
+    assert!(value.left() >= menu.left() && value.right() <= menu.right());
+    let bar_selector = Box::leak(
+        format!(
+            "return-send-{}-{}-slider",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
     assert_eq!(
-        value.size.width,
-        px(46.0),
-        "numeric value hit target is not clipped"
+        value,
+        visual.debug_bounds(bar_selector).unwrap(),
+        "value spans the filled rectangle"
     );
 
     editor.update(cx, |view, cx| {
@@ -4954,7 +4967,7 @@ fn return_send_pointer_drag_previews_then_commits_once(cx: &mut TestAppContext) 
     );
     let slider = visual.debug_bounds(selector).expect("return send slider");
     let start = point(slider.center().x, slider.center().y);
-    let moved = point(start.x + px(36.0), start.y);
+    let moved = point(start.x, start.y - px(36.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());

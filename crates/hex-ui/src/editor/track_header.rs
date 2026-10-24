@@ -3,6 +3,8 @@
 use crate::theme;
 use gpui::{Div, ElementId, Stateful, div, prelude::*, px, rgb};
 
+pub(super) const NAME_HEIGHT: f32 = 18.0;
+
 pub(super) fn surface(
     id: impl Into<ElementId>,
     width: f32,
@@ -36,7 +38,7 @@ pub(super) fn name() -> Div {
         .w_full()
         .flex_shrink_0()
         .min_w_0()
-        .h(px(18.0))
+        .h(px(NAME_HEIGHT))
         .cursor_pointer()
         .truncate()
         .text_xs()

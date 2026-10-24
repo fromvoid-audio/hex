@@ -91,9 +91,50 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+changing the project bpm keeps clips at their musical start positions. audio with
+warp off keeps its natural playback speed. if a faster bpm makes an audio tail
+reach the next clip on that track, hex crops that tail at the next start. original
+media remains available, and undo restores the previous tempo and clip extents.
+
+with the computer midi keyboard off, **l** sets a loop around selected clips, a
+time selection, or the selected main sections. **command+l** also sets this loop.
+for multiple sections, the loop spans the earliest start to the latest end,
+including gaps. while the computer midi keyboard is on, plain **l** plays a note.
+
+a time selection shows a dark dot when its musical length is a power of two,
+such as two or four beats. the dot follows the dragged top-right or top-left
+corner and stays visible after release.
+
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
-track's color a saturated fill; **use muted flavor** uses a pale tint. selection
+track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
+
+shift-click ordinary track headers to select a range; command-click toggles
+individual members. drag any selected track name to reorder the selection as
+one block, keeping its order and content. dragging an unselected name moves
+that track alone. one undo restores the previous order.
+
+with an arrange track header focused, **command+c** copies all selected tracks,
+**command+x** cuts them, **command+v** pastes after the selected block, and
+**command+d** duplicates it. empty tracks are included, and sparse selections
+keep their project order. each cut, paste or duplicate has one undo step.
+right-click a track header for these actions or **duplicate tracks without clips**:
+this keeps the mixer, gain automation and complete device chain, including a/b
+settings, while omitting both arrange and console clips. full copies include both
+clip workspaces. original media stays shared; copied tracks and devices have new
+identities. internal routes follow the copied group, and external inputs remain
+connected. duplication preserves outside tracks' existing midi source choices.
+track and clip/time clipboards are separate and clear when another project opens.
+
+
+drag the bottom edge of a track header to resize that row. hold **option** while
+resizing to give all ordinary tracks the same height. at the minimum height, rows
+keep their names and clip titles; expand them to use the mixer and fade controls.
+with the computer midi keyboard off, press **h** in arrange to toggle a compact
+overview. press **h** again to restore each track's previous height. resizing in
+the overview is temporary; it does not replace normal heights. these view sizes
+last for the current editor session. return and main rows retain their own size.
+with the computer midi keyboard on, **h** continues to play its note.
 
 right-click a track header or the track area and choose **insert track** or
 **insert return track**. return buses stay pinned above **main** in arrange;
@@ -234,6 +275,7 @@ even when live audio output is unavailable.
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser / search | command+option+b / command+f |
+| compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | export | command+shift+e |
 | changelog | command+shift+l |

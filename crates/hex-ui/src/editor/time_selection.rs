@@ -9,6 +9,14 @@ use std::time::Instant;
 
 pub(super) const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
 
+/// A compact row keeps the complete title usable; larger rows retain their
+/// existing proportional move rail. Rendered affordances and hit tests agree.
+pub(super) fn header_hit_height(row_height: f32) -> f32 {
+    (row_height * SELECTION_HANDLE_FRACTION)
+        .max(super::clip_name::CLIP_NAME_HEIGHT)
+        .min(row_height)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimeSelection {
     pub(super) anchor_track: TrackId,
@@ -230,7 +238,7 @@ impl EditorView {
         let lane = self.main_track_lane_bounds.filter(|lane| {
             self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
         })?;
-        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+        if y >= lane.top + header_hit_height(lane.height) {
             return None;
         }
         let frame = super::seek::pointer_to_frame(
@@ -370,7 +378,7 @@ impl EditorView {
             last_tick: Instant::now(),
         });
         self.retain_clip_detail_for_time_selection();
-        self.selected_track = Some(track);
+        self.select_lane_track(track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -405,8 +413,8 @@ impl EditorView {
         let Some((track, lane)) = self.visible_lane_at(x, y) else {
             return false;
         };
-        // Only the upper third is a move handle; the rest always reselects.
-        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+        // The visible title/move rail is the handle; the rest reselects.
+        if y >= lane.top + header_hit_height(lane.height) {
             return false;
         }
         let Some(track_offset) = range.tracks().iter().position(|item| *item == track) else {
@@ -720,6 +728,16 @@ impl EditorView {
     }
 
     pub(super) fn copy_time_selection(&mut self, cut: bool, window: &Window) {
+        if self.track_clipboard_shortcut(
+            window,
+            if cut {
+                super::track_clipboard::Shortcut::Cut
+            } else {
+                super::track_clipboard::Shortcut::Copy
+            },
+        ) {
+            return;
+        }
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
             || !self.focus.is_focused(window)
@@ -743,6 +761,9 @@ impl EditorView {
     }
 
     pub(super) fn paste_time_selection(&mut self, window: &Window) {
+        if self.track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Paste) {
+            return;
+        }
         self.paste_or_insert_time_selection(false, window);
     }
 
@@ -924,7 +945,7 @@ impl EditorView {
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope {
-            self.selected_track = Some(track);
+            self.select_lane_track(track);
         }
         self.selected_clip = None;
         true
@@ -993,7 +1014,8 @@ impl EditorView {
             .drag_lanes
             .iter()
             .filter(|(track, _)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.arrangement_track_visible(**track)
+                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find(|(_, lane)| lane_contains(x, y, **lane))?;
         state.project.track(*track)?;
@@ -1056,7 +1078,7 @@ impl EditorView {
             }
             let edge = super::trim::handle_width(width);
             Some(
-                y < lane.top + lane.height * SELECTION_HANDLE_FRACTION
+                y < lane.top + header_hit_height(lane.height)
                     || (visible_start == start && x < left + edge)
                     || (visible_end == end && x >= left + width - edge),
             )
@@ -1068,12 +1090,18 @@ impl EditorView {
             .iter()
             .rev()
             .find_map(|clip| {
+                if !self.arrangement_clip_visible(clip.id()) {
+                    return None;
+                }
                 let preview = state.midi_preview.get(clip.id())?;
                 handle_hit(preview.frame_start, preview.frame_end, 4.0)
                     .map(|ordinary| (ordinary, false))
             })
             .or_else(|| {
                 track.clips().iter().rev().find_map(|clip| {
+                    if !self.arrangement_clip_visible(clip.id()) {
+                        return None;
+                    }
                     let end = clip.start().checked_add(clip.duration())?;
                     handle_hit(clip.start(), end, 3.0).map(|ordinary| {
                         (
@@ -1084,6 +1112,39 @@ impl EditorView {
                 })
             })
             .unwrap_or((false, false))
+    }
+
+    /// Paint one opaque marker at the true dragged endpoint, above the range's
+    /// translucent fill. Reuse the loop rail's checked musical-duration law.
+    fn time_selection_binary_marker(
+        &self,
+        selection: TimeSelection,
+        viewport: super::viewport::Viewport,
+    ) -> Option<Div> {
+        if selection.end_frame < viewport.start || selection.end_frame > viewport.end()? {
+            return None;
+        }
+        let region = hex_project::LoopRegion::new(
+            selection.anchor_frame.min(selection.end_frame),
+            selection.anchor_frame.max(selection.end_frame),
+            true,
+        )
+        .ok()?;
+        if !super::loop_rail::binary_duration(&self.state.as_ref()?.project, region) {
+            return None;
+        }
+        let marker = div()
+            .debug_selector(|| "time-selection-binary-length-marker".into())
+            .absolute()
+            .top(px(2.0))
+            .size(px(5.0))
+            .rounded_full()
+            .bg(rgb(theme::color(theme::PaletteRole::Background)));
+        Some(if selection.end_frame > selection.anchor_frame {
+            marker.right_0()
+        } else {
+            marker.left_0()
+        })
     }
 
     pub(super) fn time_selection_overlay(
@@ -1158,18 +1219,34 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
-                        .id(("time-selection-handle", track.value()))
-                        .debug_selector(|| format!("time-selection-handle-{}", track.value()))
                         .absolute()
-                        .top_0()
-                        .w_full()
-                        .h(relative(SELECTION_HANDLE_FRACTION))
-                        .cursor(CursorStyle::OpenHand)
-                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
+                        .inset_0()
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .opacity(theme::TIME_SELECTION_OPACITY)
+                        .child(
+                            div()
+                                .id(("time-selection-handle", track.value()))
+                                .debug_selector(|| {
+                                    format!("time-selection-handle-{}", track.value())
+                                })
+                                .absolute()
+                                .top_0()
+                                .w_full()
+                                .h(px(header_hit_height(self.track_height(track))))
+                                .cursor(CursorStyle::OpenHand)
+                                .hover(|style| {
+                                    style.bg(rgb(theme::color(theme::PaletteRole::Text)))
+                                }),
+                        ),
+                )
+                .children(
+                    if track_index == first_index && !self.time_selection_project_scope {
+                        self.time_selection_binary_marker(raw_selection, viewport)
+                    } else {
+                        None
+                    },
                 ),
         )
     }
@@ -1230,19 +1307,27 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
-                        .id("main-project-time-selection-handle")
-                        .debug_selector(|| "main-project-time-selection-handle".to_owned())
                         .absolute()
-                        .top_0()
-                        .w_full()
-                        .h(relative(SELECTION_HANDLE_FRACTION))
-                        .cursor(CursorStyle::OpenHand)
-                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
-                ),
+                        .inset_0()
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .opacity(theme::TIME_SELECTION_OPACITY)
+                        .child(
+                            div()
+                                .id("main-project-time-selection-handle")
+                                .debug_selector(|| "main-project-time-selection-handle".to_owned())
+                                .absolute()
+                                .top_0()
+                                .w_full()
+                                .h(relative(SELECTION_HANDLE_FRACTION))
+                                .cursor(CursorStyle::OpenHand)
+                                .hover(|style| {
+                                    style.bg(rgb(theme::color(theme::PaletteRole::Text)))
+                                }),
+                        ),
+                )
+                .children(self.time_selection_binary_marker(selection, viewport)),
         )
     }
 

@@ -69,6 +69,7 @@ pub enum PaletteRole {
 struct ThemeTokens {
     colors: hex_preferences::ThemePreferences,
     elements: [ElementColors; 10],
+    muted_clip_fills: [u32; 10],
     clip: u32,
     clip_fill: u32,
     clip_text: u32,
@@ -87,10 +88,12 @@ impl ThemeTokens {
         let background = colors.background.packed();
         let text = colors.text.packed();
         let primary = colors.primary.packed();
+        let elements = hex_project::ElementColor::ALL
+            .map(|identity| resolve_element_colors(identity, lighten(background, 5)));
         Self {
             colors,
-            elements: hex_project::ElementColor::ALL
-                .map(|identity| resolve_element_colors(identity, lighten(background, 5))),
+            muted_clip_fills: elements.map(|colors| muted_clip_fill(colors.accent)),
+            elements,
             clip: mix(background, text, 0.15),
             clip_fill: mix(primary, text, 0.15),
             clip_text: contrast_text(mix(primary, text, 0.15), text),
@@ -282,20 +285,32 @@ fn resolve_element_colors(identity: hex_project::ElementColor, surface: u32) -> 
         accent_text: contrast_text(accent, 0x000000),
     }
 }
-/// Shared audio/MIDI body, Console cell and title fill. Regular (the persisted
-/// `Muted` flavor) is a pale tint; Accent keeps the saturated track hue. Derive
-/// only clip fills so track strips, sections and browser marker palettes remain
-/// unchanged. Both flavors keep black content ink legible after selection.
+/// Darken the track hue by removing neutral light, increasing saturation without
+/// shifting its hue. Resolve once per theme; retain 4.5:1 contrast for the existing
+/// black waveform/note ink and Console foregrounds, including historical gray.
+fn muted_clip_fill(accent: u32) -> u32 {
+    (0..=40)
+        .rev()
+        .map(|amount| darken(accent, amount))
+        .find(|fill| contrast_ratio(*fill, 0x000000) >= 4.5)
+        .unwrap_or(accent)
+}
+
+/// Shared audio/MIDI body, Console cell, drag preview and title fill. The persisted
+/// `Muted` flavor is darker and more saturated; Accent keeps the track hue.
+/// Track strips, sections and browser marker palettes retain their own surfaces.
 pub fn clip_fill(
     color: hex_project::ElementColor,
     flavor: hex_project::ClipFlavor,
     selected: bool,
 ) -> u32 {
-    let colors = element_colors(color);
-    let base = match flavor {
-        hex_project::ClipFlavor::Muted => mix(colors.muted, 0xffffff, 0.72),
-        hex_project::ClipFlavor::Accent => colors.accent,
-    };
+    let base = ACTIVE_THEME.with(|theme| {
+        let theme = theme.get();
+        match flavor {
+            hex_project::ClipFlavor::Muted => theme.muted_clip_fills[color as usize],
+            hex_project::ClipFlavor::Accent => theme.elements[color as usize].accent,
+        }
+    });
     if selected { lighten(base, 22) } else { base }
 }
 
@@ -402,6 +417,32 @@ mod tests {
                     let regular = clip_fill(hue, hex_project::ClipFlavor::Muted, selected);
                     let accent = clip_fill(hue, hex_project::ClipFlavor::Accent, selected);
                     let separation = contrast_ratio(regular, accent);
+                    assert_eq!(
+                        accent,
+                        if selected {
+                            lighten(colors.accent, 22)
+                        } else {
+                            colors.accent
+                        }
+                    );
+                    let channels = |color: u32| [color >> 16 & 255, color >> 8 & 255, color & 255];
+                    let saturation = |color| {
+                        let c = channels(color);
+                        let max = *c.iter().max().unwrap() as f32;
+                        let min = *c.iter().min().unwrap() as f32;
+                        (max - min) / max
+                    };
+                    assert!(
+                        channels(regular)
+                            .into_iter()
+                            .zip(channels(accent))
+                            .all(|(muted, accent)| muted < accent),
+                        "muted clips must be darker for {hue:?}"
+                    );
+                    assert!(
+                        saturation(regular) > saturation(accent),
+                        "muted clips must be more saturated for {hue:?}"
+                    );
                     weakest = weakest.min(separation);
                     for (fill, cell_text) in
                         [(regular, colors.muted_text), (accent, colors.accent_text)]
@@ -421,10 +462,11 @@ mod tests {
                 }
             }
         }
-        // An explicit visible separation target, independent of a particular
-        // mixing recipe; selection must not wash away the flavor distinction.
+        // Both flavors retain black ink: the darkest red therefore has less
+        // luminance separation than the former pale tint. Selection must keep
+        // the dark, saturated flavor visibly distinct as well as readable.
         assert!(
-            weakest >= 1.6,
+            weakest >= 1.35,
             "weakest regular/accent separation: {weakest:.4}:1"
         );
     }

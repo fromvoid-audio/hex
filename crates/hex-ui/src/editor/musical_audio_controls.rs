@@ -15,6 +15,20 @@ struct Capture {
     revision: u64,
     generation: u64,
 }
+pub(super) fn warp_command(
+    view: &EditorView,
+    clip: ClipId,
+) -> Result<hex_project::Command, hex_project::Invalid> {
+    let state = view
+        .state
+        .as_ref()
+        .ok_or(hex_project::Invalid("project unavailable"))?;
+    if view.selected_clip_ids().len() > 1 {
+        actions::selection_command(&state.project, clip, Action::Warp)
+    } else {
+        command(&state.project, clip, Action::Warp)
+    }
+}
 /// Selected-clip stretch controls stay above the scrollable source fields.
 pub(super) fn warp_header(
     view: &mut EditorView,
@@ -38,16 +52,6 @@ pub(super) fn warp_header(
     let mode = domain
         .and_then(|domain| domain.warp.as_ref())
         .map_or(modes()[0], |warp| warp.mode);
-    controls = controls.child(
-        button(
-            capture,
-            if active { "warp · on" } else { "warp · off" },
-            Action::Warp,
-            view.edit_pending(),
-            cx,
-        )
-        .debug_selector(|| "audio-clip-warp-toggle".into()),
-    );
     controls = controls.child(sample_bpm::field(view, clip_id, cx));
     if active {
         if let WarpMode::Beats {

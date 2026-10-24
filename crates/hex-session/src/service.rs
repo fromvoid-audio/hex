@@ -349,18 +349,40 @@ impl GainLaneEdit {
         }
     }
 }
+/// Context-specific, bounded whole-track clipboard operation. Metadata stays on
+/// control; the service owns clipboard lifetime and existing audio admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackClipboardAction {
+    Copy(hex_project::TrackSelectionIds),
+    Cut(hex_project::TrackSelectionIds),
+    Duplicate {
+        tracks: hex_project::TrackSelectionIds,
+        without_clips: bool,
+    },
+    Paste {
+        before: Option<hex_project::TrackId>,
+    },
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
-// The approved fixed snapshot remains inline: 800 bytes per request, 32 slots
-// (25,600 payload bytes). Boxing would hide storage and add control allocations.
+// Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
-    /// Captured ordinary-track row move. Target identities and source revision
-    /// must still match before this becomes a canonical MoveTrackBefore edit.
-    ReorderTrack {
+    TrackClipboard {
         project_generation: u64,
         revision: u64,
-        track: hex_project::TrackId,
+        action: TrackClipboardAction,
+    },
+    /// Captured ordinary-track block move. Immutable membership contains at most
+    /// MAX_TRACKS IDs (2048 ID bytes); clones share that allocation. With the
+    /// 32-slot FIFO, queued reorders retain at most 65536 ID bytes; the active
+    /// gesture and worker each retain their own bounded payload separately.
+    /// Identities and source revision must match before MoveTracksBefore.
+    ReorderTracks {
+        project_generation: u64,
+        revision: u64,
+        tracks: hex_project::TrackSelectionIds,
         before: Option<hex_project::TrackId>,
     },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
@@ -618,7 +640,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
-                | Request::ReorderTrack { .. }
+                | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
@@ -1598,6 +1620,8 @@ fn run_worker(
         Clips(Arc<hex_project::ClipClipboard>),
     }
     let mut range_clipboard: Option<ArrangementClipboard> = None;
+    // Typed clipboard contexts are independent; both expire with the document.
+    let mut track_clipboard: Option<Arc<hex_project::TrackClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -1938,16 +1962,85 @@ fn run_worker(
         // and requests during a live draft cannot commit unrelated gesture history.
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
+        let mut cut_clipboard = None;
         let resolved_edit = match &request {
-            Request::ReorderTrack {
+            Request::TrackClipboard {
+                project_generation: generation,
+                revision: source_revision,
+                action,
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(Err("track clipboard canceled · project changed".into()))
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some(Err(
+                        "finish or cancel the active gesture before copying tracks".into(),
+                    ))
+                } else {
+                    match action {
+                        TrackClipboardAction::Copy(_) => None,
+                        TrackClipboardAction::Cut(tracks) => Some(
+                            session
+                                .project()
+                                .capture_tracks(tracks, false)
+                                .map(|captured| {
+                                    cut_clipboard = Some(Arc::new(captured));
+                                    Command::RemoveTracks(tracks.ids().to_vec())
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                        TrackClipboardAction::Paste { before } => Some(
+                            track_clipboard
+                                .as_ref()
+                                .map(|clipboard| Command::PasteTracks {
+                                    clipboard: Arc::clone(clipboard),
+                                    before: *before,
+                                })
+                                .ok_or_else(|| {
+                                    "track clipboard is empty · copy tracks first".into()
+                                }),
+                        ),
+                        TrackClipboardAction::Duplicate {
+                            tracks,
+                            without_clips,
+                        } => Some(
+                            session
+                                .project()
+                                .capture_tracks(tracks, *without_clips)
+                                .map(|clipboard| {
+                                    let after = session
+                                        .project()
+                                        .tracks()
+                                        .iter()
+                                        .rposition(|t| tracks.ids().contains(&t.id()));
+                                    let before = after
+                                        .and_then(|i| session.project().tracks().get(i + 1))
+                                        .map(|t| t.id());
+                                    Command::PasteTracks {
+                                        clipboard: Arc::new(clipboard),
+                                        before,
+                                    }
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                    }
+                }
+            }
+
+            Request::ReorderTracks {
                 project_generation: captured_generation,
                 revision: captured_revision,
-                track,
+                tracks,
                 before,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("track reorder canceled · project changed".to_owned())
-                } else if session.project().track(*track).is_none()
+                } else if tracks
+                    .ids()
+                    .iter()
+                    .any(|id| session.project().track(*id).is_none())
                     || before.is_some_and(|anchor| session.project().track(anchor).is_none())
                 {
                     Err("track reorder target no longer exists".into())
@@ -1957,8 +2050,8 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before reordering tracks".into())
                 } else {
-                    Ok(Command::MoveTrackBefore {
-                        track: *track,
+                    Ok(Command::MoveTracksBefore {
+                        tracks: tracks.clone(),
                         before: *before,
                     })
                 },
@@ -2333,7 +2426,13 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
-                    | Request::ReorderTrack { .. }
+                    | Request::TrackClipboard {
+                        action: TrackClipboardAction::Cut(_)
+                            | TrackClipboardAction::Duplicate { .. }
+                            | TrackClipboardAction::Paste { .. },
+                        ..
+                    }
+                    | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
@@ -2350,7 +2449,8 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
-                    | Request::ReorderTrack { .. }
+                    | Request::TrackClipboard { .. }
+                    | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
@@ -2759,7 +2859,7 @@ fn run_worker(
                         replacement_revision = Some(prepared);
                     }
                 }
-                Request::ReorderTrack { .. } => {
+                Request::ReorderTracks { .. } => {
                     error = Some("track reorder target was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
@@ -3779,6 +3879,19 @@ fn run_worker(
                         }
                         Err(reason) => error = Some(reason),
                     }
+                }
+                Request::TrackClipboard {
+                    action: TrackClipboardAction::Copy(tracks),
+                    ..
+                } => match session.project().capture_tracks(&tracks, false) {
+                    Ok(captured) => {
+                        track_clipboard = Some(Arc::new(captured));
+                        status = Some("tracks copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::TrackClipboard { .. } => {
+                    error = Some("track clipboard request was not resolved".into())
                 }
                 Request::CopyClips(ids) => match session.project().capture_clips(&ids) {
                     Ok(captured) => {
@@ -5401,7 +5514,15 @@ fn run_worker(
             }
         }
 
+        // Only successful canonical removal installs a cut. Failed preparation,
+        // queue/publication admission or stale input retains the previous copy.
+        if created.is_some()
+            && let Some(captured) = cut_clipboard
+        {
+            track_clipboard = Some(captured);
+        }
         if project_replaced {
+            track_clipboard = None;
             if let Some(input) = audition_activation.take() {
                 input.cancel();
             }
@@ -6366,6 +6487,10 @@ mod clip_move_tests;
 mod track_reorder_tests;
 
 #[cfg(test)]
+#[path = "service/track_clipboard_tests.rs"]
+mod track_clipboard_tests;
+
+#[cfg(test)]
 mod service_tests {
     use super::*;
     use crate::arrangement_seek::ArrangementSeekMode;
@@ -7094,15 +7219,28 @@ mod service_tests {
     fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
         let directory = TestDir::new();
         let path = directory.0.join("tone.WAV");
-        fs::write(&path, wav_mono(&[4_000; 96])).expect("write wav fixture");
+        for overrun in [0, 4] {
+            let mut bytes = wav_mono(&[4_000; 96]);
+            let size = u32::try_from(bytes.len() - 8).unwrap() + overrun;
+            bytes[4..8].copy_from_slice(&size.to_le_bytes());
+            fs::write(&path, &bytes).expect("write wav fixture");
 
-        let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
-
-        assert_eq!(preview.playback_frames, 48);
-        assert_eq!(preview.sample_rate, 24_000);
-        assert_eq!(preview.waveform.source_frames, 48);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert!(!preview.waveform.bins.is_empty());
+            let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
+            assert_eq!(preview.playback_frames, 48);
+            assert_eq!(preview.sample_rate, 24_000);
+            assert_eq!(preview.waveform.source_frames, 48);
+            assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+            assert!(!preview.waveform.bins.is_empty());
+            let pcm = prepare_sample_preview(&path, 24_000).expect("prepare playback");
+            assert_eq!(pcm.sample_rate(), 24_000);
+            assert_eq!(pcm.frames().len(), 48);
+            assert!(
+                pcm.frames()
+                    .iter()
+                    .all(|frame| frame[0] > 0.0 && frame[0] == frame[1])
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]

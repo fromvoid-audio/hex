@@ -1,5 +1,6 @@
 //! Disposable owners for widget events. All edits stop at this view's local values.
 use super::catalog::{Demo, Item};
+use super::workspace::{self, Workspace};
 use crate::theme;
 use gpui::{
     Context, Div, Entity, Focusable, Render, Subscription, Window, div, prelude::*, px, rgb,
@@ -8,13 +9,16 @@ use hex_widgets::*;
 
 pub(super) struct Prepared {
     item: Item,
+    prefix: String,
     numbers: Vec<NumericControlConfig>,
     toggle: ToggleConfig,
     selector: SelectorConfig,
     picker: ColorPickerConfig,
+    workspace: Option<workspace::Prepared>,
 }
 pub(super) struct Sample {
     pub item: Item,
+    prefix: String,
     numbers: Vec<Entity<NumericControl>>,
     toggle: Entity<Toggle>,
     selector: Entity<Selector>,
@@ -32,18 +36,23 @@ pub(super) struct Sample {
     pub status: String,
     pub narrow: bool,
     actions: u32,
+    workspace: Option<Entity<Workspace>>,
 }
 impl Sample {
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub fn prepare(item: Item) -> Result<Prepared, String> {
+        Self::prepare_scoped(item, "")
+    }
+    pub fn prepare_scoped(item: Item, prefix: &str) -> Result<Prepared, String> {
+        let id = |name: &str| format!("{prefix}{name}");
         let style = theme::control_style();
-        let (kind, appearance, layout, scale, axis) = match item.demo {
-            Demo::Numeric(k, a, l, s, axis) => (k, a, l, s, axis),
+        let (kind, appearance, layout, scale) = match item.demo {
+            Demo::Numeric(k, a, l, s) => (k, a, l, s),
             _ => (
                 NumericControlKind::HorizontalSlider,
                 NumericControlAppearance::CompactSlider,
                 DialLayout::ReadoutGap,
                 NumericScale::Linear,
-                NumericDragAxis::Horizontal,
             ),
         };
         let (min, max, default, unit) = match scale {
@@ -57,7 +66,7 @@ impl Sample {
         let mut numbers = Vec::new();
         for (i, initial) in [0.0, 0.5, 1.0].into_iter().enumerate() {
             let config = NumericControlConfig::new(
-                format!("sandbox-number-{i}"),
+                id(&format!("sandbox-number-{i}")),
                 theme::text(["minimum", "middle", "maximum"][i]),
                 kind,
                 spec.clone(),
@@ -66,12 +75,11 @@ impl Sample {
             )
             .map_err(|e| e.to_string())?
             .with_appearance(appearance)
-            .with_dial_layout(layout)
-            .with_drag_axis(axis);
+            .with_dial_layout(layout);
             numbers.push(config);
         }
         let toggle_config =
-            ToggleConfig::new("sandbox-toggle", theme::text("enabled"), true, style)?
+            ToggleConfig::new(id("sandbox-toggle"), theme::text("enabled"), true, style)?
                 .with_appearance(match item.demo {
                     Demo::Toggle(a) => a,
                     Demo::Frame("device header" | "device frame") => {
@@ -79,34 +87,50 @@ impl Sample {
                     }
                     _ => DiscreteControlAppearance::Standard,
                 });
-        let selector_config = SelectorConfig::new(
-            "sandbox-selector",
-            ["sine", "triangle", "square"].map(theme::text),
-            0,
+        let choices = if matches!(item.demo, Demo::Curve) {
+            vec![theme::text("horizontal grid"), theme::text("centered grid")]
+        } else {
+            ["sine", "triangle", "square"].map(theme::text).to_vec()
+        };
+        let selector_config = SelectorConfig::new(id("sandbox-selector"), choices, 0, style)?
+            .with_appearance(match item.demo {
+                Demo::Selector(a) => a,
+                _ => DiscreteControlAppearance::Standard,
+            })
+            .with_accessibility_name(theme::text(if matches!(item.demo, Demo::Curve) {
+                "plot grid"
+            } else {
+                "wave shape"
+            }));
+        let picker = ColorPickerConfig::new(
+            id("sandbox-color"),
+            RgbColor::new(75, 150, 210),
+            210.0,
             style,
-        )?
-        .with_appearance(match item.demo {
-            Demo::Selector(a) => a,
-            _ => DiscreteControlAppearance::Standard,
-        })
-        .with_accessibility_name(theme::text("wave shape"));
-        let picker =
-            ColorPickerConfig::new("sandbox-color", RgbColor::new(75, 150, 210), 210.0, style)?;
+        )?;
         Ok(Prepared {
             item,
+            prefix: prefix.to_owned(),
             numbers,
             toggle: toggle_config,
             selector: selector_config,
             picker,
+            workspace: if let Demo::Workspace(kind) = item.demo {
+                Some(Workspace::prepare_scoped(kind, prefix)?)
+            } else {
+                None
+            },
         })
     }
     pub fn new(prepared: Prepared, cx: &mut Context<Self>) -> Self {
         let Prepared {
             item,
+            prefix,
             numbers: configs,
             toggle: toggle_config,
             selector: selector_config,
             picker: picker_config,
+            workspace,
         } = prepared;
         let style = theme::control_style();
         let mut status = "local fixture · ready".to_string();
@@ -138,7 +162,7 @@ impl Sample {
         }));
         let graph_model = ResponseGraphModel {
             primary: vec![[0.0, 0.3], [0.5, 0.7], [1.0, 0.4]],
-            secondary: vec![[0.0, 0.6], [0.5, 0.4], [1.0, 0.6]],
+            secondary: vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.5]],
             analyzer: Some(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 0.1]]),
             input_analyzer: Some(vec![[0.0, 0.1], [0.5, 0.4], [1.0, 0.0]]),
             nodes: vec![ResponseGraphNode {
@@ -148,16 +172,17 @@ impl Sample {
                 selected: true,
             }],
         };
-        let graph = cx.new(|cx| ResponseGraph::new(cx, "sandbox-graph", style));
+        let graph = cx.new(|cx| ResponseGraph::new(cx, format!("{prefix}sandbox-graph"), style));
         if let Err(e) = graph.update(cx, |g, cx| {
+            g.set_editable(true, cx);
             g.set_creation_enabled(true);
             g.set_backspace_removal(true);
             g.set_tab_navigation(true, cx);
             g.set_axes(
                 Some(ResponseGraphAxes {
-                    horizontal: vec![(0.0, theme::text("low")), (1.0, theme::text("high"))],
+                    horizontal: vec![(0.0, theme::text("0")), (1.0, theme::text("1"))],
                     vertical: vec![(0.0, theme::text("0")), (1.0, theme::text("1"))],
-                    right: vec![(0.5, theme::text("mid"))],
+                    right: vec![],
                 }),
                 cx,
             )?;
@@ -169,7 +194,7 @@ impl Sample {
             s.graph_event(e, cx)
         }));
         let values = std::array::from_fn(|i| 0.25 + (i % 8) as f32 * 0.08);
-        let bars = cx.new(|cx| BarEditor::new(cx, "sandbox-bars", style));
+        let bars = cx.new(|cx| BarEditor::new(cx, format!("{prefix}sandbox-bars"), style));
         if let Err(e) = bars.update(cx, |b, cx| b.set_values(values, 32, cx)) {
             status = e.into();
         }
@@ -183,6 +208,7 @@ impl Sample {
         }));
         let mut s = Self {
             item,
+            prefix,
             numbers,
             toggle,
             selector,
@@ -200,14 +226,18 @@ impl Sample {
             status,
             narrow: false,
             actions: 0,
+            workspace: workspace.map(|p| cx.new(|cx| Workspace::new(p, cx))),
         };
         s.refresh_meters(cx);
         s
     }
+    fn id(&self, name: &str) -> String {
+        format!("{}{name}", self.prefix)
+    }
     fn refresh_meters(&mut self, cx: &mut Context<Self>) {
         if !matches!(
             self.item.demo,
-            Demo::Numeric(_, NumericControlAppearance::DeviceMeters, _, _, _)
+            Demo::Numeric(_, NumericControlAppearance::DeviceMeters, _, _)
         ) {
             return;
         }
@@ -266,6 +296,7 @@ impl Sample {
         cx.notify();
     }
     fn graph_event(&mut self, e: &ResponseGraphEvent, cx: &mut Context<Self>) {
+        let mut node_id = e.node_id;
         match e.phase {
             ResponseGraphPhase::Begin => self.graph_before = Some(self.graph_model.clone()),
             ResponseGraphPhase::Create if self.graph_model.nodes.len() < 16 => {
@@ -274,6 +305,7 @@ impl Sample {
                 else {
                     return;
                 };
+                node_id = id;
                 for n in &mut self.graph_model.nodes {
                     n.selected = false;
                 }
@@ -310,6 +342,23 @@ impl Sample {
             }
             _ => {}
         }
+        // This fixture is a piecewise-linear editor; production response owners
+        // still supply their own DSP response independently of control nodes.
+        self.graph_model.primary = std::iter::once([0.0, 0.3])
+            .chain(self.graph_model.nodes.iter().map(|node| node.position))
+            .chain(std::iter::once([1.0, 0.4]))
+            .collect();
+        self.graph_model
+            .primary
+            .sort_by(|a, b| a[0].total_cmp(&b[0]));
+        // ResponseGraph requires aligned primary/reference sample counts.
+        // Keep a static midpoint reference at the edited x positions.
+        self.graph_model.secondary = self
+            .graph_model
+            .primary
+            .iter()
+            .map(|[x, _]| [*x, 0.5])
+            .collect();
         if let Err(e) = self.graph.update(cx, |g, cx| {
             g.set_model(self.graph_model.clone(), theme::control_style(), cx)
         }) {
@@ -318,11 +367,14 @@ impl Sample {
         }
         self.status = format!(
             "node {} · {:?} · {:.3}, {:.3}",
-            e.node_id, e.phase, e.position[0], e.position[1]
+            node_id, e.phase, e.position[0], e.position[1]
         );
         cx.notify();
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if let Some(w) = &self.workspace {
+            w.update(cx, |w, cx| w.cancel(cx));
+        }
         for n in &self.numbers {
             n.update(cx, |n, cx| n.cancel(cx));
         }
@@ -351,6 +403,9 @@ impl Sample {
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.cancel(cx);
         self.enabled = enabled;
+        if let Some(w) = &self.workspace {
+            w.update(cx, |w, cx| w.set_enabled(enabled, cx));
+        }
         for n in &self.numbers {
             n.update(cx, |n, cx| n.set_enabled(enabled, cx));
         }
@@ -362,6 +417,9 @@ impl Sample {
     pub fn restyle(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         self.cancel(cx);
         let style = theme::control_style();
+        if let Some(w) = &self.workspace {
+            w.update(cx, |w, cx| w.restyle(cx))?;
+        }
         if self.style == style {
             return Ok(());
         }
@@ -379,9 +437,9 @@ impl Sample {
         // entities, preserving authored local values and reconnecting subscriptions.
         let color = self.picker.read(cx).color();
         let hue = self.picker.read(cx).hsv().hue;
-        let config = ColorPickerConfig::new("sandbox-color", color, hue, style)?;
+        let config = ColorPickerConfig::new(self.id("sandbox-color"), color, hue, style)?;
         self.picker = cx.new(|cx| ColorPicker::from_config(cx, config));
-        self.bars = cx.new(|cx| BarEditor::new(cx, "sandbox-bars", style));
+        self.bars = cx.new(|cx| BarEditor::new(cx, self.id("sandbox-bars"), style));
         self.bars
             .update(cx, |b, cx| b.set_values(self.values, 32, cx))?;
         self.paint_subscriptions.clear();
@@ -402,6 +460,11 @@ impl Sample {
     }
     pub fn focus_first(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.item.demo {
+            Demo::Workspace(_) => {
+                if let Some(w) = &self.workspace {
+                    w.update(cx, |w, cx| w.focus_first(window, cx));
+                }
+            }
             Demo::Toggle(_) | Demo::Chrome(_) | Demo::Frame("device header" | "device frame") => {
                 self.toggle.focus_handle(cx).focus(window)
             }
@@ -446,7 +509,10 @@ impl Sample {
         div().child(
             div()
                 .id("chrome-hit")
-                .debug_selector(|| "chrome-hit".into())
+                .debug_selector({
+                    let id = self.id("chrome-hit");
+                    move || id.clone()
+                })
                 .track_focus(&self.toggle.focus_handle(cx))
                 .flex()
                 .items_center()
@@ -475,7 +541,10 @@ impl Sample {
         div().child(
             device_action(theme::text("+"), theme::action_style())
                 .id("header-action")
-                .debug_selector(|| "header-action".into())
+                .debug_selector({
+                    let id = self.id("header-action");
+                    move || id.clone()
+                })
                 .on_click(cx.listener(|s, _, _, cx| {
                     if s.enabled {
                         s.actions = s.actions.saturating_add(1);
@@ -488,8 +557,8 @@ impl Sample {
     fn content(&self, cx: &mut Context<Self>) -> Div {
         let s = theme::control_style();
         match self.item.demo {
-            Demo::Numeric(kind, appearance, _, _, _) => device_layout(DeviceLayout::Wrapped)
-                .children(self.numbers.iter().map(|n| {
+            Demo::Numeric(kind, appearance, _, _) => {
+                device_layout(DeviceLayout::Wrapped).children(self.numbers.iter().map(|n| {
                     div()
                         .w(px(
                             if appearance == NumericControlAppearance::WideMicroDial {
@@ -505,13 +574,14 @@ impl Sample {
                         }))
                         .flex_shrink_0()
                         .child(n.clone())
-                })),
+                }))
+            }
             Demo::Toggle(_) => div().w(px(180.0)).h(px(28.0)).child(self.toggle.clone()),
             Demo::Selector(_) => div().w(px(220.0)).h(px(28.0)).child(self.selector.clone()),
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
             Demo::Graph => div().w_full().h(px(220.0)).child(self.graph.clone()),
             Demo::Color => div().w(px(240.0)).h(px(220.0)).child(self.picker.clone()),
-            Demo::Curve | Demo::Transfer | Demo::Spectrum => {
+            Demo::Curve | Demo::Spectrum => {
                 let amount = self.numbers[1].read(cx).value() as f32 / 100.0;
                 let points = [
                     [0.0, 0.0],
@@ -521,8 +591,15 @@ impl Sample {
                     [1.0, 1.0],
                 ];
                 let plot = match self.item.demo {
-                    Demo::Curve => curve_plot(points, s),
-                    Demo::Transfer => transfer_plot(points, s),
+                    Demo::Curve => curve_plot(
+                        points,
+                        s,
+                        if self.selector.read(cx).selected() == 0 {
+                            CurvePlotGrid::Horizontal
+                        } else {
+                            CurvePlotGrid::Centered
+                        },
+                    ),
                     _ => SpectrumPlotLayers::new(vec![
                         SpectrumPlotLayer {
                             points: points.to_vec(),
@@ -539,6 +616,9 @@ impl Sample {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
+                    .when(matches!(self.item.demo, Demo::Curve), |column| {
+                        column.child(self.selector.clone())
+                    })
                     .child(div().h(px(180.0)).children(plot))
                     .child(self.controls())
             }
@@ -584,6 +664,7 @@ impl Sample {
                 ),
             },
             Demo::Compositions => div(),
+            Demo::Workspace(_) => div().w_full().children(self.workspace.clone()),
         }
     }
 }
@@ -591,10 +672,10 @@ impl Render for Sample {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().flex().flex_col().gap(px(12.0)).w_full()
             .child(theme::text(self.item.name))
-            .child(div().id("widget-preview").debug_selector(||"widget-preview".into()).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
+            .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus"))
-            .child(theme::text(match self.item.demo {Demo::Graph=>"drag nodes · click blank to add (max 16) · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Transfer|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color|Demo::Bars){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
@@ -603,6 +684,83 @@ impl Render for Sample {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn inline_value_catalog_entry_has_no_dial(cx: &mut TestAppContext) {
+        let item = super::super::catalog::inventory()
+            .into_iter()
+            .find(|i| i.name == "inline value")
+            .unwrap();
+        let prepared = Sample::prepare(item).unwrap();
+        let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("sandbox-number-0-value").is_some());
+        assert!(
+            visual.debug_bounds("sandbox-number-0-knob").is_none(),
+            "inline value must not silently render the standard knob fallback"
+        );
+    }
+    #[gpui::test]
+    fn graph_fixture_line_follows_pointer_edits_and_cancel(cx: &mut TestAppContext) {
+        cx.update(hex_widgets::bind_response_graph_keys);
+        let item = Item {
+            name: "response graph",
+            category: "graphics",
+            demo: Demo::Graph,
+        };
+        let prepared = Sample::prepare(item).expect("valid fixture");
+        let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+        handle
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        let view = handle.root(cx).expect("sample");
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let plot = view.read_with(cx, |s, cx| s.graph.read(cx).plot_bounds().unwrap());
+        let at = |x, y| {
+            point(
+                plot.left() + plot.size.width * x,
+                plot.bottom() - plot.size.height * y,
+            )
+        };
+        let before = view.read_with(cx, |s, _| s.graph_model.primary.clone());
+        visual.simulate_mouse_down(at(0.5, 0.7), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.65, 0.8), Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_ne!(s.graph_model.primary, before);
+            assert!(
+                s.graph_model
+                    .primary
+                    .contains(&s.graph_model.nodes[0].position)
+            );
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| assert_eq!(s.graph_model.primary, before));
+        visual.simulate_mouse_up(at(0.65, 0.8), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(at(0.3, 0.2), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at(0.3, 0.2), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_eq!(s.graph_model.nodes.len(), 2);
+            assert!(
+                s.graph_model
+                    .primary
+                    .contains(&s.graph_model.nodes[1].position)
+            );
+            assert!(s.status.starts_with("node 2"), "{}", s.status);
+        });
+        visual.simulate_click(at(0.3, 0.2), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("backspace");
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_eq!(s.graph_model.nodes.len(), 1, "{}", s.status);
+            assert_eq!(s.graph_model.primary, before);
+        });
+    }
+
     #[gpui::test]
     fn theme_rebuild_cancels_live_bar_stroke_and_preserves_committed_color(
         cx: &mut TestAppContext,

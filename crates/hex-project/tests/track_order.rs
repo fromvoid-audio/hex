@@ -278,3 +278,158 @@ fn stale_ids_and_failed_preparation_preserve_source_allocator_and_history() {
     assert!(editor.redo());
     assert_eq!(editor.project().tracks().last().unwrap().id(), stale);
 }
+
+#[test]
+fn selected_block_uses_canonical_member_order_and_preserves_complete_state_and_history() {
+    let (original, [a, b, c]) = fixture();
+    let mut setup = Editor::new(original, 16).unwrap();
+    let Created::Track(d) = setup
+        .execute(Command::AddTrack {
+            name: "fourth".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let original = setup.project().clone();
+    for (members, before, order) in [
+        (vec![c, a], None, vec![b, d, a, c]),
+        (vec![d, b], Some(a), vec![b, d, a, c]),
+        (vec![c, b], Some(a), vec![b, c, a, d]),
+        (vec![d, b], Some(c), vec![a, b, d, c]),
+    ] {
+        let mut editor = Editor::new(original.clone(), 16).unwrap();
+        let mut expected = original.snapshot();
+        expected
+            .tracks
+            .sort_by_key(|row| order.iter().position(|id| id.value() == row.id).unwrap());
+        editor
+            .execute_prepared(
+                Command::MoveTracksBefore {
+                    tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
+                    before,
+                },
+                |candidate| {
+                    assert_eq!(candidate.snapshot(), expected);
+                    Ok::<_, Invalid>(())
+                },
+            )
+            .unwrap();
+        assert_eq!(editor.project().snapshot(), expected);
+        for track in original.tracks() {
+            let moved = editor.project().track(track.id()).unwrap();
+            assert_eq!(moved, track);
+            for (a, b) in moved.clips().iter().zip(track.clips()) {
+                assert!(std::sync::Arc::ptr_eq(
+                    &a.audio_edit().unwrap().domain,
+                    &b.audio_edit().unwrap().domain
+                ));
+            }
+            for (a, b) in moved.midi_clips().iter().zip(track.midi_clips()) {
+                assert_eq!(a.source_identity(), b.source_identity());
+            }
+        }
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &original);
+        assert!(!editor.can_undo());
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), expected);
+    }
+}
+
+#[test]
+fn selected_targets_contiguous_boundaries_and_refused_preparation_preserve_redo() {
+    let (original, [a, b, c]) = fixture();
+    let mut editor = Editor::new(original.clone(), 16).unwrap();
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(editor.undo());
+    for (members, before) in [
+        (vec![a, c], Some(a)),
+        (vec![a, c], Some(c)),
+        (vec![a, b], Some(c)),
+        (vec![c, a, b], None),
+    ] {
+        editor
+            .execute(Command::MoveTracksBefore {
+                tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
+                before,
+            })
+            .unwrap();
+        assert_eq!(editor.project(), &original);
+        assert!(!editor.can_undo());
+        assert!(editor.can_redo());
+    }
+    let mut prepared = false;
+    let error = editor
+        .execute_prepared(
+            Command::MoveTracksBefore {
+                tracks: hex_project::TrackSelectionIds::new(&[c, a]).unwrap(),
+                before: Some(b),
+            },
+            |candidate| {
+                prepared = true;
+                assert_eq!(
+                    candidate
+                        .tracks()
+                        .iter()
+                        .map(|t| t.id())
+                        .collect::<Vec<_>>(),
+                    [a, c, b]
+                );
+                Err::<(), _>(Invalid("injected preparation failure"))
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.0, "injected preparation failure");
+    assert!(prepared);
+    assert_eq!(editor.project(), &original);
+    assert!(editor.can_redo());
+    editor.execute(Command::RemoveTrack(c)).unwrap();
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(editor.undo());
+    let stable = editor.project().clone();
+    for (members, before) in [(vec![a, c], None), (vec![a, b], Some(c))] {
+        let mut prepared = false;
+        assert!(
+            editor
+                .execute_prepared(
+                    Command::MoveTracksBefore {
+                        tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
+                        before,
+                    },
+                    |_| {
+                        prepared = true;
+                        Ok::<_, Invalid>(())
+                    }
+                )
+                .is_err()
+        );
+        assert!(!prepared);
+        assert_eq!(editor.project(), &stable);
+        assert!(editor.can_redo());
+    }
+}
+
+#[test]
+fn captured_track_membership_is_nonempty_unique_and_bounded_before_queueing() {
+    // Obtain unique typed identities without building a large musical fixture.
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..=hex_project::MAX_TRACKS {
+        let Created::Track(id) = editor
+            .execute(Command::AddTrack {
+                name: "identity".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        ids.push(id);
+        editor.execute(Command::RemoveTrack(id)).unwrap();
+    }
+    assert!(hex_project::TrackSelectionIds::new(&[]).is_err());
+    assert!(hex_project::TrackSelectionIds::new(&[ids[0], ids[0]]).is_err());
+    let maximum = hex_project::TrackSelectionIds::new(&ids[..hex_project::MAX_TRACKS]).unwrap();
+    assert_eq!(maximum.ids(), &ids[..hex_project::MAX_TRACKS]);
+    assert!(hex_project::TrackSelectionIds::new(&ids).is_err());
+}

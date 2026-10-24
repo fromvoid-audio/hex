@@ -29,6 +29,7 @@ mod audio_events;
 mod project_tempo;
 mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+pub use track_order::TrackSelectionIds;
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
@@ -47,6 +48,8 @@ mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
+mod track_clipboard;
+pub use track_clipboard::TrackClipboard;
 mod clip_clipboard;
 mod clip_copy;
 mod clip_duplicate;
@@ -740,7 +743,8 @@ impl Project {
     pub fn master_gain(&self) -> f32 {
         self.master_gain
     }
-    /// Canonical piecewise-constant tempo map. Audio clips remain frame-anchored.
+    /// Canonical piecewise-constant tempo map. Global tempo edits preserve
+    /// musical onsets; each audio clip retains its own source-processing clock.
     pub fn tempo_map(&self) -> &TempoMap {
         &self.tempo_map
     }

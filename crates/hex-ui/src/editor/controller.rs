@@ -993,7 +993,9 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1017,10 +1019,12 @@ impl EditorView {
                 let resize_request = self.pending_trim_matches(&request);
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
+                let clip_detail_request = self.audio_clip_controls.matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
                 let duplicate_request = self.pending_duplicate_matches(&request);
+                let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
                 let eq_creation_request = self.pending_eq_creation_matches(&request);
@@ -1041,6 +1045,10 @@ impl EditorView {
                         if group_copy_request {
                             self.group_copy_submitted();
                         }
+                        if clip_detail_request {
+                            self.audio_clip_controls
+                                .submitted(self.worker_requests_pending);
+                        }
                         if clip_move_request {
                             self.clip_move_submitted();
                         }
@@ -1049,6 +1057,9 @@ impl EditorView {
                         }
                         if track_reorder_request {
                             self.track_reorder_submitted();
+                        }
+                        if track_clipboard_request {
+                            self.track_clipboard_submitted();
                         }
                         if duplicate_request {
                             self.duplicate_submitted();
@@ -1089,6 +1100,9 @@ impl EditorView {
                         }
                         if track_reorder_request {
                             self.retire_pending_track_reorder();
+                        }
+                        if track_clipboard_request {
+                            self.pending_track_clipboard = None;
                         }
                         if duplicate_request {
                             self.duplicate_intent.reject();
@@ -1154,6 +1168,9 @@ impl EditorView {
                         if track_reorder_request {
                             self.retire_pending_track_reorder();
                         }
+                        if track_clipboard_request {
+                            self.pending_track_clipboard = None;
+                        }
                         if duplicate_request {
                             self.duplicate_intent.reject();
                         }
@@ -1173,7 +1190,9 @@ impl EditorView {
         }
         visible_change |= self.pump_device_gesture();
         visible_change |= self.retire_abandoned_duplicate();
+        visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
@@ -1907,6 +1926,12 @@ impl EditorView {
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
+        if self
+            .audio_clip_controls
+            .observe(self.project_generation, &event)
+        {
+            self.retire_sample_bpm_control();
+        }
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -1919,6 +1944,7 @@ impl EditorView {
         let midi_step_complete = self.take_completed_midi_step(&event);
         let created_note_selection = self.take_created_note_selection(&event);
         let duplicate_completion = self.take_duplicate_completion(&mut event);
+        let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -2408,6 +2434,9 @@ impl EditorView {
                 generation: self.project_generation,
                 revision,
             });
+        if let Some(completion) = track_clipboard_completion {
+            self.complete_track_clipboard(completion);
+        }
         if let Some(completion) = duplicate_completion {
             self.complete_clip_duplicate(completion);
         } else if let Some(hex_project::Created::Scene(scene)) = event.created {
@@ -2973,7 +3002,13 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
-                | Request::ReorderTrack { .. }
+                | Request::TrackClipboard {
+                    action: hex_session::service::TrackClipboardAction::Cut(_)
+                        | hex_session::service::TrackClipboardAction::Duplicate { .. }
+                        | hex_session::service::TrackClipboardAction::Paste { .. },
+                    ..
+                }
+                | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
@@ -3036,10 +3071,12 @@ impl EditorView {
         let resize_request = self.pending_trim_matches(&request);
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
+        let clip_detail_request = self.audio_clip_controls.matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
         let duplicate_request = self.pending_duplicate_matches(&request);
+        let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
         let eq_creation_request = self.pending_eq_creation_matches(&request);
@@ -3055,6 +3092,10 @@ impl EditorView {
                 if group_copy_request {
                     self.group_copy_submitted();
                 }
+                if clip_detail_request {
+                    self.audio_clip_controls
+                        .submitted(self.worker_requests_pending);
+                }
                 if clip_move_request {
                     self.clip_move_submitted();
                 }
@@ -3063,6 +3104,9 @@ impl EditorView {
                 }
                 if track_reorder_request {
                     self.track_reorder_submitted();
+                }
+                if track_clipboard_request {
+                    self.track_clipboard_submitted();
                 }
                 if duplicate_request {
                     self.duplicate_submitted();

@@ -12,6 +12,7 @@ mod arrangement_audio_panel;
 mod arrangement_device_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_device_drop_ui_test;
+mod arrangement_focus;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
 mod arrangement_sections;
@@ -152,6 +153,11 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_clipboard;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_clipboard_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_compact_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_creation_ui_tests;
 mod track_gain;
@@ -410,7 +416,6 @@ fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     device_panel::bind_keyboard_keys(cx);
     clip_name::bind_keys(cx);
-    tuning::library::bind_keys(cx);
     track_name::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -436,62 +441,6 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser_search")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser_search")),
-        gpui::KeyBinding::new(
-            "backspace",
-            browser_input::BrowserBackspace,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "delete",
-            browser_input::BrowserDelete,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "left",
-            browser_input::BrowserLeft,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "right",
-            browser_input::BrowserRight,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "shift-left",
-            browser_input::BrowserSelectLeft,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "shift-right",
-            browser_input::BrowserSelectRight,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "cmd-a",
-            browser_input::BrowserSelectAll,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "home",
-            browser_input::BrowserHome,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new("end", browser_input::BrowserEnd, Some("hex_browser_search")),
-        gpui::KeyBinding::new(
-            "cmd-v",
-            browser_input::BrowserPaste,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "cmd-c",
-            browser_input::BrowserCopy,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "cmd-x",
-            browser_input::BrowserCut,
-            Some("hex_browser_search"),
-        ),
         KeyBinding::new("cmd-shift-t", AddMidiTrack, Some("hex_editor")),
         KeyBinding::new("cmd-shift-m", AddMidiClip, Some("hex_editor")),
         KeyBinding::new("cmd-o", OpenProject, Some("hex_editor")),
@@ -528,6 +477,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new(
             "+",
@@ -555,6 +505,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
+    hex_widgets::bind_text_input_keys(cx);
 }
 
 fn escape_binding() -> KeyBinding {
@@ -677,6 +628,7 @@ pub(super) struct EditorView {
     selected_track: Option<TrackId>,
     track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
+    audio_clip_controls: arrangement_audio_panel::controls::Controls,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
     track_gain_controls: track_gain::Controls,
@@ -770,6 +722,10 @@ pub(super) struct EditorView {
     pending_open_mode: Option<hex_session::DocumentAudioMode>,
     requested_audio_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
+    pending_track_clipboard: Option<track_clipboard::Pending>,
+    // Input context only: a committed cut can remove its focused header.
+    // The next real selection intent or document generation invalidates it.
+    track_clipboard_context: Option<(u64, u64)>,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
     pending_clip_move: Option<pending_clip_move::Pending>,
@@ -799,6 +755,7 @@ pub(super) struct EditorView {
     _scrub_focus_lifecycle: gpui::Subscription,
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
+    arrangement_focus: arrangement_focus::State,
     track_reorder: track_reorder::TrackReorder,
     #[cfg(all(test, feature = "ui-test-support"))]
     track_row_builds: usize,
@@ -1320,6 +1277,7 @@ impl EditorView {
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
             gain_lane: gain_lane::GainLane::default(),
+            audio_clip_controls: Default::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
             track_gain_controls: track_gain::Controls::default(),
@@ -1410,6 +1368,8 @@ impl EditorView {
             pending_open_mode: None,
             requested_audio_mode: None,
             duplicate_intent: DuplicateIntent::default(),
+            pending_track_clipboard: None,
+            track_clipboard_context: None,
             pending_scene_duplicate: None,
             pending_group_copy: None,
             pending_clip_move: None,
@@ -1439,6 +1399,7 @@ impl EditorView {
             _scrub_focus_lifecycle: scrub_focus_blur,
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
+            arrangement_focus: arrangement_focus::State::default(),
             track_reorder: track_reorder::TrackReorder::default(),
             #[cfg(all(test, feature = "ui-test-support"))]
             track_row_builds: 0,
@@ -1661,10 +1622,13 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let choice = self
-            .state
-            .as_ref()
-            .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward));
+        let choice = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+            self.focused_neighbor_track(forward)
+        } else {
+            self.state
+                .as_ref()
+                .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward))
+        };
         if let Some((index, track, clip)) = choice {
             self.select_track(track, window);
             if let Some(clip) = clip
@@ -1672,8 +1636,15 @@ impl EditorView {
             {
                 self.selected_clip = Some(clip);
             }
-            self.track_scroll
-                .scroll_to_item(index, gpui::ScrollStrategy::Top);
+            let row = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+                Some(index)
+            } else {
+                self.arrangement_row_index(index)
+            };
+            if let Some(row) = row {
+                self.track_scroll
+                    .scroll_to_item(row, gpui::ScrollStrategy::Top);
+            }
         }
     }
 

@@ -378,7 +378,7 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
     });
     visual.simulate_input("p 🎹");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "p 🎹");
+        assert_eq!(view.browser.search.read(cx).text(), "p 🎹");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     visual.update(|window, cx| {

@@ -34,7 +34,7 @@ impl EditorView {
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
             || self.gain_lane.pointer_is_active()
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.close_prompt_open
             || self.opening_project
             || self.project_open.busy()

@@ -147,8 +147,7 @@ fn current_playable_route_inventories_are_required_even_when_empty() {
     }
 }
 
-#[test]
-fn reordered_track_inventory_roundtrips_complete_content_automation_and_stable_routes() {
+fn content_fixture() -> Project {
     let mut editor = Editor::new(fixture(), 16).unwrap();
     let ids: Vec<_> = editor
         .project()
@@ -185,15 +184,123 @@ fn reordered_track_inventory_roundtrips_complete_content_automation_and_stable_r
             }],
         })
         .unwrap();
-    let original = editor.project().clone();
-    for (track, before, order) in [
-        (ids[2], Some(ids[0]), vec![ids[2], ids[0], ids[1]]),
-        (ids[0], None, vec![ids[1], ids[2], ids[0]]),
+    let device = editor
+        .project()
+        .track(ids[1])
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .clone();
+    let other =
+        hex_lattice_contract::NativeDeviceState::new(device.state().type_id(), 1, vec![1, 2, 3])
+            .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceComparison {
+            device: device.id(),
+            state: device.state().clone(),
+            comparison: Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::B,
+                other,
+            )),
+        })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let asset = editor.project().tracks()[0].clips()[0].asset();
+    editor
+        .execute(Command::CreateSessionAudioClip {
+            track: ids[0],
+            scene,
+            name: "session audio".into(),
+            asset,
+            source_start: 4,
+            source_end: 128,
+        })
+        .unwrap();
+    editor
+        .execute(Command::CreateSessionMidiClip {
+            track: ids[1],
+            scene,
+            name: "session midi".into(),
+            source_length: hex_project::BeatTime::ONE,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetSessionStopCell {
+            track: ids[2],
+            scene,
+        })
+        .unwrap();
+    editor.project().clone()
+}
+
+#[test]
+fn track_clipboard_roundtrips_full_and_setup_only_copies_with_routes_and_history() {
+    let original = content_fixture();
+    for without_clips in [false, true] {
+        let mut editor = Editor::new(original.clone(), 16).unwrap();
+        let ids: Vec<_> = original.tracks().iter().map(|t| t.id()).collect();
+        let clipboard = std::sync::Arc::new(
+            original
+                .capture_tracks(
+                    &hex_project::TrackSelectionIds::new(&ids).unwrap(),
+                    without_clips,
+                )
+                .unwrap(),
+        );
+        editor
+            .execute(Command::PasteTracks {
+                clipboard,
+                before: None,
+            })
+            .unwrap();
+        let saved = encode(editor.project()).unwrap();
+        let opened = decode(&saved).unwrap();
+        assert_eq!(opened.snapshot(), editor.project().snapshot());
+        assert_eq!(&opened.tracks()[..3], original.tracks());
+        assert_eq!(opened.tracks()[3].clips().is_empty(), without_clips);
+        assert_eq!(opened.tracks()[4].midi_clips().is_empty(), without_clips);
+        assert!(editor.undo());
+        assert!(editor.redo());
+        assert_eq!(encode(editor.project()).unwrap(), saved);
+    }
+}
+
+#[test]
+fn reordered_track_inventory_roundtrips_complete_content_automation_and_stable_routes() {
+    let original = content_fixture();
+    let ids: Vec<_> = original.tracks().iter().map(|t| t.id()).collect();
+    for (command, order) in [
+        (
+            Command::MoveTrackBefore {
+                track: ids[2],
+                before: Some(ids[0]),
+            },
+            vec![ids[2], ids[0], ids[1]],
+        ),
+        (
+            Command::MoveTrackBefore {
+                track: ids[0],
+                before: None,
+            },
+            vec![ids[1], ids[2], ids[0]],
+        ),
+        (
+            Command::MoveTracksBefore {
+                tracks: hex_project::TrackSelectionIds::new(&[ids[2], ids[0]]).unwrap(),
+                before: None,
+            },
+            vec![ids[1], ids[0], ids[2]],
+        ),
     ] {
         let mut editor = Editor::new(original.clone(), 16).unwrap();
-        editor
-            .execute(Command::MoveTrackBefore { track, before })
-            .unwrap();
+        editor.execute(command).unwrap();
         let restored = decode(&encode(editor.project()).unwrap()).unwrap();
         assert_eq!(restored, *editor.project());
         assert_eq!(

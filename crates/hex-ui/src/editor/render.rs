@@ -374,8 +374,13 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
+        super::browser_input::restyle(&self.browser.search, cx);
+        if let Some(input) = &self.tuning.name {
+            super::browser_input::restyle(input, cx);
+        }
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
+        self.reconcile_arrangement_focus();
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
@@ -432,6 +437,7 @@ impl Render for EditorView {
                     })),
             )
             .child(workspace_content.flex_1().min_w_0());
+        self.restore_clip_control_focus(window, cx);
         let modifier_entity = cx.entity();
         let console_drag_entity = cx.entity();
         let trim_pointer_entity = cx.entity();
@@ -463,7 +469,7 @@ impl Render for EditorView {
                 "hex_context_menu"
             } else if self.project_tempo_editing(cx) {
                 "hex_project_tempo_editor hex_text_editing"
-            } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
+            } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
@@ -618,6 +624,10 @@ impl Render for EditorView {
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                 if view.workspace_tab(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if view.arrangement_view_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -1141,6 +1151,12 @@ impl Render for EditorView {
                     .iter()
                     .any(|context| context.contains("hex_text_editing"))
                 {
+                    return;
+                }
+                if view
+                    .track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate)
+                {
+                    cx.notify();
                     return;
                 }
                 if view.duplicate_section(window) {
