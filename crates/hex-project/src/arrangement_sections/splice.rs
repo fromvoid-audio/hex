@@ -532,6 +532,11 @@ fn apply_transform(
 }
 
 fn transformed_tempo(old: &TempoMap, transform: Transform) -> Result<TempoMap, Invalid> {
+    // Duplicating music cannot change a single global tempo. Preserve its exact
+    // clock, including fractional BPMs, rather than adding same-tempo seams.
+    if matches!(transform, Transform::Duplicate { .. }) && old.points().len() == 1 {
+        return Ok(old.clone());
+    }
     let start = transform.start();
     let end = transform.end();
     let length = transform.length();

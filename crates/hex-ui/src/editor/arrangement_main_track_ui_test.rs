@@ -65,6 +65,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         midi_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
+        bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,

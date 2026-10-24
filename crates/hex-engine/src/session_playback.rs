@@ -332,7 +332,7 @@ const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
 
 /// Control-owned source conversion ceiling, separate from general WAV export.
-pub const MAX_FINITE_BOUNCE_FRAMES: u64 = 8_000_000;
+pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderConstruction {
@@ -1172,6 +1172,17 @@ impl SessionPlayback {
         Self::new_with_policy_scoped(revision, false, Some(resources))
     }
 
+    /// Construct an unused interactive candidate with an existing launched loop.
+    /// Control owns construction/admission; callback inheritance supplies its actual clock.
+    pub(crate) fn new_section_candidate(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::section_runtime_allowance(&revision, region)?;
+        Self::new_with_policy_and_loop(revision, false, Some(resources), Some(region))
+    }
+
     fn new_with_policy_scoped(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
@@ -1837,6 +1848,27 @@ impl SessionPlayback {
                 .is_err()
                 || active
         })
+    }
+
+    /// Offline bounce completion after the isolated source's final gate. Checks
+    /// actual analytic releases and mutable processor state, never output silence.
+    /// The caller must exclude future source events and nonzero latency paths.
+    pub fn arrangement_bounce_is_quiescent(&self) -> bool {
+        !self.has_active_arrangement_voices()
+            && self.releases.is_empty()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|r| r.committed_is_quiescent())
+            && self
+                .device_chains
+                .iter()
+                .chain(self.return_chains.iter())
+                .chain(std::iter::once(&self.main_chain))
+                .all(|c| c.committed_range_is_quiescent(0..c.len()))
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
     }
 
     pub fn release_voice_count(&self) -> usize {
