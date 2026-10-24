@@ -141,6 +141,7 @@ fn setup(location: usize) -> (hex_project::Project, crate::OwnedAudioInputs, Fac
 }
 struct Borrowed<'a> {
     expected: &'a Facts,
+    configuration_address: Option<usize>,
     ring: [[f32; 2]; 19],
     cursor: usize,
     visited: usize,
@@ -158,6 +159,12 @@ impl ForeignProcessors for Borrowed<'_> {
         assert_eq!(node.prepared.binding(), self.expected.binding);
         assert_eq!(node.prepared.total_latency_frames(), 19);
         assert_eq!(node.configuration.payload(), 19_u32.to_le_bytes());
+        if let Some(address) = self.configuration_address {
+            assert_eq!(
+                node.configuration as *const NativeDeviceState as usize, address,
+                "control query must borrow the same original configuration used for rendering"
+            );
+        }
         self.visited += frames.len();
         for frame in frames {
             let gain = if node.bypassed {
@@ -200,6 +207,7 @@ fn closed_foreign_chains_copy_state_and_process_at_each_original_owner() {
         let mut runtime = hex_lattice::NativeRuntimeChain::new_prepared(chain.to_vec()).unwrap();
         let mut borrowed = Borrowed {
             expected: &facts,
+            configuration_address: None,
             ring: [[0.0; 2]; 19],
             cursor: 0,
             visited: 0,
@@ -509,6 +517,7 @@ fn closed_foreign_main_coexists_with_original_sampler_sources() {
     let mut expected_source = [[0.0; 2]; 64];
     let mut foreign = Borrowed {
         expected: &facts,
+        configuration_address: None,
         ring: [[0.0; 2]; 19],
         cursor: 0,
         visited: 0,
@@ -655,8 +664,20 @@ fn closed_compensated_foreign_runtime_has_literal_pcm_and_complete_constructor_d
     if !crate::audio_storage_constructor_layout_supported() {
         return;
     }
-    for location in 0..3 {
+    for (location, bypassed) in
+        (0..3).flat_map(|location| [false, true].map(move |bypassed| (location, bypassed)))
+    {
         let (project, bank, facts) = setup(location);
+        let device = match location {
+            0 => project.tracks()[0].devices()[0].id(),
+            1 => project.return_tracks()[0].devices()[0].id(),
+            _ => project.main_devices()[0].id(),
+        };
+        let mut editor = Editor::new(project, 16).unwrap();
+        editor
+            .execute(Command::SetDeviceBypass { device, bypassed })
+            .unwrap();
+        let project = editor.project().clone();
         let original = bank.sources.as_ptr();
         let defs: [&dyn NativeDeviceDefinition; 1] = [&facts];
         let registry = NativeDeviceRegistry::new(&defs).unwrap();
@@ -708,6 +729,31 @@ fn closed_compensated_foreign_runtime_has_literal_pcm_and_complete_constructor_d
             owner.requires_effect_graph_custody_on_control().unwrap(),
             "constructor success is not native source admission"
         );
+        let configuration_address = {
+            let mut nodes = owner.foreign_nodes_on_control().unwrap();
+            let node = nodes.next().expect("actual original foreign node");
+            assert!(nodes.next().is_none());
+            assert_eq!(node.owner, facts.identity.owner());
+            assert_eq!(node.device_id, facts.identity.device_id());
+            assert_eq!(node.device_type, facts.type_id());
+            assert_eq!(node.sample_rate, 48_000);
+            assert_eq!(node.bypassed, bypassed);
+            assert_eq!(
+                node.configuration.as_deref().unwrap().payload(),
+                19_u32.to_le_bytes()
+            );
+            let Some(PreparedProcessorFactory::Foreign(prepared)) = &node.definition else {
+                panic!("foreign node query returned another factory");
+            };
+            assert_eq!(prepared.binding(), facts.binding);
+            assert_eq!(prepared.total_latency_frames(), 19);
+            assert_ne!(
+                prepared.binding().unwrap().instance,
+                node.device_id,
+                "binding and processor identity are independent namespaces"
+            );
+            node.configuration.as_deref().unwrap() as *const NativeDeviceState as usize
+        };
         owner
             .test_apply_action(crate::PlaybackAction::Transport(
                 crate::PlaybackCommand::Play,
@@ -715,6 +761,7 @@ fn closed_compensated_foreign_runtime_has_literal_pcm_and_complete_constructor_d
             .unwrap();
         let mut foreign = Borrowed {
             expected: &facts,
+            configuration_address: Some(configuration_address),
             ring: [[0.0; 2]; 19],
             cursor: 0,
             visited: 0,
@@ -723,7 +770,12 @@ fn closed_compensated_foreign_runtime_has_literal_pcm_and_complete_constructor_d
         for block in output.chunks_mut(8) {
             owner.test_render_with_foreign(block, &mut foreign).unwrap();
         }
-        let gain = if location == 1 { 0.3125 } else { 0.0625 };
+        let gain = match (location, bypassed) {
+            (1, true) => 0.5,
+            (1, false) => 0.3125,
+            (_, true) => 0.25,
+            (_, false) => 0.0625,
+        };
         let mut expected = [[0.0; 2]; 48];
         expected[19..35].fill([gain; 2]);
         assert_eq!(
