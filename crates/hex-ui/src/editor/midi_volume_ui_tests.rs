@@ -5,11 +5,43 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point};
 use hex_session::service::Request;
 use std::time::{Duration, Instant};
 
+fn assert_point_readout_fits(visual: &mut gpui::VisualTestContext) {
+    let panel = visual.debug_bounds("midi-volume-editor").unwrap();
+    let values = visual.debug_bounds("midi-volume-point-values").unwrap();
+    let text = "beat 2 · gain 2";
+    let measured = visual.update(|window, _| {
+        window
+            .text_system()
+            .shape_line(
+                theme::text(text),
+                gpui::px(12.0),
+                &[gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font(theme::FONT_FAMILY),
+                    color: gpui::rgb(0xffffff).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+    });
+    assert!(
+        values.size.width >= measured
+            && values.left() >= panel.left()
+            && values.right() <= panel.right(),
+        "numeric feedback must fit in the editor: {values:?}, panel {panel:?}, measured {measured:?}"
+    );
+}
+
 #[gpui::test]
 fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_undo(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
+    visual.simulate_resize(gpui::size(gpui::px(960.0), gpui::px(600.0)));
+    visual.run_until_parked();
     editor.update(&mut visual, |v, cx| {
         v.midi_volume.enabled = true;
         cx.notify();
@@ -35,6 +67,14 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
     visual.run_until_parked();
     let held = editor.read_with(&visual, |v, _| v.displayed_midi_volume(clip).unwrap());
     assert!(visual.debug_bounds("midi-volume-point-values").is_some());
+    assert_point_readout_fits(&mut visual);
+    editor.read_with(&visual, |v, cx| {
+        assert_eq!(
+            v.midi_volume.graph.as_ref().unwrap().read(cx).plot_bounds(),
+            Some(bounds),
+            "selecting a point must not shift the captured plot"
+        );
+    });
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             point_values(&held, v.midi_volume.selected).as_deref(),
@@ -64,6 +104,7 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
             assert!(v.pending_midi_drag.is_some());
         });
         assert!(visual.debug_bounds("midi-volume-point-values").is_some());
+        assert_point_readout_fits(&mut visual);
     }
     let until = Instant::now() + Duration::from_secs(5);
     let terminal = loop {
@@ -95,6 +136,26 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
         );
     });
     assert!(visual.debug_bounds("midi-volume-point-values").is_some());
+    for width in [1314.0, 1920.0, 960.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.0)));
+        visual.run_until_parked();
+        assert_point_readout_fits(&mut visual);
+        let panel = visual.debug_bounds("midi-volume-editor").unwrap();
+        for id in [
+            "pan envelope left",
+            "pan envelope right",
+            "zoom envelope out",
+            "zoom envelope in",
+            "midi-zoom-fit",
+            "midi-zoom-back",
+        ] {
+            let control = visual.debug_bounds(id).unwrap();
+            assert!(
+                control.left() >= panel.left() && control.right() <= panel.right(),
+                "navigation control must remain inside editor: {id}"
+            );
+        }
+    }
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Undo));
     });
@@ -206,4 +267,142 @@ fn envelope_escape_blur_lost_pointer_and_stale_source_cancel_without_history(
         });
         assert!(visual.debug_bounds("midi-volume-point-values").is_none());
     }
+}
+
+#[gpui::test]
+fn envelope_shows_interior_source_beat_guides(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    editor.update(&mut visual, |v, cx| {
+        v.midi_volume.enabled = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // Axis labels use plot bounds measured during the first paint. Complete
+    // that notified repaint explicitly; parking worker tasks does not advance
+    // the headless window's frame clock.
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("midi-volume-axis-x-0").is_some(),
+        "the first source beat label has no preceding label to collide with"
+    );
+    let plot = visual.debug_bounds("midi-volume-plot").unwrap();
+    let beat = visual
+        .debug_bounds("midi-volume-axis-x-4")
+        .expect("one-beat grid guide must be rendered inside the four-beat viewport");
+    assert!(
+        (f32::from(beat.center().x - plot.left()) / f32::from(plot.size.width) - 0.25).abs() < 0.01,
+        "beat label {beat:?}; plot {plot:?}; graph {:?}",
+        editor.read_with(&visual, |v, cx| v
+            .midi_volume
+            .graph
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .plot_bounds())
+    );
+    editor.update(&mut visual, |v, cx| {
+        v.pan_piano(true);
+        v.zoom_piano(true);
+        v.cycle_midi_grid();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let plot = visual.debug_bounds("midi-volume-plot").unwrap();
+    let first = visual.debug_bounds("midi-volume-axis-x-1").unwrap();
+    assert!(first.left() >= plot.left() && first.right() <= plot.right());
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.edit_pending());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original);
+        assert_eq!(v.piano_beat_start, BeatTime::from_quarters(2).unwrap());
+        assert_eq!(v.piano_beat_span, BeatTime::from_quarters(2).unwrap());
+    });
+}
+
+#[gpui::test]
+fn envelope_fit_and_back_restore_view_without_musical_edits(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    let original = editor.update(&mut visual, |v, cx| {
+        v.midi_volume.enabled = true;
+        v.piano_beat_start = BeatTime::ONE;
+        v.piano_beat_span = BeatTime::ONE;
+        cx.notify();
+        let s = v.state.as_ref().unwrap();
+        (s.project.snapshot(), s.can_undo, s.can_redo)
+    });
+    visual.run_until_parked();
+    let fit = visual
+        .debug_bounds("midi-zoom-fit")
+        .expect("envelope view must retain fit navigation");
+    visual.simulate_click(fit.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (v.piano_beat_start, v.piano_beat_span),
+            (BeatTime::ZERO, BeatTime::from_quarters(4).unwrap())
+        );
+    });
+    let back = visual.debug_bounds("midi-zoom-back").unwrap();
+    visual.simulate_click(back.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (v.piano_beat_start, v.piano_beat_span),
+            (BeatTime::ONE, BeatTime::ONE)
+        );
+        assert!(!v.edit_pending());
+        let s = v.state.as_ref().unwrap();
+        assert_eq!((s.project.snapshot(), s.can_undo, s.can_redo), original);
+    });
+}
+
+#[gpui::test]
+fn mode_switch_contains_its_label_and_toggles_without_musical_edits(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    visual.simulate_resize(gpui::size(gpui::px(960.0), gpui::px(600.0)));
+    visual.run_until_parked();
+    let original = editor.read_with(&visual, |v, _| {
+        let s = v.state.as_ref().unwrap();
+        (s.project.snapshot(), s.can_undo, s.can_redo)
+    });
+    for label in ["envelopes", "notes"] {
+        let button = visual
+            .debug_bounds("switch between notes and clip volume envelope")
+            .unwrap();
+        let measured = visual.update(|window, _| {
+            window
+                .text_system()
+                .shape_line(
+                    theme::text(label),
+                    gpui::px(12.0),
+                    &[gpui::TextRun {
+                        len: label.len(),
+                        font: gpui::font(theme::FONT_FAMILY),
+                        color: gpui::rgb(0xffffff).into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width
+        });
+        assert!(
+            button.size.width >= measured + gpui::px(8.0),
+            "mode label {label} needs a padded hit surface: {:?} versus {:?}",
+            button.size.width,
+            measured
+        );
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.midi_volume.enabled, label == "envelopes")
+        });
+    }
+    editor.read_with(&visual, |v, _| {
+        let s = v.state.as_ref().unwrap();
+        assert_eq!((s.project.snapshot(), s.can_undo, s.can_redo), original);
+        assert!(!v.edit_pending());
+    });
 }

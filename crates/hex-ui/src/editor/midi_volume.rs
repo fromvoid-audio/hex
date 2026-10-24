@@ -3,7 +3,7 @@
 //! the same ordered receipt as note edits until canonical state is installed.
 use super::{EditorView, midi_pending_drag::Frozen};
 use crate::theme;
-use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
+use gpui::{Context, Div, Entity, SharedString, Subscription, div, prelude::*, px};
 use hex_project::{
     BeatTime, ClipId, Command, MidiClipGain, MidiClipVolume, MidiClipVolumePoint, Project,
 };
@@ -45,21 +45,58 @@ pub(super) fn curve(project: &Project, clip: ClipId) -> Option<&MidiClipVolume> 
 // corresponding point. This readout never supplies values back to an edit.
 fn point_values(volume: &MidiClipVolume, selected: u32) -> Option<String> {
     let point = volume.points().get(selected.checked_sub(1)? as usize)?;
-    let number = |value: f64| {
-        if (value != 0.0 && value < 0.0001) || value >= 1_000_000.0 {
-            format!("{value:.3e}")
-        } else {
-            format!("{value:.4}")
-                .trim_end_matches('0')
-                .trim_end_matches('.')
-                .to_owned()
-        }
-    };
+
     Some(format!(
         "beat {} · gain {}",
-        number(point.beat.raw() as f64 / BeatTime::ONE.raw() as f64),
-        number(point.value.linear()),
+        compact_number(point.beat.raw() as f64 / BeatTime::ONE.raw() as f64),
+        compact_number(point.value.linear()),
     ))
+}
+
+fn compact_number(value: f64) -> String {
+    if (value != 0.0 && value < 0.0001) || value >= 1_000_000.0 {
+        format!("{value:.3e}")
+    } else {
+        format!("{value:.4}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+// Grid guides use source beats, just like point snapping. Coarsen by powers of
+// two at wide zoom; keep at most 32 axis entries and let the shared graph suppress
+// overlapping labels. This changes only display density, never the snap grid.
+fn beat_axes(start: u64, span: u64, grid: super::midi_drag::MidiGrid) -> Vec<(f32, SharedString)> {
+    let Some(end) = start.checked_add(span).filter(|_| span > 0) else {
+        return Vec::new();
+    };
+    let label = |raw| {
+        theme::text(format!(
+            "{}b",
+            compact_number(raw as f64 / BeatTime::ONE.raw() as f64)
+        ))
+    };
+    let mut ticks = vec![(0.0, label(start))];
+    let mut step = grid.step_raw().unwrap_or(BeatTime::ONE.raw());
+    while span / step > 28 {
+        let Some(next) = step.checked_mul(2) else {
+            break;
+        };
+        step = next;
+    }
+    let mut next = (start / step)
+        .checked_add(1)
+        .and_then(|v| v.checked_mul(step));
+    for _ in 0..30 {
+        let Some(raw) = next.filter(|raw| *raw < end) else {
+            break;
+        };
+        ticks.push((((raw - start) as f64 / span as f64) as f32, label(raw)));
+        next = raw.checked_add(step);
+    }
+    ticks.push((1.0, label(end)));
+    ticks
 }
 
 fn point_at(
@@ -117,22 +154,25 @@ impl EditorView {
         } else {
             "envelopes"
         };
-        div().children([self.midi_button_with_id(
-            "midi-volume-mode",
-            label,
-            "switch between notes and clip volume envelope",
-            cx.listener(|view, _, window, cx| {
-                view.cancel_midi_note_gesture();
-                view.cancel_midi_audition();
-                view.cancel_computer_keyboard();
-                view.focus.focus(window);
-                view.midi_volume.enabled = !view.midi_volume.enabled;
-                if let Some(graph) = view.midi_volume.graph.clone() {
-                    graph.update(cx, |g, cx| g.cancel(cx));
-                }
-                cx.notify();
-            }),
-        )])
+        div().children([self
+            .midi_button_with_id(
+                "midi-volume-mode",
+                label,
+                "switch between notes and clip volume envelope",
+                cx.listener(|view, _, window, cx| {
+                    view.cancel_midi_note_gesture();
+                    view.cancel_midi_audition();
+                    view.cancel_computer_keyboard();
+                    view.focus.focus(window);
+                    view.midi_volume.enabled = !view.midi_volume.enabled;
+                    if let Some(graph) = view.midi_volume.graph.clone() {
+                        graph.update(cx, |g, cx| g.cancel(cx));
+                    }
+                    cx.notify();
+                }),
+            )
+            .w_auto()
+            .px_2()])
     }
     pub(super) fn cancel_midi_volume_input(&mut self) -> bool {
         self.midi_volume.gesture.take().is_some()
@@ -212,19 +252,7 @@ impl EditorView {
         let graph = self.midi_volume.graph.clone()?;
         let editable = !self.edit_pending();
         let axes = ResponseGraphAxes {
-            horizontal: vec![
-                (
-                    0.0,
-                    theme::text(format!("{:.2}b", start as f64 / BeatTime::ONE.raw() as f64)),
-                ),
-                (
-                    1.0,
-                    theme::text(format!(
-                        "{:.2}b",
-                        start.saturating_add(span) as f64 / BeatTime::ONE.raw() as f64
-                    )),
-                ),
-            ],
+            horizontal: beat_axes(start, span, self.midi_snap_grid),
             vertical: vec![
                 (0.0, theme::text("0")),
                 (0.25, theme::text("1")),
@@ -251,9 +279,10 @@ impl EditorView {
         let grid = self.midi_snap_grid;
         let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
-            .h(px(28.0))
+            .min_h(px(28.0))
             .flex_shrink_0()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .px_1()
@@ -314,6 +343,18 @@ impl EditorView {
                     cx.notify();
                 }),
             )])
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, true, cx));
+        // Reserve feedback height even before a point is selected: revealing or
+        // changing a value must not move the graph under a captured pointer.
+        let feedback = div()
+            .h(px(22.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_1()
+            .text_xs()
             .child(theme::text(format!("{} points", volume.points().len())))
             .children(
                 point_values(&volume, self.midi_volume.selected).map(|values| {
@@ -333,6 +374,7 @@ impl EditorView {
                 .flex_col()
                 .debug_selector(|| "midi-volume-editor".into())
                 .child(toolbar)
+                .child(feedback)
                 .child(div().flex_1().min_h_0().child(graph)),
         )
     }
@@ -509,6 +551,32 @@ mod ui_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn beat_guides_align_to_source_grid_and_remain_bounded_at_extreme_zoom() {
+        use super::super::midi_drag::MidiGrid;
+        let beat = BeatTime::ONE.raw();
+        let ticks = beat_axes(0, 4 * beat, MidiGrid::Sixteenth);
+        assert_eq!(ticks.len(), 17);
+        assert_eq!(ticks[4], (0.25, theme::text("1b")));
+        assert_eq!(
+            beat_axes(beat / 2, 4 * beat, MidiGrid::Sixteenth)[2].1,
+            theme::text("1b")
+        );
+        assert_eq!(beat_axes(0, 4 * beat, MidiGrid::Off).len(), 5);
+        for (start, span) in [(0, u64::MAX), (u64::MAX - 4 * beat, 4 * beat), (0, 1)] {
+            let ticks = beat_axes(start, span, MidiGrid::ThirtySecond);
+            assert!((2..=32).contains(&ticks.len()));
+            assert!(
+                ticks.iter().all(|(x, label)| x.is_finite()
+                    && (0.0..=1.0).contains(x)
+                    && label.len() <= 24)
+            );
+            assert!(ticks.windows(2).all(|w| w[0].0 <= w[1].0));
+        }
+        assert!(beat_axes(u64::MAX, 1, MidiGrid::Quarter).is_empty());
+        assert!(beat_axes(0, 0, MidiGrid::Quarter).is_empty());
+    }
+
     #[test]
     fn dense_original_points_and_boundary_jumps_remain_visible_and_bounded() {
         let length = BeatTime::from_raw(2048);
