@@ -1533,7 +1533,7 @@ impl EditorView {
                 .debug_selector(move || format!("arrangement-section-{index}"))
                 .top_0()
                 .bottom_0()
-                .cursor(gpui::CursorStyle::Crosshair)
+                .cursor(gpui::CursorStyle::Arrow)
                 .border_1()
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
@@ -3667,7 +3667,7 @@ mod tests {
                 (header.center(), gpui::CursorStyle::OpenHand),
                 (
                     point(body.center().x, body.top() + body.size.height * 0.75),
-                    gpui::CursorStyle::Crosshair,
+                    gpui::CursorStyle::Arrow,
                 ),
                 (
                     point(body.right() - px(1.0), body.top() + body.size.height * 0.75),
