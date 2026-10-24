@@ -102,7 +102,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(undone.state.project.snapshot(), restored);
     assert_eq!(replay(&mut h), expected);
     let redone = h.run(Request::Redo);
-    (applied, _) = h.applied(applied);
+    h.applied(applied);
     assert_eq!(redone.state.project, grouped.state.project);
     assert_eq!(replay(&mut h), expected);
     let saved = files.0.join("grouped.hex");
