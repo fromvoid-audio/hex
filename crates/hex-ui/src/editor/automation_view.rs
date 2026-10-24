@@ -1,7 +1,7 @@
 //! Transient Arrangement presentation. Gain edits use the existing lane actor;
 //! switching views never changes authored automation, clip activation or history.
 use super::{EditorMode, EditorView};
-use gpui::{Context, KeyDownEvent, Modifiers, Window};
+use gpui::{Context, Window};
 use hex_session::service::GainLaneEdit;
 
 #[derive(Default)]
@@ -10,23 +10,6 @@ pub(super) struct AutomationView {
     gain_panel_was_open: bool,
 }
 impl EditorView {
-    pub(super) fn automation_view_key(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if event.keystroke.key != "a"
-            || event.keystroke.modifiers != Modifiers::default()
-            || event.is_held
-            || self.computer_keyboard.enabled
-            || !(self.focus.is_focused(window) || self.track_header_focused(window))
-        {
-            return false;
-        }
-        self.toggle_automation_view(cx)
-    }
-
     pub(super) fn toggle_automation_view(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.arrangement_view_change_available(cx) {
             return false;
