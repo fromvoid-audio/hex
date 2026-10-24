@@ -205,3 +205,55 @@ fn native_group_missing_child_refuses_and_preserves_collected_bank_for_control_c
     // No source owner or project mutation was accepted from this refused copy.
     assert_eq!(audio.frames().len(), 64);
 }
+
+#[test]
+fn directed_finite_and_grouped_native_origins_quote_and_render_the_actual_output() {
+    for grouped in [false, true] {
+        let (mut editor, ids, media) = fixture();
+        let clip = if grouped {
+            let Created::Clip(group) = editor
+                .execute(Command::GroupClips(ids[..2].to_vec()))
+                .unwrap()
+            else {
+                panic!("group");
+            };
+            group
+        } else {
+            ids[0]
+        };
+        let Created::Clip(tail) = editor
+            .execute(Command::SplitClip { clip, frame: 31 })
+            .unwrap()
+        else {
+            panic!("split");
+        };
+        editor.execute(Command::RemoveClip(tail)).unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let expected_frames: u64 = editor
+            .project()
+            .tracks()
+            .iter()
+            .flat_map(|t| t.clips())
+            .filter(|c| c.audio_edit().is_some())
+            .map(|c| c.duration())
+            .sum();
+        assert_eq!(
+            crate::audio_preparation::transformed::prepared_pcm_frames(editor.project()).unwrap(),
+            expected_frames
+        );
+        for start in [0, 7, 30] {
+            let (mut cell, _, _) = candidate(editor.project(), &media);
+            let owner = cell.owner_on_control().unwrap();
+            owner
+                .test_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(start)))
+                .unwrap();
+            let mut actual = vec![[0.0; 2]; 256];
+            for block in actual.chunks_mut(17) {
+                owner.test_render(block).unwrap();
+            }
+            assert_eq!(actual, semantic(editor.project(), &media, start));
+            cell.cleanup_on_control().unwrap();
+            assert!(!cell.failed_incomplete());
+        }
+    }
+}

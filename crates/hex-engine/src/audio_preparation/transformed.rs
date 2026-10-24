@@ -27,7 +27,7 @@ fn root_work(
     let Some(edit) = clip.audio_edit() else {
         return Ok(0);
     };
-    if edit.placement.is_none() {
+    if edit.placement.is_none() && edit.content_view.is_none() {
         return edit
             .projected_domain(tempo)
             .map(|(_, length, _, _)| length)
@@ -66,7 +66,7 @@ fn clip_quote(
         .events
         .as_ref()
         .filter(|events| !events.sources.is_empty());
-    let frames = if grouped.is_some() || edit.placement.is_some() {
+    let frames = if grouped.is_some() || edit.placement.is_some() || edit.content_view.is_some() {
         clip.duration()
     } else {
         edit.projected_domain(tempo).map_err(invalid)?.1
@@ -87,7 +87,7 @@ fn clip_quote(
             .ok_or(AudioStorageError::Overflow)?
     } else {
         root_work(clip, tempo)?
-            .checked_add(if edit.placement.is_some() {
+            .checked_add(if edit.placement.is_some() || edit.content_view.is_some() {
                 clip.duration()
             } else {
                 0
