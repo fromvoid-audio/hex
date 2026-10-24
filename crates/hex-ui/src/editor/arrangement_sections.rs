@@ -6,6 +6,8 @@
 //! Option latches marker-only intent independently of Command's live snapping.
 //! Five-pixel inner edges resize one section; a two-pixel touching seam resizes
 //! both. Paint and input use the same widths and existing native bracket cursors.
+//! The top-third header owns section gestures; the lower body delegates to the
+//! existing Main all-track range owner, including tracks hidden by section focus.
 use super::{
     EditorMode, EditorView,
     musical_time::SnapGrid,
@@ -338,6 +340,12 @@ impl EditorView {
     fn section_has_focus(&self, window: &Window) -> bool {
         self.mode == EditorMode::Arrangement
             && self.focus.is_focused(window)
+            // Q may retain section IDs while a painted range owns keyboard
+            // editing. A stationary Main header point keeps its existing section
+            // cursor contract; the range body explicitly retires that cursor.
+            && self.time_selection.is_none_or(|selection| {
+                selection.anchor_frame == selection.end_frame && self.sections.cursor.is_some()
+            })
             && self.selected_clip.is_none()
             && self.selected_track.is_none()
             && self.focused_return.is_none()
@@ -512,6 +520,20 @@ impl EditorView {
         if !self.sections_available() {
             return self.section_hit(x, y).is_some();
         }
+        let edge = self.section_edge_hit(x);
+        let Some([_, top, _, height]) = self.section_layout() else {
+            return false;
+        };
+        if edge.is_none() && y >= top + super::time_selection::header_hit_height(height) {
+            // Do not start a competing capture. Main's existing range receiver
+            // sees this same press next and keeps canonical all-track scope.
+            self.sections.cursor = None;
+            if !self.arrangement_focus.enabled {
+                self.sections.selected = None;
+                self.sections.selection.clear();
+            }
+            return false;
+        }
         if !double && self.section_hit(x, y).is_none() && self.main_time_range_grab(x, y).is_some()
         {
             return false;
@@ -519,7 +541,6 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let edge = self.section_edge_hit(x);
         let id = match edge {
             Some(SectionEdge::Shared(left, _)) => Some(left),
             _ => self.section_hit(x, y),
@@ -1481,6 +1502,11 @@ impl EditorView {
         if viewport.length == 0 {
             return Vec::new();
         }
+        let header_height = self
+            .main_track_lane_bounds
+            .map_or(super::clip_name::CLIP_NAME_HEIGHT, |lane| {
+                super::time_selection::header_hit_height(lane.height)
+            });
         let mut elements = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
             let (Ok(start), Ok(end)) = (
@@ -1505,23 +1531,32 @@ impl EditorView {
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
-                .top(px(3.0))
-                .bottom(px(3.0))
-                .cursor(RectanglePart::Body.cursor())
+                .top_0()
+                .bottom_0()
+                .cursor(gpui::CursorStyle::Arrow)
                 .border_1()
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
                 .text_color(rgb(colors.1))
                 .hover(move |style| style.bg(section_fill(hover.0)).text_color(rgb(hover.1)).border_color(rgb(hover.2)))
                 .text_xs()
-                .px_1()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip {
-                        name: "drag: reorder · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: select · g: merge · cmd-d: duplicate · cmd-e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: select · g: merge · cmd-d: duplicate · cmd-e: split"
                             .into(),
                     })
                     .into()
                 });
+            let mut header = hex_widgets::rectangle_body(-1.0, header_height)
+                .id(("arrangement-section-header", index))
+                .debug_selector(move || format!("arrangement-section-header-{index}"))
+                .bg(rgb(colors.0))
+                .text_color(rgb(colors.1))
+                .text_xs()
+                .line_height(px(14.0))
+                .px_1()
+                .overflow_hidden()
+                .hover(move |style| style.bg(rgb(hover.0)).text_color(rgb(hover.1)));
             if let Some(id) = m.id {
                 element = element.on_mouse_down(
                     gpui::MouseButton::Right,
@@ -1530,21 +1565,21 @@ impl EditorView {
                         cx.stop_propagation();
                     }),
                 );
-                if let Some(n) = self.sections.name.as_ref().filter(|n| n.id == id) {
-                    element = element.children([n.input.clone()]);
-                } else {
-                    element = element.child(theme::text(if selected {
-                        format!("✓ {}", m.name)
-                    } else {
-                        m.name.clone()
-                    }));
-                }
-            } else {
-                element = element.child(theme::text(if selected {
+            }
+            let name_edit =
+                m.id.and_then(|id| self.sections.name.as_ref().filter(|name| name.id == id));
+            if name_edit.is_none() {
+                header = header.child(theme::text(if selected {
                     format!("✓ {}", m.name)
                 } else {
                     m.name.clone()
                 }));
+            }
+            element = element.child(header);
+            if let Some(name) = name_edit {
+                // Name editing keeps its existing full-size native field; held
+                // pointer/range captures are disabled for its entire lifetime.
+                element = element.children([name.input.clone()]);
             }
             for right in [false, true] {
                 let part = if right {
@@ -1572,8 +1607,8 @@ impl EditorView {
                 hex_widgets::rectangle_edge(RectanglePart::Seam, 2.0 * SHARED_EDGE_RADIUS, 0.0)
                     .debug_selector(|| "section-shared-edge".into())
                     .absolute()
-                    .top(px(3.0))
-                    .bottom(px(3.0))
+                    .top_0()
+                    .bottom_0()
                     .left(relative(
                         (frame - viewport.start) as f32 / viewport.length as f32,
                     ))
@@ -1607,10 +1642,10 @@ impl EditorView {
         elements
     }
 }
-/// Only the fill is translucent: existing grid lines show very faintly through
-/// it while label/border contrast stays opaque in either palette.
+/// Body tint leaves the existing Main grid and range overlay visible. The
+/// header paints its own opaque fill; label and border never inherit opacity.
 fn section_fill(color: u32) -> gpui::Rgba {
-    rgba((color << 8) | 0xe0)
+    rgba((color << 8) | 0x38)
 }
 fn insertion_target(
     project: &hex_project::Project,
@@ -1864,7 +1899,10 @@ mod tests {
             .unwrap();
         point(
             px(left + (frame - viewport.start) as f32 / viewport.length as f32 * width),
-            px(top + 18.0),
+            px(top
+                + super::super::time_selection::header_hit_height(
+                    super::super::tracks::TRACK_ROW_HEIGHT,
+                ) * 0.5),
         )
     }
     fn bounds(visual: &mut VisualTestContext, index: usize) -> gpui::Bounds<gpui::Pixels> {
@@ -3456,5 +3494,193 @@ mod tests {
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("section-edit-cursor").is_some());
+    }
+    #[gpui::test]
+    fn section_lower_body_paints_all_tracks_without_section_edit_even_when_focused(
+        cx: &mut TestAppContext,
+    ) {
+        for focused in [false, true] {
+            let (handle, editor, ids) = fixture(cx);
+            editor.update(cx, |view, cx| {
+                assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                    name: "hidden empty track".into()
+                })));
+                let event = next(&view.service);
+                assert!(event.error.is_none());
+                view.receive(event);
+                view.section_autoplay = false;
+                view.last_enqueued_edit = None;
+                cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let (header, start, end) = editor.read_with(cx, |view, _| {
+                let [_, top, _, height] = view.section_layout().unwrap();
+                let a = position(view, 1);
+                let b = position(view, 3);
+                (
+                    point(a.x, px(top + 6.0)),
+                    point(a.x, px(top + height * 0.75)),
+                    point(b.x, px(top + height * 0.75)),
+                )
+            });
+            visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.sections.selected, Some(ids[0]))
+            });
+            if focused {
+                visual.simulate_keystrokes("q");
+                visual.run_until_parked();
+            }
+            let before =
+                editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+            let hidden = before.tracks()[1].id();
+            if focused {
+                assert!(
+                    visual
+                        .debug_bounds(Box::leak(
+                            format!("arrangement-lane-{}", hidden.value()).into_boxed_str()
+                        ))
+                        .is_none()
+                );
+            }
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.sections.gesture.is_none(),
+                    "lower section body must delegate to the time-selection owner"
+                );
+                assert!(view.time_selection_gesture.is_some());
+                assert!(
+                    view.sections.cursor.is_none(),
+                    "body range must not retain a second section edit cursor"
+                );
+            });
+            visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("main-project-time-selection").is_some());
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                let range = view
+                    .normalized_time_selection()
+                    .expect("completed main range");
+                let map = before.tempo_map();
+                assert_eq!(
+                    (range.start(), range.end()),
+                    (
+                        map.beat_to_frame(BeatTime::ONE).unwrap(),
+                        map.beat_to_frame(BeatTime::from_quarters(3).unwrap())
+                            .unwrap()
+                    )
+                );
+                assert_eq!(
+                    range.tracks(),
+                    before
+                        .tracks()
+                        .iter()
+                        .map(|track| track.id())
+                        .collect::<Vec<_>>()
+                );
+                assert!(view.time_selection_project_scope);
+                assert!(view.sections.pending.is_none());
+                assert!(view.last_enqueued_edit.is_none());
+                assert_eq!(view.state.as_ref().unwrap().project, before);
+                assert_eq!(view.arrangement_focus.enabled, focused);
+                assert!(
+                    !focused || view.sections.selected == Some(ids[0]),
+                    "focus retains its section driver while range scope includes hidden tracks"
+                );
+            });
+            assert!(
+                !visual.update(|window, app| editor.read(app).section_has_focus(window)),
+                "range owns keyboard actions while Q keeps its display driver"
+            );
+            visual.simulate_keystrokes("cmd-c");
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.last_time_request, Some(("copy", None)))
+            });
+        }
+    }
+    #[gpui::test]
+    fn section_header_is_opaque_and_body_keeps_grid_visible_across_palettes_and_layouts(
+        cx: &mut TestAppContext,
+    ) {
+        struct RestoreTheme(hex_preferences::ThemePreferences);
+        impl Drop for RestoreTheme {
+            fn drop(&mut self) {
+                theme::apply_preferences(self.0);
+            }
+        }
+        let _restore = RestoreTheme(theme::preferences());
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        for (width, palette) in [
+            (880.0, hex_preferences::ThemePreferences::default()),
+            (
+                1280.0,
+                hex_preferences::ThemePreferences {
+                    background: hex_preferences::RgbColor::new(225, 229, 238),
+                    text: hex_preferences::RgbColor::new(24, 27, 34),
+                    primary: hex_preferences::RgbColor::new(145, 25, 45),
+                    secondary: hex_preferences::RgbColor::new(16, 70, 145),
+                },
+            ),
+        ] {
+            theme::apply_preferences(palette);
+            editor.update(cx, |view, cx| {
+                view.viewport = Some(Viewport {
+                    start: 24_000,
+                    length: 240_000,
+                });
+                cx.notify();
+            });
+            visual.simulate_resize(gpui::size(px(width), px(600.0)));
+            visual.simulate_mouse_move(point(px(4.0), px(4.0)), None, Modifiers::default());
+            visual.run_until_parked();
+            let body = bounds(&mut visual, 0);
+            let header = visual
+                .debug_bounds("arrangement-section-header-0")
+                .expect("actual section header");
+            assert!((f32::from(header.top() - body.top())).abs() <= 1.0);
+            assert!(
+                (f32::from(header.size.height) * 3.0 - f32::from(body.size.height)).abs() <= 2.0,
+                "header is the compact top third"
+            );
+            assert!(header.right() <= body.right() + px(1.0));
+            let (fill, _, _) = theme::section_colors(ElementColor::Blue, false, false);
+            assert_eq!(
+                visual.rendered_background("arrangement-section-header-0"),
+                Some(rgb(fill).into()),
+                "opaque header preserves title contrast"
+            );
+            assert_eq!(
+                visual.rendered_background("arrangement-section-0"),
+                Some(rgba((fill << 8) | 0x38).into()),
+                "completed body paint leaves the underlying Main grid/range visible"
+            );
+            for (at, cursor) in [
+                (header.center(), gpui::CursorStyle::OpenHand),
+                (
+                    point(body.center().x, body.top() + body.size.height * 0.75),
+                    gpui::CursorStyle::Arrow,
+                ),
+                (
+                    point(body.right() - px(1.0), body.top() + body.size.height * 0.75),
+                    gpui::CursorStyle::ResizeRightBracket,
+                ),
+            ] {
+                visual.simulate_mouse_move(at, None, Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(visual.rendered_cursor_style(), Some(cursor));
+            }
+            editor.read_with(cx, |view, _| {
+                assert_eq!(view.state.as_ref().unwrap().project, before)
+            });
+        }
     }
 }
