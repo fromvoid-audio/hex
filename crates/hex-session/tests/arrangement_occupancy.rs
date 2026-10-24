@@ -225,6 +225,85 @@ fn worker_raw_import_and_midi_placement_carve_literal_pcm_and_saved_history() {
 }
 
 #[test]
+fn faster_global_tempo_crops_adjacent_audio_in_one_publication_and_roundtrip() {
+    let files = Directory::new();
+    let source = files.wav("adjacent-tempo.wav", 1_000, 8_192);
+    let original_bytes = fs::read(&source).unwrap();
+    let service = Service::new(8_000, 32, 8_000_000).unwrap();
+    assert!(receive(&service).error.is_none());
+    let imported = run(&service, Request::Import(source.clone()));
+    let first = &imported.state.project.tracks()[0].clips()[0];
+    let (clip, asset) = (first.id(), first.asset());
+    let track = imported.state.project.tracks()[0].id();
+    let before = run(
+        &service,
+        Request::Edit(Command::PlaceClip {
+            track,
+            asset,
+            start: 1_000,
+            duration: 1_000,
+            source_offset: 0,
+            source_length: 1_000,
+            looping: false,
+        }),
+    );
+    let changed = run(
+        &service,
+        Request::Edit(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(240_000_000).unwrap(),
+        }),
+    );
+    assert!(changed.error.is_none(), "{:?}", changed.error);
+    assert_eq!(changed.state.revision, before.state.revision + 1);
+    let clips = changed.state.project.track(track).unwrap().clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(
+        (clips[0].id(), clips[0].start(), clips[0].duration()),
+        (clip, 0, 500)
+    );
+    assert_eq!(
+        (clips[1].id(), clips[1].start(), clips[1].duration()),
+        (
+            before.state.project.track(track).unwrap().clips()[1].id(),
+            500,
+            1_000
+        )
+    );
+    let render = |event: &Event| {
+        let revision = event
+            .playback
+            .as_ref()
+            .and_then(Playback::prepared_revision)
+            .unwrap()
+            .clone();
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback.apply(PlaybackCommand::Play);
+        let mut pcm = vec![[0.0; 2]; 1_501];
+        for block in pcm.chunks_mut(61) {
+            playback.render(block).unwrap();
+        }
+        assert_eq!(&pcm[..1_500], &vec![[0.25; 2]; 1_500]);
+        assert_eq!(pcm[1_500], [0.0; 2]);
+    };
+    render(&changed);
+    assert_eq!(
+        run(&service, Request::Undo).state.project,
+        before.state.project
+    );
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project, changed.state.project);
+    render(&redo);
+    let path = files.0.join("adjacent-tempo.hex");
+    assert!(run(&service, Request::SaveNew(path.clone())).save_complete);
+    run(&service, Request::Edit(Command::MasterGain { gain: 0.5 }));
+    let reopened = run(&service, Request::Open(path));
+    assert!(reopened.open_complete && reopened.project_replaced);
+    assert_eq!(reopened.state.project, changed.state.project);
+    render(&reopened);
+    assert_eq!(fs::read(source).unwrap(), original_bytes);
+}
+
+#[test]
 fn global_tempo_worker_publishes_natural_audio_onset_and_reopens_frozen_timing() {
     use hex_project::{Tempo, WarpMode, default_audio_warp};
     let files = Directory::new();

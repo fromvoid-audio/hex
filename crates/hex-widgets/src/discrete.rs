@@ -22,7 +22,7 @@ pub enum DiscreteControlAppearance {
     MicroSquare,
     CompactIconButton,
     CompactSelector,
-    /// Small directly selectable options without a popup.
+    /// Equal-width directly selectable options without a popup.
     CompactSegments,
 }
 
@@ -848,22 +848,33 @@ impl gpui::Render for Selector {
                 row = row.child(
                     div()
                         .id(index)
+                        .debug_selector(|| format!("{}-option-{index}", self.id))
                         .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
                         .h_full()
                         .flex()
                         .items_center()
                         .justify_center()
                         .border_1()
-                        .border_color(rgb(if self.focus.is_focused(window) {
-                            self.style.accent
-                        } else {
-                            self.style.border
-                        }))
+                        .border_color(rgb(
+                            if self.enabled
+                                && index == self.selected
+                                && self.focus.is_focused(window)
+                            {
+                                self.style.text
+                            } else {
+                                self.style.border
+                            },
+                        ))
                         .bg(rgb(if index == self.selected {
                             self.style.accent
                         } else {
                             self.style.surface
                         }))
+                        .when(self.enabled && index != self.selected, |option| {
+                            option.hover(|hover| hover.bg(rgb(self.style.hover)))
+                        })
                         .text_size(px(8.0))
                         .text_color(rgb(if index == self.selected {
                             self.style.background
@@ -1027,11 +1038,16 @@ impl gpui::Render for Selector {
                     cx.stop_propagation();
                     selector.choose(index, window, cx)
                 });
+                let marker_id = format!("{}-option-marker-{index}", self.id);
                 popup = popup.child(
                     div()
                         .id(SharedString::from(format!("{}-option-{index}", self.id)))
                         .debug_selector(|| format!("{}-option-{index}", self.id))
+                        .relative()
                         .flex()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex_shrink_0()
                         .h(px(option_height))
                         .px(px(4.0))
@@ -1044,11 +1060,25 @@ impl gpui::Render for Selector {
                         } else {
                             self.style.surface
                         }))
+                        .hover(move |hover| hover.bg(rgb(style.hover)))
                         .text_size(px(self.style.font_size))
                         .text_color(rgb(self.style.text))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, listener)
-                        .child(choice),
+                        .child(choice)
+                        // Keep the actual selection distinct while another row is hovered.
+                        .when(index == current, |option| {
+                            option.child(
+                                div()
+                                    .debug_selector(move || marker_id.clone())
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(px(2.0))
+                                    .bg(rgb(style.accent)),
+                            )
+                        }),
                 );
             }
             root = root.child(
@@ -1097,3 +1127,6 @@ pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -
         )
         .child(label)
 }
+
+#[cfg(test)]
+mod selector_tests;
