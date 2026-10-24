@@ -930,7 +930,7 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
     let project = Project::from_snapshot(snapshot).unwrap();
     let revision = prepared(&project, 71, [3; 32]);
     let source_key = StreamSourceKey::new(71, project.assets().next().unwrap().id());
-    let mut playback = Playback::from_prepared(revision);
+    let mut playback = Playback::from_prepared(Arc::clone(&revision));
     playback.apply(PlaybackCommand::Seek(1));
     playback.apply(PlaybackCommand::Play);
     let mut pages = MemoryPages::with_source(source_key);
@@ -948,6 +948,64 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
     assert!(pages.requests.is_empty());
     assert_eq!(playback.position(), 3);
     assert_eq!(playback.performance_frame(), 9);
+
+    // An absolute post-loop cursor must request and render that source range,
+    // including the same speculative window at a revision handoff.
+    let mut session = hex_engine::SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    session
+        .apply(hex_engine::SessionPlaybackCommand::Seek(4))
+        .unwrap();
+    session
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut extents = Vec::new();
+    let window = session
+        .visit_next_stream_chunk(2, None, &mut |extent| {
+            extents.push(extent);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(window.arrangement_frame, 4);
+    assert_eq!(window.frames, 2);
+    assert_eq!(
+        extents
+            .iter()
+            .find(|e| e.source == source_key)
+            .unwrap()
+            .start,
+        4_093
+    );
+    assert_eq!(session.arrangement_frame(), 4, "demand is read-only");
+    let mut candidate = hex_engine::SessionPlayback::new(revision).unwrap();
+    let planned = candidate
+        .preview_stream_handoff(&mut session, 2, None, &mut |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        (
+            planned.performance_frame,
+            planned.arrangement_frame,
+            planned.frames
+        ),
+        (
+            window.performance_frame,
+            window.arrangement_frame,
+            window.frames
+        )
+    );
+    assert_eq!(session.route_state_generation(), window.route_generation);
+    candidate.try_inherit_state_from(&mut session).unwrap();
+    assert_eq!(candidate.route_state_generation(), planned.route_generation);
+    let mut output = [[0.0; 2]; 2];
+    candidate
+        .render_with_pages(&mut output, &mut pages)
+        .unwrap();
+    for (index, actual) in output.iter().enumerate() {
+        let source = sample(4_093 + index as u64);
+        let bed = sample(6 + index as u64);
+        assert_eq!(*actual, [source[0] + bed[0], source[1] + bed[1]]);
+    }
+    assert!(pages.requests.is_empty());
+    assert_eq!(candidate.arrangement_frame(), 6);
 }
 
 #[test]

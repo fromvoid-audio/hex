@@ -87,7 +87,8 @@ impl SessionPlayback {
             for frames in &mut self.return_scratch {
                 frames[..chunk.len()].fill([0.0; 2]);
             }
-            let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+            let timing =
+                timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
             for (index, track) in self.revision.arrangement().tracks().iter().enumerate() {
                 let mut frames = [[0.0; 2]; 256];
                 let frames = &mut frames[..chunk.len()];
