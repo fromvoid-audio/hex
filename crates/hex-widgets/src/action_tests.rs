@@ -9,6 +9,10 @@ const STYLE: ActionStyle = ActionStyle {
     hover_background: 0xee9944,
     hover_text: Some(0x202020),
 };
+const PRESSED: ActionPressStyle = ActionPressStyle {
+    background: 0xffbb66,
+    text: 0x202020,
+};
 struct Fixture {
     clicks: [u32; 2],
 }
@@ -24,7 +28,7 @@ impl Render for Fixture {
                     .into_iter()
                     .enumerate()
                     .map(|(index, (id, label, width))| {
-                        round_action_surface(id, STYLE, 0x111111)
+                        round_action_surface(id, STYLE, 0x111111, PRESSED)
                             .debug_selector(move || id.into())
                             .w(px(width))
                             .child(label)
@@ -35,8 +39,7 @@ impl Render for Fixture {
                     }),
             )
             .child(
-                action("run".into(), STYLE)
-                    .id("regular")
+                pressed_action_surface(action("run".into(), STYLE).id("regular"), PRESSED)
                     .debug_selector(|| "regular".into())
                     .w(px(40.0))
                     .h(px(ROUND_ACTION_SIZE)),
@@ -113,10 +116,17 @@ fn pill_and_circle_execute_once_per_release_without_latching(cx: &mut TestAppCon
             px(ROUND_ACTION_SIZE / 2.0).scale(scale)
         );
         for count in 1..=2 {
+            visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            let hover = visual.rendered_background(selector);
             visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             view.read_with(cx, |view, _| assert_eq!(view.clicks[index], count - 1));
-            assert_ne!(visual.rendered_background(selector), idle);
+            assert_ne!(visual.rendered_background(selector), hover);
+            assert_eq!(
+                visual.rendered_background(selector),
+                Some(rgb(PRESSED.background).into())
+            );
             visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(point(px(100.0), px(60.0)), None, Modifiers::default());
             visual.run_until_parked();

@@ -226,8 +226,34 @@ fn bars_graph_color_and_chrome_accept_real_pointer_input(cx: &mut TestAppContext
         let hit = visual
             .debug_bounds(self::selector(&view, cx, selector))
             .expect(name);
-        visual.simulate_click(hit.center(), Modifiers::default());
-        visual.run_until_parked();
+        if name == "action" {
+            let action = self::selector(&view, cx, "chrome-action");
+            let bounds = visual.debug_bounds(action).unwrap();
+            visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            let hover = visual.rendered_background(action);
+            visual.simulate_mouse_down(
+                bounds.center(),
+                gpui::MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(action),
+                Some(rgb(theme::action_press_style(theme::action_style()).background).into())
+            );
+            assert_ne!(visual.rendered_background(action), hover);
+            visual.simulate_mouse_up(
+                bounds.center(),
+                gpui::MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_eq!(visual.rendered_background(action), hover);
+        } else {
+            visual.simulate_click(hit.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
         view.read_with(cx, |s, cx| {
             assert!(
                 s.samples[&s.selected].read(cx).status.starts_with(prefix),
