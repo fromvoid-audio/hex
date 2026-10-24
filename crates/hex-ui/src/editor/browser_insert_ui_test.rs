@@ -572,6 +572,27 @@ fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_
     let (handle, editor, _directory, _path) = fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    editor.update(visual, |view, cx| {
+        view.set_input_quantization(hex_project::InputQuantization::Adaptive);
+        cx.notify();
+    });
+    for width in [880.0, 1_000.0, 1_280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(540.0)));
+        visual.run_until_parked();
+        for id in ["input-quantization", "arrange-zoom-back"] {
+            let bounds = visual.debug_bounds(id).unwrap();
+            assert!(
+                f32::from(bounds.origin.x) >= 0.0
+                    && f32::from(bounds.origin.x + bounds.size.width) <= width,
+                "{id} must remain inside the toolbar at {width}: {bounds:?}"
+            );
+        }
+    }
+    editor.update(visual, |view, cx| {
+        view.set_input_quantization(hex_project::InputQuantization::Off);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let control = visual.debug_bounds("input-quantization").unwrap();
     visual.simulate_mouse_down(control.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(control.center(), MouseButton::Left, Modifiers::default());
