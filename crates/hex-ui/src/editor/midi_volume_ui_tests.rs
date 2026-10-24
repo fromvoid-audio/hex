@@ -15,6 +15,7 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
         cx.notify();
     });
     visual.run_until_parked();
+    assert!(visual.debug_bounds("midi-volume-point-values").is_none());
     let bounds = editor.read_with(&visual, |v, cx| {
         v.midi_volume
             .graph
@@ -33,6 +34,13 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     let held = editor.read_with(&visual, |v, _| v.displayed_midi_volume(clip).unwrap());
+    assert!(visual.debug_bounds("midi-volume-point-values").is_some());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            point_values(&held, v.midi_volume.selected).as_deref(),
+            Some("beat 2 · gain 2")
+        );
+    });
     assert_eq!(held.points().len(), 1);
     assert!((held.points()[0].value.linear() - 2.0).abs() < 0.001);
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -46,10 +54,16 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
                     .points()
                     .is_empty()
             );
-            assert_eq!(v.displayed_midi_volume(clip).unwrap(), held);
+            let displayed = v.displayed_midi_volume(clip).unwrap();
+            assert_eq!(displayed, held);
+            assert_eq!(
+                point_values(&displayed, v.midi_volume.selected).as_deref(),
+                Some("beat 2 · gain 2")
+            );
             assert!(v.midi_volume.gesture.is_none());
             assert!(v.pending_midi_drag.is_some());
         });
+        assert!(visual.debug_bounds("midi-volume-point-values").is_some());
     }
     let until = Instant::now() + Duration::from_secs(5);
     let terminal = loop {
@@ -71,7 +85,16 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.displayed_midi_volume(clip).unwrap(), held);
         assert!(v.pending_midi_drag.is_none());
+        assert_eq!(
+            point_values(
+                &v.displayed_midi_volume(clip).unwrap(),
+                v.midi_volume.selected
+            )
+            .as_deref(),
+            Some("beat 2 · gain 2")
+        );
     });
+    assert!(visual.debug_bounds("midi-volume-point-values").is_some());
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Undo));
     });
@@ -79,6 +102,7 @@ fn graph_creation_release_keeps_preview_until_matching_worker_terminal_and_one_u
     editor.read_with(&visual, |v, _| {
         assert!(v.displayed_midi_volume(clip).unwrap().points().is_empty())
     });
+    assert!(visual.debug_bounds("midi-volume-point-values").is_none());
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Redo));
     });
@@ -128,6 +152,7 @@ fn envelope_escape_blur_lost_pointer_and_stale_source_cancel_without_history(
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         assert!(editor.read_with(&visual, |v, _| v.midi_volume.gesture.is_some()));
+        assert!(visual.debug_bounds("midi-volume-point-values").is_some());
         // A/0 belongs to contextual clip activation only outside nested plot
         // focus. It must not submit an edit underneath a held envelope node.
         visual.simulate_keystrokes("a");
@@ -166,11 +191,19 @@ fn envelope_escape_blur_lost_pointer_and_stale_source_cancel_without_history(
             assert!(v.midi_volume.gesture.is_none(), "reason {reason}");
             assert!(v.pending_midi_drag.is_none());
             assert!(
+                point_values(
+                    &v.displayed_midi_volume(clip).unwrap(),
+                    v.midi_volume.selected
+                )
+                .is_none()
+            );
+            assert!(
                 curve(&v.state.as_ref().unwrap().project, clip)
                     .unwrap()
                     .points()
                     .is_empty()
             );
         });
+        assert!(visual.debug_bounds("midi-volume-point-values").is_none());
     }
 }
