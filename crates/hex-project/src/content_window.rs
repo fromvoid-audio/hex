@@ -3,6 +3,25 @@
 use crate::Invalid;
 use std::ops::Range;
 
+/// Constant-space finite loop seam plan, in elapsed clip-clock units. Only
+/// internal seams are returned; an introduction becomes a nonrepeating tail
+/// when reflected. This is display geometry, never a note scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepeatBoundaryPlan {
+    first: u64,
+    period: u64,
+    count: u64,
+}
+impl RepeatBoundaryPlan {
+    pub fn count(self) -> u64 {
+        self.count
+    }
+    pub fn boundary(self, index: u64) -> Option<u64> {
+        (index < self.count).then_some(())?;
+        self.first.checked_add(index.checked_mul(self.period)?)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContentWindow {
     pub start: u64,
@@ -25,6 +44,47 @@ impl ContentWindow {
             .checked_sub(self.start)
             .filter(|n| *n > 0)
             .ok_or(Invalid("content read interval must be positive"))
+    }
+    /// Project the forward seams `first + n * period` through this finite read
+    /// window. Work and storage are constant even for extremely dense loops.
+    pub fn repeat_boundaries(
+        self,
+        first: u64,
+        period: u64,
+    ) -> Result<Option<RepeatBoundaryPlan>, Invalid> {
+        self.length()?;
+        if first == 0 || period == 0 {
+            return Err(Invalid("repeat boundary and period must be positive"));
+        }
+        if self.end <= first {
+            return Ok(None);
+        }
+        let last = (self.end - 1 - first) / period;
+        let initial = if self.start < first {
+            0
+        } else {
+            (self.start - first) / period + 1
+        };
+        if initial > last {
+            return Ok(None);
+        }
+        let index = if self.reversed { last } else { initial };
+        let source = first
+            .checked_add(
+                index
+                    .checked_mul(period)
+                    .ok_or(Invalid("repeat boundary overflow"))?,
+            )
+            .ok_or(Invalid("repeat boundary overflow"))?;
+        Ok(Some(RepeatBoundaryPlan {
+            first: if self.reversed {
+                self.end - source
+            } else {
+                source - self.start
+            },
+            period,
+            count: last - initial + 1,
+        }))
     }
     /// Map a half-open elapsed interval, retaining the same finite gate length.
     pub fn read_range(self, range: Range<u64>) -> Result<Range<u64>, Invalid> {
@@ -109,5 +169,39 @@ mod tests {
         assert!(ContentWindow::new(3, 3, false).is_err());
         let whole = ContentWindow::new(0, u64::MAX, true).unwrap();
         assert_eq!(whole.read_range(0..u64::MAX).unwrap(), 0..u64::MAX);
+    }
+    #[test]
+    fn repeat_seams_reflect_only_internal_boundaries_and_bound_dense_windows() {
+        for (reversed, expected) in [(false, [3, 8]), (true, [2, 7])] {
+            let plan = ContentWindow::new(3, 13, reversed)
+                .unwrap()
+                .repeat_boundaries(6, 5)
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.count(), 2);
+            assert_eq!(
+                [plan.boundary(0).unwrap(), plan.boundary(1).unwrap()],
+                expected
+            );
+            assert_eq!(plan.boundary(2), None);
+        }
+        let plan = ContentWindow::new(3, 11, true)
+            .unwrap()
+            .repeat_boundaries(6, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!((plan.count(), plan.boundary(0)), (1, Some(5)));
+        assert_eq!(
+            ContentWindow::new(0, 6, true)
+                .unwrap()
+                .repeat_boundaries(6, 5)
+                .unwrap(),
+            None
+        );
+        let window = ContentWindow::new(0, u64::MAX, true).unwrap();
+        let dense = window.repeat_boundaries(1, 1).unwrap().unwrap();
+        assert_eq!(dense.count(), u64::MAX - 1);
+        assert_eq!(dense.boundary(dense.count() - 1), Some(u64::MAX - 1));
+        assert!(window.repeat_boundaries(1, 0).is_err());
     }
 }

@@ -411,6 +411,38 @@ mod tests {
             let encoded = crate::encode(editor.project()).unwrap();
             let mut reopened = Editor::new(crate::decode(&encoded).unwrap(), 32).unwrap();
             assert_eq!(reopened.project().snapshot(), reversed);
+            if let Some(clip) = reopened
+                .project()
+                .tracks()
+                .iter()
+                .flat_map(|t| t.midi_clips())
+                .next()
+            {
+                let id = clip.id();
+                let end = clip
+                    .start()
+                    .raw()
+                    .checked_add(clip.length().raw())
+                    .unwrap()
+                    .checked_add(hex_project::BeatTime::ONE.raw())
+                    .unwrap();
+                let mut resized = Editor::new(reopened.project().clone(), 32).unwrap();
+                resized
+                    .execute(Command::ResizeMidiClipView {
+                        clip: id,
+                        operation: hex_project::MidiViewResizeOperation::RepeatOuterEnd {
+                            beat: hex_project::BeatTime::from_raw(end),
+                        },
+                    })
+                    .unwrap();
+                assert_eq!(
+                    crate::decode(&crate::encode(resized.project()).unwrap())
+                        .unwrap()
+                        .snapshot(),
+                    resized.project().snapshot(),
+                    "directed loop authoring retains complete saved state"
+                );
+            }
             assert!(
                 super::super::clip_activation::encode(editor.project()).is_err() || ids.is_empty()
             );

@@ -393,6 +393,35 @@ impl<'a> AudioViewProjection<'a> {
     pub fn logical_first_boundary(&self) -> i128 {
         self.first_boundary
     }
+    /// Internal repeat seams in audible elapsed order. Unlike base occurrence
+    /// destinations, this includes finite read direction and retained trims.
+    pub fn repeat_boundaries(&self) -> Result<Option<crate::RepeatBoundaryPlan>, Invalid> {
+        let edit = self.clip.audio_edit();
+        let placement = edit.and_then(|edit| {
+            edit.content_view
+                .map_or(edit.placement, |v| v.base_placement)
+        });
+        if placement.is_none_or(|p| p.mode != AudioViewMode::Repeat) {
+            return Ok(None);
+        }
+        let window = self.content.map_or_else(
+            || {
+                crate::ContentWindow::new(
+                    0,
+                    u64::try_from(self.end - self.start)
+                        .map_err(|_| Invalid("audio repeat extent overflow"))?,
+                    false,
+                )
+            },
+            |(window, _, _)| Ok(window),
+        )?;
+        window.repeat_boundaries(
+            self.cycle
+                .checked_sub(self.phase)
+                .ok_or(Invalid("audio repeat phase exceeds cycle"))?,
+            self.cycle,
+        )
+    }
     pub fn occurrence_count(&self) -> u64 {
         self.count
     }

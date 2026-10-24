@@ -132,8 +132,12 @@ impl AudioTransformPreparation {
                 if first >= last {
                     continue;
                 }
-                let root_edit =
-                    super::view::occurrence_edit(&unfaded, occurrence, self, project.tempo_map())?;
+                let root_edit = super::view::occurrence_edit(
+                    &unfaded,
+                    occurrence.root_origin,
+                    self,
+                    project.tempo_map(),
+                )?;
                 let root = if let Some(root) = frame_root.as_ref() {
                     root
                 } else {
@@ -198,8 +202,12 @@ impl AudioTransformPreparation {
                 {
                     *f = [0.0; 2];
                 }
-                let root_edit =
-                    super::view::occurrence_edit(edit, occurrence, self, project.tempo_map())?;
+                let root_edit = super::view::occurrence_edit(
+                    edit,
+                    occurrence.root_origin,
+                    self,
+                    project.tempo_map(),
+                )?;
                 let fade = root_edit
                     .projected_fade(project.tempo_map())
                     .map_err(|e| Invalid(e.0))?;
@@ -287,8 +295,12 @@ impl AudioTransformPreparation {
                 return Err(Invalid("audio preparation cancelled"));
             }
             let occurrence = projection.occurrence(i)?;
-            let root_edit =
-                super::view::occurrence_edit(&unfaded, occurrence, self, project.tempo_map())?;
+            let root_edit = super::view::occurrence_edit(
+                &unfaded,
+                occurrence.root_origin,
+                self,
+                project.tempo_map(),
+            )?;
             let root = self.prepare_audio(project, &root_edit, asset, source)?;
             if root.frames().len() as u64 != occurrence.root_frame_length {
                 return Err(Invalid("directed root differs from admitted pcm"));

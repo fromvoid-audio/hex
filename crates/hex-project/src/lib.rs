@@ -47,7 +47,7 @@ pub use audio_edit::{
     default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
-pub use content_window::ContentWindow;
+pub use content_window::{ContentWindow, RepeatBoundaryPlan};
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};

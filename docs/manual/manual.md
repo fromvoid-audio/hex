@@ -352,7 +352,10 @@ audio and midi reverse in the clip's beat clock, so tempo changes can change the
 sound of musical audio. fades keep their timeline position.
 
 directed midi clips cannot yet be transferred to session, and midi recording requires
-a forward clip. an unsupported preparation refuses the complete edit.
+a forward clip. directed clips retain the outer repeat handle; dragging their
+first repeat seam is not available. for directed clips with fades, loop resizing
+updates the waveform after the edit is accepted. an unsupported preparation refuses
+the complete edit.
 
 # useful shortcuts
 
