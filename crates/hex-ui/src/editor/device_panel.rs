@@ -2462,19 +2462,45 @@ pub(super) fn action_button(
     role: theme::DeviceActionRole,
     selected: bool,
 ) -> Stateful<Div> {
-    hex_widgets::device_action(
-        theme::text(icon),
-        theme::device_header_action_style(selected, role),
+    button_details(
+        hex_widgets::device_action(
+            theme::text(icon),
+            theme::device_header_action_style(selected, role),
+        ),
+        id,
+        tooltip,
     )
-    .id(ElementId::Name(id.clone().into()))
-    .debug_selector(move || id.clone())
-    .cursor(gpui::CursorStyle::PointingHand)
-    .tooltip(move |_, cx| {
-        cx.new(|_| super::transport::MiniTooltip {
-            description: tooltip.into(),
+}
+
+/// Latched header/toolbar settings retain segment artwork, distinct from commands.
+pub(super) fn segment_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    button_details(
+        hex_widgets::device_segment(
+            theme::text(label),
+            theme::device_header_action_style(selected, role),
+        ),
+        id,
+        tooltip,
+    )
+}
+
+fn button_details(surface: Div, id: String, tooltip: &'static str) -> Stateful<Div> {
+    surface
+        .id(ElementId::Name(id.clone().into()))
+        .debug_selector(move || id.clone())
+        .cursor(gpui::CursorStyle::PointingHand)
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::transport::MiniTooltip {
+                description: tooltip.into(),
+            })
+            .into()
         })
-        .into()
-    })
 }
 
 // Host-specific composition policy stays outside the shared bindings.
