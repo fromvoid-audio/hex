@@ -1,5 +1,5 @@
 use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
 use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
@@ -721,6 +721,7 @@ fn button_surface(
         .text_xs()
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 name: tooltip.to_string(),
             })
             .into()
@@ -728,21 +729,13 @@ fn button_surface(
 }
 
 pub(super) struct ClipTooltip {
+    pub(super) kind: crate::tooltips::Kind,
     pub(super) name: String,
 }
 
 impl Render for ClipTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .font_family(theme::FONT_FAMILY)
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(&self.name))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::tooltips::view(&self.kind, &self.name, cx)
     }
 }
 
@@ -761,7 +754,7 @@ mod tests {
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
-        use gpui::{IntoElement, point, size};
+        use gpui::{IntoElement, div, point, size};
         use std::{cell::Cell, rc::Rc};
 
         let visual = cx.add_empty_window();

@@ -300,6 +300,7 @@ impl EditorView {
                 .debug_selector(|| "clip-view-toggle".into())
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: if open {
                             "hide clip view"
                         } else {
@@ -357,6 +358,7 @@ impl EditorView {
                     .child(theme::text("→ audio"))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: "bounce clip to audio in place".into(),
                         })
                         .into()

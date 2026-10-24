@@ -386,6 +386,7 @@ fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui:
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: tooltip.into(),
             })
             .into()
