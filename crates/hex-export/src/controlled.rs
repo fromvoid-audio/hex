@@ -32,6 +32,11 @@ impl ExportControl {
         }
     }
 
+    /// Identity comparison for an exact generated-media completion.
+    pub fn same_job(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.state.load(Ordering::Acquire) == 1
     }
@@ -63,6 +68,12 @@ impl ExportControl {
 
     pub(super) fn advance(&self, count: usize) {
         self.processed.fetch_add(count as u64, Ordering::Release);
+    }
+
+    /// Seal a prepared generated-media transaction immediately before its
+    /// infallible adoption. Cancellation can no longer win after this boundary.
+    pub fn seal_prepared_adoption(&self) -> Result<(), ExportError> {
+        self.begin_publication()
     }
 
     pub(super) fn begin_publication(&self) -> Result<(), ExportError> {
