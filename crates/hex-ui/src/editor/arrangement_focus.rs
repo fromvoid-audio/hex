@@ -61,6 +61,13 @@ fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64
     union.into()
 }
 impl State {
+    /// Retire on the selection event, even when multiple events share one paint.
+    pub(super) fn observe_active_track(&mut self, active: Option<TrackId>) {
+        if self.new_track != active {
+            self.new_track = None;
+        }
+    }
+
     pub(super) fn reveal_created_track(&mut self, track: TrackId) {
         self.new_track = (self.enabled && !self.ranges.is_empty()).then_some(track);
     }
@@ -79,10 +86,8 @@ impl State {
             self.pending_restore = None;
             self.new_track = None;
         }
-        if !self.enabled
-            || self.selected != selected
-            || self.new_track.is_some_and(|id| active_track != Some(id))
-        {
+        self.observe_active_track(active_track);
+        if !self.enabled || self.selected != selected {
             self.new_track = None;
         }
         let mut stamp = Stamp {

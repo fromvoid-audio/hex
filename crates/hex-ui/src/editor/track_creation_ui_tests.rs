@@ -160,6 +160,21 @@ fn section_focus_keeps_new_active_track_through_authoring_then_filters_on_select
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds(header).is_some());
+        if content_start.is_none() {
+            visual.update(|window, cx| {
+                editor.update(cx, |v, cx| {
+                    v.select_track(original, window);
+                    v.select_track(created, window);
+                    cx.notify();
+                });
+            });
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds(header).is_none(),
+                "reselection before repaint cannot revive the exception"
+            );
+            continue;
+        }
         if let Some(start) = content_start {
             editor.update(&mut visual, |v, _| {
                 assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
