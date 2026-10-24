@@ -490,7 +490,10 @@ impl NativeAudioSink {
                 let maximum = usize::try_from(MAX_RESIDENT_FRAMES)
                     .ok()?
                     .checked_mul(std::mem::size_of::<hex_engine::Frame>())?;
-                (bytes <= maximum).then_some(())?;
+                let prepared = usize::try_from(quote.prepared_pcm_frames)
+                    .ok()?
+                    .checked_mul(std::mem::size_of::<hex_engine::Frame>())?;
+                (bytes.checked_add(prepared)? <= maximum).then_some(())?;
                 quote.storage_reservation(bytes).ok()
             });
             let Some(storage) = storage else {
@@ -541,6 +544,8 @@ impl NativeAudioSink {
                         input_bytes.unwrap_or(usize::MAX)
                             / std::mem::size_of::<hex_engine::Frame>(),
                     )
+                    .ok()
+                    .and_then(|frames| frames.checked_add(quote.prepared_pcm_frames))
                     .unwrap_or(u64::MAX);
                     self.verified_pcm_frames =
                         self.verified_pcm_frames.saturating_add(copied_frames);

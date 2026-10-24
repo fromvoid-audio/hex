@@ -47,6 +47,7 @@ mod workspace_view;
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod group_selection;
 mod midi_pending_drag;
 mod midi_volume;
 mod pending_clip_move;
@@ -369,7 +370,7 @@ actions!(
         TrimRight,
         DeleteClip,
         DeleteSectionMarker,
-        MergeSections,
+        GroupSelection,
         RenameClip,
         RenameTrack,
         CommitTrackName,
@@ -486,7 +487,11 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
         KeyBinding::new("alt-backspace", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new("alt-delete", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("g", MergeSections, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "g",
+            GroupSelection,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_device_selection"),
+        ),
         KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),

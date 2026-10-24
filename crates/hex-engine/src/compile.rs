@@ -464,8 +464,26 @@ fn compile_project_inner<'a>(
                 let asset = snapshot
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
-                let source = resolve_source(asset, snapshot.sample_rate())?;
-                let mut compiled = transforms.compile_clip(snapshot, clip, asset, source)?;
+                let mut compiled = if let Some(events) = clip.audio_edit()
+                    .and_then(|edit| edit.domain.events.as_ref())
+                    .filter(|events| !events.sources.is_empty())
+                {
+                    let mut sources = Vec::new();
+                    sources.try_reserve_exact(events.sources.len())
+                        .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
+                    for root in &events.sources {
+                        let asset = snapshot.asset(root.clip.asset())
+                            .ok_or(Invalid("grouped audio source asset missing"))?;
+                        let PreparedAudioSourceRef::Resident(audio) = resolve_source(asset, snapshot.sample_rate())? else {
+                            return Err(Invalid("grouped audio preparation requires resident sources; source changes were not committed"));
+                        };
+                        sources.push(crate::audio_transform::GroupSource { root, asset, audio });
+                    }
+                    Some(transforms.compile_group(clip, &sources)?)
+                } else {
+                    let source = resolve_source(asset, snapshot.sample_rate())?;
+                    transforms.compile_clip(snapshot, clip, asset, source)?
+                };
                 if let Some(compiled) = compiled.as_mut() {
                     compiled.active = clip.active();
                 }
