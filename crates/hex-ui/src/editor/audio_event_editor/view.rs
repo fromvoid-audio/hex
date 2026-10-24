@@ -11,11 +11,13 @@ pub(in crate::editor) fn view(
     let owner = (clip_id, view.project_generation);
     if view.audio_event_editor.owner != Some(owner) {
         let clipboard = view.audio_event_editor.clipboard.take();
+        let pending = view.audio_event_editor.pending.take();
         view.audio_event_editor = State {
             owner: Some(owner),
             revision,
             cursor: root.view_start,
             clipboard,
+            pending,
             ..State::default()
         };
     }
@@ -56,10 +58,17 @@ pub(in crate::editor) fn view(
     }
     let preview = view
         .audio_event_editor
-        .gesture
+        .pending
         .as_ref()
-        .and_then(|g| g.operation.clone())
-        .and_then(|op| events.edited(op, root.domain.clock.length()).ok())
+        .filter(|p| p.owner == owner)
+        .map(|p| p.preview.clone())
+        .or_else(|| {
+            view.audio_event_editor
+                .gesture
+                .as_ref()
+                .and_then(|g| g.operation.clone())
+                .and_then(|op| events.edited(op, root.domain.clock.length()).ok())
+        })
         .unwrap_or_else(|| events.clone());
     let local = view.event_viewport(&root);
     let viewport = view.event_project_viewport(&root)?;
@@ -304,6 +313,7 @@ pub(in crate::editor) fn view(
                 ) else {
                     return;
                 };
+                view.advance_selection_intent();
                 view.audio_event_focus.focus(window);
                 let Some((clip_id, root, _)) = view.event_context() else {
                     return;
@@ -411,16 +421,6 @@ pub(in crate::editor) fn view(
                 view.event_update_pointer(f32::from(event.position.x), event.modifiers.platform);
                 if let Some(gesture) = view.audio_event_editor.gesture.take() {
                     if let Some(operation) = gesture.operation {
-                        if let AudioEventEdit::MoveRange {
-                            start,
-                            end,
-                            destination,
-                        } = &operation
-                        {
-                            view.audio_event_editor.range =
-                                Some((*destination, *destination + (*end - *start)));
-                            view.audio_event_editor.cursor = *destination;
-                        }
                         view.event_commit(operation);
                     }
                 }
@@ -646,6 +646,7 @@ pub(in crate::editor) fn view(
         )
         .on_action(
             cx.listener(|view, _: &super::super::CancelDragOrStop, _, cx| {
+                view.advance_selection_intent();
                 view.audio_event_editor.gesture = None;
                 view.audio_event_editor.range = None;
                 cx.stop_propagation();

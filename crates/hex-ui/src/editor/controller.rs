@@ -996,6 +996,7 @@ impl EditorView {
                     visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
+                    visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1020,6 +1021,7 @@ impl EditorView {
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_detail_request = self.audio_clip_controls.matches(&request);
+                let audio_events_request = self.pending_audio_events_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -1048,6 +1050,9 @@ impl EditorView {
                         if clip_detail_request {
                             self.audio_clip_controls
                                 .submitted(self.worker_requests_pending);
+                        }
+                        if audio_events_request {
+                            self.audio_events_submitted();
                         }
                         if clip_move_request {
                             self.clip_move_submitted();
@@ -1091,6 +1096,9 @@ impl EditorView {
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
                         if group_copy_request {
                             self.pending_group_copy = None;
+                        }
+                        if audio_events_request {
+                            visible_change |= self.retire_pending_audio_events();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -1158,6 +1166,9 @@ impl EditorView {
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
                         if group_copy_request {
                             self.pending_group_copy = None;
+                        }
+                        if audio_events_request {
+                            visible_change |= self.retire_pending_audio_events();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -1932,6 +1943,7 @@ impl EditorView {
         {
             self.retire_sample_bpm_control();
         }
+        self.audio_events_request_complete(&event);
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -3072,6 +3084,7 @@ impl EditorView {
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_detail_request = self.audio_clip_controls.matches(&request);
+        let audio_events_request = self.pending_audio_events_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -3095,6 +3108,9 @@ impl EditorView {
                 if clip_detail_request {
                     self.audio_clip_controls
                         .submitted(self.worker_requests_pending);
+                }
+                if audio_events_request {
+                    self.audio_events_submitted();
                 }
                 if clip_move_request {
                     self.clip_move_submitted();

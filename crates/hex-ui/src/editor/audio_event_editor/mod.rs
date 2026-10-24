@@ -1,7 +1,10 @@
 //! Clip-local waveform editing. Only selection, viewport and previews live here.
+mod pending;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 mod view;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod workflow_tests;
 use super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
@@ -22,6 +25,7 @@ pub(super) struct State {
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
+    pending: Option<pending::Pending>,
 }
 impl State {
     pub(super) fn clear_fit_back(&mut self) {
@@ -65,18 +69,6 @@ impl EditorView {
                 && self.audio_event_editor.revision == revision
         })
     }
-    fn event_commit(&mut self, operation: AudioEventEdit) {
-        if self.edit_pending() || !self.event_context_current() {
-            return;
-        }
-        let Some((clip, _, _)) = self.event_context() else {
-            return;
-        };
-        self.audio_event_editor.gesture = None;
-        self.enqueue(hex_session::service::Request::Edit(
-            hex_project::Command::EditAudioEvents { clip, operation },
-        ));
-    }
     fn event_range(&self) -> Option<(u64, u64)> {
         if let Some(range) = self.audio_event_editor.range.filter(|(a, b)| a < b) {
             return Some(range);
@@ -92,6 +84,9 @@ impl EditorView {
             .map(|e| (e.start, e.end))
     }
     fn event_copy(&mut self, cut: bool) {
+        if self.edit_pending() || !self.event_context_current() {
+            return;
+        }
         let Some((clip, root, _)) = self.event_context() else {
             return;
         };
@@ -104,7 +99,7 @@ impl EditorView {
         let Some(source) = state.project.clip(clip) else {
             return;
         };
-        self.audio_event_editor.clipboard = Some(Clipboard {
+        let clipboard = Clipboard {
             owner: (clip, self.project_generation),
             root,
             length: end - start,
@@ -115,10 +110,15 @@ impl EditorView {
                     return;
                 }
             },
-        });
-        self.audio_event_editor.cursor = start;
+        };
         if cut {
             self.event_commit(AudioEventEdit::Delete { start, end });
+            if let Some(pending) = self.audio_event_editor.pending.as_mut() {
+                pending.clipboard = Some(clipboard);
+            }
+        } else {
+            self.audio_event_editor.clipboard = Some(clipboard);
+            self.audio_event_editor.cursor = start;
         }
     }
     fn event_paste(&mut self, insert: bool) {
@@ -174,8 +174,6 @@ impl EditorView {
     fn event_delete(&mut self) {
         if let Some((start, end)) = self.event_range() {
             self.event_commit(AudioEventEdit::Delete { start, end });
-            self.audio_event_editor.range = None;
-            self.audio_event_editor.selected = None;
         }
     }
     fn event_split(&mut self) {
@@ -446,6 +444,7 @@ impl EditorView {
     }
     fn event_select_all(&mut self) {
         if let Some((_, root, _)) = self.event_context() {
+            self.advance_selection_intent();
             self.audio_event_editor.range = Some((root.view_start, root.view_end));
             self.audio_event_editor.cursor = root.view_start;
         }
