@@ -43,7 +43,7 @@ pub use text_click_selection::TextClickSelection;
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
 };
-pub use curve::{curve_plot, transfer_plot};
+pub use curve::{CurvePlotGrid, curve_plot};
 pub use dial::{
     DialLayout, MICRO_DIAL_DIAMETER, MICRO_DIAL_HEIGHT, MICRO_DIAL_WIDTH, WIDE_MICRO_DIAL_WIDTH,
 };

@@ -77,17 +77,21 @@ impl Sample {
                     }
                     _ => DiscreteControlAppearance::Standard,
                 });
-        let selector_config = SelectorConfig::new(
-            "sandbox-selector",
-            ["sine", "triangle", "square"].map(theme::text),
-            0,
-            style,
-        )?
-        .with_appearance(match item.demo {
-            Demo::Selector(a) => a,
-            _ => DiscreteControlAppearance::Standard,
-        })
-        .with_accessibility_name(theme::text("wave shape"));
+        let choices = if matches!(item.demo, Demo::Curve) {
+            vec![theme::text("horizontal grid"), theme::text("centered grid")]
+        } else {
+            ["sine", "triangle", "square"].map(theme::text).to_vec()
+        };
+        let selector_config = SelectorConfig::new("sandbox-selector", choices, 0, style)?
+            .with_appearance(match item.demo {
+                Demo::Selector(a) => a,
+                _ => DiscreteControlAppearance::Standard,
+            })
+            .with_accessibility_name(theme::text(if matches!(item.demo, Demo::Curve) {
+                "plot grid"
+            } else {
+                "wave shape"
+            }));
         let picker =
             ColorPickerConfig::new("sandbox-color", RgbColor::new(75, 150, 210), 210.0, style)?;
         Ok(Prepared {
@@ -136,7 +140,7 @@ impl Sample {
         }));
         let graph_model = ResponseGraphModel {
             primary: vec![[0.0, 0.3], [0.5, 0.7], [1.0, 0.4]],
-            secondary: vec![[0.0, 0.6], [0.5, 0.4], [1.0, 0.6]],
+            secondary: vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.5]],
             analyzer: Some(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 0.1]]),
             input_analyzer: Some(vec![[0.0, 0.1], [0.5, 0.4], [1.0, 0.0]]),
             nodes: vec![ResponseGraphNode {
@@ -148,14 +152,15 @@ impl Sample {
         };
         let graph = cx.new(|cx| ResponseGraph::new(cx, "sandbox-graph", style));
         if let Err(e) = graph.update(cx, |g, cx| {
+            g.set_editable(true, cx);
             g.set_creation_enabled(true);
             g.set_backspace_removal(true);
             g.set_tab_navigation(true, cx);
             g.set_axes(
                 Some(ResponseGraphAxes {
-                    horizontal: vec![(0.0, theme::text("low")), (1.0, theme::text("high"))],
+                    horizontal: vec![(0.0, theme::text("0")), (1.0, theme::text("1"))],
                     vertical: vec![(0.0, theme::text("0")), (1.0, theme::text("1"))],
-                    right: vec![(0.5, theme::text("mid"))],
+                    right: vec![],
                 }),
                 cx,
             )?;
@@ -264,6 +269,7 @@ impl Sample {
         cx.notify();
     }
     fn graph_event(&mut self, e: &ResponseGraphEvent, cx: &mut Context<Self>) {
+        let mut node_id = e.node_id;
         match e.phase {
             ResponseGraphPhase::Begin => self.graph_before = Some(self.graph_model.clone()),
             ResponseGraphPhase::Create if self.graph_model.nodes.len() < 16 => {
@@ -272,6 +278,7 @@ impl Sample {
                 else {
                     return;
                 };
+                node_id = id;
                 for n in &mut self.graph_model.nodes {
                     n.selected = false;
                 }
@@ -308,6 +315,23 @@ impl Sample {
             }
             _ => {}
         }
+        // This fixture is a piecewise-linear editor; production response owners
+        // still supply their own DSP response independently of control nodes.
+        self.graph_model.primary = std::iter::once([0.0, 0.3])
+            .chain(self.graph_model.nodes.iter().map(|node| node.position))
+            .chain(std::iter::once([1.0, 0.4]))
+            .collect();
+        self.graph_model
+            .primary
+            .sort_by(|a, b| a[0].total_cmp(&b[0]));
+        // ResponseGraph requires aligned primary/reference sample counts.
+        // Keep a static midpoint reference at the edited x positions.
+        self.graph_model.secondary = self
+            .graph_model
+            .primary
+            .iter()
+            .map(|[x, _]| [*x, 0.5])
+            .collect();
         if let Err(e) = self.graph.update(cx, |g, cx| {
             g.set_model(self.graph_model.clone(), theme::control_style(), cx)
         }) {
@@ -316,7 +340,7 @@ impl Sample {
         }
         self.status = format!(
             "node {} · {:?} · {:.3}, {:.3}",
-            e.node_id, e.phase, e.position[0], e.position[1]
+            node_id, e.phase, e.position[0], e.position[1]
         );
         cx.notify();
     }
@@ -510,7 +534,7 @@ impl Sample {
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
             Demo::Graph => div().w_full().h(px(220.0)).child(self.graph.clone()),
             Demo::Color => div().w(px(240.0)).h(px(220.0)).child(self.picker.clone()),
-            Demo::Curve | Demo::Transfer | Demo::Spectrum => {
+            Demo::Curve | Demo::Spectrum => {
                 let amount = self.numbers[1].read(cx).value() as f32 / 100.0;
                 let points = [
                     [0.0, 0.0],
@@ -520,8 +544,15 @@ impl Sample {
                     [1.0, 1.0],
                 ];
                 let plot = match self.item.demo {
-                    Demo::Curve => curve_plot(points, s),
-                    Demo::Transfer => transfer_plot(points, s),
+                    Demo::Curve => curve_plot(
+                        points,
+                        s,
+                        if self.selector.read(cx).selected() == 0 {
+                            CurvePlotGrid::Horizontal
+                        } else {
+                            CurvePlotGrid::Centered
+                        },
+                    ),
                     _ => SpectrumPlotLayers::new(vec![
                         SpectrumPlotLayer {
                             points: points.to_vec(),
@@ -538,6 +569,9 @@ impl Sample {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
+                    .when(matches!(self.item.demo, Demo::Curve), |column| {
+                        column.child(self.selector.clone())
+                    })
                     .child(div().h(px(180.0)).children(plot))
                     .child(self.controls())
             }
@@ -593,7 +627,7 @@ impl Render for Sample {
             .child(div().id("widget-preview").debug_selector(||"widget-preview".into()).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus"))
-            .child(theme::text(match self.item.demo {Demo::Graph=>"drag nodes · click blank to add (max 16) · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Transfer|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color|Demo::Bars){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
@@ -602,6 +636,67 @@ impl Render for Sample {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn graph_fixture_line_follows_pointer_edits_and_cancel(cx: &mut TestAppContext) {
+        cx.update(hex_widgets::bind_response_graph_keys);
+        let item = Item {
+            name: "response graph",
+            category: "graphics",
+            demo: Demo::Graph,
+        };
+        let prepared = Sample::prepare(item).expect("valid fixture");
+        let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+        handle
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        let view = handle.root(cx).expect("sample");
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let plot = view.read_with(cx, |s, cx| s.graph.read(cx).plot_bounds().unwrap());
+        let at = |x, y| {
+            point(
+                plot.left() + plot.size.width * x,
+                plot.bottom() - plot.size.height * y,
+            )
+        };
+        let before = view.read_with(cx, |s, _| s.graph_model.primary.clone());
+        visual.simulate_mouse_down(at(0.5, 0.7), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.65, 0.8), Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_ne!(s.graph_model.primary, before);
+            assert!(
+                s.graph_model
+                    .primary
+                    .contains(&s.graph_model.nodes[0].position)
+            );
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| assert_eq!(s.graph_model.primary, before));
+        visual.simulate_mouse_up(at(0.65, 0.8), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(at(0.3, 0.2), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at(0.3, 0.2), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_eq!(s.graph_model.nodes.len(), 2);
+            assert!(
+                s.graph_model
+                    .primary
+                    .contains(&s.graph_model.nodes[1].position)
+            );
+            assert!(s.status.starts_with("node 2"), "{}", s.status);
+        });
+        visual.simulate_click(at(0.3, 0.2), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("backspace");
+        visual.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_eq!(s.graph_model.nodes.len(), 1, "{}", s.status);
+            assert_eq!(s.graph_model.primary, before);
+        });
+    }
+
     #[gpui::test]
     fn theme_rebuild_cancels_live_bar_stroke_and_preserves_committed_color(
         cx: &mut TestAppContext,
