@@ -12,9 +12,15 @@ pub(super) fn tempo_map(
     old: &TempoMap,
     preview: &SectionReorderPreview,
 ) -> Result<TempoMap, Invalid> {
-    // A single global tempo has no events to move. Keep its exact Q32 clock
-    // instead of introducing synthetic splice seams (and fractional prefixes).
-    if preview.is_noop() || old.points().len() == 1 {
+    // A constant tempo is the project clock, not transitions to splice. Keep
+    // every saved point and its exact Q32 prefix, including legacy redundant
+    // points, rather than introducing/moving artificial timing seams.
+    if preview.is_noop()
+        || old
+            .points()
+            .iter()
+            .all(|p| p.tempo() == old.tempo_at(BeatTime::ZERO))
+    {
         return Ok(old.clone());
     }
     let mut beats: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();

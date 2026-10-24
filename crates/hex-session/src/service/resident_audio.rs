@@ -1274,14 +1274,16 @@ impl Session {
         Ok(snapshot)
     }
     pub(super) fn section_history_requires_publication(&self, redo: bool) -> bool {
-        self.editor
-            .inspect_history(redo, |source, target| {
-                source.arrangement_sections() != target.arrangement_sections()
-                    && (source.tracks() != target.tracks()
-                        || source.tempo_map() != target.tempo_map()
-                        || source.meter_map() != target.meter_map())
-            })
-            .unwrap_or(false)
+        self.editor.next_section_history_requires_publication(redo)
+            || self
+                .editor
+                .inspect_history(redo, |source, target| {
+                    source.arrangement_sections() != target.arrangement_sections()
+                        && (source.tracks() != target.tracks()
+                            || source.tempo_map() != target.tempo_map()
+                            || source.meter_map() != target.meter_map())
+                })
+                .unwrap_or(false)
     }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn section_snapshot(

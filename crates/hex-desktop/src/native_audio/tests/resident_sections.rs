@@ -640,18 +640,35 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             panic!("track")
         };
         (applied, _) = h.applied(applied);
+        // A 64-frame periodic source makes successive 64-frame blocks an exact
+        // phase oracle as well as a double-note oracle after publication.
+        let sampler_path = files.wav(48_000, 192_000);
+        let mut bytes = fs::read(&sampler_path).unwrap();
+        for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+            let value =
+                (8192.0 * (std::f64::consts::TAU * (i % 64) as f64 / 64.0).sin()).round() as i16;
+            sample.copy_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&sampler_path, bytes).unwrap();
         let loaded = h.run(Request::LoadFirstSampler {
             request_id: 1,
             project_generation: 0,
             revision: added.state.revision,
             track,
             empty_sampler: None,
-            path: files.wav(48_000, 192_000),
+            path: sampler_path,
             cancel: Arc::new(AtomicBool::new(false)),
         });
         assert!(loaded.error.is_none());
         (applied, _) = h.applied(applied);
         h.run(Request::Edit(Command::SetProjectTempo {
+            tempo: Tempo::new(micro_bpm).unwrap(),
+        }));
+        (applied, _) = h.applied(applied);
+        // Older section edits inserted same-tempo points. Retain that complete
+        // saved clock, including a fractional beat, while editing live.
+        h.run(Request::Edit(Command::SetTempoPoint {
+            beat: BeatTime::from_ratio(7, 13).unwrap(),
             tempo: Tempo::new(micro_bpm).unwrap(),
         }));
         (applied, _) = h.applied(applied);
@@ -694,6 +711,20 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
         assert!(h.seek_result().result.is_ok());
         (applied, _) = h.applied(applied);
         assert!(h.render().iter().flatten().any(|s| *s != 0.0));
+        let before_noop = event.state.project.snapshot();
+        let noop = run_callback(
+            &mut h,
+            section_request(
+                event.state.revision,
+                Command::ReorderSectionBefore {
+                    section: intro,
+                    before: intro,
+                },
+            ),
+        );
+        assert!(noop.error.is_none(), "{:?}", noop.error);
+        assert_eq!(noop.state.revision, event.state.revision);
+        assert_eq!(noop.state.project.snapshot(), before_noop);
         for command in [
             Command::DuplicateArrangementSection(intro),
             Command::ReorderSectionAfter {
@@ -752,5 +783,53 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .command(PlaybackCommand::Stop)
             .unwrap();
         assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+    }
+}
+
+#[test]
+fn empty_section_structural_history_retains_the_launched_loop_while_playing() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    let initial = h.next();
+    let (mut applied, _) = h.applied(0);
+    let (first, intro) = add(&mut h, initial.state.revision, "intro", 0, 2);
+    (applied, _) = h.applied(applied);
+    let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    (applied, _) = h.applied(applied);
+    let mut intent = h.seek_intent(1, event.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: hex_project::LoopRegion::new(0, 48_000, true).unwrap(),
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok());
+    (applied, _) = h.applied(applied);
+    for command in [
+        Command::ReorderSectionAfter {
+            section: intro,
+            after: chorus,
+        },
+        Command::DuplicateArrangementSection(intro),
+    ] {
+        for request in [
+            section_request(event.state.revision, command),
+            Request::Undo,
+            Request::Redo,
+        ] {
+            event = run_callback(&mut h, request);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            (applied, _) = h.applied(applied);
+            for _ in 0..800 {
+                h.render();
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire));
+            assert!(
+                status.position.load(Acquire) < 48_000,
+                "even an empty structural history edge must keep the launched loop"
+            );
+        }
     }
 }
