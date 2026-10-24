@@ -36,7 +36,13 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
     let initial = next(&service);
     let mut old: serde_json::Value =
         serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
-    // This empty schema36 fixture predates horizontal fade coordinates.
+    // This empty schema36 fixture predates clip activation, sections, one-shot
+    // boundaries and horizontal fade coordinates. Strip later-schema inventories
+    // explicitly; historical readers must keep rejecting unknown fields.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("clip_activation"),
+        Some(serde_json::json!([]))
+    );
     assert_eq!(
         old.as_object_mut()
             .unwrap()
