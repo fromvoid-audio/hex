@@ -498,21 +498,21 @@ pub(in crate::editor) fn view(
                 if view.audio_event_editor.gesture.is_none() {
                     return;
                 }
-                view.event_update_pointer(f32::from(event.position.x), event.modifiers.platform);
-                if let Some(gesture) = view.audio_event_editor.gesture.take() {
-                    if let Some(operation) = gesture.operation {
-                        view.event_commit(operation);
-                    }
-                }
+                view.event_release_pointer(f32::from(event.position.x), event.modifiers.platform);
                 cx.stop_propagation();
                 cx.notify();
             }),
         )
         .on_mouse_up_out(
             MouseButton::Left,
-            cx.listener(|view, _, window, cx| {
-                if view.audio_event_editor.gesture.take().is_some() {
+            cx.listener(|view, event: &gpui::MouseUpEvent, window, cx| {
+                if view.audio_event_editor.gesture.is_some() {
+                    view.event_release_pointer(
+                        f32::from(event.position.x),
+                        event.modifiers.platform,
+                    );
                     view.audio_event_focus.focus(window);
+                    cx.stop_propagation();
                     cx.notify();
                 }
             }),
