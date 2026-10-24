@@ -149,7 +149,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button("m", self.muted[track]).id(("mute", track)),
+                    Self::toggle_button("m", self.muted[track]).id(("mute", track)),
                     "toggle track mute",
                 )
                 .h(px(22.0))
