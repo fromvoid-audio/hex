@@ -195,6 +195,15 @@ in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
 
+## clip loop resizing
+
+hover the lower part of a clip's right edge to show the loop cursor, then drag
+to repeat its source. the rest of the edge keeps ordinary trimming. audio and
+midi clips use the same gesture; no loop icon is painted inside the clip. looped
+clips have rounded bottom corners. drag the first repeat boundary to change the
+cycle while keeping the outer duration; directed clips retain only the outer
+repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
+
 ## audio event fades
 
 select an audio clip and choose **events** in its detail area. focus the event

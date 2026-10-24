@@ -136,11 +136,42 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             v.state.as_ref().unwrap().project.snapshot()
         });
         let handle = f.visual.debug_bounds(selector(&f, "outer")).unwrap();
-        let affordance = f
-            .visual
-            .debug_bounds("clip-loop-corner-affordance")
-            .expect("visible repeat affordance before activation");
-        assert!(handle.contains(&affordance.center()));
+        assert!(
+            f.visual
+                .debug_bounds("clip-loop-corner-affordance")
+                .is_none(),
+            "loop action belongs to the edge cursor, not a painted clip icon"
+        );
+        let trim_selector = Box::leak(
+            format!(
+                "{}clip-trim-right-{}",
+                if midi { "midi-" } else { "" },
+                f.clip.value()
+            )
+            .into_boxed_str(),
+        );
+        let trim = f.visual.debug_bounds(trim_selector).unwrap();
+        assert!((handle.right() - trim.right()).abs() <= px(1.0));
+        assert!((handle.bottom() - trim.bottom()).abs() <= px(1.0));
+        assert!(handle.size.height < trim.size.height);
+        f.visual
+            .simulate_mouse_move(handle.center(), None, Modifiers::default());
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Loop)
+        );
+        f.visual.simulate_mouse_move(
+            point(handle.center().x, handle.top() - px(3.0)),
+            None,
+            Modifiers::default(),
+        );
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::ResizeRightBracket),
+            "upper right edge still trims"
+        );
         let modifiers = Modifiers {
             shift: true,
             ..Default::default()
@@ -363,7 +394,7 @@ fn clip_loop_no_motion_stale_and_refused_capture_leave_no_edit(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn clip_loop_compact_track_corner_keeps_ordinary_edge_strip(cx: &mut TestAppContext) {
+fn clip_loop_compact_track_corner_keeps_ordinary_edge_above(cx: &mut TestAppContext) {
     for midi in [false, true] {
         let mut f = fixture(cx, midi);
         let track = f.editor.read_with(&f.visual, |v, _| {
@@ -408,7 +439,19 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_strip(cx: &mut TestAppCont
             )
             .into_boxed_str(),
         );
-        assert!(corner.right() < f.visual.debug_bounds(edge).unwrap().left());
+        let edge = f.visual.debug_bounds(edge).unwrap();
+        assert!((corner.right() - edge.right()).abs() <= px(1.0));
+        assert!(corner.top() > edge.top() + px(3.0));
+        f.visual.simulate_mouse_move(
+            point(corner.center().x, corner.top() - px(2.0)),
+            None,
+            Modifiers::default(),
+        );
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::ResizeRightBracket)
+        );
         let target = drag(&mut f, "outer", 40.0, Modifiers::default());
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());

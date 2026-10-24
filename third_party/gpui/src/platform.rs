@@ -1473,6 +1473,10 @@ pub enum CursorStyle {
     /// corresponds to the CSS cursor value `ew-resize`
     ResizeLeftRight,
 
+    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
+    /// other platforms retain a horizontal resize fallback.
+    Loop,
+
     /// A resize up cursor
     /// corresponds to the CSS cursor value `n-resize`
     ResizeUp,
