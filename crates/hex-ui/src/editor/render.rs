@@ -452,6 +452,7 @@ impl Render for EditorView {
             .font_family(theme::FONT_FAMILY)
             .child(self.fade_pointer_events(cx))
             .child(self.project_spectrum_pointer_events(cx))
+            .child(self.clip_detail_pointer_events(cx))
             .track_focus(&self.focus)
             .key_context(if self.changelog.is_open() {
                 "hex_changelog"
@@ -787,6 +788,7 @@ impl Render for EditorView {
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
                     | view.cancel_project_spectrum_resize(cx)
+                    | view.cancel_clip_detail_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()
@@ -1370,7 +1372,7 @@ impl Render for EditorView {
                 view.request_quit(window, cx);
             }))
             .child(self.title_bar(cx))
-            .child(self.transport(cx))
+            .child(self.transport(window, cx))
             .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))

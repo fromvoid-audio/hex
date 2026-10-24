@@ -27,6 +27,9 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         text: readable_text(surface, text),
         muted: color(PaletteRole::Muted),
         accent: color(PaletteRole::Secondary),
+        accent_text: readable_text(color(PaletteRole::Secondary), text),
+        numeric_fill: color(PaletteRole::Border),
+        hover_text: readable_text(color(PaletteRole::Hover), text),
         focus_marker: text,
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
@@ -54,6 +57,11 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
             }
         }
     }
+    style.numeric_fill = [0.35, 0.30, 0.25, 0.20, 0.15, 0.10, 0.0]
+        .into_iter()
+        .map(|opacity| super::mix(style.rail, style.accent, opacity))
+        .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
+        .unwrap_or(style.rail);
     style
 }
 
@@ -169,13 +177,26 @@ pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole)
     }
 }
 
+/// Existing enabled-red/bypassed-gray palette tokens for the boolean header
+/// indicator. Selection and transient input never replace the acknowledged color.
+pub(crate) fn device_enable_colors() -> (u32, u32) {
+    (
+        device_header_action_style(false, DeviceActionRole::Enabled).background,
+        device_header_action_style(false, DeviceActionRole::Bypassed).background,
+    )
+}
+
 pub(crate) fn device_segment_style(selected: bool) -> ActionStyle {
     let background = color(if selected {
         PaletteRole::Secondary
     } else {
         PaletteRole::Raised
     });
-    let hover_background = color(PaletteRole::Hover);
+    let hover_background = if selected {
+        background
+    } else {
+        color(PaletteRole::Hover)
+    };
     ActionStyle {
         background,
         text: readable_text(background, color(PaletteRole::Text)),
@@ -221,6 +242,14 @@ mod action_tests {
             },
         ] {
             super::super::apply_preferences(palette);
+            let controls = device_style(DeviceStyleRole::Control);
+            assert!(super::super::contrast_ratio(controls.accent, controls.accent_text) >= 4.5);
+            assert!(super::super::contrast_ratio(controls.hover, controls.hover_text) >= 4.5);
+            // Filled numeric rails paint accent at 35% over the rail; text must
+            // remain readable both above the fill and above the empty rail.
+            let filled = controls.numeric_fill;
+            assert!(super::super::contrast_ratio(controls.rail, controls.text) >= 4.5);
+            assert!(super::super::contrast_ratio(filled, controls.text) >= 4.5);
             let workspace = super::super::action_style();
             assert!(super::super::contrast_ratio(workspace.background, workspace.text) >= 4.5);
             assert!(
@@ -246,6 +275,9 @@ mod action_tests {
                     );
                 }
                 let segment = device_segment_style(selected);
+                if selected {
+                    assert_eq!(segment.hover_background, segment.background);
+                }
                 assert!(super::super::contrast_ratio(segment.background, segment.text) >= 4.5);
                 assert!(
                     super::super::contrast_ratio(

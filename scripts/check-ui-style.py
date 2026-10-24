@@ -8,7 +8,7 @@ errors = []
 # Text children must be normalized centrally; other children are view elements.
 widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
-    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.clip_detail_view(',
+    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
@@ -137,7 +137,7 @@ widgets = (
     'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
     # Fade pointer capture is a typed canvas listener with no rendered text.
-    'self.fade_pointer_events(',
+    'self.fade_pointer_events(', 'self.clip_detail_pointer_events(',
     # Tuning components normalize labels at their theme::text boundary.
     'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(', 'self.tuning_mts_controls(',
     'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',

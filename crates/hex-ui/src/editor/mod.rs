@@ -35,6 +35,7 @@ mod clip_selection;
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
+mod section_launch;
 mod track_header;
 mod track_header_device_drop;
 mod workspace_view;
@@ -51,8 +52,12 @@ mod test_environment;
 mod activation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod activation_ui_test;
+mod arrange_clip_range;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod arrange_clip_range_ui_tests;
 mod audio_import_settings;
 pub(crate) mod changelog;
+mod clip_detail_resize;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -642,6 +647,7 @@ pub(super) struct EditorView {
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
     sections: arrangement_sections::Sections,
+    section_autoplay: bool,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -771,6 +777,8 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    clip_detail_resize: clip_detail_resize::State,
+    arrange_clip_range: arrange_clip_range::State,
     retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
@@ -1153,6 +1161,7 @@ impl EditorView {
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
+                view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
                     // Blur runs after paint in GPUI's focus phase. Notify again
@@ -1198,6 +1207,7 @@ impl EditorView {
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
+                view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
                 }
@@ -1230,6 +1240,7 @@ impl EditorView {
             device_panel::cancel_sampler_boundary(view);
             view.cancel_fade_gesture(cx);
             view.cancel_project_spectrum_resize(cx);
+            view.cancel_clip_detail_resize(cx);
             if view.cancel_trim_gesture(cx) {
                 cx.stop_active_drag(window);
             }
@@ -1259,6 +1270,9 @@ impl EditorView {
         let project_directory = project_directory::State::new(project_directory_path);
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path.with_file_name("audio-import.json"),
+        );
+        let controller_input = controller_input::ControllerInput::new(
+            theme_preferences_path.with_file_name("midi-input.json"),
         );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
@@ -1291,6 +1305,7 @@ impl EditorView {
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
             sections: arrangement_sections::Sections::default(),
+            section_autoplay: false,
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -1391,7 +1406,7 @@ impl EditorView {
             recovery_failure: None,
             recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
-            controller_input: controller_input::ControllerInput::default(),
+            controller_input,
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             audio_event_editor: audio_event_editor::State::default(),
@@ -1415,6 +1430,8 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            clip_detail_resize: clip_detail_resize::State::default(),
+            arrange_clip_range: arrange_clip_range::State::default(),
             retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
@@ -1510,6 +1527,7 @@ impl EditorView {
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
+        view.start_controller_preferences_load(cx);
         view
     }
 
@@ -1552,6 +1570,7 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
         if let Some(state) = self.state.as_ref() {
             self.gain_lane.change_owner(track, &state.project);
         }
@@ -1796,6 +1815,7 @@ impl EditorView {
             }
         }
         self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {

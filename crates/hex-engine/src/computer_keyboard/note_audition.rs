@@ -40,6 +40,7 @@ impl ComputerKeyboardInput {
             || self.sequence.load(Acquire) != 0
             || self.is_cancelled()
             || self.audition.is_some()
+            || self.live_notes.is_some()
         {
             return Err(Invalid(
                 "note audition requires 1–17 valid notes and a fresh ordinary input",
@@ -88,11 +89,21 @@ impl ComputerKeyboardInput {
         Ok(())
     }
     pub(super) fn template_count(&self) -> usize {
-        self.audition.as_ref().map_or(NOTES, |bank| bank.len)
+        self.audition.as_ref().map_or(
+            if self.live_notes.is_some() {
+                NOTES
+            } else {
+                COMPUTER_NOTES
+            },
+            |bank| bank.len,
+        )
     }
     pub(super) fn template_note(&self, index: usize) -> Option<(u8, u8)> {
         if let Some(bank) = &self.audition {
             return bank.notes.get(index).copied().filter(|_| index < bank.len);
+        }
+        if self.live_notes.is_some() {
+            return (index < NOTES).then_some(((index % 128) as u8, (index / 128 + 1) as u8));
         }
         Some((
             (index % 128) as u8,
@@ -114,6 +125,9 @@ impl KeyboardInput {
                 .filter(|note| key < bank.len && **note == (pitch, velocity))
                 .map(|_| key)
                 .ok_or(Invalid("note audition word differs from its prepared bank"));
+        }
+        if self.lease().is_some_and(|input| input.live_notes.is_some()) {
+            return Ok((usize::from(velocity) - 1) * 128 + usize::from(pitch));
         }
         let velocity_index = COMPUTER_KEY_VELOCITIES
             .iter()

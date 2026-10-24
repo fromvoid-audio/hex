@@ -52,7 +52,11 @@ impl ClipWindow {
     }
 }
 
-pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Option<Div> {
+pub(super) fn view(
+    view: &mut EditorView,
+    render_window: &gpui::Window,
+    cx: &mut Context<EditorView>,
+) -> Option<Div> {
     if view.mode != super::EditorMode::Arrangement {
         return None;
     }
@@ -86,7 +90,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let waveform = state.waveforms.get(&window.asset).cloned();
     let title = lowercase_path_tail(asset.path());
     let mut details = div()
-        .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .w_full()
         .flex_shrink_0()
         .flex()
@@ -180,7 +184,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             ),
     );
     if !source_view {
-        waveform_panel = waveform_panel.child(super::audio_event_editor::view(view, cx)?);
+        waveform_panel =
+            waveform_panel.child(super::audio_event_editor::view(view, render_window, cx)?);
         return Some(details.child(waveform_panel));
     }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
