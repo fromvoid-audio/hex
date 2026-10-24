@@ -1293,7 +1293,17 @@ impl EditorView {
                 .clone()
                 .or_else(|| pending.playback.prepared_revision().cloned());
             let policy = if let Some(fence) = pending.fresh_runtime_fence {
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+                self.prepared_seek
+                    .as_ref()
+                    .filter(|seek| Some(seek.request_id) == pending.seek_request_id)
+                    .and_then(|seek| seek.section)
+                    .map_or(
+                        PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                        |section| PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: section.quantization,
+                        },
+                    )
             } else if pending.install_fresh_runtime {
                 PublicationPolicy::InstallFreshRuntime
             } else {

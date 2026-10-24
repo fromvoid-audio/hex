@@ -6,7 +6,7 @@ use crate::theme;
 use gpui::{Context, Div, Stateful, Window, div, prelude::*, px, rgb};
 
 impl EditorView {
-    pub(super) fn transport(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(super) fn transport(&mut self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
@@ -18,7 +18,10 @@ impl EditorView {
             self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
         );
         let field = self.project_tempo_input(cx);
-        let mut row = header::toolbar_row()
+        let controls = div()
+            .flex()
+            .items_center()
+            .flex_shrink_0()
             .child(field)
             .child(self.control_icon(
                 "♯",
@@ -41,6 +44,21 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("■", "stop · escape", Stop, cx))
+            .child(
+                self.control_icon(
+                    "▶↻",
+                    "section autoplay and loop · click a section to launch",
+                    |view, _, _| view.toggle_section_autoplay(),
+                    cx,
+                )
+                .debug_selector(|| "section-autoplay-toggle".into())
+                .text_color(rgb(theme::color(if self.section_autoplay {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Muted
+                }))),
+            )
+            .children([self.launch_quantization_control(cx)])
             .child(
                 self.control_icon_description(
                     "⌨",
@@ -139,7 +157,12 @@ impl EditorView {
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
-            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
+        let mut status = div()
+            .flex()
+            .items_center()
+            .min_w_0()
+            .flex_1()
             .child(
                 self.control_icon(
                     "▤",
@@ -224,7 +247,7 @@ impl EditorView {
                     .child(theme::text(&output_label)),
             );
         if self.state().is_none() {
-            row = row.child(
+            status = status.child(
                 div()
                     .debug_selector(|| "project loading".into())
                     .px_2()
@@ -233,7 +256,21 @@ impl EditorView {
                     .child(theme::text("loading")),
             );
         }
-        row
+        let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;
+        let row = header::toolbar_row().h(px(header::toolbar_height(f32::from(
+            window.viewport_size().width,
+        ))));
+        if narrow {
+            row.flex_col()
+                .items_start()
+                .children([controls.h(px(header::TOOLBAR_HEIGHT))])
+                .children([status
+                    .w_full()
+                    .h(px(header::TOOLBAR_HEIGHT))
+                    .flex_shrink_0()])
+        } else {
+            row.children([controls, status])
+        }
     }
 
     pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -313,6 +350,65 @@ impl EditorView {
                 handler(view, window, cx);
                 cx.notify();
             }))
+    }
+
+    fn launch_quantization_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        hex_widgets::action(
+            theme::text(format!("{} ▾", self.session_quantization.label())),
+            theme::action_style(),
+        )
+        .id("global-launch-quantization")
+        .debug_selector(|| "global-launch-quantization".into())
+        .w(px(66.0))
+        .h(px(header::CONTROL_SIZE))
+        .text_xs()
+        .tooltip(|_, cx| {
+            cx.new(|_| MiniTooltip {
+                description: "global launch quantization · sections and console clips".into(),
+            })
+            .into()
+        })
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                view.open_launch_quantization_menu(event.position, window, cx);
+                cx.stop_propagation();
+            }),
+        )
+    }
+
+    pub(super) fn open_launch_quantization_menu(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = cx.focus_handle();
+        let previous_focus = window.focused(cx);
+        focus.focus(window);
+        self.context_menu = Some(crate::context_menu::PopupMenu {
+            position,
+            icon_grid: None,
+            selected: hex_engine::LaunchQuantization::GLOBAL_CHOICES
+                .iter()
+                .position(|choice| *choice == self.session_quantization)
+                .unwrap_or(0),
+            focus,
+            previous_focus,
+            items: hex_engine::LaunchQuantization::GLOBAL_CHOICES
+                .into_iter()
+                .map(|quantization| crate::context_menu::MenuItem {
+                    label: quantization.label(),
+                    swatch: None,
+                    checked: self.session_quantization == quantization,
+                    action: super::context_menu::EditorContextAction::LaunchQuantization {
+                        generation: self.project_generation,
+                        quantization,
+                    },
+                })
+                .collect(),
+        });
+        cx.notify();
     }
 
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {

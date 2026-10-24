@@ -33,42 +33,51 @@ pub(crate) fn well(
     let peak_height = fraction(held);
     let tooltip = readout.tooltips[index].clone();
     let selector = format!("{id}-{}-meter", if index == 0 { "input" } else { "output" });
+    let peak_selector = format!("{selector}-peak");
+    let overload_selector = format!("{selector}-above");
     let gain = if readout.gain_db.is_finite() {
         ((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)
     } else {
         60.0 / 84.0
     };
     let handle_selector = format!("{selector}-gain-handle");
+    // These readouts are actual sample amplitudes supplied by the host. A
+    // reported magnitude strictly above unity is evidence; gain position is not.
+    let above = level.is_finite() && level > 1.0;
+    let held_above = held.is_finite() && held > 1.0;
+    let colors = crate::MeterColors {
+        signal: readout.signal,
+        near_peak: readout.warning,
+        clipping: readout.clipping,
+    };
     let well = crate::level_meter(
         selector.clone().into(),
         height,
         false,
         crate::LevelMeterStyle {
             background: style.rail,
-            fill: if level >= 1.0 {
-                readout.clipping
-            } else if level >= 0.5 {
-                readout.warning
-            } else {
-                readout.signal
-            },
+            fill: colors.color(crate::MeterLevel::from_amplitude(level, above)),
             above: readout.clipping,
         },
     )
     .w(px(8.0))
     .h_full()
-    .when(held > 0.0, |well| {
+    .when(held.is_finite() && held > 0.0, |well| {
+        let top = 1.0 - peak_height;
         well.child(
             div()
+                .debug_selector(move || peak_selector.clone())
                 .absolute()
-                .bottom(relative(peak_height))
+                .top(relative(top))
+                .mt(px(-top))
                 .w_full()
                 .h(px(1.0))
-                .bg(rgb(if held >= 1.0 {
-                    readout.clipping
-                } else {
-                    style.text
-                })),
+                .bg(rgb(
+                    match crate::MeterLevel::from_amplitude(held, held_above) {
+                        crate::MeterLevel::Normal => style.text,
+                        level => colors.color(level),
+                    },
+                )),
         )
     })
     .child(
@@ -105,6 +114,20 @@ pub(crate) fn well(
                         .bg(rgb(readout.warning)),
                 ),
         )
+        .when(above || held_above, |surface| {
+            // Paint evidence after the gain overlay: a +24 dB handle at the
+            // top must not cover a held overload while the current fill is low.
+            surface.child(
+                div()
+                    .debug_selector(move || overload_selector.clone())
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(px(8.0))
+                    .h(px(2.0))
+                    .bg(rgb(readout.clipping)),
+            )
+        })
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }
 fn fraction(amplitude: f32) -> f32 {
