@@ -2035,7 +2035,7 @@ impl EditorView {
                 .is_some_and(|state| state.revision == event.state.revision)
                 && self.controller_input_matches(input)
             {
-                self.connect_prepared_controller();
+                self.controller_expression_prepared();
             } else {
                 input.cancel();
                 return None;
@@ -2086,7 +2086,7 @@ impl EditorView {
             let note_audition =
                 self.midi_audition_preparation_matches(request_id, event.state.revision);
             let current = note_audition
-                || (self.computer_keyboard.enabled
+                || ((self.computer_keyboard.enabled || self.controller_wants_live_notes())
                     && !self.computer_keyboard.suspended
                     && request_id == self.computer_keyboard.request_id
                     && self.computer_keyboard.target
@@ -2103,6 +2103,7 @@ impl EditorView {
                         .as_ref()
                         .is_some_and(|state| state.revision == event.state.revision));
             if current {
+                self.computer_keyboard.prepared = event.error.is_none();
                 let audition_ok = note_audition && event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
@@ -2484,6 +2485,8 @@ impl EditorView {
             self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
+            self.reconcile_arrangement_focus();
+            self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state

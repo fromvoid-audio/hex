@@ -153,7 +153,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        // Contiguous compact controls preserve room for transport status.
+        // Contiguous compact controls keep the audio status readable at minimum width.
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
@@ -471,6 +471,7 @@ mod ui_tests {
                         "arrange-zoom-back",
                         "section-autoplay-toggle",
                         "global-launch-quantization",
+                        "section-focus-control",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));

@@ -121,7 +121,7 @@ fn live_expression_worker_preserves_parameter_revisions_and_rejects_stale_genera
 }
 
 #[test]
-fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note_off() {
+fn controller_activation_preserves_worker_prepared_computer_and_hardware_notes() {
     use hex_engine::computer_keyboard::ComputerKeyboardInput;
     use hex_engine::playback::Playback;
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -156,10 +156,20 @@ fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note
         }))
         .unwrap();
     let edited = next(&service);
-    let keys = Arc::new(ComputerKeyboardInput::default());
-    let oracle_keys = Arc::new(ComputerKeyboardInput::default());
+    let keys = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+    let oracle_keys = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
     for input in [&keys, &oracle_keys] {
         input.set_key(0, Some((60, 100, 1))).unwrap();
+        let live = input.live_notes().unwrap();
+        live.publish(
+            live.current_activation_on_control().unwrap(),
+            hex_engine::computer_keyboard::LiveNoteEvent::NoteOn {
+                channel: 3,
+                pitch: 64,
+                velocity: 37,
+            },
+        )
+        .unwrap();
     }
     service
         .submit(Request::PrepareComputerKeyboard {
@@ -210,6 +220,18 @@ fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note
         "mutable Vector phase and envelope must continue without a retrigger"
     );
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    for input in [&keys, &oracle_keys] {
+        let live = input.live_notes().unwrap();
+        live.publish(
+            live.current_activation_on_control().unwrap(),
+            hex_engine::computer_keyboard::LiveNoteEvent::NoteOff {
+                channel: 3,
+                pitch: 64,
+                velocity: 0,
+            },
+        )
+        .unwrap();
+    }
     keys.set_key(0, None).unwrap();
     oracle_keys.set_key(0, None).unwrap();
     candidate.render(&mut actual).unwrap();
