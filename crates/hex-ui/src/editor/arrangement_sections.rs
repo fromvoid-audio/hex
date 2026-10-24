@@ -116,6 +116,13 @@ pub(super) struct Sections {
     name: Option<Name>,
 }
 impl Sections {
+    pub(super) fn selected_ids(&self) -> &[SectionId] {
+        if self.selected.is_some_and(|id| self.selection.contains(&id)) {
+            &self.selection
+        } else {
+            self.selected.as_slice()
+        }
+    }
     pub(super) fn held(&self) -> bool {
         self.gesture.is_some()
     }
@@ -475,9 +482,10 @@ impl EditorView {
         let extend = modifiers.shift;
         let free = modifiers.platform;
         let marker_only = modifiers.alt;
+        // This capture also sees clicks on track headers and the focus toggle.
+        // Let their focus owners finish before reconciliation decides whether
+        // to clear section selection; an armed filter retains its driving IDs.
         if self.section_pointer(x, y, free).is_none() {
-            self.sections.selected = None;
-            self.sections.selection.clear();
             return false;
         }
         if self.sections.naming()
@@ -488,8 +496,6 @@ impl EditorView {
             return false;
         }
         let Some(anchor) = self.section_pointer(x, y, free) else {
-            self.sections.selected = None;
-            self.sections.selection.clear();
             return false;
         };
         if !self.sections_available() {
@@ -988,11 +994,14 @@ impl EditorView {
                 || self.focused_return.is_some()
                 || self.device_panel.main_selected != Some(self.project_generation)
                 || (!self.focus.is_focused(window)
+                    && !self.section_focus_toggle_focused(window, cx)
                     && !self.sections.naming()
                     && self.context_menu.is_none()))
         {
-            self.sections.selected = None;
-            self.sections.selection.clear();
+            if !self.arrangement_focus.enabled {
+                self.sections.selected = None;
+                self.sections.selection.clear();
+            }
             self.sections.cursor = None;
         }
         if self.sections.selected.is_some_and(|id| {

@@ -115,6 +115,19 @@ impl super::EditorView {
             .track_selection
             .select(&state.project, track, modifiers.shift, modifiers.platform)
         {
+            if modifiers.shift
+                && self.mode == super::EditorMode::Arrangement
+                && self.arrangement_focus.enabled
+            {
+                let ids = self
+                    .track_selection
+                    .ids
+                    .iter()
+                    .copied()
+                    .filter(|id| self.arrangement_track_visible(*id))
+                    .collect();
+                self.track_selection.ids = ids;
+            }
             self.focus_selected_track(track, window);
         }
     }

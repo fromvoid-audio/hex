@@ -341,12 +341,20 @@ fn clip_owner_wins_over_track_selection_and_stop_or_source_loss_cannot_retrigger
     let pending = editor.update(&mut visual, |v, cx| {
         v.tick(cx);
         let input = Arc::clone(v.computer_keyboard.input.as_ref().unwrap());
+        // Exercise the fast-ACK case deterministically: a completed preparation
+        // may have populated notes before source loss cancels this input.
+        if input.key_word(0) == Some(0) {
+            input.trigger_note_audition().unwrap();
+        }
+        assert_ne!(input.key_word(0), Some(0));
         v.project_generation += 1;
         input
     });
     pump(&editor, &mut visual);
     assert!(pending.is_cancelled());
-    assert_eq!(pending.key_word(0), Some(0));
+    // Cancellation is terminal even when a fast ACK already populated notes;
+    // the raw key slots need not be zero for the renderer to remain silent.
+    assert!(pending.trigger_note_audition().is_err());
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
 }
 
