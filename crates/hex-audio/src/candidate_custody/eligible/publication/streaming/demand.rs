@@ -55,7 +55,7 @@ impl Workspace {
         }
     }
 }
-impl State {
+impl StateView<'_> {
     pub(in crate::candidate_custody::eligible::publication) fn cancel_stream_pending(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -66,7 +66,7 @@ impl State {
     }
     pub(in crate::candidate_custody::eligible::publication) fn prepare_stream_window(
         &mut self,
-        previous: Option<&mut State>,
+        previous: Option<&mut StateView<'_>>,
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
@@ -74,7 +74,7 @@ impl State {
     }
     pub(super) fn prepare_stream_window_at(
         &mut self,
-        previous: Option<&mut State>,
+        previous: Option<&mut StateView<'_>>,
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
         due: Option<u64>,
@@ -278,7 +278,7 @@ impl State {
         Ok(Some(window))
     }
     pub(in crate::candidate_custody::eligible::publication) fn prepare_stream_commit<'a>(
-        &self,
+        &mut self,
         domains: &'a mut [Option<DomainEnvelope>; 2],
     ) -> Result<[Option<hex_stream::PreparedRolePromotion<'a>>; 2], hex_engine::Invalid> {
         let workspace = self
@@ -323,7 +323,7 @@ impl State {
     }
 }
 
-impl State {
+impl StateView<'_> {
     pub(in crate::candidate_custody::eligible::publication) fn clear_stream_roles(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -371,10 +371,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
     pub(crate) activated: Option<u64>,
 }
-impl Active {
-    pub(crate) fn streaming_enabled(&self) -> bool {
-        self.state.streaming.is_some()
-    }
+impl ActiveView<'_> {
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.clear_stream_roles(domains);
     }

@@ -2,7 +2,7 @@
 //! These receipts never authorize activation: due rendering uses Transition.
 use super::*;
 use hex_stream::ProtectionRole;
-impl Active {
+impl ActiveView<'_> {
     fn scheduled_is_pending(&self, due: u64) -> bool {
         self.state.runtime.as_ref().is_some_and(|runtime| {
             runtime.status().is_some_and(|status| {
@@ -124,7 +124,10 @@ impl Active {
         self.state.streaming.as_mut()?.scheduled = None;
         Some(scheduled.ticket)
     }
-    pub(crate) fn inherit_schedule_observation(&mut self, previous: &mut Active) -> Option<u64> {
+    pub(crate) fn inherit_schedule_observation(
+        &mut self,
+        previous: &mut ActiveView<'_>,
+    ) -> Option<u64> {
         let mut scheduled = previous.state.streaming.as_mut()?.scheduled.take()?;
         // Called only after the real checked handoff. The closed constructor
         // starts without pending routes, and the single observational slot

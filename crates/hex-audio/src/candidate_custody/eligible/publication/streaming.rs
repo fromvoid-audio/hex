@@ -5,7 +5,9 @@ use hex_engine::StreamPageExtent;
 mod actions;
 mod demand;
 mod prewarm;
+mod view;
 pub(crate) use actions::StageAction;
+use view::{ActiveView, StateView};
 #[derive(Clone, Copy)]
 struct ScheduledAction {
     ticket: u64,
