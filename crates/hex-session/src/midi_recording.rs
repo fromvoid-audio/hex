@@ -227,6 +227,7 @@ impl MidiTakeBinding {
             .instrument()
             .is_none_or(|device| device.id() != self.instrument || device.bypassed())
             || clip.source_identity() != self.source
+            || clip.content_view().is_some()
             || project.sample_rate() != self.sample_rate
             || project.tempo_map() != &self.tempo
             || clip.start() != self.start
