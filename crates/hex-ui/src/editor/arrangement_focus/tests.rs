@@ -150,6 +150,7 @@ fn select_section(visual: &mut VisualTestContext, index: u64, shift: bool) {
             ..Modifiers::default()
         },
     );
+    visual.run_until_parked();
     visual.simulate_mouse_up(
         bounds.center(),
         MouseButton::Left,
@@ -368,8 +369,7 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
         .debug_bounds(selector("track-name", f.tracks[3].value()))
         .unwrap()
         .center();
-    visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+    visual.simulate_click(header, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_track, Some(f.tracks[3]));
@@ -391,6 +391,27 @@ fn toggle_tracks_section_selection_and_ignores_loop_changes(cx: &mut TestAppCont
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(!v.arrangement_focus.enabled));
+    select_section(&mut visual, 0, false);
+    let button = visual
+        .debug_bounds("arrangement-focus-toggle")
+        .unwrap()
+        .center();
+    visual.simulate_click(button, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.enabled);
+        assert_eq!(v.sections.selected_ids(), &f.sections[..1]);
+        assert_eq!(v.arrangement_focus.indices, [1, 3]);
+    });
+    f.model
+        .execute(Command::RemoveArrangementSection(f.sections[0]))
+        .unwrap();
+    replace(&mut visual, &editor, f.model.project().clone());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.arrangement_focus.enabled);
+        assert!(v.sections.selected_ids().is_empty());
+        assert_eq!(v.arrangement_focus.indices, [0, 1, 2, 3, 4]);
+    });
 }
 #[gpui::test]
 fn q_respects_text_repeat_modifiers_and_filtered_drag_geometry(cx: &mut TestAppContext) {

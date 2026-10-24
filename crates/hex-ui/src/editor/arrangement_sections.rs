@@ -485,9 +485,10 @@ impl EditorView {
         let extend = modifiers.shift;
         let free = modifiers.platform;
         let marker_only = modifiers.alt;
+        // This capture also sees clicks on track headers and the focus toggle.
+        // Let their focus owners finish before reconciliation decides whether
+        // to clear section selection; an armed filter retains its driving IDs.
         if self.section_pointer(x, y, free).is_none() {
-            self.sections.selected = None;
-            self.sections.selection.clear();
             return false;
         }
         if self.sections.naming()
@@ -498,8 +499,6 @@ impl EditorView {
             return false;
         }
         let Some(anchor) = self.section_pointer(x, y, free) else {
-            self.sections.selected = None;
-            self.sections.selection.clear();
             return false;
         };
         if !self.sections_available() {
