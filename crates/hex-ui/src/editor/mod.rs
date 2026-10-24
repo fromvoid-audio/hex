@@ -53,6 +53,7 @@ mod activation;
 mod activation_ui_test;
 mod audio_import_settings;
 pub(crate) mod changelog;
+mod clip_detail_resize;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -771,6 +772,7 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    clip_detail_resize: clip_detail_resize::State,
     retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
@@ -1153,6 +1155,7 @@ impl EditorView {
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
+                view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
                     // Blur runs after paint in GPUI's focus phase. Notify again
@@ -1198,6 +1201,7 @@ impl EditorView {
                 view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_project_spectrum_resize(cx);
+                view.cancel_clip_detail_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
                 }
@@ -1230,6 +1234,7 @@ impl EditorView {
             device_panel::cancel_sampler_boundary(view);
             view.cancel_fade_gesture(cx);
             view.cancel_project_spectrum_resize(cx);
+            view.cancel_clip_detail_resize(cx);
             if view.cancel_trim_gesture(cx) {
                 cx.stop_active_drag(window);
             }
@@ -1415,6 +1420,7 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            clip_detail_resize: clip_detail_resize::State::default(),
             retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
