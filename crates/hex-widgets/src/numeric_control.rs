@@ -1652,6 +1652,7 @@ impl gpui::Render for NumericControl {
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
+                .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
                 .child(self.slider_element(value, false, value_text, cx)),
             (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
@@ -1662,6 +1663,7 @@ impl gpui::Render for NumericControl {
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
+                .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
                 .child(
                     div()
                         .w(px(42.0))
@@ -2047,7 +2049,8 @@ fn filled_slider(
         .flex_1()
         .min_w(px(46.0))
         .when(vertical, |bar| bar.w_full().min_h(px(32.0)))
-        .when(!vertical, |bar| bar.h_full())
+        // Keep the surrounding row's hit area while thinning the painted field.
+        .when(!vertical, |bar| bar.h(px(14.0)))
         .overflow_hidden()
         .bg(rgb(field.style.rail))
         .child(fill)
