@@ -33,7 +33,7 @@ pub(super) fn command(
     resident: &mut Option<resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
-    let structural = command.requires_stopped_section_edit();
+    let structural = command.requires_section_publication();
     let no_op = match &command {
         Command::ReorderSectionBefore { section, before } => session
             .project()
@@ -46,6 +46,12 @@ pub(super) fn command(
         _ => false,
     };
     if no_op {
+        if events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && let Some(current) = resident.as_ref()
+        {
+            return session.section_noop_revision(command, current);
+        }
         return session.command_prepared_revision(command, previous);
     }
     if !structural {
@@ -79,11 +85,22 @@ pub(super) fn command(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let frame = super::stopped_arrangement::acquire(sink, source_context, &shutdown, None)?;
-    let result = session.stopped_section_snapshot(
+    let position = super::stopped_arrangement::acquire_position(
+        sink,
+        source_context,
+        &shutdown,
+        None,
+        matches!(
+            &command,
+            Command::ReorderSectionBefore { .. }
+                | Command::ReorderSectionAfter { .. }
+                | Command::DuplicateArrangementSection(_)
+        ),
+    )?;
+    let result = session.section_snapshot(
         Some(command),
         false,
-        frame,
+        position,
         context,
         sink,
         admission,
@@ -122,11 +139,12 @@ pub(super) fn history(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let frame = super::stopped_arrangement::acquire(sink, source_context, &shutdown, None)?;
-    match session.stopped_section_snapshot(
+    let position =
+        super::stopped_arrangement::acquire_position(sink, source_context, &shutdown, None, true)?;
+    match session.section_snapshot(
         None,
         redo,
-        frame,
+        position,
         context,
         sink,
         admission,
