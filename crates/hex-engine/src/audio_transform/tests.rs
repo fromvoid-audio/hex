@@ -5,6 +5,9 @@ use hex_project::{
 };
 use std::collections::BTreeMap;
 
+#[path = "tests/view_placement.rs"]
+mod view_placement;
+
 fn fixture(
     looping: bool,
 ) -> (
