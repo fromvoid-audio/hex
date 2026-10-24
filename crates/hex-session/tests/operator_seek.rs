@@ -23,8 +23,11 @@ fn operator_preroll(lfo: Option<bool>) {
     const OPERATOR: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "operator seek".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("MIDI track")
     else {

@@ -9,9 +9,20 @@ pub(super) struct AudioPolicy {
     pub(super) stream: hex_stream::StreamConfig,
     pub(super) readiness: hex_stream::StreamReadinessReservation,
     pub(super) publication: AudioCandidatePublicationReservation,
+    pub(super) resident_native: hex_session::ResidentNativeReservation,
+    pub(super) resident_publication: AudioCandidatePublicationReservation,
+    pub(super) control_backing_quote: usize,
+    pub(super) legacy_hold_bytes: usize,
+    pub(super) ordinary_graph_metadata_bytes: usize,
 }
 pub(super) const RUNTIME_CELLS: usize = 3;
-pub(super) const MAX_RESIDENT_FRAMES: u64 = 8_000_000;
+const MAX_SOURCE_FRAMES: u64 = 8_000_000;
+// Originals and converted PCM remain live while the active, queued and constructing
+// graphs retain their own conservative PCM allowances. One 8M-frame envelope for
+// their entire union refused ordinary tempo edits even below 64MB of distinct PCM.
+// Reserve one source role plus the existing three graph roles: 32M stereo frames
+// (256MB PCM), still checked at every admission. This is not an RSS reservation.
+pub(super) const MAX_RESIDENT_FRAMES: u64 = MAX_SOURCE_FRAMES * (RUNTIME_CELLS as u64 + 1);
 impl AudioPolicy {
     pub(super) fn source_reservation() -> SourcePlanReservation {
         let stream = hex_stream::StreamConfig::initial();
@@ -19,7 +30,7 @@ impl AudioPolicy {
             reader: hex_media::VerifiedWavReaderLimits::new(
                 hex_media::WavReaderLimits::new(
                     64 * 1024 * 1024,
-                    8_000_000,
+                    MAX_SOURCE_FRAMES,
                     32,
                     // Output pages are not source windows: downsampling also
                     // needs the resampler halo. The worker already reserves
@@ -117,26 +128,117 @@ impl AudioPolicy {
                 )
             })
             .ok_or("audio handle reservation overflow")?;
+        let publication = AudioCandidatePublicationReservation {
+            runtime_slots: RUNTIME_CELLS,
+            archive_slots: RUNTIME_CELLS,
+            receipt_rows: RUNTIME_CELLS,
+            member_rows: quote
+                .member_rows
+                .checked_mul(RUNTIME_CELLS)
+                .ok_or("audio member overflow")?,
+            transfer_rows: quote
+                .transfer_rows
+                .checked_mul(RUNTIME_CELLS)
+                .ok_or("audio transfer overflow")?,
+            data_rows: quote.data_rows,
+            handle_rows: handles,
+            max_retained_data_bytes: retained,
+            max_construction_peak_data_bytes: peak,
+        };
+        let native_quote =
+            hex_engine::AudioCandidateReservationQuote::for_supported_resident_limits()
+                .map_err(|e| format!("resident constructor quote refused: {e:?}"))?;
+        let native_graph = native_quote
+            .storage_reservation(input)
+            .map_err(|e| format!("resident constructor reservation refused: {e:?}"))?;
+        let resident_publication = AudioCandidatePublicationReservation {
+            runtime_slots: RUNTIME_CELLS,
+            archive_slots: RUNTIME_CELLS,
+            receipt_rows: RUNTIME_CELLS,
+            member_rows: native_quote
+                .member_rows
+                .checked_mul(RUNTIME_CELLS)
+                .ok_or("resident member overflow")?,
+            transfer_rows: native_quote
+                .transfer_rows
+                .checked_mul(RUNTIME_CELLS)
+                .ok_or("resident transfer overflow")?,
+            data_rows: native_quote.data_rows,
+            handle_rows: native_quote
+                .handle_rows
+                .checked_mul(RUNTIME_CELLS + 1)
+                .ok_or("resident handles overflow")?,
+            max_retained_data_bytes: native_graph
+                .max_prepared_data_bytes
+                .checked_mul(RUNTIME_CELLS)
+                .ok_or("resident DATA overflow")?,
+            max_construction_peak_data_bytes: native_graph
+                .max_construction_data_bytes
+                .checked_mul(RUNTIME_CELLS)
+                .ok_or("resident peak overflow")?,
+        };
+        let control_backing_quote = resident_publication
+            .worker_control_storage_quote()
+            .ok_or("native control storage quote overflow")?;
+        let legacy_hold_bytes = native_quote
+            .metadata_data_bytes
+            .checked_add(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .and_then(|n| n.checked_add(control_backing_quote))
+            .ok_or("legacy native hold overflow")?;
+        // One physical PCM allowance is shared by Session/staged/export/native
+        // owners. Immutable metadata covers three native roles plus the three
+        // Service current/staged/export selections; runtime has its own32MiB
+        // per-owner limit, including the independent exporter. PCM uses the bounded
+        // source-plus-publication-role envelope above; source read/scan limits stay8M.
+        let immutable_roles = RUNTIME_CELLS.checked_mul(2).ok_or("native role overflow")?;
+        let runtime_roles = RUNTIME_CELLS.checked_add(1).ok_or("native role overflow")?;
+        let native_retained = input
+            .checked_add(
+                native_quote
+                    .metadata_data_bytes
+                    .checked_mul(immutable_roles)
+                    .ok_or("native metadata overflow")?,
+            )
+            .and_then(|n| {
+                n.checked_add(
+                    hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES.checked_mul(runtime_roles)?,
+                )
+            })
+            .and_then(|n| n.checked_add(control_backing_quote.checked_mul(RUNTIME_CELLS)?))
+            .ok_or("native retained reservation overflow")?;
+        let native_peak = native_retained
+            .checked_add(native_quote.compiler_workspace_bytes)
+            .and_then(|n| n.checked_add(native_quote.metadata_data_bytes))
+            .ok_or("native construction reservation overflow")?;
+        let resident_native = hex_session::ResidentNativeReservation {
+            max_scan_frames: MAX_SOURCE_FRAMES,
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: native_quote
+                    .data_rows
+                    .checked_mul(immutable_roles)
+                    .ok_or("native DATA rows overflow")?,
+                handle_rows: native_quote
+                    .handle_rows
+                    .checked_mul(immutable_roles)
+                    .ok_or("native handle rows overflow")?,
+                root_rows: native_quote
+                    .source_capacity
+                    .checked_mul(immutable_roles)
+                    .and_then(|n| n.checked_add(RUNTIME_CELLS))
+                    .ok_or("native root rows overflow")?,
+                max_retained_bytes: native_retained,
+                max_construction_peak_bytes: native_peak,
+            },
+        };
         Ok(Self {
             stream,
             readiness,
-            publication: AudioCandidatePublicationReservation {
-                runtime_slots: RUNTIME_CELLS,
-                archive_slots: RUNTIME_CELLS,
-                receipt_rows: RUNTIME_CELLS,
-                member_rows: quote
-                    .member_rows
-                    .checked_mul(RUNTIME_CELLS)
-                    .ok_or("audio member overflow")?,
-                transfer_rows: quote
-                    .transfer_rows
-                    .checked_mul(RUNTIME_CELLS)
-                    .ok_or("audio transfer overflow")?,
-                data_rows: quote.data_rows,
-                handle_rows: handles,
-                max_retained_data_bytes: retained,
-                max_construction_peak_data_bytes: peak,
-            },
+            publication,
+            resident_native,
+            resident_publication,
+            control_backing_quote,
+            legacy_hold_bytes,
+            ordinary_graph_metadata_bytes: native_quote.metadata_data_bytes,
         })
     }
     pub(super) fn configure(

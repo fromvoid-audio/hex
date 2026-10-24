@@ -264,6 +264,57 @@ fn mutable_source_and_transport_loops_match_authored_linear_occurrences_across_w
 }
 
 #[test]
+fn finite_bounce_preserves_mutable_source_phase_and_ignores_transport_wrapping() {
+    for offset in [0, Q / 4, 5 * Q / 4] {
+        let mut snapshot = arrangement_loop_project().snapshot();
+        let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+        | TrackContentSnapshot::Instrument(midi_clips)) = &mut snapshot.tracks[0].content
+        else {
+            panic!("fixture midi");
+        };
+        midi_clips[0].playback_offset_raw = offset;
+        snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+        let looped = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+        snapshot.loop_region = None;
+        let reference = legacy_project_from_snapshot(snapshot).unwrap();
+        let mut bounce =
+            SessionPlayback::new_finite_arrangement_bounce(prepare_mutable(&looped), None, 120_000)
+                .unwrap();
+        let mut reference = SessionPlayback::new(prepare_mutable(&reference)).unwrap();
+        assert!(bounce.is_linear_arrangement_export());
+        bounce.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut rendered = 0;
+        for count in [1, 137, 511].into_iter().cycle() {
+            let count = count.min(120_000 - rendered);
+            let mut actual = vec![[0.0; 2]; count];
+            let mut expected = vec![[0.0; 2]; count];
+            bounce.render(&mut actual).unwrap();
+            reference.render(&mut expected).unwrap();
+            assert_eq!(
+                actual, expected,
+                "finite source phase offset={offset} at {rendered}"
+            );
+            rendered += count;
+            if rendered == 120_000 {
+                break;
+            }
+        }
+        assert_eq!(bounce.arrangement_loop_pass, 0);
+        for frames in [0, MAX_FINITE_BOUNCE_FRAMES + 1, u64::MAX] {
+            assert!(
+                SessionPlayback::new_finite_arrangement_bounce(
+                    prepare_mutable(&looped),
+                    None,
+                    frames,
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
 fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops() {
     let mut snapshot = arrangement_loop_project().snapshot();
     snapshot.loop_region = Some(LoopRegion::new(0, 48_000, true).expect("valid transport loop"));
@@ -376,7 +427,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             id: 100 + index,
             start_raw: 0,
             duration_raw: 2 * Q,
-            pitch: 48 + (index % 12) as u8,
+            pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
         })
@@ -421,6 +472,8 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
     };
     let mut duplicate = midi_clips[0].notes[0].clone();
     duplicate.id = duplicate_id;
+    // Same simultaneous event/voice pressure on a distinct valid pitch.
+    duplicate.pitch += 1;
     midi_clips[0].notes.push(duplicate);
     let project = legacy_project_from_snapshot(snapshot).expect("valid duplicated loop notes");
     let revision = prepare_mutable(&project);
@@ -545,7 +598,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             id: first_note_id + 128 + index,
             start_raw: beat_raw_for_frames(450),
             duration_raw: beat_raw_for_frames(550),
-            pitch: 36 + (index % 48) as u8,
+            pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
         }))

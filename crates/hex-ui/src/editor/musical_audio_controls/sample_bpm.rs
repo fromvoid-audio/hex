@@ -2,27 +2,29 @@
 use super::*;
 use gpui::{Entity, Subscription};
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 
 pub(crate) struct Binding {
-    key: (ClipId, u64, u64),
+    pub(crate) key: (ClipId, u64, u64),
+    pub(crate) focus: gpui::FocusHandle,
     entity: Entity<NumericControl>,
     _subscription: Subscription,
 }
 impl EditorView {
-    pub(crate) fn sample_bpm_editing(&self, cx: &Context<Self>) -> bool {
-        self.sample_bpm_control.as_ref().is_some_and(|binding| {
-            self.selected_clip_data()
-                .is_some_and(|selection| selection.1 == binding.key.0)
-                && self.project_generation == binding.key.1
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == binding.key.2)
-                && binding.entity.read(cx).is_editing()
-        })
+    pub(crate) fn clip_numeric_editing(&self, cx: &Context<Self>) -> bool {
+        self.audio_clip_controls.editing(cx) && self.audio_clip_controls_key_is_current()
+            || self.sample_bpm_control.as_ref().is_some_and(|binding| {
+                self.detail_audio_clip_data()
+                    .is_some_and(|selection| selection.1 == binding.key.0)
+                    && self.project_generation == binding.key.1
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == binding.key.2)
+                    && binding.entity.read(cx).is_editing()
+            })
     }
 }
 pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorView>) -> Div {
@@ -47,16 +49,17 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
         });
     let value = f64::from(value.micro_bpm()) / 1_000_000.0;
     let key = (id, view.project_generation, state.revision);
-    if view
-        .sample_bpm_control
-        .as_ref()
-        .is_some_and(|binding| binding.key != key)
-    {
-        view.sample_bpm_control = None;
+    if view.sample_bpm_control.as_ref().is_some_and(|binding| {
+        binding.key != key
+            && (!view.audio_clip_controls.has_pending()
+                || (binding.key.0, binding.key.1) != (key.0, key.1))
+    }) {
+        view.retire_sample_bpm_control();
     }
     if view.sample_bpm_control.is_none() {
-        let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm")).map(
-            |spec| {
+        let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm"))
+            .and_then(|spec| spec.with_keyboard_steps(1.0, 0.1))
+            .map(|spec| {
                 spec.with_codec(
                     |v| {
                         format!("{v:.6}")
@@ -66,8 +69,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                     },
                     |s| s.trim().trim_end_matches("bpm").trim().parse::<f64>().ok(),
                 )
-            },
-        );
+            });
         let config = spec.and_then(|spec| {
             NumericControlConfig::new(
                 "audio-sample-bpm",
@@ -75,14 +77,16 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 NumericControlKind::HorizontalSlider,
                 spec,
                 value,
-                super::super::device_panel::control_style(),
+                crate::theme::control_style(),
             )
         });
         let Ok(config) = config else { return div() };
         let entity = cx.new(|cx| {
             NumericControl::from_config(
                 cx,
-                config.with_appearance(NumericControlAppearance::InlineValue),
+                config
+                    .with_command_fine_steps()
+                    .with_presentation(NumericControlPresentation::FilledSlider),
             )
         });
         let subscription =
@@ -97,7 +101,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                         .as_ref()
                         .is_none_or(|state| state.revision != key.2)
                     || view
-                        .selected_clip_data()
+                        .detail_audio_clip_data()
                         .is_none_or(|selection| selection.1 != id)
                 {
                     return;
@@ -105,13 +109,16 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 let Ok(tempo) = parse_bpm(event.value) else {
                     return;
                 };
-                view.enqueue(hex_session::service::Request::Edit(
+                super::super::arrangement_audio_panel::controls::queue(
+                    view,
+                    key.1,
                     hex_project::Command::SetAudioClipSampleBpm { clip: id, tempo },
-                ));
+                );
                 cx.notify();
             });
         view.sample_bpm_control = Some(Binding {
             key,
+            focus: gpui::Focusable::focus_handle(&entity, cx),
             entity,
             _subscription: subscription,
         });
@@ -181,8 +188,10 @@ mod ui_tests {
                 .unwrap();
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::new(model.project().clone()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),
@@ -200,7 +209,13 @@ mod ui_tests {
         let bounds = visual
             .debug_bounds("audio-sample-bpm-value")
             .expect("visible numeric value");
-        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: bounds.center(),
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::default(),
+            first_mouse: false,
+        });
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("nan");
@@ -210,7 +225,13 @@ mod ui_tests {
         visual.simulate_input("60");
         visual.simulate_keystrokes("escape");
         editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
-        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: bounds.center(),
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::default(),
+            first_mouse: false,
+        });
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("60");

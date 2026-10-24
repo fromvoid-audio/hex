@@ -117,11 +117,12 @@ impl SessionPlayback {
                     .session()
                     .audio_clip(clip)
                     .is_some_and(|clip| clip.track == track)
-                    || self
-                        .revision
-                        .session()
-                        .midi_clip(clip)
-                        .is_some_and(|clip| clip.track == track)
+                    || crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip(clip)
+                    .is_some_and(|clip| clip.track == track)
             }
             SessionPlaybackCommand::LaunchScene { scene, .. } => self
                 .revision
@@ -129,7 +130,8 @@ impl SessionPlayback {
                 .cells()
                 .iter()
                 .any(|cell| cell.scene == scene && cell.track == track),
-            SessionPlaybackCommand::StopTrack { track: target, .. } => track == target,
+            SessionPlaybackCommand::StopTrack { track: target, .. }
+            | SessionPlaybackCommand::CueMidiClip { track: target, .. } => track == target,
             SessionPlaybackCommand::StopAllClips { .. }
             | SessionPlaybackCommand::BackToArrangement { .. } => true,
             _ => false,
@@ -155,6 +157,7 @@ impl SessionPlayback {
             },
             PlaybackAction::Session(
                 command @ (SessionPlaybackCommand::LaunchClip { .. }
+                | SessionPlaybackCommand::CueMidiClip { .. }
                 | SessionPlaybackCommand::LaunchScene { .. }
                 | SessionPlaybackCommand::StopTrack { .. }
                 | SessionPlaybackCommand::StopAllClips { .. }
@@ -188,9 +191,10 @@ impl SessionPlayback {
                 for route in &mut self.route_scratch {
                     route.pending = None;
                     route.owner = match route.owner {
-                        RouteOwner::Session { clip, .. } => {
-                            RouteOwner::Session { clip, launch: beat }
-                        }
+                        RouteOwner::Session { clip, .. } => RouteOwner::Session {
+                            clip,
+                            origin: SessionMidiOrigin::launch(beat),
+                        },
                         RouteOwner::SessionAudio { clip, .. } => RouteOwner::SessionAudio {
                             clip,
                             launch_frame: frame,
@@ -248,12 +252,7 @@ impl SessionPlayback {
             .arrangement_frame
             .checked_add(delta)
             .ok_or(Invalid("stream projection overflow"))?;
-        match self
-            .revision
-            .arrangement()
-            .loop_region()
-            .filter(|region| region.enabled())
-        {
+        match self.loop_region().filter(|region| region.enabled()) {
             Some(region) => {
                 render::normalize_loop_cursor(frame, region, self.arrangement_loop_pass)
                     .map_err(|e| Invalid(e.diagnostic_message()))

@@ -85,8 +85,11 @@ fn operator_revision_with_tuning(
 ) -> Arc<PreparedRevision> {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "operator export".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("MIDI track")
     {

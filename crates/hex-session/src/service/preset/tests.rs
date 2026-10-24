@@ -55,8 +55,11 @@ fn fixture(class: NativeDeviceClass, type_name: &'static str) -> (Service, Event
     let service = Service::new(48_000, 32, 0).unwrap();
     event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "preset owner".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = event(&service);
@@ -311,6 +314,7 @@ fn device_preset_refusals_preserve_revision_history_and_audio() {
     let target = owner(&added, device, NativeDeviceClass::Effect);
     let native = added.state.project.device(device).unwrap().state().clone();
     let valid = Preset {
+        comparison: None,
         class: DeviceClass::Effect,
         state: native.clone(),
     };
@@ -318,11 +322,13 @@ fn device_preset_refusals_preserve_revision_history_and_audio() {
         b"broken".to_vec(),
         vec![b' '; hex_storage::preset::MAX_PRESET_BYTES + 1],
         hex_storage::preset::encode(&Preset {
+            comparison: None,
             class: DeviceClass::Instrument,
             state: native.clone(),
         })
         .unwrap(),
         hex_storage::preset::encode(&Preset {
+            comparison: None,
             class: DeviceClass::Effect,
             state: hex_engine::default_native_device_state_for_class(
                 NativeDeviceClass::Effect,
@@ -332,12 +338,14 @@ fn device_preset_refusals_preserve_revision_history_and_audio() {
         })
         .unwrap(),
         hex_storage::preset::encode(&Preset {
+            comparison: None,
             class: DeviceClass::Effect,
             state: NativeDeviceState::new(native.type_id(), u32::MAX, native.payload().to_vec())
                 .unwrap(),
         })
         .unwrap(),
         hex_storage::preset::encode(&Preset {
+            comparison: None,
             class: DeviceClass::Effect,
             state: NativeDeviceState::new(native.type_id(), native.state_version(), vec![0])
                 .unwrap(),
@@ -491,6 +499,7 @@ fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
     hex_storage::preset::save_new(
         &path,
         &Preset {
+            comparison: None,
             class: DeviceClass::Instrument,
             state,
         },
@@ -524,4 +533,163 @@ fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
             .prepared_revision()
             .unwrap()
     ));
+}
+
+#[test]
+fn comparison_preset_roundtrip_restores_both_variants_but_not_global_trims_or_bypass() {
+    use hex_project::{DeviceComparisonAction as Action, DeviceVariant as Slot};
+    for (class, type_name) in [
+        (NativeDeviceClass::Instrument, "hex.instrument.operator"),
+        (NativeDeviceClass::Effect, "hex.utility"),
+    ] {
+        let directory = Directory::new();
+        let path = directory.0.join("Comparison.hex-device-preset.json");
+        let (service, initial, device) = fixture(class, type_name);
+        let a = initial
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone();
+        service
+            .submit(Request::CompareDevice {
+                owner: owner(&initial, device, class),
+                expected: Slot::A,
+                action: Action::Switch,
+            })
+            .unwrap();
+        let switched = event(&service);
+        assert!(switched.error.is_none());
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: ParameterId::from_static(1),
+                value: ParameterValue::Float(0.37),
+            })
+            .unwrap();
+        let authored = event(&service);
+        assert!(authored.error.is_none());
+        let b = authored
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone();
+        assert_ne!(a.payload(), b.payload());
+        service
+            .submit(Request::SaveDevicePreset {
+                owner: owner(&authored, device, class),
+                path: path.clone(),
+            })
+            .unwrap();
+        let saved = event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        let original_file = fs::read(&path).unwrap();
+        let preset = hex_storage::preset::decode(&original_file).unwrap();
+        assert_eq!(preset.state.payload(), b.payload());
+        assert_eq!(preset.comparison.as_ref().unwrap().active(), Slot::B);
+        assert_eq!(
+            preset.comparison.as_ref().unwrap().inactive().payload(),
+            a.payload()
+        );
+        let trimmed = b
+            .clone()
+            .with_input_gain_millidb(-1_234)
+            .unwrap()
+            .with_output_gain_millidb(4_321)
+            .unwrap();
+        service
+            .submit(Request::Edit(Command::ReplaceDeviceState {
+                device,
+                state: trimmed,
+            }))
+            .unwrap();
+        let trimmed = event(&service);
+        assert!(trimmed.error.is_none());
+        service
+            .submit(Request::CompareDevice {
+                owner: owner(&trimmed, device, class),
+                expected: Slot::B,
+                action: Action::Switch,
+            })
+            .unwrap();
+        assert!(event(&service).error.is_none());
+        service
+            .submit(Request::SetDeviceParameter {
+                device,
+                parameter: ParameterId::from_static(1),
+                value: ParameterValue::Float(0.62),
+            })
+            .unwrap();
+        let edited = event(&service);
+        assert!(edited.error.is_none());
+        let bypassed = !edited.state.project.device(device).unwrap().bypassed();
+        service
+            .submit(Request::Edit(Command::SetDeviceBypass { device, bypassed }))
+            .unwrap();
+        let before = event(&service);
+        assert!(before.error.is_none());
+        let expected_state = b
+            .with_input_gain_millidb(-1_234)
+            .unwrap()
+            .with_output_gain_millidb(4_321)
+            .unwrap();
+        let expected_pair = preset
+            .comparison
+            .unwrap()
+            .with_global_trims_from(&expected_state)
+            .unwrap();
+        let mut expected = hex_project::Editor::new((*before.state.project).clone(), 1).unwrap();
+        expected
+            .execute(Command::ReplaceDeviceComparison {
+                device,
+                state: expected_state,
+                comparison: Some(expected_pair),
+            })
+            .unwrap();
+        service
+            .submit(Request::LoadDevicePreset {
+                owner: owner(&before, device, class),
+                path: path.clone(),
+            })
+            .unwrap();
+        let loaded = event(&service);
+        assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(loaded.state.project.as_ref(), expected.project());
+        assert_eq!(loaded.state.revision, before.state.revision + 1);
+        assert_eq!(
+            loaded.state.project.device(device).unwrap().bypassed(),
+            bypassed
+        );
+        assert_eq!(fs::read(&path).unwrap(), original_file);
+        service.submit(Request::Undo).unwrap();
+        let undone = event(&service);
+        assert_eq!(undone.state.project, before.state.project);
+        service.submit(Request::Redo).unwrap();
+        let redone = event(&service);
+        assert_eq!(redone.state.project, loaded.state.project);
+        let mut malformed: serde_json::Value = serde_json::from_slice(&original_file).unwrap();
+        malformed["comparison"]["state_version"] = u32::MAX.into();
+        let invalid_path = directory.0.join("Invalid.hex-device-preset.json");
+        fs::write(&invalid_path, serde_json::to_vec(&malformed).unwrap()).unwrap();
+        service
+            .submit(Request::LoadDevicePreset {
+                owner: owner(&redone, device, class),
+                path: invalid_path,
+            })
+            .unwrap();
+        let refused = event(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, redone.state.project);
+        assert_eq!(refused.state.revision, redone.state.revision);
+        assert!(refused.playback.is_none());
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            event(&service).state.project,
+            before.state.project,
+            "invalid inactive payload must not add history"
+        );
+    }
 }

@@ -1,7 +1,17 @@
 //! Control-owned immutable audio transformation, cache and retained PCM accounting.
+//! Structural relocation may freeze original tempo/root context independently of
+//! destination placement. Cache identity, mapping, fades and events all consume
+//! that retained processing law; a crop never restarts full-root analysis.
+//! Finite Once/Repeat placements compose the canonical projection into one
+//! resident outer buffer, shared with waveform preparation. Their distinct
+//! cache identity retains complete geometry and tempo. Outer frames and summed
+//! musical full-root work each cap at 16777216; at most 8192 occurrences are
+//! admitted before PCM allocation. Unsupported streamed placement preparation
+//! refuses without changing project or media. Ordinary crops keep their path.
 mod budget;
 mod events;
 mod mapping;
+mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
 use hex_project::{
@@ -15,6 +25,60 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
+    Ok(if domain.warp_enabled {
+        match domain
+            .warp
+            .as_ref()
+            .ok_or(Invalid("warp settings missing"))?
+            .mode
+        {
+            WarpMode::RePitch => hex_warp::Mode::RePitch,
+            WarpMode::Beats { tail, decay, .. } => hex_warp::Mode::Beats {
+                division_frames: None,
+                tail: match tail {
+                    BeatsTail::Off => hex_warp::Tail::Off,
+                    BeatsTail::Forward => hex_warp::Tail::Forward,
+                    BeatsTail::Alternating => hex_warp::Tail::Alternating,
+                },
+                decay,
+            },
+            WarpMode::Tones { grain_ms } => hex_warp::Mode::Tones { grain_ms },
+            WarpMode::Texture {
+                grain_ms,
+                fluctuation,
+                seed,
+            } => hex_warp::Mode::Texture {
+                grain_ms,
+                fluctuation,
+                seed,
+            },
+            WarpMode::Complex => hex_warp::Mode::Complex,
+            WarpMode::ComplexPro { formants, envelope } => {
+                hex_warp::Mode::ComplexPro { formants, envelope }
+            }
+        }
+    } else {
+        hex_warp::Mode::Resample
+    })
+}
+
+/// Check the existing renderer's projected stretch capability without PCM or
+/// preparation/cache ownership. Allocates the same bounded metadata map (at most
+/// 8192 segments and 1024 explicit attacks); this is control-side work, not a
+/// callback API and not a proof of available render memory or work budget.
+pub fn validate_clip_warp_preview(
+    clip: &hex_project::Clip,
+    tempo: &hex_project::TempoMap,
+) -> Result<(), Invalid> {
+    let Some(edit) = clip.audio_edit() else {
+        return Ok(());
+    };
+    let (map, _) = mapping::prepare_map(edit, tempo, &AtomicBool::new(false))?;
+    map.validate_stretch(render_mode(&edit.domain)?, edit.domain.pitch_cents)
+        .map_err(warp_error)
+}
+
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
 /// Conservative full-original PCM charge, including pending cache entries.
@@ -23,15 +87,26 @@ pub const MAX_RETAINED_DERIVED_BYTES: usize = budget::RETAINED_LIMIT;
 
 struct Entry {
     source: Audio,
-    domain: Arc<AudioClipDomain>,
-    tempo: Option<Arc<hex_project::TempoMap>>,
-    origin: i128,
+    key: EntryKey,
     algorithm_version: u32,
     conversion: u32,
     source_rate: u32,
     prepared: Audio,
     bytes: usize,
     source_bytes: usize,
+}
+enum EntryKey {
+    Root {
+        domain: Arc<AudioClipDomain>,
+        tempo: Option<Arc<hex_project::TempoMap>>,
+        origin: i128,
+    },
+    View {
+        edit: AudioClipEdit,
+        tempo: Arc<hex_project::TempoMap>,
+        start: u64,
+        duration: u64,
+    },
 }
 struct Cache {
     entries: VecDeque<Entry>,
@@ -308,15 +383,25 @@ impl AudioTransformPreparation {
         origin: i128,
         asset: &Asset,
     ) -> Result<Option<Audio>, Invalid> {
+        self.lookup_key(source, asset, |key| {
+            matches!(key, EntryKey::Root { domain, tempo: retained, origin: at }
+                if (Arc::ptr_eq(domain, &edit.domain) || domain == &edit.domain)
+                    && *at == origin && retained.as_deref() == tempo.as_deref())
+        })
+    }
+    fn lookup_key(
+        &self,
+        source: &Audio,
+        asset: &Asset,
+        key_matches: impl Fn(&EntryKey) -> bool,
+    ) -> Result<Option<Audio>, Invalid> {
         let matching = |entry: &Entry| {
             entry.algorithm_version == hex_warp::ALGORITHM_VERSION
                 && entry.source.shares_pcm_with(source)
                 && entry.source.sample_rate() == source.sample_rate()
-                && (Arc::ptr_eq(&entry.domain, &edit.domain) || entry.domain == edit.domain)
-                && entry.origin == origin
                 && entry.conversion == asset.conversion_version()
                 && entry.source_rate == asset.source_sample_rate()
-                && entry.tempo.as_deref() == tempo.as_deref()
+                && key_matches(&entry.key)
         };
         if let Some(entries) = self
             .pending
@@ -355,13 +440,13 @@ impl AudioTransformPreparation {
             return Err(Invalid("audio preparation cancelled"));
         }
         let (_, length, _, _) = edit.projected_domain(project.tempo_map())?;
-        let tempo = if edit.musical_start.is_some() {
-            Some(self.shared_tempo(project.tempo_map())?)
+        let tempo = if edit.reference_start_raw().is_some() {
+            Some(self.shared_tempo(edit.processing_tempo(project.tempo_map()))?)
         } else {
             None
         };
-        let origin = if edit.musical_start.is_some() {
-            edit.projection_origin()?
+        let origin = if edit.reference_start_raw().is_some() {
+            edit.processing_origin()?
         } else {
             0
         };
@@ -443,41 +528,7 @@ impl AudioTransformPreparation {
             gain_q16: p.gain_q16,
         }));
         let domain = &edit.domain;
-        let mode = if domain.warp_enabled {
-            match domain
-                .warp
-                .as_ref()
-                .ok_or(Invalid("warp settings missing"))?
-                .mode
-            {
-                WarpMode::RePitch => hex_warp::Mode::RePitch,
-                WarpMode::Beats { tail, decay, .. } => hex_warp::Mode::Beats {
-                    division_frames: None,
-                    tail: match tail {
-                        BeatsTail::Off => hex_warp::Tail::Off,
-                        BeatsTail::Forward => hex_warp::Tail::Forward,
-                        BeatsTail::Alternating => hex_warp::Tail::Alternating,
-                    },
-                    decay,
-                },
-                WarpMode::Tones { grain_ms } => hex_warp::Mode::Tones { grain_ms },
-                WarpMode::Texture {
-                    grain_ms,
-                    fluctuation,
-                    seed,
-                } => hex_warp::Mode::Texture {
-                    grain_ms,
-                    fluctuation,
-                    seed,
-                },
-                WarpMode::Complex => hex_warp::Mode::Complex,
-                WarpMode::ComplexPro { formants, envelope } => {
-                    hex_warp::Mode::ComplexPro { formants, envelope }
-                }
-            }
-        } else {
-            hex_warp::Mode::Resample
-        };
+        let mode = render_mode(domain)?;
         let input = hex_warp::Input {
             frames: source.frames(),
             sample_rate: source.sample_rate(),
@@ -515,9 +566,11 @@ impl AudioTransformPreparation {
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
-            domain: Arc::clone(&edit.domain),
-            tempo,
-            origin,
+            key: EntryKey::Root {
+                domain: Arc::clone(&edit.domain),
+                tempo,
+                origin,
+            },
             algorithm_version: hex_warp::ALGORITHM_VERSION,
             conversion: asset.conversion_version(),
             source_rate: asset.source_sample_rate(),
@@ -567,6 +620,11 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        if edit.placement.is_some() {
+            return self
+                .compile_view(project, clip, edit, asset, source)
+                .map(Some);
+        }
         let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map())?;
         let domain = &edit.domain;
         let direct = domain.events.is_none()

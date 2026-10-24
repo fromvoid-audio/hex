@@ -162,6 +162,80 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
             ));
         }
     });
+    // A fast right stroke clears every crossed column, even with Shift held,
+    // and retains the same single canonical snapshot/history transaction.
+    let (before_clear, clear_revision, before_values) = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.device(device).unwrap().state().clone(),
+            state.revision,
+            (93..=156)
+                .map(|id| operator_parameter_value(state, track, device, id))
+                .collect::<Vec<_>>(),
+        )
+    });
+    let clear_from = point(
+        bounds.left() + bounds.size.width * 2.5 / 64.0,
+        bounds.top() + px(2.0),
+    );
+    let clear_to = point(
+        bounds.left() + bounds.size.width * 59.5 / 64.0,
+        bounds.center().y,
+    );
+    let outside = point(bounds.right() + px(20.0), bounds.top() - px(10.0));
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_down(clear_from, MouseButton::Right, shift);
+    visual.simulate_mouse_move(clear_to, Some(MouseButton::Right), shift);
+    visual.simulate_mouse_up(outside, MouseButton::Right, shift);
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none()
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.revision == clear_revision + 1)
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        for (index, before) in before_values.iter().enumerate() {
+            assert_eq!(
+                operator_parameter_value(state, track, device, 93 + index as u32),
+                if index < 2 {
+                    *before
+                } else {
+                    ParameterValue::Float(0.0)
+                }
+            );
+        }
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .is_some_and(|s| s.project.device(device).unwrap().state() == &before_clear)
+    });
+    visual.run_until_parked();
+    let cancel_revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+    visual.simulate_mouse_down(clear_from, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_move(clear_to, Some(MouseButton::Right), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, cancel_revision);
+        assert_eq!(state.project.device(device).unwrap().state(), &before_clear);
+    });
+    // Return to the final painted column for the existing keyboard continuation.
+    for _ in 0..64 {
+        visual.simulate_keystrokes("right");
+    }
     // A redraw must refresh the painter's values, not just the canonical project.
     // Keyboard adjustment of the last painted bar observes that rendered value.
     visual.run_until_parked();
@@ -417,25 +491,10 @@ fn waveform_menu_order_preserves_saved_choices_and_undo(cx: &mut TestAppContext)
     visual.run_until_parked();
     let popup = Box::leak(format!("device-{}-parameter-57-popup", device.value()).into_boxed_str());
     let popup_bounds = visual.debug_bounds(popup).expect("wave menu");
-    let label_width = visual.update(|window, _| {
-        window
-            .text_system()
-            .shape_line(
-                "noise looped".into(),
-                px(control_style().font_size),
-                &[gpui::TextRun {
-                    len: "noise looped".len(),
-                    font: gpui::font(theme::FONT_FAMILY),
-                    color: gpui::rgb(0xffffff).into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            )
-            .width
-    });
-    assert!(popup_bounds.size.width >= label_width + px(10.0));
+    // Compact menus share the field rectangle; full option text belongs to
+    // each row's tooltip rather than widening the device-panel layout.
+    assert_eq!(popup_bounds.left(), bounds.left());
+    assert_eq!(popup_bounds.right(), bounds.right());
     visual.simulate_keystrokes("down");
     pump_until(&editor, cx, |view| {
         view.state.as_ref().is_some_and(|state| {

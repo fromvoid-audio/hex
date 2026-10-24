@@ -171,8 +171,11 @@ fn operator_state(carrier: f32) -> hex_lattice_contract::NativeDeviceState {
 fn fixture() -> Fixture {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "operator".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("midi track")
     {

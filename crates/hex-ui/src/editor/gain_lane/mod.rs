@@ -34,6 +34,10 @@ pub(super) struct GainLane {
     pub(super) error: Option<String>,
 }
 impl GainLane {
+    pub(super) fn pointer_is_active(&self) -> bool {
+        self.draft.is_some_and(|draft| draft.pointer.is_some())
+    }
+
     pub(super) fn change_owner(&mut self, track: TrackId, project: &hex_project::Project) {
         if self.track.is_none() || self.track == Some(track) {
             return;
@@ -135,7 +139,7 @@ fn presentation(
     }
 }
 impl EditorView {
-    pub(super) fn gain_numeric_editing(&self, cx: &Context<Self>) -> bool {
+    pub(super) fn gain_numeric_editing(&self, cx: &gpui::App) -> bool {
         self.gain_recorder.numeric_editing(cx)
             || self
                 .gain_lane
@@ -380,6 +384,7 @@ impl EditorView {
                 return false;
             };
             GainPoint {
+                incoming_gain: None,
                 beat,
                 gain: pointer_gain(rect, pos[1]),
                 outgoing: hex_project::GainInterpolation::Linear,

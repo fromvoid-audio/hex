@@ -1,14 +1,37 @@
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -54,7 +54,10 @@
- use std::os::raw::{c_int, c_ulong, c_void};
- use std::ptr;
- 
+@@ -57 +57,4 @@
 -enum Class { }
 +#[repr(C)]
 +struct Class {
 +    _private: [u8; 0],
 +}
- 
- #[cfg_attr(any(target_os = "macos", target_os = "ios"),
-            link(name = "System", kind = "dylib"))]
+@@ -63 +66 @@
+-extern {
++extern "C" {
+@@ -83 +86 @@
+-                let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
++                let invoke: unsafe extern "C" fn(*mut Block<Self, R> $(, $t)*) -> R = {
+@@ -113 +116 @@
+-    invoke: unsafe extern fn(*mut Block<A, R>, ...) -> R,
++    invoke: unsafe extern "C" fn(*mut Block<A, R>, ...) -> R,
+@@ -203 +206 @@
+-                unsafe extern fn $f<$($t,)* R, X>(
++                unsafe extern "C" fn $f<$($t,)* R, X>(
+@@ -211 +214 @@
+-                let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
++                let f: unsafe extern "C" fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+@@ -257 +260 @@
+-    unsafe fn with_invoke(invoke: unsafe extern fn(*mut Self, ...) -> R,
++    unsafe fn with_invoke(invoke: unsafe extern "C" fn(*mut Self, ...) -> R,
+@@ -311 +314 @@
+-unsafe extern fn block_context_dispose<B>(block: &mut B) {
++unsafe extern "C" fn block_context_dispose<B>(block: &mut B) {
+@@ -316 +319 @@
+-unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {
++unsafe extern "C" fn block_context_copy<B>(_dst: &mut B, _src: &B) {
+@@ -324,2 +327,2 @@
+-    copy_helper: unsafe extern fn(&mut B, &B),
+-    dispose_helper: unsafe extern fn(&mut B),
++    copy_helper: unsafe extern "C" fn(&mut B, &B),
++    dispose_helper: unsafe extern "C" fn(&mut B),

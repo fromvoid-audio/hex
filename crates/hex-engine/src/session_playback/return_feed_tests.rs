@@ -70,11 +70,13 @@ fn assert_late_failure(automation: bool) {
                 track,
                 points: vec![
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 0.5,
                         outgoing: hex_project::GainInterpolation::Linear,
                     },
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ONE,
                         gain: 1.0,
                         outgoing: hex_project::GainInterpolation::Step,

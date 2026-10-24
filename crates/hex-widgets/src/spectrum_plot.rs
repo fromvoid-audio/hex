@@ -1,6 +1,7 @@
 //! Bounded read-only overlaid curves; product owns identities, units and colors.
 use crate::ControlStyle;
-use gpui::{Div, PathBuilder, canvas, div, point, prelude::*, px, rgb};
+use crate::spectrum_painter::{self, Layer as SpectrumLayer, Pass as SpectrumPass};
+use gpui::{Bounds, Div, PathBuilder, canvas, div, point, prelude::*, px, rgb};
 use std::{ops::Deref, sync::Arc};
 
 pub const MAX_SPECTRUM_PLOT_LAYERS: usize = 257;
@@ -56,6 +57,13 @@ pub fn layered_spectrum_plot(layers: SpectrumPlotLayers, style: ControlStyle) ->
                         return;
                     }
                     let origin = bounds.origin + point(px(4.0), px(4.0));
+                    let plot = Bounds::new(origin, gpui::size(width, height));
+                    let spectra = layers.iter().map(|layer| SpectrumLayer {
+                        points: &layer.points,
+                        color: layer.color,
+                        stroke_width: px(1.0),
+                    });
+                    spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Fill, window);
                     let mut grid = PathBuilder::stroke(px(0.5));
                     for division in 1..4 {
                         let y = origin.y + height * division as f32 / 4.0;
@@ -70,20 +78,7 @@ pub fn layered_spectrum_plot(layers: SpectrumPlotLayers, style: ControlStyle) ->
                     if let Ok(path) = grid.build() {
                         window.paint_path(path, rgb(style.rail));
                     }
-                    for layer in layers.iter() {
-                        let mut curve = PathBuilder::stroke(px(1.0));
-                        for (i, [x, y]) in layer.points.iter().enumerate() {
-                            let p = point(origin.x + width * *x, origin.y + height * (1.0 - *y));
-                            if i == 0 {
-                                curve.move_to(p);
-                            } else {
-                                curve.line_to(p);
-                            }
-                        }
-                        if let Ok(path) = curve.build() {
-                            window.paint_path(path, rgb(layer.color));
-                        }
-                    }
+                    spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
                 },
             )
             .size_full(),

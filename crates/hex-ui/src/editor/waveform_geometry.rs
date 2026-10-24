@@ -1,7 +1,10 @@
 //! Bounded retained waveform paths for the visible editor working set.
-use gpui::{Bounds, Path, PathBuilder, Pixels, point, px};
+use gpui::{Bounds, Pixels, point, px};
 use hex_project::Clip;
 use hex_session::{CachedPeak, CachedWaveform};
+use hex_widgets::{
+    MAX_WAVEFORM_COLUMNS, WaveformChannel, WaveformEnvelope, WaveformEnvelopeMode, WaveformStroke,
+};
 #[cfg(test)]
 use std::hint::black_box;
 use std::{collections::VecDeque, sync::Arc};
@@ -22,6 +25,8 @@ const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
 pub(super) struct WaveformGeometryCache {
     entries: VecDeque<WaveformGeometryEntry>,
     columns: usize,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    painted: VecDeque<WaveformPaintSample>,
 }
 
 struct WaveformGeometryEntry {
@@ -73,15 +78,20 @@ enum WaveformMappingKey {
 }
 
 pub(super) struct WaveformGeometry {
+    display: hex_widgets::WaveformGeometry,
+    #[cfg(test)]
     pub(super) channels: [WaveformChannelGeometry; 2],
     columns: usize,
 }
 
+#[cfg(test)]
 pub(super) struct WaveformChannelGeometry {
-    pub(super) centerline: Path<Pixels>,
-    pub(super) waveform: Path<Pixels>,
-    #[cfg(test)]
     outline: Vec<gpui::Point<Pixels>>,
+}
+impl AsRef<hex_widgets::WaveformGeometry> for WaveformGeometry {
+    fn as_ref(&self) -> &hex_widgets::WaveformGeometry {
+        &self.display
+    }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -89,6 +99,14 @@ pub(super) struct RenderedWaveformSample {
     pub(super) source: Arc<CachedWaveform>,
     pub(super) prepared: Option<(u64, u64)>,
     pub(super) spans: [f32; 2],
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WaveformPaintSample {
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) mask: Bounds<Pixels>,
+    pub(super) ordinates: [(f32, f32); 2],
 }
 
 impl WaveformGeometryCache {
@@ -150,6 +168,38 @@ impl WaveformGeometryCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.columns = 0;
+        #[cfg(all(test, feature = "ui-test-support"))]
+        self.painted.clear();
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn record_paint(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        mask: Bounds<Pixels>,
+        geometry: &WaveformGeometry,
+    ) {
+        if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
+            self.painted.pop_front();
+        }
+        self.painted.push_back(WaveformPaintSample {
+            bounds,
+            mask,
+            ordinates: std::array::from_fn(|channel| {
+                geometry.channels[channel]
+                    .outline
+                    .iter()
+                    .map(|p| f32::from(p.y))
+                    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), y| {
+                        (lo.min(y), hi.max(y))
+                    })
+            }),
+        });
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn painted_waveforms(&self) -> &VecDeque<WaveformPaintSample> {
+        &self.painted
     }
 
     /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
@@ -358,7 +408,7 @@ pub(super) fn prepare_waveform_geometry(
     let frames = grid.end.checked_sub(grid.start)?;
     if frames == 0
         || grid.columns == 0
-        || grid.columns > 4096
+        || grid.columns > MAX_WAVEFORM_COLUMNS
         || !grid.left.is_finite()
         || !grid.width.is_finite()
         || grid.width <= 0.0
@@ -447,6 +497,10 @@ pub(super) fn prepare_waveform_geometry(
     }
 
     let mut channels = Vec::with_capacity(2);
+    #[cfg(test)]
+    let mut outlines = std::array::from_fn(|_| WaveformChannelGeometry {
+        outline: Vec::new(),
+    });
     for channel in 0..2 {
         let band_top = height * channel as f32 * 0.5;
         let band_height = height * 0.5;
@@ -461,50 +515,44 @@ pub(super) fn prepare_waveform_geometry(
             minima.push(point(px(x), bounds.origin.y + px(bottom)));
         }
 
-        let mut centerline = PathBuilder::stroke(px(0.5));
-        centerline.move_to(point(bounds.origin.x, bounds.origin.y + px(center)));
-        centerline.line_to(point(
-            bounds.origin.x + bounds.size.width,
-            bounds.origin.y + px(center),
-        ));
-        let centerline = centerline.build().ok()?;
-
         let has_area = maxima
             .iter()
             .zip(&minima)
             .any(|(maximum, minimum)| (f32::from(maximum.y - minimum.y)).abs() >= 0.5);
-        let waveform = if has_area && let Some(first) = maxima.first().copied() {
-            let mut silhouette = PathBuilder::fill();
-            silhouette.move_to(first);
-            for point in maxima.iter().skip(1) {
-                silhouette.line_to(*point);
-            }
-            for point in minima.iter().rev() {
-                silhouette.line_to(*point);
-            }
-            silhouette.close();
-            silhouette.build().ok()?
-        } else if let Some(first) = maxima.first().copied() {
-            // A constant sample has zero fill area; stroke its real level so
-            // deep zoom never turns a non-silent signal into empty space.
-            let mut trace = PathBuilder::stroke(px(1.0));
-            trace.move_to(first);
-            for point in maxima.iter().skip(1) {
-                trace.line_to(*point);
-            }
-            trace.build().ok()?
-        } else {
-            Path::new(point(bounds.origin.x, bounds.origin.y + px(center)))
-        };
-        channels.push(WaveformChannelGeometry {
-            centerline,
-            waveform,
-            #[cfg(test)]
-            outline: maxima.into_iter().chain(minima).collect(),
-        });
+        channels.push(WaveformChannel::new(
+            WaveformEnvelope {
+                upper: &maxima,
+                lower: &minima,
+                mode: if has_area {
+                    WaveformEnvelopeMode::Filled
+                } else {
+                    WaveformEnvelopeMode::Trace
+                },
+                trace_width: px(1.0),
+                centerline: Some(WaveformStroke {
+                    points: [
+                        point(bounds.origin.x, bounds.origin.y + px(center)),
+                        point(
+                            bounds.origin.x + bounds.size.width,
+                            bounds.origin.y + px(center),
+                        ),
+                    ],
+                    width: px(0.5),
+                }),
+            },
+            std::iter::empty(),
+        )?);
+        #[cfg(test)]
+        {
+            outlines[channel] = WaveformChannelGeometry {
+                outline: maxima.into_iter().chain(minima).collect(),
+            };
+        }
     }
     Some(WaveformGeometry {
-        channels: channels.try_into().ok()?,
+        display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
+        #[cfg(test)]
+        channels: outlines,
         columns,
     })
 }

@@ -14,8 +14,8 @@ use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
 use hex_widgets::{
-    DiscreteControlAppearance, ResponseGraph, ResponseGraphEvent, ResponseGraphModel,
-    ResponseGraphNode, Toggle, ToggleChanged, ToggleConfig,
+    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, Toggle,
+    ToggleAppearance, ToggleChanged, ToggleConfig,
 };
 
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::EQ8_FRAME_WIDTH;
@@ -281,7 +281,7 @@ fn audition_toggle(
                 .id(ElementId::Name("eq8-audition-unavailable".into()))
                 .child(unavailable("audition toggle unavailable"));
         };
-        let config = config.with_appearance(DiscreteControlAppearance::CompactIconButton);
+        let config = config.with_appearance(ToggleAppearance::CompactIconButton);
         let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
         let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
             if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
@@ -364,7 +364,7 @@ pub(super) fn spectrum_toggle(
                     .to_owned()
             }
         });
-    hex_widgets::device_action(
+    hex_widgets::device_segment(
         theme::text("spectrum"),
         theme::device_segment_style(selected && available),
     )
@@ -541,7 +541,7 @@ fn compact_control(
         device,
         identity,
         parameter,
-        ControlPresentation::MiniDial,
+        ControlPresentation::MicroDial,
         ControlText {
             label: Some(label),
             codec: None,

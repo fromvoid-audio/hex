@@ -1,0 +1,104 @@
+{
+  "format": "hex-project",
+  "version": 8,
+  "sample_rate": 48000,
+  "next_id": 12,
+  "assets": [
+    {
+      "id": 2,
+      "path": "Media/Drum.WAV",
+      "source_sample_rate": 44100,
+      "source_frames": 200,
+      "playback_frames": 218,
+      "conversion_version": 1
+    }
+  ],
+  "tracks": [
+    {
+      "id": 1,
+      "name": "Case Preserved",
+      "gain": 0.375,
+      "balance": -0.25,
+      "muted": true,
+      "soloed": true,
+      "clips": [
+        {
+          "id": 3,
+          "asset": 2,
+          "start": 123,
+          "duration": 77,
+          "source_offset": 11,
+          "source_length": 99,
+          "looping": false,
+          "source_phase": 0,
+          "fade": {
+            "span": 77,
+            "offset": 0,
+            "fade_in": 3,
+            "fade_out": 5
+          }
+        },
+        {
+          "id": 4,
+          "asset": 2,
+          "start": 300,
+          "duration": 2,
+          "source_offset": 20,
+          "source_length": 3,
+          "looping": true,
+          "source_phase": 0,
+          "fade": {
+            "span": 9,
+            "offset": 0,
+            "fade_in": 0,
+            "fade_out": 0
+          }
+        },
+        {
+          "id": 5,
+          "asset": 2,
+          "start": 302,
+          "duration": 7,
+          "source_offset": 20,
+          "source_length": 3,
+          "looping": true,
+          "source_phase": 2,
+          "fade": {
+            "span": 9,
+            "offset": 2,
+            "fade_in": 0,
+            "fade_out": 0
+          }
+        }
+      ]
+    }
+  ],
+  "loop_region": {
+    "start": 100,
+    "end": 450,
+    "enabled": true
+  },
+  "master_gain": 0.8125,
+  "tempo_points": [
+    {
+      "beat_raw": 0,
+      "micro_bpm": 120000000
+    },
+    {
+      "beat_raw": 34359738368,
+      "micro_bpm": 93500000
+    }
+  ],
+  "meter_points": [
+    {
+      "beat_raw": 0,
+      "numerator": 4,
+      "denominator": 4
+    },
+    {
+      "beat_raw": 10737418240,
+      "numerator": 7,
+      "denominator": 8
+    }
+  ]
+}

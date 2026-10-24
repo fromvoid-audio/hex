@@ -302,6 +302,8 @@ fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() 
     let fade = ClipFade::new(4800, 0, 1800, 1600)
         .unwrap()
         .with_shape(200, 300, 700, -800)
+        .unwrap()
+        .with_curve_positions(250, 750)
         .unwrap();
     editor
         .execute(Command::SetClipFadeEnvelope { clip, fade })
@@ -415,4 +417,46 @@ fn resized_lower_handles_render_trimmed_source_and_fade_in_playback_across_block
             assert_eq!(sought, expected[3..8]);
         }
     }
+}
+
+#[test]
+fn two_axis_fades_render_independent_anchor_gains_in_both_players() {
+    let fade = ClipFade::new(2002, 0, 1001, 1001)
+        .unwrap()
+        .with_shape(0, 0, 400, -300)
+        .unwrap()
+        .with_curve_positions(250, 750)
+        .unwrap();
+    let audio = Audio::new(48_000, vec![[0.5, -0.5]; 2002]).unwrap();
+    let clip = hex_engine::Clip::region_with_fade(audio, 0, 2002, 0, 2002, false, fade).unwrap();
+    let project = hex_engine::Project::new(
+        48_000,
+        vec![hex_engine::Track::new(vec![clip], 1.0, false).unwrap()],
+    )
+    .unwrap();
+    let mut renderer = Renderer::new(&project);
+    renderer.play();
+    let mut actual = vec![[0.0; 2]; 2002];
+    renderer.render(&mut actual).unwrap();
+    // Independent knot oracle: time mapping sends each authored position to 0.5;
+    // rational vertical gains there are (1001-curve)/2002, in opposite time directions.
+    for (frame, gain) in [
+        (0, 0.0),
+        (250, 601.0_f32 / 2002.0),
+        (1000, 1.0),
+        (1001, 1.0),
+        (1751, 1301.0 / 2002.0),
+        (2001, 0.0),
+    ] {
+        assert!((actual[frame][0] - 0.5 * gain).abs() < 1e-7);
+        assert!((actual[frame][1] + 0.5 * gain).abs() < 1e-7);
+    }
+    let mut playback = Playback::new(project);
+    playback.apply(PlaybackCommand::Play);
+    let mut chunked = vec![[0.0; 2]; 2002];
+    for block in chunked.chunks_mut(37) {
+        playback.render(block).unwrap();
+    }
+    assert_eq!(actual, chunked);
+    assert_ne!(actual[250][0], 0.125); // x has changed actual PCM from the linear ramp.
 }

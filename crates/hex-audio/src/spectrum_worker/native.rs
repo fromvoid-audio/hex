@@ -132,6 +132,20 @@ pub(crate) fn spawn_native_spectrum_worker(
     spawn_worker(initial, true, None)
 }
 
+/// Finite normal native spectrum constructor payload, including project pool.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    std::mem::size_of::<SpectrumCore>()
+        .checked_add(4usize.checked_mul(std::mem::size_of::<[hex_engine::Frame; FFT_SIZE]>())?)?
+        .checked_add(SpectrumKernel::heap_storage_quote()?)?
+        .checked_add(std::mem::size_of::<Option<SpectrumReaper>>())?
+        .checked_add(ChannelStorage::ring_bytes::<CaptureBatch>(
+            CAPTURE_QUEUE_CAPACITY,
+        )?)?
+        .checked_add(std::mem::size_of::<AtomicBool>())?
+        .checked_add(project::constructor_storage_quote()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +177,10 @@ mod tests {
             + 3 * FFT_SIZE * std::mem::size_of::<f64>()
             + (FFT_SIZE / 2 + 1) * std::mem::size_of::<f64>();
         assert!(receipt.storage.data_bytes > worker_payload);
+        assert_eq!(
+            Some(receipt.storage.data_bytes),
+            constructor_storage_quote()
+        );
         let mut submit = || {
             assert_eq!(
                 capture.submit(stamp(44100), &[[0.5; 2]; 32]),

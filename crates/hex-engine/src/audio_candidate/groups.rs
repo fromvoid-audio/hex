@@ -415,7 +415,13 @@ mod tests {
         let mut ids = vec![x];
         for name in ["y", "z"] {
             let Created::Track(id) = editor
-                .execute(Command::AddTrack { name: name.into() })
+                .execute(Command::InsertTrackWithDevice {
+                    name: name.into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
+                })
                 .unwrap()
             else {
                 panic!("track")
@@ -458,6 +464,7 @@ mod tests {
                 )
                 .unwrap();
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state,

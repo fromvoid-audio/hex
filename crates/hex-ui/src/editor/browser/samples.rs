@@ -52,6 +52,10 @@ pub(super) struct SampleBrowser {
 }
 
 impl SampleBrowser {
+    pub(super) fn history_loading(&self) -> bool {
+        self.in_flight || self.pending
+    }
+
     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
         self.visible_with_listing(query, None, None)
     }
@@ -195,13 +199,21 @@ impl EditorView {
             .browser
             .preferences_path
             .with_extension("samples-v1.db");
+        #[cfg(test)]
+        let test_environment = Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             if load {
                 let path = database.clone();
+                #[cfg(test)]
+                let load_environment = Arc::clone(&test_environment);
                 let cached = cx
                     .background_executor()
-                    .spawn(async move { SampleCatalog::load(&path) })
+                    .spawn(async move {
+                        #[cfg(test)]
+                        let _test_environment = load_environment;
+                        SampleCatalog::load(&path)
+                    })
                     .await;
                 if this
                     .update(cx, |view, cx| {
@@ -232,7 +244,13 @@ impl EditorView {
                 .background_executor()
                 .spawn(async move {
                     let scan = scan_samples(&scan_roots);
+                    #[cfg(test)]
+                    let gate = test_environment.before_catalog_save().await;
                     let saved = scan.catalog.save(&database);
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.did_save(saved.is_ok(), test_environment.root().is_dir());
+                    }
                     (scan, saved)
                 })
                 .await;
@@ -282,7 +300,7 @@ impl EditorView {
 
     pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
-        let noun = ResultsMode::for_query(&self.browser.search.read(cx).content).count_noun();
+        let noun = ResultsMode::for_query(self.browser.search.read(cx).text()).count_noun();
         format!(
             "{count} {noun}{}",
             if self.browser.samples.in_flight {

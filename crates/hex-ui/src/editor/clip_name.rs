@@ -1,11 +1,12 @@
 //! Selection-driven, in-place clip label editing. Drafts never mutate the project.
-use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, browser_input::*};
+use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, browser_input};
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
 };
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
+use hex_widgets::TextInput;
 
 pub(super) const CLIP_NAME_HEIGHT: f32 =
     super::tracks::TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION;
@@ -15,7 +16,7 @@ pub(super) struct NameEdit {
     generation: u64,
     revision: u64,
     original: String,
-    input: Entity<BrowserSearch>,
+    input: Entity<TextInput>,
     _blur: Subscription,
 }
 
@@ -24,24 +25,13 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-r", RenameClip, Some("hex_editor && !hex_text_editing")),
         KeyBinding::new("enter", CommitClipName, Some("hex_clip_name")),
         KeyBinding::new("escape", CancelClipName, Some("hex_clip_name")),
-        KeyBinding::new("backspace", BrowserBackspace, Some("hex_clip_name")),
-        KeyBinding::new("delete", BrowserDelete, Some("hex_clip_name")),
-        KeyBinding::new("left", BrowserLeft, Some("hex_clip_name")),
-        KeyBinding::new("right", BrowserRight, Some("hex_clip_name")),
-        KeyBinding::new("shift-left", BrowserSelectLeft, Some("hex_clip_name")),
-        KeyBinding::new("shift-right", BrowserSelectRight, Some("hex_clip_name")),
-        KeyBinding::new("cmd-a", BrowserSelectAll, Some("hex_clip_name")),
-        KeyBinding::new("home", BrowserHome, Some("hex_clip_name")),
-        KeyBinding::new("cmd-left", BrowserHome, Some("hex_clip_name")),
-        KeyBinding::new("end", BrowserEnd, Some("hex_clip_name")),
-        KeyBinding::new("cmd-right", BrowserEnd, Some("hex_clip_name")),
-        KeyBinding::new("cmd-v", BrowserPaste, Some("hex_clip_name")),
-        KeyBinding::new("cmd-c", BrowserCopy, Some("hex_clip_name")),
-        KeyBinding::new("cmd-x", BrowserCut, Some("hex_clip_name")),
     ]);
 }
 impl EditorView {
     pub(super) fn reconcile_clip_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = &self.clip_name_edit {
+            super::browser_input::restyle(&edit.input, cx);
+        }
         if let Some(edit) = &self.clip_name_edit
             && (edit.generation != self.project_generation
                 || self.clip_name_target() != Some(edit.clip)
@@ -93,7 +83,7 @@ impl EditorView {
         };
         let original = name.to_owned();
         let revision = state.revision;
-        let input = cx.new(|cx| BrowserSearch::for_clip_name(original.clone(), cx));
+        let input = cx.new(|cx| browser_input::name(original.clone(), cx));
         let focus = input.read(cx).focus_handle().clone();
         let blur = cx.on_blur(&focus, window, |view, _, cx| {
             // Preserve the newly clicked control's focus.
@@ -114,7 +104,7 @@ impl EditorView {
         let Some(edit) = self.clip_name_edit.take() else {
             return;
         };
-        let name = edit.input.read(cx).content.clone();
+        let name = edit.input.read(cx).text().to_owned();
         if edit.generation == self.project_generation
             && self.state.as_ref().is_some_and(|s| {
                 s.revision == edit.revision
@@ -133,6 +123,36 @@ impl EditorView {
             }
         }
         cx.notify();
+    }
+    /// Match the existing Enter/blur commit law, but keep a refused draft
+    /// visible when a project replacement is requested.
+    pub(super) fn finalize_clip_name_for_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = &self.clip_name_edit else {
+            return true;
+        };
+        let name = edit.input.read(cx).text();
+        if self.edit_pending()
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || edit.generation != self.project_generation
+            || !self.state.as_ref().is_some_and(|state| {
+                state.revision == edit.revision
+                    && state.project.clip_name(edit.clip) == Some(edit.original.as_str())
+            })
+            || name.trim().is_empty()
+            || name.len() > hex_project::MAX_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            self.error =
+                Some("finish or cancel the current name edit before opening a project".into());
+            return false;
+        }
+        self.finish_clip_name(true, window, cx);
+        true
     }
     pub(super) fn finish_clip_name(
         &mut self,
@@ -161,56 +181,102 @@ impl EditorView {
                 .child(edit.input.clone())
                 .into_any_element();
         }
-        div()
-            .min_w_0()
-            .flex_1()
-            .truncate()
-            .child(theme::text(name))
-            .into_any_element()
+        clip_name_text(name).into_any_element()
     }
     pub(super) fn clip_name_header(
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
+        self.clip_name_strip(track, clip, name, fill, true, cx)
+    }
+    pub(super) fn clip_name_preview_header(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.clip_name_strip(
+            track,
+            clip,
+            name,
+            theme::color(theme::PaletteRole::Raised),
+            false,
+            cx,
+        )
+    }
+    pub(super) fn clip_name_drag_header(
+        &self,
+        clip: ClipId,
+        name: &str,
+        fill: u32,
+    ) -> impl IntoElement + use<> {
+        clip_name_surface(fill)
+            .id(("clip-drag-name", clip.value()))
+            .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
+            .child(clip_name_text(name))
+    }
+
+    fn clip_name_strip(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        fill: u32,
+        interactive: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        clip_name_surface(fill)
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
-            .absolute()
-            .top(px(-1.0))
-            .left(px(-1.0))
-            .right(px(-1.0))
-            .h(px(CLIP_NAME_HEIGHT))
-            .px_1()
-            .overflow_hidden()
-            .text_xs()
-            .line_height(px(14.0))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .cursor_pointer()
-            .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    if view
-                        .clip_name_edit
-                        .as_ref()
-                        .is_some_and(|edit| edit.clip == clip)
-                    {
+            .when(interactive, |header| {
+                header.cursor_pointer().on_click(cx.listener(
+                    move |view, event: &gpui::ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        return;
-                    }
-                    if view.clip_name_edit.is_some() {
-                        view.finish_clip_name(true, window, cx);
-                    }
-                    view.select_clip_header(track, clip, event.modifiers(), window, cx);
-                    view.focus.focus(window);
-                    cx.notify();
-                }),
-            )
+                        if view
+                            .clip_name_edit
+                            .as_ref()
+                            .is_some_and(|edit| edit.clip == clip)
+                        {
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if view.clip_name_edit.is_some() {
+                            view.finish_clip_name(true, window, cx);
+                        }
+                        view.select_clip_header(track, clip, event.modifiers(), window, cx);
+                        view.focus.focus(window);
+                        cx.notify();
+                    },
+                ))
+            })
             .child(self.clip_name_label(clip, name))
     }
+}
+
+fn clip_name_surface(fill: u32) -> gpui::Div {
+    let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
+    div()
+        .absolute()
+        .top(px(-1.0))
+        .left(px(-1.0))
+        .right(px(-1.0))
+        .h(px(CLIP_NAME_HEIGHT))
+        .px_1()
+        .overflow_hidden()
+        .text_xs()
+        .line_height(px(14.0))
+        .bg(rgb(fill))
+        .text_color(rgb(text))
+}
+
+// A passive drag clone must never mount the live rename input a second time.
+fn clip_name_text(name: &str) -> gpui::Div {
+    div().min_w_0().flex_1().truncate().child(theme::text(name))
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -246,7 +312,7 @@ mod tests {
         visual.simulate_keystrokes("space l backspace");
         editor.read_with(cx, |v, cx| {
             assert_eq!(
-                v.clip_name_edit.as_ref().unwrap().input.read(cx).content,
+                v.clip_name_edit.as_ref().unwrap().input.read(cx).text(),
                 "Verse S 🎹 "
             );
             assert!(
@@ -348,8 +414,10 @@ mod tests {
                 editor.update(cx, |v, cx| {
                     v.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(canonical.project().clone()),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),
                         gain_preview: Ok(Arc::default()),
@@ -408,3 +476,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_header_color_tests.rs"]
+mod color_tests;

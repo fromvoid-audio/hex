@@ -38,6 +38,7 @@ pub(super) fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs
     snapshot.tracks[0].balance = -0.25;
     snapshot.tracks[0].soloed = true;
     snapshot.tracks[0].gain_envelope = vec![hex_project::GainPoint {
+        incoming_gain: None,
         beat: hex_project::BeatTime::ZERO,
         gain: 0.5,
         outgoing: hex_project::GainInterpolation::Step,
@@ -399,4 +400,112 @@ fn occupied_restore_target_and_caller_byte_pressure_keep_original_owners() {
     assert_eq!(refusal.inputs.sources.capacity(), capacity);
     assert_eq!(refusal.inputs.reservation, reservation);
     assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
+}
+
+#[test]
+fn empty_main_carrier_survives_construct_transfer_restore_and_reuse() {
+    if !supported("main_carrier_identity") {
+        return;
+    }
+    let (project, bank) = fixture(false);
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = begin(&mut custody, &project, bank).ok().unwrap();
+    let root = &mut custody.arrangement_clips.root;
+    let pointer = Arc::as_ptr(&root.project.as_ref().unwrap().main_device_chain);
+    assert_eq!(
+        root.capacity(false).unwrap().main_prepared_bytes,
+        ArrangementRootAssembly::main_carrier_bytes().unwrap()
+    );
+    assert!(root.main_chain.is_none());
+    let mut target = None;
+    root.transfer_project(&mut target);
+    assert!(root.can_restore_project());
+    assert!(std::ptr::eq(
+        Arc::as_ptr(&target.as_ref().unwrap().main_device_chain),
+        pointer
+    ));
+    assert_eq!(
+        root.capacity_at(false, target.as_ref())
+            .unwrap()
+            .main_prepared_bytes,
+        ArrangementRootAssembly::main_carrier_bytes().unwrap()
+    );
+    root.restore_project(&mut target);
+    assert!(target.is_none());
+    assert!(custody.cancel(&token));
+    custody.cleanup_on_control();
+    assert!(std::ptr::eq(
+        Arc::as_ptr(custody.arrangement_clips.root.main_chain.as_ref().unwrap()),
+        pointer
+    ));
+    let bank = custody.recover_on_control(&token).unwrap();
+    let next = begin(&mut custody, &project, bank).ok().unwrap();
+    assert!(std::ptr::eq(
+        Arc::as_ptr(
+            &custody
+                .arrangement_clips
+                .root
+                .project
+                .as_ref()
+                .unwrap()
+                .main_device_chain
+        ),
+        pointer
+    ));
+    assert!(custody.cancel(&next));
+    custody.cleanup_on_control();
+    assert!(custody.recover_on_control(&next).is_some());
+}
+
+#[test]
+fn main_carrier_is_not_born_before_either_byte_reservation_admits_it() {
+    if !supported("main_carrier_before_birth") {
+        return;
+    }
+    let (project, bank) = fixture(false);
+    let mut successful = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = begin(&mut successful, &project, bank).ok().unwrap();
+    let report = successful.capacity_report();
+    assert!(successful.cancel(&token));
+    successful.cleanup_on_control();
+    for prepared_limit in [true, false] {
+        let (project, mut bank) = fixture(false);
+        if prepared_limit {
+            bank.reservation.max_prepared_data_bytes = report.retained_stage_bytes - 1;
+        } else {
+            bank.reservation.max_construction_data_bytes = report.construction_peak_bytes - 1;
+        }
+        let pointer = bank.sources.as_ptr();
+        let mut refused = AudioPreparationCustody::try_new_on_control().unwrap();
+        let failure = begin(&mut refused, &project, bank).err().unwrap();
+        assert_eq!(failure.reason, AudioStorageError::ReservationExceeded);
+        assert_eq!(failure.inputs.sources.as_ptr(), pointer);
+        assert!(refused.arrangement_clips.root.main_chain.is_none());
+        assert!(refused.arrangement_clips.root.project.is_none());
+    }
+}
+
+#[test]
+fn narrow_root_refuses_authored_main_before_taking_any_source() {
+    if !supported("main_carrier_authored_refusal") {
+        return;
+    }
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (project, bank) = fixture(false);
+    let mut editor = Editor::new(project, 8).unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let pointer = bank.sources.as_ptr();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let refused = begin(&mut custody, editor.project(), bank).err().unwrap();
+    assert_eq!(refused.reason, AudioStorageError::UnsupportedGraph);
+    assert_eq!(refused.inputs.sources.as_ptr(), pointer);
+    assert!(custody.arrangement_clips.root.project.is_none());
+    assert!(custody.arrangement_clips.root.main_chain.is_none());
 }

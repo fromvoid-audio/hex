@@ -1351,7 +1351,7 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
-    assert_eq!(document["version"], 31);
+    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     service
@@ -2042,8 +2042,11 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     let service = Service::new(48_000, 16, 128).unwrap();
     next_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "target".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let baseline = next_event(&service);
@@ -2170,7 +2173,7 @@ fn arrangement_catalog_atomic_command_preserves_project_on_compile_and_capacity_
 }
 
 #[test]
-fn clip_conversion_worker_rejects_stale_selection_and_publishes_editable_midi() {
+fn clip_conversion_worker_refuses_audio_and_stale_selection_without_publication() {
     let service = Service::new(48_000, 16, 1024).unwrap();
     next_event(&service);
     let path = std::env::temp_dir().join(format!(
@@ -2201,24 +2204,72 @@ fn clip_conversion_worker_rejects_stale_selection_and_publishes_editable_midi() 
         assert_eq!(refused.state.project, imported.state.project);
         assert_eq!(refused.state.revision, revision);
     }
+    let bytes = fs::read(&path).unwrap();
     service.submit(request(0, revision)).unwrap();
-    let converted = next_event(&service);
-    assert!(converted.error.is_none());
-    assert!(converted.playback.is_some());
-    assert_eq!(converted.created, Some(Created::Clip(clip)));
-    assert!(converted.state.project.clip(clip).is_none());
-    assert!(
-        converted
-            .state
-            .project
-            .midi_clip(clip)
-            .unwrap()
-            .notes()
-            .is_empty()
+    let refused = next_event(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some(hex_project::AUDIO_TO_MIDI_UNSUPPORTED)
     );
-    assert_eq!(converted.state.project.tracks()[0].id(), track.id());
-    assert_eq!(converted.state.revision, revision + 1);
+    assert!(refused.playback.is_none() && refused.created.is_none());
+    assert_eq!(refused.state.project, imported.state.project);
+    assert_eq!(refused.state.revision, revision);
+    assert_eq!(refused.state.unsaved, imported.state.unsaved);
+    assert_eq!(refused.state.can_undo, imported.state.can_undo);
+    assert_eq!(refused.state.can_redo, imported.state.can_redo);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    service
+        .submit(Request::Edit(Command::AddScene {
+            name: "scene".into(),
+        }))
+        .unwrap();
+    let scene_event = next_event(&service);
+    let Some(Created::Scene(scene)) = scene_event.created else {
+        panic!("scene")
+    };
+    service
+        .submit(Request::Edit(Command::CopyArrangementAudioClipToSession {
+            source: clip,
+            scene,
+        }))
+        .unwrap();
+    let copied = next_event(&service);
+    let Some(Created::SessionClip(cell)) = copied.created else {
+        panic!("session clip")
+    };
+    for id in [clip, cell] {
+        for command_request in [false, true] {
+            let request = if command_request {
+                Request::Edit(Command::ConvertAudioClipToMidi(id))
+            } else {
+                Request::ConvertClip {
+                    project_generation: 0,
+                    revision: copied.state.revision,
+                    clip: id,
+                    to_audio: false,
+                }
+            };
+            service.submit(request).unwrap();
+            let refused = next_event(&service);
+            assert!(
+                refused.error.as_deref().is_some_and(
+                    |message| message.ends_with(hex_project::AUDIO_TO_MIDI_UNSUPPORTED)
+                )
+            );
+            assert!(refused.playback.is_none() && refused.created.is_none());
+            assert_eq!(refused.state.project, copied.state.project);
+            assert_eq!(refused.state.revision, copied.state.revision);
+            assert_eq!(refused.state.can_undo, copied.state.can_undo);
+            assert_eq!(refused.state.can_redo, copied.state.can_redo);
+            assert_eq!(refused.state.unsaved, copied.state.unsaved);
+        }
+    }
+    // Refusals did not add history: one Undo still removes the session copy.
     service.submit(Request::Undo).unwrap();
-    assert!(next_event(&service).state.project.clip(clip).is_some());
+    let undone = next_event(&service);
+    let mut actual = undone.state.project.snapshot();
+    actual.next_id = scene_event.state.project.snapshot().next_id;
+    assert_eq!(actual, scene_event.state.project.snapshot());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
     fs::remove_file(path).unwrap();
 }

@@ -196,6 +196,12 @@ fn compensated_touch_waits_for_the_main_sample_and_preserves_release_to_read() {
         else {
             panic!("import")
         };
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
         editor.execute(Command::RemoveInstrument { track }).unwrap();
         if delayed {
             editor

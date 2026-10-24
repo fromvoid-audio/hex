@@ -1,6 +1,8 @@
+diff --git a/src/accessibility.rs b/src/accessibility.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/accessibility.rs
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,247 @@
 +//! Bounded semantic control snapshots. Native backends never retain application pointers.
 +use crate::{App, Bounds, Pixels, SharedString, Window};
 +use std::{
@@ -32,6 +34,8 @@
 +/// User-facing semantics of a control, independent of its painted shape.
 +#[derive(Clone, Debug, PartialEq)]
 +pub enum AccessibilityValue {
++    /// A stateless action, with no editable value or option inventory.
++    Button,
 +    /// A finite adjustable canonical value and its actual formatted readout.
 +    Number {
 +        /// Canonical current value.
@@ -59,7 +63,7 @@
 +pub enum AccessibilityAction {
 +    /// Move keyboard focus without editing the parameter.
 +    Focus,
-+    /// Activate a boolean or open a choice control.
++    /// Activate a stateless action, boolean, or choice control.
 +    Press,
 +    /// Apply the control's existing positive keyboard step.
 +    Increment,
@@ -125,7 +129,7 @@
 +                        && (*min..=*max).contains(value)
 +                        && text_ok(text)
 +                }
-+                AccessibilityValue::Toggle(_) => true,
++                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => true,
 +                AccessibilityValue::Choice { selected, options } => {
 +                    !options.is_empty()
 +                        && options.len() <= 128
@@ -140,7 +144,7 @@
 +            + self.status.as_ref().map_or(0, |text| text.len())
 +            + match &self.value {
 +                AccessibilityValue::Number { text, .. } => text.len(),
-+                AccessibilityValue::Toggle(_) => 0,
++                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => 0,
 +                AccessibilityValue::Choice { options, .. } => {
 +                    options.iter().map(|text| text.len()).sum()
 +                }
@@ -156,7 +160,9 @@
 +            (AccessibilityAction::Focus, _) => true,
 +            (
 +                AccessibilityAction::Press,
-+                AccessibilityValue::Toggle(_) | AccessibilityValue::Choice { .. },
++                AccessibilityValue::Button
++                | AccessibilityValue::Toggle(_)
++                | AccessibilityValue::Choice { .. },
 +            ) => true,
 +            (
 +                AccessibilityAction::Increment | AccessibilityAction::Decrement,
@@ -244,6 +250,21 @@
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
 +}
+diff --git a/src/app.rs b/src/app.rs
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1122,0 +1123,10 @@
++    /// Select paths, optionally starting in an exact native directory.
++    /// Platforms without a directory override retain their ordinary picker.
++    pub fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.platform.prompt_for_paths_with_directory(options, directory)
++    }
++
+diff --git a/src/app/test_context.rs b/src/app/test_context.rs
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
 @@ -122,0 +123,12 @@
@@ -259,7 +280,59 @@
 +        self.test_platform.cursor_style()
 +    }
 +
-@@ -677,0 +690,65 @@
+@@ -142,0 +155,18 @@
++    }
++
++    /// Opt into real macOS font registration and shaping for a disposable test.
++    /// Call before opening any window. This retains the deterministic test
++    /// platform and never creates an OS window or changes system font settings.
++    /// Default test contexts continue to use the no-op text system.
++    #[cfg(all(target_os = "macos", feature = "font-kit"))]
++    pub fn use_native_text_system(&mut self) -> Result<()> {
++        let mut app = self.app.borrow_mut();
++        if !app.windows.is_empty() {
++            bail!("native test text system must be selected before opening windows");
++        }
++        let text_system = Arc::new(TextSystem::new(Arc::new(
++            crate::platform::MacTextSystem::new(),
++        )));
++        app.text_system = Arc::clone(&text_system);
++        self.text_system = text_system;
++        Ok(())
+@@ -307,0 +338,32 @@
++    /// Whether the test platform has an outstanding Open picker request.
++    pub fn did_prompt_for_paths(&self) -> bool {
++        self.test_platform.did_prompt_for_paths()
++    }
++
++    /// Complete the test platform Open picker; this does not show a native picker.
++    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
++        self.test_platform.simulate_paths_selection(paths);
++    }
++
++    /// Arguments of the pending injected Open request; never a native panel probe.
++    pub fn pending_open_directory(&self) -> Option<Option<std::path::PathBuf>> {
++        self.test_platform.pending_open_directory()
++    }
++    /// Initial directory and suggested name of an injected Save request.
++    pub fn pending_save_options(&self) -> Option<(std::path::PathBuf, Option<String>)> {
++        self.test_platform.pending_save_options()
++    }
++    /// Complete the injected Open request with a platform error, without a panel.
++    pub fn simulate_paths_error(&self, message: &str) {
++        self.test_platform.simulate_paths_error(message);
++    }
++    /// Complete the injected Save request with a platform error, without a panel.
++    pub fn simulate_new_path_error(&self, message: &str) {
++        self.test_platform.simulate_new_path_error(message);
++    }
++    /// Pure NSURL roundtrip in the Mac dependency; no panel is shown or configured.
++    #[cfg(target_os = "macos")]
++    pub fn picker_directory_url_roundtrip(&self, directory: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
++        crate::MacPlatform::picker_directory_url_for_test(directory)
++    }
++
+@@ -677,0 +740,112 @@
 +    /// Returns the cursor request selected by the current rendered hitbox.
 +    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
 +    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
@@ -284,6 +357,29 @@
 +        })
 +    }
 +
++    /// Filled quad fragments inside a debug element in the completed scene,
++    /// clipped to its bounds and each replay/content mask. Canvas primitives do
++    /// not have individual element selectors. This is scene geometry, not native
++    /// framebuffer readback; it draws no frame and injects no input.
++    pub fn rendered_filled_quads(
++        &mut self,
++        selector: &'static str,
++    ) -> Vec<(Bounds<crate::ScaledPixels>, crate::Background)> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.quads.iter().filter_map(|quad| {
++                let visible = quad.bounds.intersect(&scaled).intersect(&quad.content_mask.bounds);
++                (!quad.background.is_transparent()
++                    && visible.size.width > crate::ScaledPixels(0.0)
++                    && visible.size.height > crate::ScaledPixels(0.0))
++                    .then(|| (visible, quad.background.clone()))
++            }).collect()
++        })
++    }
++
 +    /// Border color, widths and ancestor mask of the last matching scene quad.
 +    /// Reads completed paint under test support without changing layout or input.
 +    pub fn rendered_border(
@@ -301,6 +397,30 @@
 +                .rev()
 +                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
 +                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
++        })
++    }
++
++    /// Completed quad fragments for a debug element, including cache replay
++    /// masks. The caller can check coverage and ordering across all fragments.
++    /// This is scene evidence, not native framebuffer/pixel readback.
++    pub fn rendered_quad_paint_layers(
++        &mut self,
++        selector: &'static str,
++        border: bool,
++    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.quads.iter().enumerate()
++                .filter(|(_, quad)| quad.bounds == scaled && if border {
++                    quad.border_widths != crate::Edges::default()
++                } else {
++                    !quad.background.is_transparent()
++                })
++                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
++                .collect()
 +        })
 +    }
 +
@@ -325,6 +445,7 @@
 +        })
 +    }
 +
+diff --git a/src/bounds_tree.rs b/src/bounds_tree.rs
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
 @@ -35,0 +36,15 @@
@@ -370,6 +491,7 @@
 @@ -94 +114 @@
 -        let ordering = max_intersecting_ordering + 1;
 +        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
+diff --git a/src/elements/div.rs b/src/elements/div.rs
 --- a/src/elements/div.rs
 +++ b/src/elements/div.rs
 @@ -1227,0 +1228 @@
@@ -417,22 +539,50 @@
 +    }
 +}
 +
+diff --git a/src/gpui.rs b/src/gpui.rs
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
 @@ -8,0 +9,2 @@
 +mod accessibility;
 +pub use accessibility::*;
+diff --git a/src/interactive.rs b/src/interactive.rs
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
-@@ -363,0 +364,4 @@
+@@ -88,0 +89,2 @@
++    /// The platform cancelled the physical gesture.
++    Cancelled,
+@@ -363,0 +366,16 @@
 +    /// True when the platform inverted device scroll direction for user preferences.
 +    /// Raw `delta` remains suitable for ordinary content scrolling.
 +    pub direction_inverted_from_device: bool,
 +
-@@ -374,0 +379,14 @@
++    /// True for platform-reported inertial continuation after physical input.
++    /// Neutral by default. Ordinary content scrolling keeps using raw `delta`.
++    pub is_momentum: bool,
++
++    /// Physical wheel increments, when the platform knows them independently
++    /// of content-line preferences. Fractional increments are retained. Uses
++    /// the same preference-direction convention as `delta`, except a backend
++    /// with per-axis direction reports may normalize these ticks to device
++    /// direction and leave `direction_inverted_from_device` false. Content
++    /// scrolling must use `delta`, not this optional parameter-input metadata.
++    pub wheel_ticks: Option<Point<f32>>,
++
+@@ -374,0 +393,25 @@
 +}
 +
 +impl ScrollWheelEvent {
++    /// Opt-in physical detents, with user-preference inversion undone once.
++    pub fn physical_wheel_ticks(&self) -> Option<Point<f32>> {
++        self.wheel_ticks.map(|ticks| {
++            if self.direction_inverted_from_device {
++                point(-ticks.x, -ticks.y)
++            } else {
++                ticks
++            }
++        })
++    }
++
 +    /// Device-direction delta before the platform's user-preference inversion.
 +    /// This is opt-in: ordinary scrolling should continue using `delta`.
 +    pub fn physical_delta(&self) -> ScrollDelta {
@@ -444,12 +594,21 @@
 +            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
 +        }
 +    }
+diff --git a/src/platform.rs b/src/platform.rs
 --- a/src/platform.rs
 +++ b/src/platform.rs
 @@ -0,0 +1,2 @@
 +#[cfg(any(target_os = "macos", test))]
 +mod accessibility_bridge;
-@@ -491,0 +494,8 @@
+@@ -221,0 +224,7 @@
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        _directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths(options)
++    }
+@@ -491,0 +501,8 @@
 +    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
 +    /// Revoke before accepted close callbacks or UI-owned resources are released.
 +    fn revoke_accessibility(&self) {}
@@ -458,25 +617,27 @@
 +        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
 +    ) {
 +    }
-@@ -1228,0 +1239 @@
+@@ -1228,0 +1246 @@
 +                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1269,4 @@
+@@ -1257,0 +1276,4 @@
 +
 +    /// Hide the standard macOS close, minimize, and zoom buttons.
 +    /// This does not change the native titlebar or window movement/resizing flags.
 +    pub hide_native_window_controls: bool,
-@@ -1411,0 +1427,4 @@
+@@ -1411,0 +1434,4 @@
 +    /// A persistent invisible cursor for a window-scoped pointer adjustment.
 +    /// macOS uses a transparent image, without changing NSCursor hide counts.
 +    Hidden,
 +
-@@ -1438,0 +1458,6 @@
+@@ -1438,0 +1465,6 @@
 +
 +    /// A bracket cursor for trimming an item from its left edge.
 +    ResizeLeftBracket,
 +
 +    /// A bracket cursor for trimming an item from its right edge.
 +    ResizeRightBracket,
+diff --git a/src/platform/accessibility_bridge.rs b/src/platform/accessibility_bridge.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/platform/accessibility_bridge.rs
 @@ -0,0 +1,288 @@
@@ -768,6 +929,7 @@
 +        assert!(!bridge.revoke());
 +    }
 +}
+diff --git a/src/platform/linux/platform.rs b/src/platform/linux/platform.rs
 --- a/src/platform/linux/platform.rs
 +++ b/src/platform/linux/platform.rs
 @@ -705 +705 @@
@@ -776,6 +938,7 @@
 @@ -712,0 +713,2 @@
 +            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
 +            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
+diff --git a/src/platform/linux/wayland.rs b/src/platform/linux/wayland.rs
 --- a/src/platform/linux/wayland.rs
 +++ b/src/platform/linux/wayland.rs
 @@ -17 +17 @@
@@ -784,19 +947,716 @@
 @@ -24,0 +25,2 @@
 +            CursorStyle::ResizeLeftBracket => Shape::WResize,
 +            CursorStyle::ResizeRightBracket => Shape::EResize,
+diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/client.rs
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
-@@ -1790,0 +1791 @@
-+                                direction_inverted_from_device: false,
-@@ -1802,0 +1804 @@
-+                            direction_inverted_from_device: false,
+@@ -192,0 +193,250 @@
++// Axis metadata stays local to one wl_pointer.frame. Raw content accumulators
++// retain their original arithmetic and routing; only optional parameter ticks
++// are normalized per original axis before Shift can collapse both onto x.
++#[derive(Clone, Copy, Default, PartialEq)]
++enum AxisDirection {
++    #[default]
++    Unknown,
++    Identical,
++    Inverted,
++    Ambiguous,
++}
++
++impl AxisDirection {
++    fn observe(&mut self, direction: WEnum<wl_pointer::AxisRelativeDirection>) {
++        let next = match direction {
++            WEnum::Value(wl_pointer::AxisRelativeDirection::Identical) => Self::Identical,
++            WEnum::Value(wl_pointer::AxisRelativeDirection::Inverted) => Self::Inverted,
++            _ => Self::Ambiguous,
++        };
++        *self = match (*self, next) {
++            (Self::Unknown, next) => next,
++            (old, next) if old == next => old,
++            _ => Self::Ambiguous,
++        };
++    }
++}
++
++#[derive(Default)]
++struct AxisTicks {
++    // [original protocol axis][routed output axis], horizontal then vertical.
++    lines: [[f32; 2]; 2],
++    directions: [AxisDirection; 2],
++    pending_direction: [bool; 2],
++}
++
++impl AxisTicks {
++    fn index(axis: wl_pointer::Axis) -> Option<usize> {
++        match axis {
++            wl_pointer::Axis::HorizontalScroll => Some(0),
++            wl_pointer::Axis::VerticalScroll => Some(1),
++            _ => None,
++        }
++    }
++
++    fn record(&mut self, original: wl_pointer::Axis, routed: wl_pointer::Axis, lines: f32) {
++        if let (Some(original), Some(routed)) = (Self::index(original), Self::index(routed)) {
++            self.lines[original][routed] += lines;
++        }
++    }
++
++    fn physical(&self, raw: Point<f32>) -> Point<f32> {
++        if !self.directions.contains(&AxisDirection::Inverted) {
++            // Preserve the old f32 accumulation/division exactly in all fallback
++            // cases. Unknown/conflicting direction never guesses an inversion.
++            return raw.map(|lines| lines / SCROLL_LINES);
++        }
++        let signed = |original: usize, routed: usize| {
++            let lines = self.lines[original][routed];
++            if self.directions[original] == AxisDirection::Inverted {
++                -lines
++            } else {
++                lines
++            }
++        };
++        point(
++            (signed(0, 0) + signed(1, 0)) / SCROLL_LINES,
++            (signed(0, 1) + signed(1, 1)) / SCROLL_LINES,
++        )
++    }
++}
++
++struct AxisFrame {
++    axis_source: AxisSource,
++    continuous_scroll_delta: Option<Point<Pixels>>,
++    discrete_scroll_delta: Option<Point<f32>>,
++    vertical_modifier: f32,
++    horizontal_modifier: f32,
++    scroll_event_received: bool,
++    ticks: AxisTicks,
++}
++
++impl Default for AxisFrame {
++    fn default() -> Self {
++        Self {
++            axis_source: AxisSource::Wheel,
++            continuous_scroll_delta: None,
++            discrete_scroll_delta: None,
++            vertical_modifier: -1.0,
++            horizontal_modifier: -1.0,
++            scroll_event_received: false,
++            ticks: AxisTicks::default(),
++        }
++    }
++}
++
++impl AxisFrame {
++    fn fold(
++        &mut self,
++        event: &wl_pointer::Event,
++        shift: bool,
++    ) -> Option<(ScrollDelta, Option<Point<f32>>)> {
++        match event {
++            wl_pointer::Event::AxisSource {
++                axis_source: WEnum::Value(axis_source),
++            } => {
++                self.axis_source = *axis_source;
++            }
++            wl_pointer::Event::Axis {
++                axis: WEnum::Value(axis),
++                value,
++                ..
++            } => {
++                if let Some(original) = AxisTicks::index(*axis) {
++                    if !std::mem::take(&mut self.ticks.pending_direction[original]) {
++                        // A direction report describes one paired Axis, not all
++                        // later motion of that axis in this frame.
++                        self.ticks.directions[original] = AxisDirection::Ambiguous;
++                    }
++                }
++                if self.axis_source == AxisSource::Wheel {
++                    return None;
++                }
++                let axis = if shift {
++                    wl_pointer::Axis::HorizontalScroll
++                } else {
++                    *axis
++                };
++                let axis_modifier = match axis {
++                    wl_pointer::Axis::VerticalScroll => self.vertical_modifier,
++                    wl_pointer::Axis::HorizontalScroll => self.horizontal_modifier,
++                    _ => 1.0,
++                };
++                self.scroll_event_received = true;
++                let scroll_delta = self
++                    .continuous_scroll_delta
++                    .get_or_insert(point(px(0.0), px(0.0)));
++                let modifier = 3.0;
++                match axis {
++                    wl_pointer::Axis::VerticalScroll => {
++                        scroll_delta.y += px(*value as f32 * modifier * axis_modifier);
++                    }
++                    wl_pointer::Axis::HorizontalScroll => {
++                        scroll_delta.x += px(*value as f32 * modifier * axis_modifier);
++                    }
++                    _ => unreachable!(),
++                }
++            }
++            wl_pointer::Event::AxisDiscrete {
++                axis: WEnum::Value(axis),
++                discrete,
++            } => {
++                let original_axis = *axis;
++                self.scroll_event_received = true;
++                let axis = if shift {
++                    wl_pointer::Axis::HorizontalScroll
++                } else {
++                    *axis
++                };
++                let axis_modifier = match axis {
++                    wl_pointer::Axis::VerticalScroll => self.vertical_modifier,
++                    wl_pointer::Axis::HorizontalScroll => self.horizontal_modifier,
++                    _ => 1.0,
++                };
++
++                let scroll_delta = self.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
++                self.ticks.record(
++                    original_axis,
++                    axis,
++                    *discrete as f32 * axis_modifier * SCROLL_LINES,
++                );
++                match axis {
++                    wl_pointer::Axis::VerticalScroll => {
++                        scroll_delta.y += *discrete as f32 * axis_modifier * SCROLL_LINES;
++                    }
++                    wl_pointer::Axis::HorizontalScroll => {
++                        scroll_delta.x += *discrete as f32 * axis_modifier * SCROLL_LINES;
++                    }
++                    _ => unreachable!(),
++                }
++            }
++            wl_pointer::Event::AxisValue120 {
++                axis: WEnum::Value(axis),
++                value120,
++            } => {
++                let original_axis = *axis;
++                self.scroll_event_received = true;
++                let axis = if shift {
++                    wl_pointer::Axis::HorizontalScroll
++                } else {
++                    *axis
++                };
++                let axis_modifier = match axis {
++                    wl_pointer::Axis::VerticalScroll => self.vertical_modifier,
++                    wl_pointer::Axis::HorizontalScroll => self.horizontal_modifier,
++                    _ => unreachable!(),
++                };
++
++                let scroll_delta = self.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
++                let wheel_percent = *value120 as f32 / 120.0;
++                self.ticks.record(
++                    original_axis,
++                    axis,
++                    wheel_percent * axis_modifier * SCROLL_LINES,
++                );
++                match axis {
++                    wl_pointer::Axis::VerticalScroll => {
++                        scroll_delta.y += wheel_percent * axis_modifier * SCROLL_LINES;
++                    }
++                    wl_pointer::Axis::HorizontalScroll => {
++                        scroll_delta.x += wheel_percent * axis_modifier * SCROLL_LINES;
++                    }
++                    _ => unreachable!(),
++                }
++            }
++            wl_pointer::Event::AxisRelativeDirection {
++                axis: WEnum::Value(axis),
++                direction,
++            } => {
++                if let Some(axis) = AxisTicks::index(*axis) {
++                    self.ticks.directions[axis].observe(*direction);
++                    self.ticks.pending_direction[axis] = true;
++                }
++            }
++            wl_pointer::Event::Frame => {
++                // Drain even without motion or a focused window: per-frame
++                // direction reports must never affect the next logical group.
++                let mut ticks = std::mem::take(&mut self.ticks);
++                for axis in 0..2 {
++                    if ticks.pending_direction[axis] {
++                        ticks.directions[axis] = AxisDirection::Ambiguous;
++                    }
++                }
++                if self.scroll_event_received {
++                    self.scroll_event_received = false;
++                    let continuous = self.continuous_scroll_delta.take();
++                    let discrete = self.discrete_scroll_delta.take();
++                    let physical = discrete.map(|raw| ticks.physical(raw));
++                    if let Some(continuous) = continuous {
++                        return Some((ScrollDelta::Pixels(continuous), physical));
++                    } else if let Some(discrete) = discrete {
++                        return Some((ScrollDelta::Lines(discrete), physical));
++                    }
++                }
++            }
++            _ => {}
++        }
++        None
++    }
++}
++
+@@ -220 +470 @@
+-    axis_source: AxisSource,
++    axis_frame: AxisFrame,
+@@ -222,5 +471,0 @@
+-    continuous_scroll_delta: Option<Point<Pixels>>,
+-    discrete_scroll_delta: Option<Point<f32>>,
+-    vertical_modifier: f32,
+-    horizontal_modifier: f32,
+-    scroll_event_received: bool,
+@@ -599,2 +844 @@
+-            scroll_event_received: false,
+-            axis_source: AxisSource::Wheel,
++            axis_frame: AxisFrame::default(),
+@@ -602,4 +845,0 @@
+-            continuous_scroll_delta: None,
+-            discrete_scroll_delta: None,
+-            vertical_modifier: -1.0,
+-            horizontal_modifier: -1.0,
+@@ -1689,122 +1929,21 @@
+-            // Axis Events
+-            wl_pointer::Event::AxisSource {
+-                axis_source: WEnum::Value(axis_source),
+-            } => {
+-                state.axis_source = axis_source;
+-            }
+-            wl_pointer::Event::Axis {
+-                axis: WEnum::Value(axis),
+-                value,
+-                ..
+-            } => {
+-                if state.axis_source == AxisSource::Wheel {
+-                    return;
+-                }
+-                let axis = if state.modifiers.shift {
+-                    wl_pointer::Axis::HorizontalScroll
+-                } else {
+-                    axis
+-                };
+-                let axis_modifier = match axis {
+-                    wl_pointer::Axis::VerticalScroll => state.vertical_modifier,
+-                    wl_pointer::Axis::HorizontalScroll => state.horizontal_modifier,
+-                    _ => 1.0,
+-                };
+-                state.scroll_event_received = true;
+-                let scroll_delta = state
+-                    .continuous_scroll_delta
+-                    .get_or_insert(point(px(0.0), px(0.0)));
+-                let modifier = 3.0;
+-                match axis {
+-                    wl_pointer::Axis::VerticalScroll => {
+-                        scroll_delta.y += px(value as f32 * modifier * axis_modifier);
+-                    }
+-                    wl_pointer::Axis::HorizontalScroll => {
+-                        scroll_delta.x += px(value as f32 * modifier * axis_modifier);
+-                    }
+-                    _ => unreachable!(),
+-                }
+-            }
+-            wl_pointer::Event::AxisDiscrete {
+-                axis: WEnum::Value(axis),
+-                discrete,
+-            } => {
+-                state.scroll_event_received = true;
+-                let axis = if state.modifiers.shift {
+-                    wl_pointer::Axis::HorizontalScroll
+-                } else {
+-                    axis
+-                };
+-                let axis_modifier = match axis {
+-                    wl_pointer::Axis::VerticalScroll => state.vertical_modifier,
+-                    wl_pointer::Axis::HorizontalScroll => state.horizontal_modifier,
+-                    _ => 1.0,
+-                };
+-
+-                let scroll_delta = state.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
+-                match axis {
+-                    wl_pointer::Axis::VerticalScroll => {
+-                        scroll_delta.y += discrete as f32 * axis_modifier * SCROLL_LINES;
+-                    }
+-                    wl_pointer::Axis::HorizontalScroll => {
+-                        scroll_delta.x += discrete as f32 * axis_modifier * SCROLL_LINES;
+-                    }
+-                    _ => unreachable!(),
+-                }
+-            }
+-            wl_pointer::Event::AxisValue120 {
+-                axis: WEnum::Value(axis),
+-                value120,
+-            } => {
+-                state.scroll_event_received = true;
+-                let axis = if state.modifiers.shift {
+-                    wl_pointer::Axis::HorizontalScroll
+-                } else {
+-                    axis
+-                };
+-                let axis_modifier = match axis {
+-                    wl_pointer::Axis::VerticalScroll => state.vertical_modifier,
+-                    wl_pointer::Axis::HorizontalScroll => state.horizontal_modifier,
+-                    _ => unreachable!(),
+-                };
+-
+-                let scroll_delta = state.discrete_scroll_delta.get_or_insert(point(0.0, 0.0));
+-                let wheel_percent = value120 as f32 / 120.0;
+-                match axis {
+-                    wl_pointer::Axis::VerticalScroll => {
+-                        scroll_delta.y += wheel_percent * axis_modifier * SCROLL_LINES;
+-                    }
+-                    wl_pointer::Axis::HorizontalScroll => {
+-                        scroll_delta.x += wheel_percent * axis_modifier * SCROLL_LINES;
+-                    }
+-                    _ => unreachable!(),
+-                }
+-            }
+-            wl_pointer::Event::Frame => {
+-                if state.scroll_event_received {
+-                    state.scroll_event_received = false;
+-                    let continuous = state.continuous_scroll_delta.take();
+-                    let discrete = state.discrete_scroll_delta.take();
+-                    if let Some(continuous) = continuous {
+-                        if let Some(window) = state.mouse_focused_window.clone() {
+-                            let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+-                                position: state.mouse_location.unwrap(),
+-                                delta: ScrollDelta::Pixels(continuous),
+-                                modifiers: state.modifiers,
+-                                touch_phase: TouchPhase::Moved,
+-                            });
+-                            drop(state);
+-                            window.handle_input(input);
+-                        }
+-                    } else if let Some(discrete) = discrete
+-                        && let Some(window) = state.mouse_focused_window.clone()
+-                    {
+-                        let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
+-                            position: state.mouse_location.unwrap(),
+-                            delta: ScrollDelta::Lines(discrete),
+-                            modifiers: state.modifiers,
+-                            touch_phase: TouchPhase::Moved,
+-                        });
+-                        drop(state);
+-                        window.handle_input(input);
+-                    }
++            event @ (wl_pointer::Event::AxisSource { .. }
++            | wl_pointer::Event::Axis { .. }
++            | wl_pointer::Event::AxisDiscrete { .. }
++            | wl_pointer::Event::AxisValue120 { .. }
++            | wl_pointer::Event::AxisRelativeDirection { .. }
++            | wl_pointer::Event::Frame) => {
++                let shift = state.modifiers.shift;
++                if let Some((delta, wheel_ticks)) = state.axis_frame.fold(&event, shift)
++                    && let Some(window) = state.mouse_focused_window.clone()
++                {
++                    let input = PlatformInput::ScrollWheel(ScrollWheelEvent {
++                        direction_inverted_from_device: false,
++                        is_momentum: false,
++                        position: state.mouse_location.unwrap(),
++                        delta,
++                        wheel_ticks,
++                        modifiers: state.modifiers,
++                        touch_phase: TouchPhase::Moved,
++                    });
++                    drop(state);
++                    window.handle_input(input);
+@@ -2159,0 +2299,280 @@
++
++#[cfg(test)]
++mod axis_frame_tests {
++    use super::*;
++    use wl_pointer::{Axis, AxisRelativeDirection as Direction, Event};
++
++    fn direction(axis: Axis, direction: WEnum<Direction>) -> Event {
++        Event::AxisRelativeDirection {
++            axis: WEnum::Value(axis),
++            direction,
++        }
++    }
++
++    fn tick(axis: Axis, value120: i32) -> Event {
++        Event::AxisValue120 {
++            axis: WEnum::Value(axis),
++            value120,
++        }
++    }
++
++    fn axis(axis: Axis, value: f64) -> Event {
++        Event::Axis {
++            time: 0,
++            axis: WEnum::Value(axis),
++            value,
++        }
++    }
++
++    fn source(source: AxisSource) -> Event {
++        Event::AxisSource {
++            axis_source: WEnum::Value(source),
++        }
++    }
++
++    fn finish(frame: &mut AxisFrame) -> (ScrollDelta, Option<Point<f32>>) {
++        frame.fold(&Event::Frame, false).expect("motion frame")
++    }
++
++    fn raw_bits(delta: ScrollDelta) -> (bool, [u32; 2]) {
++        match delta {
++            ScrollDelta::Lines(p) => (false, [p.x.to_bits(), p.y.to_bits()]),
++            ScrollDelta::Pixels(p) => (true, [f32::from(p.x).to_bits(), f32::from(p.y).to_bits()]),
++        }
++    }
++
++    #[test]
++    fn axis_frame_v9_direction_order_and_mixed_axes() {
++        for inverted_h in [false, true] {
++            for inverted_v in [false, true] {
++                for late in [false, true] {
++                    let mut f = AxisFrame::default();
++                    let h = direction(
++                        Axis::HorizontalScroll,
++                        WEnum::Value(if inverted_h {
++                            Direction::Inverted
++                        } else {
++                            Direction::Identical
++                        }),
++                    );
++                    let v = direction(
++                        Axis::VerticalScroll,
++                        WEnum::Value(if inverted_v {
++                            Direction::Inverted
++                        } else {
++                            Direction::Identical
++                        }),
++                    );
++                    if !late {
++                        f.fold(&h, false);
++                        f.fold(&v, false);
++                    }
++                    f.fold(&tick(Axis::VerticalScroll, 120), false);
++                    f.fold(&tick(Axis::HorizontalScroll, -240), false);
++                    if late {
++                        f.fold(&h, false);
++                        f.fold(&v, false);
++                    }
++                    f.fold(&axis(Axis::HorizontalScroll, -2.0), false);
++                    f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++                    let (raw, ticks) = finish(&mut f);
++                    // Exact baseline content bits: direction metadata cannot change it.
++                    assert_eq!(
++                        raw_bits(raw),
++                        (false, [6.0f32.to_bits(), (-3.0f32).to_bits()])
++                    );
++                    assert_eq!(
++                        ticks,
++                        Some(point(
++                            if inverted_h { -2.0 } else { 2.0 },
++                            if inverted_v { 1.0 } else { -1.0 }
++                        ))
++                    );
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn axis_frame_shift_collapses_only_after_original_direction() {
++        let mut f = AxisFrame::default();
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            true,
++        );
++        f.fold(
++            &direction(Axis::HorizontalScroll, WEnum::Value(Direction::Identical)),
++            true,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 120), true);
++        f.fold(&tick(Axis::HorizontalScroll, 240), true);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), true);
++        f.fold(&axis(Axis::HorizontalScroll, 2.0), true);
++        let (raw, ticks) = finish(&mut f);
++        assert_eq!(
++            raw_bits(raw),
++            (false, [(-9.0f32).to_bits(), 0.0f32.to_bits()])
++        );
++        assert_eq!(ticks, Some(point(-1.0, 0.0)));
++        // Existing event helper must not invert these normalized ticks again.
++        let event = ScrollWheelEvent {
++            delta: raw,
++            wheel_ticks: ticks,
++            ..Default::default()
++        };
++        assert_eq!(event.physical_wheel_ticks(), ticks);
++        assert_eq!(raw_bits(event.physical_delta()), raw_bits(raw));
++    }
++
++    #[test]
++    fn axis_frame_pixels_plus_ticks_and_continuous_only() {
++        let mut f = AxisFrame::default();
++        f.fold(&source(AxisSource::Finger), false);
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        let (raw, ticks) = finish(&mut f);
++        assert_eq!(
++            raw_bits(raw),
++            (true, [0.0f32.to_bits(), (-3.0f32).to_bits()])
++        );
++        assert_eq!(ticks, Some(point(0.0, 0.25)));
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        let (raw, ticks) = finish(&mut f);
++        assert_eq!(
++            raw_bits(raw),
++            (true, [0.0f32.to_bits(), (-3.0f32).to_bits()])
++        );
++        assert_eq!(ticks, None); // Do not invent detents for continuous motion.
++    }
++
++    #[test]
++    fn axis_frame_conflict_unknown_and_independent_known_axis() {
++        for reports in [
++            [
++                WEnum::Value(Direction::Inverted),
++                WEnum::Value(Direction::Identical),
++            ],
++            [WEnum::Unknown(999), WEnum::Value(Direction::Inverted)],
++            [WEnum::Value(Direction::Inverted), WEnum::Unknown(999)],
++        ] {
++            let mut f = AxisFrame::default();
++            for report in reports {
++                f.fold(&direction(Axis::VerticalScroll, report), true);
++                f.fold(&axis(Axis::VerticalScroll, 1.0), true);
++            }
++            f.fold(
++                &direction(Axis::HorizontalScroll, WEnum::Value(Direction::Inverted)),
++                true,
++            );
++            f.fold(&tick(Axis::VerticalScroll, 120), true);
++            f.fold(&tick(Axis::HorizontalScroll, 240), true);
++            f.fold(&axis(Axis::HorizontalScroll, 1.0), true);
++            let (raw, ticks) = finish(&mut f);
++            assert_eq!(
++                raw_bits(raw),
++                (false, [(-9.0f32).to_bits(), 0.0f32.to_bits()])
++            );
++            // Only vertical falls back; the independent horizontal axis corrects.
++            assert_eq!(ticks, Some(point(1.0, 0.0)));
++        }
++    }
++
++    #[test]
++    fn axis_frame_fractions_large_zero_and_cancellation() {
++        for values in [
++            [30, 0, 0],
++            [-30, 0, 0],
++            [240, 0, 0],
++            [-240, 0, 0],
++            [30, -30, 0],
++            [0, 0, 0],
++        ] {
++            for inverted in [false, true] {
++                let mut f = AxisFrame::default();
++                if inverted {
++                    f.fold(
++                        &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++                        false,
++                    );
++                }
++                for value in values {
++                    f.fold(&tick(Axis::VerticalScroll, value), false);
++                }
++                f.fold(&axis(Axis::VerticalScroll, 0.0), false);
++                let (raw, ticks) = finish(&mut f);
++                let expected = -(values.into_iter().sum::<i32>() as f32) / 120.0;
++                let ScrollDelta::Lines(raw) = raw else {
++                    panic!("lines");
++                };
++                assert_eq!(raw.y, expected * SCROLL_LINES);
++                assert_eq!(
++                    ticks.unwrap().y,
++                    if inverted { -expected } else { expected }
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn axis_frame_missing_report_cannot_inherit_a_previous_pair() {
++        let mut f = AxisFrame::default();
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(&axis(Axis::VerticalScroll, 1.0), false);
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.5)));
++        // A report without its required Axis must not normalize a whole frame.
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
++    }
++
++    #[test]
++    fn axis_frame_pre_v9_discrete_and_frame_retirement() {
++        let mut f = AxisFrame::default();
++        f.fold(
++            &Event::AxisDiscrete {
++                axis: WEnum::Value(Axis::VerticalScroll),
++                discrete: -2,
++            },
++            false,
++        );
++        assert_eq!(finish(&mut f).1, Some(point(0.0, 2.0)));
++        assert!(f.fold(&Event::Frame, false).is_none());
++        // No motion/window delivery must still discard this direction report.
++        f.fold(
++            &direction(Axis::VerticalScroll, WEnum::Value(Direction::Inverted)),
++            false,
++        );
++        assert!(f.fold(&Event::Frame, false).is_none());
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        // Discard the fold result exactly as Dispatch does with no focused window.
++        let _undelivered = finish(&mut f);
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
++        f.fold(
++            &Event::AxisRelativeDirection {
++                axis: WEnum::Unknown(99),
++                direction: WEnum::Value(Direction::Inverted),
++            },
++            false,
++        );
++        f.fold(&tick(Axis::VerticalScroll, 30), false);
++        assert_eq!(finish(&mut f).1, Some(point(0.0, -0.25)));
++    }
++}
+diff --git a/src/platform/linux/x11/client.rs b/src/platform/linux/x11/client.rs
 --- a/src/platform/linux/x11/client.rs
 +++ b/src/platform/linux/x11/client.rs
-@@ -2217,0 +2218 @@
+@@ -2217,0 +2218,2 @@
 +        direction_inverted_from_device: false,
++        is_momentum: false,
+@@ -2219,0 +2222 @@
++        wheel_ticks: Some(delta.map(|lines| lines / SCROLL_LINES)),
+diff --git a/src/platform/mac/accessibility.rs b/src/platform/mac/accessibility.rs
+new file mode 100644
 --- /dev/null
 +++ b/src/platform/mac/accessibility.rs
-@@ -0,0 +1,1000 @@
+@@ -0,0 +1,1049 @@
 +//! AppKit bridge: cross-thread objects contain data only; window/GPUI owners stay on UI.
 +use super::*;
 +use crate::platform::accessibility_bridge::{Bridge, Registry, WindowKey};
@@ -980,7 +1840,7 @@
 +            }
 +            let value_bytes = match &descriptor.value {
 +                crate::AccessibilityValue::Number { text, .. } => text.len(),
-+                crate::AccessibilityValue::Toggle(_) => 0,
++                crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => 0,
 +                crate::AccessibilityValue::Choice { options, .. } => {
 +                    options.iter().map(|text| text.len()).sum()
 +                }
@@ -1467,6 +2327,7 @@
 +    };
 +    unsafe {
 +        ns_string(match node.descriptor.value {
++            crate::AccessibilityValue::Button => "AXButton",
 +            crate::AccessibilityValue::Number { .. } => "AXSlider",
 +            crate::AccessibilityValue::Toggle(_) => "AXCheckBox",
 +            crate::AccessibilityValue::Choice { .. } => "AXPopUpButton",
@@ -1482,6 +2343,7 @@
 +    };
 +    unsafe {
 +        match node.descriptor.value {
++            crate::AccessibilityValue::Button => nil,
 +            crate::AccessibilityValue::Number { value, .. } => {
 +                msg_send![class!(NSNumber), numberWithDouble: value]
 +            }
@@ -1504,7 +2366,7 @@
 +            crate::AccessibilityValue::Choice { selected, options } => {
 +                options.get(selected).map_or(nil, |text| ns_string(text))
 +            }
-+            crate::AccessibilityValue::Toggle(_) => nil,
++            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => nil,
 +        }
 +    }
 +}
@@ -1609,7 +2471,7 @@
 +                    }
 +                }
 +            }
-+            crate::AccessibilityValue::Toggle(_) => {}
++            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => {}
 +        }
 +    }
 +}
@@ -1658,6 +2520,53 @@
 +                refused: false,
 +            },
 +        )
++    }
++    #[test]
++    fn appkit_stateless_button_has_button_role_no_value_and_only_action_semantics() {
++        let (_owner, mut snapshot) = fixture();
++        let descriptor = &mut snapshot.nodes[0].node.descriptor;
++        descriptor.value = crate::AccessibilityValue::Button;
++        descriptor.name = "clear search".into();
++        assert!(descriptor.permits(&crate::AccessibilityAction::Press));
++        assert!(descriptor.permits(&crate::AccessibilityAction::Focus));
++        for action in [
++            crate::AccessibilityAction::Increment,
++            crate::AccessibilityAction::Decrement,
++            crate::AccessibilityAction::SetNumber(1.0),
++            crate::AccessibilityAction::Choose(0),
++        ] {
++            assert!(!descriptor.permits(&action));
++        }
++        descriptor.enabled = false;
++        assert!(!descriptor.permits(&crate::AccessibilityAction::Press));
++        descriptor.enabled = true;
++        let descriptor = descriptor.clone();
++        let mut registry = Registry::default();
++        let bridge: Arc<NativeBridge> = registry.register(13, |_| ()).unwrap();
++        bridge.publish(snapshot);
++        // Same existing AppKit test boundary: release the actual semantic object
++        // before assertions, including when a getter returns the wrong role.
++        unsafe {
++            let class = Class::get("GPUISemanticControl").unwrap();
++            let object: id = msg_send![class, new];
++            assert!(!object.is_null());
++            (*object).set_ivar(
++                "semanticState",
++                Box::into_raw(Box::new(ElementData {
++                    bridge: bridge.clone(),
++                    id: descriptor.id,
++                    owner: descriptor.lifetime,
++                })) as *mut c_void,
++            );
++            let role: id = msg_send![object, accessibilityRole];
++            let expected = ns_string("AXButton");
++            let button: BOOL = msg_send![role, isEqualToString: expected];
++            let value: id = msg_send![object, accessibilityValue];
++            let description: id = msg_send![object, accessibilityValueDescription];
++            let _: () = msg_send![object, release];
++            assert_eq!(button, YES);
++            assert!(value.is_null() && description.is_null());
++        }
 +    }
 +    #[test]
 +    fn appkit_boolean_getters_follow_snapshot_and_revocation() {
@@ -1797,13 +2706,19 @@
 +        send_sync::<ElementData>();
 +    }
 +}
+diff --git a/src/platform/mac/events.rs b/src/platform/mac/events.rs
 --- a/src/platform/mac/events.rs
 +++ b/src/platform/mac/events.rs
-@@ -235,0 +236,2 @@
+@@ -221,0 +222 @@
++                        NSEventPhase::NSEventPhaseCancelled => TouchPhase::Cancelled,
+@@ -235,0 +237,2 @@
 +                    let direction_inverted: cocoa::base::BOOL =
 +                        msg_send![native_event, isDirectionInvertedFromDevice];
-@@ -236,0 +239 @@
+@@ -236,0 +240,3 @@
 +                        direction_inverted_from_device: direction_inverted == YES,
++                        is_momentum: native_event.momentumPhase() != NSEventPhase::NSEventPhaseNone,
++                        wheel_ticks: None,
+diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 --- a/src/platform/mac/platform.rs
 +++ b/src/platform/mac/platform.rs
 @@ -22 +22 @@
@@ -1816,6 +2731,9 @@
 +        NSSize, NSString, NSUInteger, NSURL,
 @@ -45,0 +46 @@
 +    rc::StrongPtr,
+@@ -53 +54 @@
+-    ffi::{CStr, OsStr, c_void},
++    ffi::{CStr, CString, OsStr, c_void},
 @@ -70,0 +72,89 @@
 +
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
@@ -1910,17 +2828,59 @@
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
-@@ -199,0 +293,5 @@
+@@ -188,0 +282,10 @@
++    #[cfg(any(test, feature = "test-support"))]
++    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
++        unsafe {
++            let pool = NSAutoreleasePool::new(nil);
++            let result = ns_directory_url(directory).and_then(|url| ns_url_to_path(url));
++            pool.drain();
++            result
++        }
++    }
++
+@@ -199,0 +303,5 @@
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
 +            (make_bracket_cursor(true), make_bracket_cursor(false))
 +        };
-@@ -221,0 +320,3 @@
+@@ -221,0 +330,3 @@
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
-@@ -973,2 +1074,17 @@
+@@ -713,0 +825,9 @@
++        self.prompt_for_paths_with_directory(options, None)
++    }
++
++    fn prompt_for_paths_with_directory(
++        &self,
++        options: PathPromptOptions,
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        let directory = directory.map(Path::to_owned);
+@@ -718,0 +839,9 @@
++                    if let Some(directory) = directory {
++                        match ns_directory_url(&directory) {
++                            Ok(url) => panel.setDirectoryURL(url),
++                            Err(error) => {
++                                let _ = done_tx.send(Err(error));
++                                return;
++                            }
++                        }
++                    }
+@@ -772,3 +901,7 @@
+-                    let path = ns_string(directory.to_string_lossy().as_ref());
+-                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
+-                    panel.setDirectoryURL(url);
++                    match ns_directory_url(&directory) {
++                        Ok(url) => panel.setDirectoryURL(url),
++                        Err(error) => {
++                            let _ = done_tx.send(Err(error));
++                            return;
++                        }
++                    }
+@@ -973,2 +1106,17 @@
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
@@ -1940,12 +2900,26 @@
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -983,0 +1100,2 @@
+@@ -983,0 +1132,2 @@
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1126 @@
+@@ -1008 +1158 @@
 -            };
 +            });
+@@ -1538,0 +1689,12 @@
++// NSURL copies the filesystem representation; no lossy display conversion.
++unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
++    let bytes = CString::new(directory.as_os_str().as_bytes())
++        .context("picker directory contains a nul byte")?;
++    let url: id = unsafe {
++        msg_send![class!(NSURL), fileURLWithFileSystemRepresentation: bytes.as_ptr()
++            isDirectory: YES relativeToURL: nil]
++    };
++    anyhow::ensure!(url != nil, "could not represent picker directory as a file url");
++    Ok(url)
++}
++
+diff --git a/src/platform/mac/window.rs b/src/platform/mac/window.rs
 --- a/src/platform/mac/window.rs
 +++ b/src/platform/mac/window.rs
 @@ -0,0 +1,2 @@
@@ -2073,24 +3047,111 @@
 +        native_accessibility::detach(this);
 @@ -2058,0 +2167 @@
 +    native_accessibility::revoke_object(this);
+diff --git a/src/platform/test/platform.rs b/src/platform/test/platform.rs
 --- a/src/platform/test/platform.rs
 +++ b/src/platform/test/platform.rs
-@@ -93,0 +94,4 @@
+@@ -90 +90,2 @@
+-    new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    new_path: VecDeque<(PathBuf, Option<String>, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    paths: VecDeque<(Option<PathBuf>, oneshot::Sender<Result<Option<Vec<PathBuf>>>>)>,
+@@ -93,0 +95,4 @@
 +    pub(crate) fn cursor_style(&self) -> CursorStyle {
 +        *self.active_cursor.lock()
 +    }
 +
+@@ -130 +135 @@
+-        let (path, tx) = self
++        let (path, _, tx) = self
+@@ -155,0 +161,32 @@
++    }
++
++    pub(crate) fn did_prompt_for_paths(&self) -> bool {
++        !self.prompts.borrow().paths.is_empty()
++    }
++
++    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
++        let (_, tx) = self
++            .prompts
++            .borrow_mut()
++            .paths
++            .pop_front()
++            .expect("no pending open paths prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Ok(paths)).ok();
++    }
++
++    pub(crate) fn pending_open_directory(&self) -> Option<Option<PathBuf>> {
++        self.prompts.borrow().paths.front().map(|(directory, _)| directory.clone())
++    }
++    pub(crate) fn pending_save_options(&self) -> Option<(PathBuf, Option<String>)> {
++        self.prompts.borrow().new_path.front().map(|(directory, name, _)| (directory.clone(), name.clone()))
++    }
++    pub(crate) fn simulate_paths_error(&self, message: &str) {
++        let (_, tx) = self.prompts.borrow_mut().paths.pop_front().expect("pending open prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
++    }
++    pub(crate) fn simulate_new_path_error(&self, message: &str) {
++        let (_, _, tx) = self.prompts.borrow_mut().new_path.pop_front().expect("pending save prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
+@@ -335,0 +373,7 @@
++        options: crate::PathPromptOptions,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        self.prompt_for_paths_with_directory(options, None)
++    }
++
++    fn prompt_for_paths_with_directory(
++        &self,
+@@ -337,2 +381,6 @@
+-    ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
+-        unimplemented!()
++        directory: Option<&Path>,
++    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
++        let (tx, rx) = oneshot::channel();
++        self.background_executor().set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
++        self.prompts.borrow_mut().paths.push_back((directory.map(Path::to_owned), tx));
++        rx
+@@ -344 +392 @@
+-        _suggested_name: Option<&str>,
++        suggested_name: Option<&str>,
+@@ -352 +400 @@
+-            .push_back((directory.to_path_buf(), tx));
++            .push_back((directory.to_path_buf(), suggested_name.map(str::to_owned), tx));
+diff --git a/src/platform/windows/events.rs b/src/platform/windows/events.rs
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
-@@ -555,0 +556 @@
+@@ -548,2 +548,2 @@
+-        let wheel_distance =
+-            (wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_amount as f32;
++        let wheel_ticks = wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_amount as f32;
+@@ -555,0 +556,2 @@
 +            direction_inverted_from_device: false,
-@@ -601,0 +603 @@
++            is_momentum: false,
+@@ -566,0 +569,5 @@
++            wheel_ticks: Some(if modifiers.shift {
++                Point { x: wheel_ticks, y: 0.0 }
++            } else {
++                Point { x: 0.0, y: wheel_ticks }
++            }),
+@@ -594,2 +601,2 @@
+-        let wheel_distance =
+-            (-wparam.signed_hiword() as f32 / WHEEL_DELTA as f32) * wheel_scroll_chars as f32;
++        let wheel_ticks = -wparam.signed_hiword() as f32 / WHEEL_DELTA as f32;
++        let wheel_distance = wheel_ticks * wheel_scroll_chars as f32;
+@@ -601,0 +609,2 @@
 +            direction_inverted_from_device: false,
++            is_momentum: false,
+@@ -606,0 +616 @@
++            wheel_ticks: Some(Point { x: wheel_ticks, y: 0.0 }),
+diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 --- a/src/platform/windows/util.rs
 +++ b/src/platform/windows/util.rs
 @@ -126,0 +127,2 @@
 +        | CursorStyle::ResizeLeftBracket
 +        | CursorStyle::ResizeRightBracket
+diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs
 @@ -68 +68 @@
@@ -2820,11 +3881,13 @@
 +        Ok(())
 +    }
 +}
+diff --git a/src/taffy.rs b/src/taffy.rs
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
 @@ -312 +312 @@
 -            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
 +            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+diff --git a/src/view.rs b/src/view.rs
 --- a/src/view.rs
 +++ b/src/view.rs
 @@ -25,0 +26 @@
@@ -2854,6 +3917,7 @@
 +                                epoch: self.cache_epoch,
 @@ -325,0 +341 @@
 +            cache_epoch: 0,
+diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -667,0 +668 @@
