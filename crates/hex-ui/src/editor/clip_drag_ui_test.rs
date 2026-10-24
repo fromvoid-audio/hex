@@ -171,7 +171,7 @@ fn drag_source_to_target(
             .as_ref()
             .expect("threshold movement starts clip drag");
         assert!(
-            drag.origin_pointer_x.get().is_some(),
+            drag.capture.get().is_some(),
             "drag start retains the original pointer: clip={:?}, generation={}, down={:?}",
             drag.clip,
             drag.project_generation,
@@ -814,8 +814,8 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.pointer_down.as_ref().map(|down| down.edge),
-            Some(Some(hex_project::TrimEdge::Right)),
+            view.pointer_down.as_ref().map(|down| down.part),
+            Some(hex_widgets::RectanglePart::Trailing),
             "right trim edge captures its edge mouse-down: {:?}",
             view.pointer_down
         );

@@ -99,3 +99,12 @@ pub use meter_indicator::{
     METER_INDICATOR_TICKS_DBFS, MeterChannelReadout, MeterIndicatorReadout, MeterIndicatorStyle,
     meter_indicator,
 };
+
+mod rectangle;
+pub use rectangle::{
+    RectangleCapture, RectangleEdges, RectangleIntent, RectanglePart, RectanglePhase,
+    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
+    rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
+};
+#[cfg(test)]
+mod rectangle_tests;
