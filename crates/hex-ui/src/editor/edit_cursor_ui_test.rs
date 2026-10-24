@@ -179,10 +179,10 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let main_lane = visual.debug_bounds("main-track-lane").expect("main lane");
-    // Main's title rail owns section cursor placement; the lower body selects time.
+    // Check Main's lower body first, then the section title rail separately.
     let click = point(
         main_lane.origin.x + main_lane.size.width * 0.1,
-        main_lane.origin.y + px(5.0),
+        main_lane.origin.y + main_lane.size.height * 0.7,
     );
     let unsnapped = Modifiers {
         platform: true,
@@ -216,6 +216,17 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     let before = editor.read_with(cx, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
     });
+    assert!(visual.debug_bounds("section-edit-cursor").is_none());
+    // The lower body owns Main's all-track cursor/range. Section cursor and
+    // gap-split refusal belong to the header after the shared range split.
+    let header = point(
+        click.x,
+        main_lane.top()
+            + px(super::time_selection::header_hit_height(f32::from(main_lane.size.height)) * 0.5),
+    );
+    visual.simulate_mouse_down(header, MouseButton::Left, unsnapped);
+    visual.simulate_mouse_up(header, MouseButton::Left, unsnapped);
+    visual.run_until_parked();
     assert!(visual.debug_bounds("section-edit-cursor").is_some());
     visual.simulate_keystrokes("cmd-e");
     editor.read_with(cx, |view, _| {
