@@ -67,6 +67,28 @@ fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap(
         let cancel = instance.cancellation_on_control();
         let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
         let storage = worker.transport_storage_on_control(&callback).unwrap();
+        let constructor = worker.constructor_storage_on_control(&callback).unwrap();
+        assert_eq!(
+            constructor.shared_groups,
+            storage.shared_groups + source_storage.shared_groups + 2
+        );
+        assert_eq!(
+            constructor.shared_handle_bound,
+            storage.shared_handle_bound + source_storage.shared_handle_bound + 4
+        );
+        assert_eq!(constructor.joining_thread_lifetime_bound, 1);
+        assert!(constructor.data_bytes > storage.data_bytes + source_storage.data_bytes);
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                assert_eq!(
+                    worker.constructor_storage_on_control(&callback),
+                    Some(constructor)
+                );
+            });
+            assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+        }
         assert_eq!(
             worker.retained_source_storage_on_control(&callback),
             Some(source_storage)
@@ -126,6 +148,10 @@ fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap(
         // native retirement completed. Its matching worker retains the queues.
         assert!(worker.owns_callback(&callback));
         assert_eq!(
+            worker.constructor_storage_on_control(&callback),
+            Some(constructor)
+        );
+        assert_eq!(
             worker.retained_source_storage_on_control(&callback),
             Some(source_storage)
         );
@@ -154,6 +180,7 @@ fn actual_native_worker_returns_same_instance_for_fresh_epoch() {
         assert!(owner.owns_callback(&callback));
         assert!(!owner.owns_callback(&unrelated));
         assert_eq!(owner.transport_storage_on_control(&unrelated), None);
+        assert_eq!(owner.constructor_storage_on_control(&unrelated), None);
         assert_eq!(owner.retained_source_storage_on_control(&unrelated), None);
         assert!(
             owner
@@ -182,6 +209,7 @@ fn actual_native_worker_returns_same_instance_for_fresh_epoch() {
             );
         }
         let stopped = owner.quiesce_on_control().unwrap();
+        assert_eq!(owner.constructor_storage_on_control(&callback), None);
         assert_eq!(owner.retained_source_storage_on_control(&callback), None);
         assert!(owner.transport_storage_on_control(&callback).is_some());
         assert_eq!(stopped.completed_blocks(), (epoch + 1) * 4);

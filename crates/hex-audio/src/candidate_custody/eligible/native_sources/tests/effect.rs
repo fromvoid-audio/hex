@@ -55,6 +55,20 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                 assert_eq!(source.shared_groups, 3);
                 assert_eq!(source.ipc_handle_bound, 2);
                 assert_eq!(source.native_child_lifetime_bound, 1);
+                let constructor = effect.constructor_storage_on_control().unwrap();
+                assert_eq!(
+                    constructor.dry_data_bytes,
+                    16 * std::mem::size_of::<[f32; 2]>()
+                );
+                assert_eq!(constructor.state_alias_handles, 1);
+                assert_eq!(
+                    constructor.data_bytes(),
+                    Some(constructor.worker.data_bytes + constructor.dry_data_bytes)
+                );
+                assert_eq!(
+                    constructor.shared_handle_bound(),
+                    Some(constructor.worker.shared_handle_bound + 1)
+                );
                 // The existing factory borrows this exact actual owner; copied
                 // latency/state facts alone cannot construct the definition.
                 let _definition = crate::plugin_effects::NativeEffectDefinition::new(

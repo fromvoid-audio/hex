@@ -9,6 +9,44 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_effect_storage_counts_spare_dry_capacity_and_retains_the_original_state_alias() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let mut effect = NativeEffect::prepare_on_control(
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, binding.instance).unwrap(),
+        original_instance_for_binding(binding),
+    )
+    .unwrap();
+    let before = effect.constructor_storage_on_control().unwrap();
+    let capacity = effect.callback.dry.capacity();
+    effect.callback.dry.reserve_exact(17);
+    let after = effect.constructor_storage_on_control().unwrap();
+    assert_eq!(after.worker, before.worker);
+    assert_eq!(after.state_alias_handles, 1);
+    assert_eq!(
+        after.data_bytes().unwrap() - before.data_bytes().unwrap(),
+        (effect.callback.dry.capacity() - capacity) * std::mem::size_of::<[f32; 2]>()
+    );
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(effect.constructor_storage_on_control(), Some(after));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
+    let retired = effect.retire_on_control().unwrap();
+    assert!(retired.failure.is_none());
+    assert_eq!(retired.native.terminal.unwrap().blocks, 0);
+    assert_eq!(effect.constructor_storage_on_control(), Some(after));
+}
+
 struct Fixture {
     editor: Editor,
     media: BTreeMap<hex_project::AssetId, hex_engine::Audio>,

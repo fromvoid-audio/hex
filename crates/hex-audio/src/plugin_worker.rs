@@ -9,6 +9,9 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+mod storage;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use storage::NativeWorkerStorage;
 
 struct Completion {
     fault: Option<Fault>,
@@ -57,6 +60,7 @@ pub(crate) struct Reaper {
     completed: Arc<AtomicU64>,
     terminal: crate::native_callback_owner::Terminal<State>,
     worker: Option<Box<State>>,
+    storage: Option<crate::native_callback_owner::ChannelStorage>,
 }
 impl Reaper {
     /// Observation after matching reply publication; not a canonical/audio ACK
@@ -117,6 +121,10 @@ struct SpawnFailure {
     error: std::io::Error,
     reaper: Reaper,
 }
+struct SpawnedTransport {
+    join: JoinHandle<Completion>,
+    capture_data_bytes: usize,
+}
 fn spawn_processor_with(
     control: Control,
     worker: Worker,
@@ -124,7 +132,7 @@ fn spawn_processor_with(
     spawn: impl FnOnce(
         crate::native_callback_owner::Guard<State>,
         Arc<AtomicU64>,
-    ) -> std::io::Result<JoinHandle<Completion>>,
+    ) -> std::io::Result<SpawnedTransport>,
 ) -> Result<Reaper, SpawnFailure> {
     let completed = Arc::new(AtomicU64::new(0));
     let published = Arc::clone(&completed);
@@ -134,6 +142,7 @@ fn spawn_processor_with(
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         native_error: None,
     });
+    let storage = storage::reserved_backing(&guard, &completed);
     let join = spawn(guard, published);
     let mut reaper = Reaper {
         control,
@@ -142,10 +151,18 @@ fn spawn_processor_with(
         completed,
         terminal,
         worker: None,
+        storage,
     };
     match join {
-        Ok(join) => {
-            reaper.join = Some(join);
+        Ok(spawned) => {
+            reaper.storage = reaper.storage.and_then(|mut storage| {
+                storage.data_bytes = storage
+                    .data_bytes
+                    .checked_add(spawned.capture_data_bytes)?
+                    .checked_add(std::mem::size_of::<Completion>())?;
+                Some(storage)
+            });
+            reaper.join = Some(spawned.join);
             Ok(reaper)
         }
         Err(error) => {
@@ -157,39 +174,45 @@ fn spawn_processor_with(
 fn spawn_transport(
     mut guard: crate::native_callback_owner::Guard<State>,
     published: Arc<AtomicU64>,
-) -> std::io::Result<JoinHandle<Completion>> {
-    thread::Builder::new()
-        .name("hex-plugin-transport".into())
-        .spawn(move || {
-            let mut fault = None;
-            loop {
-                let Some(state) = guard.owner_mut() else {
-                    fault = Some(Fault::Protocol);
-                    break;
-                };
-                match state.worker.receive() {
-                    Ok(Some(block)) => {
-                        let result = state
-                            .process(block)
-                            .and_then(|reply| state.worker.complete(reply));
-                        if let Err(error) = result {
-                            state.worker.revoke();
-                            if error != Fault::Revoked {
-                                fault = Some(error);
-                            }
-                            break;
+) -> std::io::Result<SpawnedTransport> {
+    let run = move || {
+        let mut fault = None;
+        loop {
+            let Some(state) = guard.owner_mut() else {
+                fault = Some(Fault::Protocol);
+                break;
+            };
+            match state.worker.receive() {
+                Ok(Some(block)) => {
+                    let result = state
+                        .process(block)
+                        .and_then(|reply| state.worker.complete(reply));
+                    if let Err(error) = result {
+                        state.worker.revoke();
+                        if error != Fault::Revoked {
+                            fault = Some(error);
                         }
-                        published.store(state.worker.completed_blocks(), Release);
-                    }
-                    Ok(None) => thread::sleep(Duration::from_micros(50)),
-                    Err(Fault::Revoked) => break,
-                    Err(error) => {
-                        fault = Some(error);
                         break;
                     }
+                    published.store(state.worker.completed_blocks(), Release);
+                }
+                Ok(None) => thread::sleep(Duration::from_micros(50)),
+                Err(Fault::Revoked) => break,
+                Err(error) => {
+                    fault = Some(error);
+                    break;
                 }
             }
-            Completion { fault }
+        }
+        Completion { fault }
+    };
+    let capture_data_bytes = std::mem::size_of_val(&run);
+    thread::Builder::new()
+        .name("hex-plugin-transport".into())
+        .spawn(run)
+        .map(|join| SpawnedTransport {
+            join,
+            capture_data_bytes,
         })
 }
 
@@ -363,6 +386,63 @@ impl NativeWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reaper_constructor_lists_boxes_terminal_counter_and_actual_thread_capture() {
+        let captured = [42_u8; 173];
+        let process = move |block| {
+            std::hint::black_box(&captured);
+            Ok(block)
+        };
+        let processor_bytes = std::mem::size_of_val(&process);
+        let (control, callback, worker) = channel(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            8,
+        )
+        .unwrap();
+        let capture_bytes = std::cell::Cell::new(0);
+        let result = spawn_processor_with(
+            control,
+            worker,
+            Processor::Function(Box::new(process)),
+            |guard, published| {
+                let spawned = spawn_transport(guard, published)?;
+                capture_bytes.set(spawned.capture_data_bytes);
+                Ok(spawned)
+            },
+        );
+        let mut reaper = match result {
+            Ok(reaper) => reaper,
+            Err(failure) => panic!("original worker spawn: {}", failure.error),
+        };
+        let storage = reaper.storage.unwrap();
+        assert!(
+            capture_bytes.get()
+                >= std::mem::size_of::<crate::native_callback_owner::Guard<State>>()
+                    + std::mem::size_of::<Arc<AtomicU64>>()
+        );
+        assert_eq!(
+            storage.data_bytes,
+            std::mem::size_of::<State>()
+                + processor_bytes
+                + std::mem::size_of::<std::sync::OnceLock<std::sync::Mutex<Box<State>>>>()
+                + std::mem::size_of::<AtomicU64>()
+                + capture_bytes.get()
+                + std::mem::size_of::<Completion>()
+        );
+        assert_eq!((storage.shared_groups, storage.shared_handles), (2, 4));
+        assert_eq!(reaper.join_on_control(), Ok(()));
+        assert_eq!(
+            reaper.storage.unwrap().data_bytes,
+            storage.data_bytes,
+            "constructor charge persists through actual worker return until control disposal"
+        );
+        drop((callback, reaper));
+    }
     #[test]
     fn spawn_refusal_retains_the_actual_processor_until_control_disposes_the_return() {
         struct Capture(Arc<AtomicU64>);

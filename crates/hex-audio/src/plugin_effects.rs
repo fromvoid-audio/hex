@@ -37,6 +37,26 @@ pub struct NativeEffect {
     worker: NativeWorker,
     callback: NativeEffectCallback,
 }
+/// Listed constructor backing of the original unsplit effect. Inline effect
+/// storage belongs to the host cell. The configuration state aliases the actual
+/// worker source's restored/captured payload, so it adds one handle, no payload
+/// or shared group. Diagnostics and construction/exchange peaks remain separate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeEffectStorage {
+    pub worker: crate::plugin_worker::NativeWorkerStorage,
+    pub dry_data_bytes: usize,
+    pub state_alias_handles: usize,
+}
+impl NativeEffectStorage {
+    pub fn data_bytes(&self) -> Option<usize> {
+        self.worker.data_bytes.checked_add(self.dry_data_bytes)
+    }
+    pub fn shared_handle_bound(&self) -> Option<usize> {
+        self.worker
+            .shared_handle_bound
+            .checked_add(self.state_alias_handles)
+    }
+}
 impl NativeEffect {
     pub fn prepare_on_control(
         identity: ProcessorInstanceIdentity,
@@ -159,6 +179,24 @@ impl NativeEffect {
     ) -> Option<hex_plugin_host::native::PreparedStorage> {
         self.worker
             .retained_source_storage_on_control(&self.callback.transport)
+    }
+    /// Inspect the original worker/source/queues plus actual aligned dry Vec
+    /// capacity. Equal state is not used to deduplicate payloads: the alias is
+    /// established by this private constructor's direct clone of that source.
+    /// This still cannot seal publication without diagnostics/peak reservations
+    /// and the existing callback loan/return and physical disposal contracts.
+    pub fn constructor_storage_on_control(&self) -> Option<NativeEffectStorage> {
+        Some(NativeEffectStorage {
+            worker: self
+                .worker
+                .constructor_storage_on_control(&self.callback.transport)?,
+            dry_data_bytes: self
+                .callback
+                .dry
+                .capacity()
+                .checked_mul(std::mem::size_of::<[f32; 2]>())?,
+            state_alias_handles: 1,
+        })
     }
     /// Unique owner transfer, never a source/Root/publication ACK. The caller
     /// retains worker control custody until its actual callback carrier returns.
