@@ -48,6 +48,16 @@ fn model() -> Fixture {
         add(&mut model, "inside"),
         add(&mut model, "late"),
     ];
+    let Created::Clip(outside_audio) = model.execute(Command::DuplicateClip(clip)).unwrap() else {
+        panic!("duplicate audio")
+    };
+    model
+        .execute(Command::MoveClip {
+            clip: outside_audio,
+            track: tracks[1],
+            start: 192_000,
+        })
+        .unwrap();
     let mut clips = vec![clip];
     for (track, start, length) in [
         (tracks[2], 0, 2),
@@ -67,6 +77,7 @@ fn model() -> Fixture {
         };
         clips.push(id);
     }
+    clips.push(outside_audio);
     let mut sections = Vec::new();
     for (start, end) in [(2, 3), (4, 5), (6, 7)] {
         let Created::ArrangementSection(id) = model
@@ -170,7 +181,10 @@ fn projection_uses_cached_section_union_and_half_open_boundaries() {
     state.enabled = true;
     assert!(state.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
     assert_eq!(state.indices, [1, 3]);
-    assert_eq!(state.clips, BTreeSet::from([f.clips[0], f.clips[2]]));
+    assert_eq!(
+        state.clips,
+        BTreeSet::from([f.clips[0], f.clips[2], f.clips[4], f.clips[5]])
+    );
     assert!(
         !state.rebuild(1, 1, f.model.project(), &f.sections[..1], None),
         "unchanged paints must not scan the project again"
@@ -186,7 +200,7 @@ fn projection_uses_cached_section_union_and_half_open_boundaries() {
     assert_eq!(state.indices, [1, 3]);
     assert_eq!(
         state.clips,
-        BTreeSet::from([f.clips[0], f.clips[2], f.clips[4]])
+        BTreeSet::from([f.clips[0], f.clips[2], f.clips[4], f.clips[5]])
     );
     assert!(!state.clips.contains(&f.clips[3]), "gap is excluded");
     assert!(state.rebuild(1, 1, f.model.project(), &f.sections[1..2], None));
@@ -325,7 +339,7 @@ fn section_projection_follows_canonical_tempo_range_and_removal() {
     assert_eq!(state.indices, [0, 1, 2, 3, 4]);
 }
 #[gpui::test]
-fn q_filters_real_rows_clips_and_hits_without_changing_selection_or_history(
+fn q_filters_tracks_but_keeps_outside_clips_and_hits_without_editing_history(
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, f) = open(cx);
@@ -346,6 +360,11 @@ fn q_filters_real_rows_clips_and_hits_without_changing_selection_or_history(
         .expect("outside midi in retained audio row");
     let empty = selector("arrangement-track-header", f.tracks[0].value());
     let original_first = visual.debug_bounds(empty).unwrap();
+    let toggle = visual.debug_bounds("arrangement-focus-toggle").unwrap();
+    let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+    assert!(toggle.top() >= toolbar.top() && toggle.bottom() <= toolbar.bottom());
+    let main = visual.debug_bounds("main-track-header").unwrap();
+    assert!(toggle.bottom() < main.top());
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
     select_section(&mut visual, 0, false);
@@ -364,7 +383,12 @@ fn q_filters_real_rows_clips_and_hits_without_changing_selection_or_history(
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds(empty).is_none());
-    assert!(visual.debug_bounds(outside).is_none());
+    assert!(visual.debug_bounds(outside).is_some());
+    assert!(
+        visual
+            .debug_bounds(selector("clip-visual", f.clips[5].value()))
+            .is_some()
+    );
     let first = visual
         .debug_bounds(selector("arrangement-track-header", f.tracks[1].value()))
         .unwrap();
@@ -399,8 +423,8 @@ fn q_filters_real_rows_clips_and_hits_without_changing_selection_or_history(
         let x = f32::from(before.center().x);
         let viewport = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
         assert!(
-            !v.clip_handle_at_pointer(f.tracks[1], x, lane.top + 3.0, viewport),
-            "hidden clip must not intercept a lane gesture"
+            v.clip_handle_at_pointer(f.tracks[1], x, lane.top + 3.0, viewport),
+            "outside-section clip on a retained track stays interactive"
         );
     });
     // H only changes row presentation. Leaving focus retains that independent mode.

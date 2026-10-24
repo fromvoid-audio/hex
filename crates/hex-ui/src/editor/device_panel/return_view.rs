@@ -242,7 +242,7 @@ pub(super) fn render_return_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
+    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions

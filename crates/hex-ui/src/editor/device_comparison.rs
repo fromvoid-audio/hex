@@ -108,7 +108,7 @@ pub(super) fn actions(
         ),
     };
     div().child(
-        super::device_panel::action_button(
+        super::device_panel::segment_button(
             format!("device-comparison-{}", device.id().value()),
             label,
             tooltip,
