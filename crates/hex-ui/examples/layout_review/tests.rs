@@ -56,6 +56,21 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             );
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
             assert_eq!(body.origin.y, header.bottom_left().y);
+            assert_eq!(
+                visual.rendered_background("device-frame-header"),
+                Some(gpui::Background::from(rgb(theme::device_style(
+                    theme::DeviceStyleRole::Layout
+                )
+                .surface)))
+            );
+            let scale = visual.update(|window, _| window.scale_factor());
+            let (_, mask) = visual
+                .rendered_surface_geometry("catalog-card")
+                .expect("painted production card");
+            assert!(
+                mask.right() <= viewport.scale(scale).right(),
+                "wide cards stay clipped to the viewport"
+            );
             for (toggle, panel) in [
                 ("device-macro-toggle", "device-macro-panel"),
                 ("device-modulator-toggle", "device-modulator-panel"),
@@ -73,21 +88,6 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
                 assert!(visual.debug_bounds(panel).is_none());
             }
 
-            assert_eq!(
-                visual.rendered_background("device-frame-header"),
-                Some(gpui::Background::from(rgb(theme::device_style(
-                    theme::DeviceStyleRole::Layout
-                )
-                .surface)))
-            );
-            let scale = visual.update(|window, _| window.scale_factor());
-            let (_, mask) = visual
-                .rendered_surface_geometry("catalog-card")
-                .expect("painted production card");
-            assert!(
-                mask.right() <= viewport.scale(scale).right(),
-                "wide cards stay clipped to the viewport"
-            );
             if entry.is_effect() {
                 visual.update(|_, cx| {
                     view.update(cx, |view, cx| {
