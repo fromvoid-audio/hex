@@ -1,7 +1,7 @@
 use super::*;
 use hex_project::{
-    BeatTime, Command, Created, Editor, Project, SourceGainPoint, Tempo, WarpMode,
-    default_audio_warp,
+    AudioDomainClock, BeatTime, Command, Created, Editor, Project, SourceGainPoint, Tempo,
+    WarpMode, default_audio_warp,
 };
 use std::collections::BTreeMap;
 
@@ -2011,6 +2011,159 @@ fn warp_preview_admission_matches_actual_preparation_pitch_modes_tempo_and_round
             }
         }
     }
+}
+#[test]
+fn duplicated_warped_audio_keeps_preparable_timing() {
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(2 * BeatTime::ONE.raw() - 1),
+            tempo: Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let compile = |project: &Project| {
+        crate::PreparedRevision::prepare_with_audio_transforms(
+            project,
+            &media,
+            Arc::new(crate::SineTable::new()),
+            None,
+            &context,
+        )
+    };
+    let before = compile(editor.project()).unwrap();
+    let original_pcm = render(&before, 0, 8_000, 97);
+    let original = editor.project().clip(clip).unwrap().clone();
+    let mut selected = clip;
+    for iteration in 0..3 {
+        let (
+            Created::Clips {
+                first: duplicate, ..
+            },
+            prepared,
+        ) = editor
+            .execute_prepared(Command::DuplicateClips(vec![selected]), compile)
+            .unwrap()
+        else {
+            panic!("duplicate selection")
+        };
+        let copy = editor.project().clip(duplicate).unwrap();
+        assert_eq!(copy.source_offset(), original.source_offset());
+        assert_eq!(copy.source_length(), original.source_length());
+        assert_eq!(
+            copy.audio_edit().unwrap().domain,
+            original.audio_edit().unwrap().domain
+        );
+        assert_eq!(editor.project().clip(clip), Some(&original));
+        assert!(preview_matches_preparation(&editor, duplicate, &media));
+        if iteration == 0 {
+            assert_eq!(render(&prepared, copy.start(), 8_000, 53), original_pcm);
+        }
+        assert!(editor.undo_prepared(compile).unwrap().is_some());
+        assert!(editor.project().clip(duplicate).is_none());
+        assert!(editor.redo_prepared(compile).unwrap().is_some());
+        assert_eq!(
+            editor
+                .project()
+                .clip(duplicate)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain,
+            original.audio_edit().unwrap().domain
+        );
+        selected = duplicate;
+    }
+}
+
+#[test]
+fn warp_map_coalesces_partial_cycles_and_tempo_crossings_but_preserves_authored_markers() {
+    let (mut editor, clip, _) = fixture(false);
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let tempo = editor.project().tempo_map();
+    let mut edit = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .clone();
+    let domain = Arc::make_mut(&mut edit.domain);
+    domain.looping = true;
+    domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(BeatTime::ONE.raw() + 1));
+    let (map, _) = mapping::prepare_map(&edit, tempo, &AtomicBool::new(false)).unwrap();
+    assert_eq!(map.segments().len(), 1);
+    assert_eq!(map.segments()[0].output_end, 8_000);
+    assert_eq!(map.segments()[0].source_start_q32, 0);
+    assert_eq!(
+        map.segments()[0].source_end_q32,
+        edit.domain
+            .warp_source_position_q32(u128::from(BeatTime::ONE.raw() + 1))
+            .unwrap()
+    );
+
+    // An interior tempo point that rounds onto a real marker must not move
+    // that marker's source coordinate or leave a gap between map segments.
+    let domain = Arc::make_mut(&mut edit.domain);
+    domain.clock = AudioDomainClock::Beats(BeatTime::ONE);
+    domain.warp.as_mut().unwrap().markers.insert(
+        1,
+        hex_project::WarpMarker {
+            source_frame: 3_000,
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+        },
+    );
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2 + 1),
+            tempo: Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    let (map, _) =
+        mapping::prepare_map(&edit, editor.project().tempo_map(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(map.segments().len(), 2);
+    assert_eq!(map.segments()[0].output_end, 4_000);
+    assert_eq!(map.segments()[0].source_end_q32, 3_000_i128 << 32);
+    assert_eq!(map.segments()[1].source_start_q32, 3_000_i128 << 32);
+
+    Arc::make_mut(&mut edit.domain)
+        .warp
+        .as_mut()
+        .unwrap()
+        .markers
+        .insert(
+            1,
+            hex_project::WarpMarker {
+                source_frame: 1_000,
+                beat: BeatTime::from_raw(1),
+            },
+        );
+    assert!(
+        mapping::prepare_map(&edit, editor.project().tempo_map(), &AtomicBool::new(false)).is_err()
+    );
 }
 #[test]
 fn warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation() {
