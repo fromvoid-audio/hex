@@ -137,6 +137,9 @@ impl ResidentHarness {
     pub(super) fn with_frame_limit(frame_limit: u64) -> Self {
         Self::with_open_gate(frame_limit, Arc::new(AtomicBool::new(true)))
     }
+    pub(super) fn with_frame_limit_at_rate(frame_limit: u64, rate: u32) -> Self {
+        Self::with_event_capacity_at_rate(frame_limit, Arc::new(AtomicBool::new(true)), 4, rate)
+    }
     pub(super) fn with_open_gate(frame_limit: u64, gate: Arc<AtomicBool>) -> Self {
         Self::with_event_capacity(frame_limit, gate, 4)
     }
@@ -144,6 +147,14 @@ impl ResidentHarness {
         frame_limit: u64,
         gate: Arc<AtomicBool>,
         capacity: usize,
+    ) -> Self {
+        Self::with_event_capacity_at_rate(frame_limit, gate, capacity, 48_000)
+    }
+    fn with_event_capacity_at_rate(
+        frame_limit: u64,
+        gate: Arc<AtomicBool>,
+        capacity: usize,
+        rate: u32,
     ) -> Self {
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
@@ -154,19 +165,20 @@ impl ResidentHarness {
             inner.worker_owned_resident_graphs,
             "production resident publication default"
         );
-        inner.output_factory = Some(Box::new(move |_| {
+        inner.output_factory = Some(Box::new(move |requested_rate| {
             if !gate.load(Acquire) {
                 return Err("fixture output unavailable".into());
             }
             // The prior fixture's async native carrier can still own the exclusive Lease
             // after its control owner has returned. Retry exactly as the existing Harness does.
-            let (output, backend) = match hex_audio::worker_fixture::open(48_000) {
-                Ok(pair) => pair,
-                Err(error) if error == "audio output is open or still shutting down" => {
-                    return Ok(None);
-                }
-                Err(error) => return Err(error),
-            };
+            let (output, backend) =
+                match hex_audio::worker_fixture::open(requested_rate.unwrap_or(rate)) {
+                    Ok(pair) => pair,
+                    Err(error) if error == "audio output is open or still shutting down" => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                };
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
         }));

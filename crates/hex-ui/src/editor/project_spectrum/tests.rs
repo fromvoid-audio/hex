@@ -1,6 +1,6 @@
 use super::*;
 use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
-use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, size};
 use hex_project::{Command, Created, Editor, ElementColor, Project};
 use hex_session::service::ViewState;
 use std::{
