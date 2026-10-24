@@ -219,8 +219,8 @@ pub fn rectangle_edge(part: RectanglePart, width: f32, inset: f32) -> Div {
         .when(!valid, |this| this.invisible())
 }
 
-/// A header-only body receiver can be composed over waveform/note content;
-/// sections use the entire rectangle as their body receiver.
+/// A header-only body receiver can be composed over other content. Hosts bind
+/// rectangle drag to this receiver while the remaining body keeps its own input.
 pub fn rectangle_body(top: f32, height: f32) -> Div {
     let valid = top.is_finite() && height.is_finite() && height > 0.0;
     div()
