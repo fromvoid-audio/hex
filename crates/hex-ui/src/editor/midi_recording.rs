@@ -763,6 +763,15 @@ mod lifecycle_tests {
             view.audio = Some(audio(client));
             view.computer_keyboard.enabled = true;
             view.set_input_quantization(hex_project::InputQuantization::Eighth);
+            // This fixture authoring happened before it had an audio output.
+            // Its offline candidate is redundant with the same canonical source
+            // actually installed above; retire it on control, not as a fake ACK.
+            if let Some(pending) = view.pending_playback.take() {
+                assert_eq!(pending.project_revision, revision);
+                assert_eq!(pending.project_generation, generation);
+            }
+            assert!(view.worker_owns_keyboard_publication());
+            assert!(!view.edit_pending());
             view.toggle_midi_recording();
             assert!(
                 view.midi_recorder.mode == Mode::Preparing,
