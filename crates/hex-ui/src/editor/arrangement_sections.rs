@@ -337,6 +337,14 @@ impl EditorView {
         self.time_selection_project_scope = false;
         self.cancel_time_selection_gesture();
     }
+    pub(super) fn retire_section_pointer_context_for_range(&mut self) {
+        self.sections.cursor = None;
+        if !self.arrangement_focus.enabled {
+            self.sections.selected = None;
+            self.sections.selection.clear();
+        }
+    }
+
     fn section_has_focus(&self, window: &Window) -> bool {
         self.mode == EditorMode::Arrangement
             && self.focus.is_focused(window)
@@ -524,14 +532,32 @@ impl EditorView {
         let Some([_, top, _, height]) = self.section_layout() else {
             return false;
         };
+        if super::time_selection::is_extent_selection_click(modifiers) {
+            let id = match edge {
+                Some(SectionEdge::Single(id, _)) | Some(SectionEdge::Shared(id, _)) => Some(id),
+                None => self.section_hit(x, y),
+            };
+            if let Some((start, end, revision)) = id.and_then(|id| {
+                let state = self.state.as_ref()?;
+                let section = state.project.arrangement_section(id)?;
+                let map = state.project.tempo_map();
+                Some((
+                    map.beat_to_frame(section.start()).ok()?,
+                    map.beat_to_frame(section.end()).ok()?,
+                    state.revision,
+                ))
+            }) {
+                self.select_project_time_range(start, end, self.project_generation, revision);
+                // The Shift hit is consumed even when there are no normal tracks:
+                // do not fall through into a marker edit or a transport action.
+                self.suppress_cursor_click = true;
+                return true;
+            }
+        }
         if edge.is_none() && y >= top + super::time_selection::header_hit_height(height) {
             // Do not start a competing capture. Main's existing range receiver
             // sees this same press next and keeps canonical all-track scope.
-            self.sections.cursor = None;
-            if !self.arrangement_focus.enabled {
-                self.sections.selected = None;
-                self.sections.selection.clear();
-            }
+            self.retire_section_pointer_context_for_range();
             return false;
         }
         if !double && self.section_hit(x, y).is_none() && self.main_time_range_grab(x, y).is_some()
@@ -1542,7 +1568,7 @@ impl EditorView {
                 .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip {
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: select · g: merge · cmd-d: duplicate · cmd-e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: range · cmd-shift-click: select · g: merge · cmd-d: duplicate · cmd-e: split"
                             .into(),
                     })
                     .into()
@@ -2094,6 +2120,7 @@ mod tests {
                 let intro = editor.read_with(cx, |v, _| position(v, 2));
                 let shift = Modifiers {
                     shift: true,
+                    platform: true,
                     ..Modifiers::default()
                 };
                 visual.simulate_mouse_down(intro, MouseButton::Left, shift);
@@ -2264,6 +2291,7 @@ mod tests {
         assert_ne!(base, selected, "selection changes entire section surface");
         let shift = Modifiers {
             shift: true,
+            platform: true,
             ..Modifiers::default()
         };
         visual.simulate_mouse_down(b, MouseButton::Left, shift);
@@ -3680,6 +3708,140 @@ mod tests {
             }
             editor.read_with(cx, |view, _| {
                 assert_eq!(view.state.as_ref().unwrap().project, before)
+            });
+        }
+    }
+    #[gpui::test]
+    fn shift_click_extent_section_replaces_range_at_exact_tempo_bounds_including_hidden_tracks(
+        cx: &mut TestAppContext,
+    ) {
+        for (focused, body) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (handle, editor, ids) = fixture(cx);
+            editor.update(cx, |view, cx| {
+                for command in [
+                    Command::AddTrack {
+                        name: "hidden empty track".into(),
+                    },
+                    Command::SetTempoPoint {
+                        beat: BeatTime::ONE,
+                        tempo: hex_project::Tempo::new(180_000_000).unwrap(),
+                    },
+                    Command::SetArrangementSectionRange {
+                        section: ids[0],
+                        start: BeatTime::from_ratio(1, 7).unwrap(),
+                        end: BeatTime::from_ratio(27, 7).unwrap(),
+                    },
+                ] {
+                    let request = if matches!(command, Command::SetArrangementSectionRange { .. }) {
+                        Request::EditArrangementSection {
+                            project_generation: view.project_generation,
+                            revision: view.state.as_ref().unwrap().revision,
+                            command,
+                        }
+                    } else {
+                        Request::Edit(command)
+                    };
+                    assert!(view.enqueue(request));
+                    let event = next(&view.service);
+                    assert!(
+                        event.error.is_none(),
+                        "fixture edit refused: {:?}",
+                        event.error
+                    );
+                    view.receive(event);
+                }
+                view.section_autoplay = false;
+                cx.notify();
+            });
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let header = editor.read_with(cx, |view, _| position(view, 2));
+            visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            if focused {
+                visual.simulate_keystrokes("q");
+                visual.run_until_parked();
+            }
+            editor.update(cx, |view, cx| {
+                let first = view.state.as_ref().unwrap().project.tracks()[0].id();
+                view.time_selection = Some(super::super::time_selection::TimeSelection {
+                    anchor_track: first,
+                    end_track: first,
+                    anchor_frame: 111,
+                    end_frame: 222,
+                });
+                view.time_selection_project_scope = false;
+                view.section_autoplay = true;
+                view.last_enqueued_edit = None;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
+            let at = editor.read_with(cx, |view, _| {
+                let [_, top, _, height] = view.section_layout().unwrap();
+                point(
+                    header.x,
+                    if body {
+                        px(top + height * 0.75)
+                    } else {
+                        header.y
+                    },
+                )
+            });
+            let shift = Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(at, MouseButton::Left, shift);
+            visual.simulate_mouse_up(at, MouseButton::Left, shift);
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                let range = view
+                    .normalized_time_selection()
+                    .expect("shift-click section must create its full time range");
+                let section = before.project.arrangement_section(ids[0]).unwrap();
+                let map = before.project.tempo_map();
+                assert_eq!(
+                    (range.start(), range.end()),
+                    (
+                        map.beat_to_frame(section.start()).unwrap(),
+                        map.beat_to_frame(section.end()).unwrap()
+                    )
+                );
+                assert_eq!(
+                    range.tracks(),
+                    before
+                        .project
+                        .tracks()
+                        .iter()
+                        .map(|track| track.id())
+                        .collect::<Vec<_>>()
+                );
+                assert!(view.time_selection_project_scope);
+                assert!(
+                    view.sections.gesture.is_none()
+                        && view.sections.pending.is_none()
+                        && view.sections.cursor.is_none()
+                );
+                assert!(view.time_selection_gesture.is_none());
+                assert!(view.last_enqueued_edit.is_none());
+                assert!(
+                    view.pending_audio_commands.is_empty()
+                        && view.prepared_seek.is_none()
+                        && view.latched_seek_intent.is_none()
+                );
+                assert_eq!(view.worker_requests_pending, 0);
+                assert_eq!(view.state.as_ref().unwrap().project, before.project);
+                assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+                assert_eq!(
+                    (
+                        view.state.as_ref().unwrap().can_undo,
+                        view.state.as_ref().unwrap().can_redo
+                    ),
+                    (before.can_undo, before.can_redo)
+                );
+                assert_eq!(view.arrangement_focus.enabled, focused);
             });
         }
     }
