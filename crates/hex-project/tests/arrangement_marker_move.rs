@@ -124,7 +124,9 @@ fn fixture(length: u64) -> (Project, SectionId) {
 fn marker_move_carves_edges_covers_and_splits_with_one_history_edge_and_no_music_edit() {
     // Literal outcomes independently describe half-open overlap. `true` marks
     // the sole new right-hand identity; every other fragment keeps its old ID.
-    let cases: &[(u64, u64, &[(&str, u64, u64, bool)])] = &[
+    type ExpectedMarker = (&'static str, u64, u64, bool);
+    type MoveCase = (u64, u64, &'static [ExpectedMarker]);
+    let cases: &[MoveCase] = &[
         (
             2,
             20,
