@@ -46,7 +46,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let mut row = div()
         .id("session-audio-source-panel")
         .w_full()
-        .h(px(DETAIL_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -113,6 +113,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 .tooltip(move |_, cx| {
                     let description = format!("source {start}–{end} / {asset_frames} frames");
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: description.into(),
                     })
                     .into()
@@ -199,52 +200,47 @@ fn gain_adjust_button(
     direction: i32,
     pending: bool,
 ) -> Stateful<Div> {
-    div()
-        .id(ElementId::Name(
-            format!("session-audio-gain-{}-{direction}", window.clip.value()).into(),
-        ))
-        .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .debug_selector(move || format!("session-audio-gain-{direction}"))
-        .tooltip(|_, cx| {
-            cx.new(|_| super::transport::MiniTooltip {
-                description: "adjust clip gain by 1 db · alt: 0.1 db".into(),
-            })
-            .into()
+    hex_widgets::action(
+        theme::text(if direction < 0 { "−" } else { "+" }),
+        theme::action_style(),
+    )
+    .id(ElementId::Name(
+        format!("session-audio-gain-{}-{direction}", window.clip.value()).into(),
+    ))
+    .size(px(18.0))
+    .debug_selector(move || format!("session-audio-gain-{direction}"))
+    .tooltip(|_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::control("clip gain"),
+            description: "adjust clip gain by 1 db · alt: 0.1 db".into(),
         })
-        .child(theme::text(if direction < 0 { "−" } else { "+" }))
-        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
-            let current = view.state.as_ref().is_some_and(|state| {
-                source_window_is_current(
-                    window,
-                    view.project_generation,
-                    view.selected_cell,
-                    state.revision,
-                    &state.project,
-                )
-            });
-            if current
-                && view.mode == super::EditorMode::Session
-                && !pending
-                && !view.edit_pending()
+        .into()
+    })
+    .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+        let current = view.state.as_ref().is_some_and(|state| {
+            source_window_is_current(
+                window,
+                view.project_generation,
+                view.selected_cell,
+                state.revision,
+                &state.project,
+            )
+        });
+        if current && view.mode == super::EditorMode::Session && !pending && !view.edit_pending() {
+            let step = if event.modifiers().alt { 100 } else { 1_000 };
+            if let Some(millidb) = gain.millidb().checked_add(direction * step)
+                && hex_project::ClipGain::new(millidb).is_ok()
             {
-                let step = if event.modifiers().alt { 100 } else { 1_000 };
-                if let Some(millidb) = gain.millidb().checked_add(direction * step)
-                    && hex_project::ClipGain::new(millidb).is_ok()
-                {
-                    view.enqueue(hex_session::service::Request::Edit(
-                        Command::SetAudioClipGain {
-                            clip: window.clip,
-                            millidb,
-                        },
-                    ));
-                }
+                view.enqueue(hex_session::service::Request::Edit(
+                    Command::SetAudioClipGain {
+                        clip: window.clip,
+                        millidb,
+                    },
+                ));
             }
-            cx.notify();
-        }))
+        }
+        cx.notify();
+    }))
 }
 
 #[derive(Clone, Copy)]
@@ -294,29 +290,24 @@ fn source_adjust_button(
         SourceEdge::EndEarlier => "end-earlier",
         SourceEdge::EndLater => "end-later",
     };
-    div()
+    hex_widgets::action(theme::text(glyph), theme::action_style())
         .id(ElementId::Name(
             format!("session-audio-source-control-{}-{control_id}", clip.value()).into(),
         ))
         .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
         .text_color(rgb(if edit_pending {
             theme::color(theme::PaletteRole::Muted)
         } else {
             theme::color(theme::PaletteRole::Secondary)
         }))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
         .tooltip(move |_, cx| {
             let description = tooltip.clone();
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: description.into(),
             })
             .into()
         })
-        .child(theme::text(glyph))
         .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
             let still_current = view.state.as_ref().is_some_and(|state| {
                 source_window_is_current(
@@ -688,6 +679,7 @@ mod tests {
                     comparison_audio: None,
                     project: Arc::new(project.project().clone()),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),

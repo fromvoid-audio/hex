@@ -482,7 +482,10 @@ class LaunchTests(unittest.TestCase):
         cargo=f.bin/'cargo';cargo.write_text(cargo.read_text().replace('"$FAKE_METADATA_TARGET"','"${CARGO_TARGET_DIR:-$FAKE_METADATA_TARGET}"'))
         target=Path(f.env['FAKE_METADATA_TARGET']);target.mkdir()
         old=f.runner('old-dev-owner');self.assertEqual(old.run(),0)
-        _,owner=fixtures.local_ci.target_state_paths(target,f.target_state_dir);raw=owner.read_bytes()
+        # Read the marker selected by the runner, not a second lexical-path hash.
+        owner=old.target_owner_path
+        self.assertIsNotNone(owner)
+        raw=owner.read_bytes()
         target.rename(target.with_name('retained-dev'));target.mkdir()
         (target/'release').mkdir();(target/'release/external').write_bytes(b'preserve release')
         stale=f.runner('stale-default-control');self.assertEqual(stale.run(),1)

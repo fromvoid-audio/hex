@@ -11,8 +11,11 @@ fn state(value: u8) -> NativeDeviceState {
 fn fixture() -> (Editor, Vec<hex_project::DeviceId>) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 64).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -173,6 +176,7 @@ fn missing_comparison_wrong_slot_provider_or_state_size_refuses_current_document
     assert!(hex_storage::decode(&serde_json::to_vec(&changed).unwrap()).is_err());
     let mut changed = original;
     changed["version"] = 31.into();
+    changed.as_object_mut().unwrap().remove("main_devices");
     assert!(
         hex_storage::decode(&serde_json::to_vec(&changed).unwrap()).is_err(),
         "old alpha envelope is explicitly unsupported"

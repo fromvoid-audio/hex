@@ -34,19 +34,20 @@ impl EditorView {
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
             || self.gain_lane.pointer_is_active()
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.close_prompt_open
             || self.opening_project
             || self.project_open.busy()
             || self.pending_open_path.is_some()
-            || self.pending_new_mode.is_some()
             || self.export_dialog_open
             || self.save_dialog_open
             || self.preset_dialog_open
             || self.track_resize_active()
+            || self.track_reorder_active()
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
             || self.project_spectrum.resize_is_active()
+            || self.clip_detail_resize.is_active()
             || self.device_panel.navigation.is_active()
             || self.clip_paint_gesture.is_some()
             || self.active_clip_drag.is_some()

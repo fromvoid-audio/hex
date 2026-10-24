@@ -303,6 +303,36 @@ class FilesystemIdentityTests(unittest.TestCase):
                     controller._prepare_helper()
 
 
+class FixturePathTests(unittest.TestCase):
+    def test_aliased_temporary_parent_reuses_the_actual_owner_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            physical = parent / 'physical'
+            physical.mkdir()
+            alias = parent / 'alias'
+            alias.symlink_to(physical, target_is_directory=True)
+            owned = tempfile.TemporaryDirectory(dir=alias)
+            fixture = fixtures.LocalCiRunnerTests()
+            try:
+                with patch.object(fixtures.tempfile, 'TemporaryDirectory', return_value=owned):
+                    fixture.setUp()
+                target = Path(fixture.env['FAKE_METADATA_TARGET'])
+                target.mkdir()
+                first = fixture.runner('aliased-parent-first')
+                self.assertEqual(first.run(), 0, first.summary)
+                _, owner = fixtures.local_ci.target_state_paths(target, fixture.target_state_dir)
+                # The fixture's public target spelling must find the real record.
+                self.assertEqual(json.loads(owner.read_bytes())['target_directory'], str(target))
+                retained = target / 'external-cache'
+                retained.write_bytes(b'preserve')
+                second = fixture.runner('aliased-parent-reuse')
+                self.assertEqual(second.run(), 0, second.summary)
+                self.assertEqual(second.summary['target_cache']['cleanup_status'], 'not_needed')
+                self.assertEqual(retained.read_bytes(), b'preserve')
+            finally:
+                owned.cleanup()
+
+
 class ReleaseFixture(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.LocalCiRunnerTests(); self.f.setUp(); self.addCleanup(self.f.tearDown)
@@ -572,6 +602,21 @@ class RecreatedTargetTests(ReleaseFixture):
                 with self.guard(authority):self.fail('live job bypassed')
         finally:self.assertIsNone(lock.release())
         self.assert_preserved(raw,calls)
+
+    def test_lexical_parent_alias_refuses_even_with_the_same_physical_target(self):
+        raw = self.owner.read_bytes()
+        calls = self.f.call_log.read_text()
+        self.inspect()  # The ordinary, physical fixture path is eligible.
+        alias = self.f.base / 'aliased-parent'
+        alias.symlink_to(self.f.repo, target_is_directory=True)
+        lexical = alias / self.target.relative_to(self.f.repo)
+        self.runner.env['FAKE_METADATA_TARGET'] = str(lexical)
+        self.runner.env['CARGO_TARGET_DIR'] = str(lexical)
+        self.assertTrue(self.runner._resolve_cargo_identity())
+        self.assertEqual(self.runner.cargo_identity['target_directory'], str(self.target))
+        with self.assertRaisesRegex(fixtures.local_ci.TargetCacheError, 'symlink'):
+            self.inspect()
+        self.assert_preserved(raw, calls)
 
     def test_last_boundary_rechecks_inactivity_owner_target_and_source(self):
         for cause in ('running','marker','target','source'):

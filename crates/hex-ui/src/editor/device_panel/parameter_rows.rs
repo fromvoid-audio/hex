@@ -212,8 +212,12 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                     first,
                     second,
                 } => device == key.device && (first == key.parameter || second == key.parameter),
-                GestureTarget::DeviceParameterSnapshot { device } => device == key.device,
-                GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
+                GestureTarget::DeviceParameterSnapshot { device }
+                | GestureTarget::EqNodeCreation { device } => device == key.device,
+                GestureTarget::ReturnSend { .. }
+                | GestureTarget::TrackGain { .. }
+                | GestureTarget::TrackBalance { .. }
+                | GestureTarget::ReturnGain { .. } => false,
             })
         || view
             .device_panel

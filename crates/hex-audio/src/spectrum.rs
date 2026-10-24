@@ -79,6 +79,11 @@ pub struct SpectrumKernel {
 }
 
 impl SpectrumKernel {
+    pub(crate) fn heap_storage_quote() -> Option<usize> {
+        std::mem::size_of::<[f64; FFT_SIZE]>()
+            .checked_mul(3)?
+            .checked_add(std::mem::size_of::<[f64; POSITIVE_BIN_COUNT]>())
+    }
     pub(crate) fn heap_data_bytes(&self) -> Option<usize> {
         let Self {
             sample_rate_hz: _,

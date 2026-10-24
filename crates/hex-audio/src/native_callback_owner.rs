@@ -1,11 +1,19 @@
-//! Once-only, coupled native closure custody, adapted from original177
-//! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
-//! destroys its contents. Receiving a carrier is not final-active quiescence.
+//! Once-only coupled custody for native callback and error guards.
+//!
+//! Backend guard destruction moves a carrier; only lifecycle control destroys its contents.
+//! Final-active extraction requires the exact root-bound release authority, normal completion of
+//! the original stream-handle destructor and release of both terminal guard anchors. Silence,
+//! Pause, shutdown acknowledgment or merely receiving a carrier establishes none of those
+//! conditions. Destruction failure retains Pending and exclusive output custody without retry.
+//! This proves nonrenderability through the supported application callback paths, not
+//! independently observed AudioUnit stop/uninitialize/dispose success.
 use crate::prepared::{Callback, Status};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;
 mod resources;
-pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
+pub(crate) use resources::{
+    ChannelStorage, NativeCandidateBoundary, worker_boundary_storage_quote,
+};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS
@@ -132,12 +140,12 @@ impl<T> Drop for Guard<T> {
     }
 }
 impl<T> Terminal<T> {
-    fn ready(&mut self) -> bool {
+    pub(crate) fn ready(&mut self) -> bool {
         self.cell
             .as_mut()
             .is_some_and(|cell| cell.get().is_some() && Arc::get_mut(cell).is_some())
     }
-    fn take(&mut self) -> Option<Box<T>> {
+    pub(crate) fn take(&mut self) -> Option<Box<T>> {
         if !self.ready() {
             return None;
         }
@@ -413,6 +421,9 @@ pub(crate) struct NativeRetirement {
     publication: Option<Box<crate::prepared::PublicationControl>>,
     completed_stream_handle: bool,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: [Option<crate::candidate_custody::NativeEndpointEnvelope>;
+        hex_lattice::MAX_STATEFUL_PROCESSORS],
     final_active: Option<crate::candidate_custody::FinalActiveReturn>,
     root: crate::candidate_custody::CandidateRoot,
 }
@@ -437,6 +448,8 @@ impl NativeRetirement {
             publication: None,
             completed_stream_handle: false,
             domain_pages: std::array::from_fn(|_| None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: std::array::from_fn(|_| None),
             final_active: None,
             root,
         }
@@ -541,6 +554,18 @@ impl NativeRetirement {
             if !data.callback.drain_candidate_custody_on_control() {
                 return Ok(false);
             }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if data.callback.has_native_source_endpoints() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data
+                    .callback
+                    .extract_native_source_endpoints_on_control(&mut self.native_sources)
+                {
+                    return Err(());
+                }
+            }
             if data.callback.has_domain_pages() {
                 if !self.completed_stream_handle {
                     return Ok(false);
@@ -582,6 +607,15 @@ impl NativeRetirement {
         }
         if self.states != [Disposal::Complete; 2] {
             return Err(());
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        for index in 0..self.native_sources.len() {
+            if let Some(endpoint) = self.native_sources[index].take()
+                && let Err(endpoint) = self.root.ingest_native_endpoint(endpoint)
+            {
+                self.native_sources[index] = Some(endpoint);
+                return Ok(false);
+            }
         }
         for index in 0..self.domain_pages.len() {
             if let Some(pages) = self.domain_pages[index].take()

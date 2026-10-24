@@ -178,6 +178,42 @@ impl PublicationControl {
         self.candidate_root
             .reserve_runtime_preparation(reservation, domains)
     }
+    /// Actual configured Root/control backing, independent of its DATA ceiling.
+    /// Native sources require the exact accepted unsplit owner inventory; busy,
+    /// pending or retiring source inspection returns None. This grants no
+    /// callback, native-output or graph publication authority.
+    pub fn audio_candidate_control_backing_bytes(&self) -> Option<usize> {
+        self.candidate_root.actual_control_backing_bytes()
+    }
+    /// Reserve an empty destination for an intact preflighted resident CURRENT
+    /// cell. No duplicate engine cell/source allocation is constructed.
+    pub fn reserve_audio_candidate_adoption(
+        &mut self,
+        reservation: crate::AudioCandidatePreparationReservation,
+    ) -> Result<crate::AudioCandidatePreparationToken, crate::AudioCandidatePreparationRefusal>
+    {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidatePreparationRefusal {
+                reason: "candidate native custody unavailable",
+                domains: Vec::new(),
+            });
+        }
+        self.candidate_root.reserve_runtime_adoption(reservation)
+    }
+    /// Move only after destination Root/context/rate and actual constructor DATA
+    /// have passed. A refusal leaves the caller's original opaque Option intact.
+    pub fn adopt_audio_candidate_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        cell: &mut Option<hex_engine::AudioCandidatePreparation>,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("candidate native custody unavailable");
+        }
+        self.candidate_root
+            .adopt_runtime_preparation(token, context, self.rate, cell)
+    }
     /// Bind a newly ready exact domain into the already-reserved graph cell.
     /// This permits reserving graph construction BEFORE starting its source
     /// worker; no second runtime slot or source registration is introduced.
@@ -199,6 +235,17 @@ impl PublicationControl {
         ) -> Result<(), hex_engine::AudioStorageError>,
     ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
         self.candidate_root.with_runtime_preparation(token, prepare)
+    }
+    /// Recheck both canonical counters for the limited CURRENT path before the
+    /// ordinary destination seal/stage. No generation or editor relabel occurs.
+    pub fn stage_current_sampler_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        expected: hex_engine::AudioSourceContext,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        self.candidate_root
+            .check_current_sampler_preparation_context(token, expected)?;
+        self.stage_audio_candidate_preparation(token, expected.project_generation)
     }
     /// Queue this exact rooted, completed preparation without returning an owner
     /// to the adapter or releasing/reacquiring its reserved runtime/archive cell.
@@ -276,8 +323,8 @@ impl PublicationControl {
             Some("candidate constructor rate or phase differs")
         } else if policy != PublicationPolicy::InheritRuntime {
             Some("constructor fresh-runtime policy is not supported")
-        } else if self.status.publication_pending.gain_active() {
-            Some("finish gain recording before replacing playback")
+        } else if self.status.publication_pending.recording_active() {
+            Some("finish recording before replacing playback")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
         } else {

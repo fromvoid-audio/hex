@@ -92,6 +92,10 @@ pub(in crate::editor) fn bottom_bar(
         view.focused_return
             .map(DevicePanelOwner::Return)
             .or_else(|| view.selected_track.map(DevicePanelOwner::Track))
+            .or_else(|| {
+                (view.device_panel.main_selected == Some(view.project_generation))
+                    .then_some(DevicePanelOwner::Main)
+            })
     };
     view.device_panel
         .navigation
@@ -102,6 +106,14 @@ pub(in crate::editor) fn bottom_bar(
     let mut cards = Vec::new();
     if let Some(state) = &view.state {
         match owner {
+            Some(DevicePanelOwner::Main) => {
+                cards.extend(state.project.main_devices().iter().map(|device| {
+                    (
+                        device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                        device.id(),
+                    )
+                }))
+            }
             Some(DevicePanelOwner::Track(id)) => {
                 if let Some(track) = state.project.track(id) {
                     for node in track.ordered_device_chain() {
@@ -152,6 +164,7 @@ pub(in crate::editor) fn bottom_bar(
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(|_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control("device chain"),
                 description:
                     "device chain · middle-drag devices · drag focus frame or click to scroll"
                         .into(),
@@ -307,6 +320,7 @@ pub(in crate::editor) fn bottom_bar(
                 })))
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: if open {
                             "hide device panel"
                         } else {

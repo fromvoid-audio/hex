@@ -63,7 +63,8 @@ fn fixture(notes: usize, duration: u64) -> Project {
                 id: first + index as u64,
                 start_raw: 0,
                 duration_raw: duration,
-                pitch: 36 + (index % 48) as u8,
+                // Keep all 64 simultaneous voices on distinct authored pitches.
+                pitch: 36 + index as u8,
                 channel: 0,
                 velocity: 100,
             })
@@ -114,16 +115,22 @@ fn routed_session_fixture() -> (
     let beat = |raw| hex_project::BeatTime::from_raw(raw);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(source) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
         panic!("source track")
     };
     let Created::Track(destination) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "destination".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -583,5 +590,148 @@ fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_
         next.render(&mut expected).unwrap();
         assert_eq!(actual, expected);
         more.render(&mut [[0.0; 2]; 257]).unwrap();
+    }
+}
+
+#[path = "harmonic_tests/cue.rs"]
+mod cue;
+
+#[test]
+fn first_harmonic_edit_preserves_live_clip_volume_ramp_in_arrangement_and_console() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    for session in [false, true] {
+        let run = |volume: bool| {
+            let mut editor = Editor::new(fixture(1, 8 << 32), 8).unwrap();
+            let clip = if session {
+                prepared(editor.project(), None).session().midi_clips()[0].id
+            } else {
+                editor.project().tracks()[0].midi_clips()[0].id()
+            };
+            if volume {
+                let length = editor.project().midi_source(clip).unwrap().source_length();
+                editor
+                    .execute(Command::ReplaceMidiClipVolume {
+                        clip,
+                        volume: MidiClipVolume::new(
+                            vec![
+                                MidiClipVolumePoint::linear(
+                                    BeatTime::ZERO,
+                                    MidiClipGain::new(0.25).unwrap(),
+                                ),
+                                MidiClipVolumePoint::linear(
+                                    BeatTime::ONE,
+                                    MidiClipGain::new(0.75).unwrap(),
+                                ),
+                            ],
+                            length,
+                        )
+                        .unwrap(),
+                    })
+                    .unwrap();
+            }
+            let mut old = start(editor.project(), session);
+            old.render(&mut [[0.0; 2]; 64]).unwrap();
+            let custom = edit(
+                editor.project(),
+                &[
+                    (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+                    (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+                ],
+            );
+            let mut next =
+                SessionPlayback::new(prepared(&custom, Some(old.revision.session()))).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            assert_eq!(
+                next.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .proofs()
+                    .count(),
+                1
+            );
+            let mut output = [[0.0; 2]; 512];
+            for block in output.chunks_mut(17) {
+                next.render(block).unwrap();
+            }
+            output
+        };
+        let baseline = run(false);
+        let actual = run(true);
+        assert!(baseline.iter().flatten().any(|v| v.abs() > 1e-3));
+        for (i, (a, b)) in actual.iter().zip(baseline).enumerate() {
+            let gain = 0.25 + 0.5 * (i + 64) as f64 / 24_000.0;
+            for c in 0..2 {
+                assert!(
+                    (f64::from(a[c]) - f64::from(b[c]) * gain).abs() < 2e-7,
+                    "session={session} frame={i} actual={a:?} unity={b:?} gain={gain}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let run = |volume: bool| {
+        let source = edit(
+            &fixture(1, 1 << 22),
+            &[
+                (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+                (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+            ],
+        );
+        let clip = source.tracks()[0].midi_clips()[0].id();
+        let mut snapshot = source.snapshot();
+        snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+        if volume {
+            let length = editor.project().midi_source(clip).unwrap().source_length();
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            MidiClipGain::new(0.25).unwrap(),
+                        )],
+                        length,
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        let mut old = start(editor.project(), false);
+        old.render(&mut vec![[0.0; 2]; 60_000]).unwrap();
+        assert_eq!(old.arrangement_frame(), 12_000);
+        assert!(
+            old.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
+        );
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tempo_points = vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(90_000_000).unwrap(),
+        )];
+        let changed = Project::from_snapshot(snapshot).unwrap();
+        let mut next =
+            SessionPlayback::new(prepared(&changed, Some(old.revision.session()))).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert!(next.clock_anchor().is_some());
+        let mut output = vec![[0.0; 2]; 24_000];
+        for block in output.chunks_mut(17) {
+            next.render(block).unwrap();
+        }
+        output
+    };
+    let baseline = run(false);
+    let actual = run(true);
+    assert!(baseline.iter().flatten().any(|v| v.abs() > 1e-3));
+    for (a, b) in actual.iter().zip(baseline) {
+        for c in 0..2 {
+            assert!((a[c] - b[c] * 0.25).abs() < 2e-7);
+        }
     }
 }

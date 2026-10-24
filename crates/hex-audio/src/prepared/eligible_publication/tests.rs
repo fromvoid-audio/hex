@@ -2,6 +2,8 @@ use super::*;
 #[cfg(feature = "allocation-probe")]
 mod actions;
 #[cfg(feature = "allocation-probe")]
+mod current_sampler;
+#[cfg(feature = "allocation-probe")]
 mod fanout;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
@@ -630,3 +632,5 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
     drop(errors);
     finish(&mut retirement);
 }
+
+mod foreign_source;

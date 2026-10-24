@@ -392,6 +392,7 @@ fn terminal_uses_current_loop_and_open_gain_lane_display_extent(cx: &mut TestApp
                 Command::UpsertTrackGainPoint {
                     track: f.track,
                     point: hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: BeatTime::from_quarters(20).unwrap(),
                         gain: 1.0,
                         outgoing: hex_project::GainInterpolation::Step,

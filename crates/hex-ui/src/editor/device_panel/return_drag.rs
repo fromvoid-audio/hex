@@ -7,7 +7,7 @@ pub(super) fn render_chain(
     view: &mut EditorView,
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
-    owner: hex_project::ReturnId,
+    owner: EffectBusOwner,
     devices: &[hex_project::Device],
 ) -> Stateful<Div> {
     let visible_bounds = Rc::new(RefCell::new(None));
@@ -24,6 +24,21 @@ pub(super) fn render_chain(
         .collect();
     super::navigation::sync_rail_scroll(view);
     view.device_panel.chain_window.prepare(&geometry);
+    let spectrum_identities: Vec<_> = devices
+        .iter()
+        .filter(|device| {
+            eq_panel::is_spectrum_eq(device.state().type_id())
+                && chain_window::must_mount(view, device.id(), window, cx)
+        })
+        .map(|device| {
+            hex_engine::PostNodeIdentity::new(
+                owner.processor(),
+                device.id().value(),
+                device.state().type_id(),
+            )
+        })
+        .collect();
+    eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
         .track_scroll(&view.device_panel.chain_window.scroll)
@@ -97,7 +112,7 @@ pub(super) fn render_chain(
 fn render_return_drop_target(
     view: &EditorView,
     cx: &mut Context<EditorView>,
-    owner: hex_project::ReturnId,
+    owner: EffectBusOwner,
     before: Option<DeviceId>,
     after: Option<DeviceId>,
     visible_bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
@@ -113,8 +128,8 @@ fn render_return_drop_target(
         .as_ref()
         .and_then(|drag| drag.return_destination.get());
     let selector = before.map_or_else(
-        || format!("return-device-drop-end-{}", owner.value()),
-        |device| format!("return-device-drop-card-{}", device.value()),
+        || owner.end_selector(),
+        |device| format!("{}-device-drop-card-{}", owner.prefix(), device.value()),
     );
     let entity = cx.entity();
     let mut target = div()
@@ -153,7 +168,7 @@ fn render_return_drop_target(
                 }) else {
                     return;
                 };
-                view.drop_native_device_to_return(payload, owner, target.before, window, cx);
+                view.drop_native_device_to_effect_bus(payload, owner, target.before, window, cx);
             }),
         )
         .child(rendered);

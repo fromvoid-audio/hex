@@ -1,5 +1,13 @@
-//! Bounded custody only. Queue acceptance, no-install closure and normal physical
-//! disposal are different facts. No state here grants render/admission authority.
+//! Bounded candidate custody with exact root/slot/incarnation/runtime identity.
+//!
+//! Reservation, queue acceptance, installation, source readiness, terminal return and normal
+//! physical disposal are separate transitions. Synchronous refusal preserves the original
+//! owner/container; accepted tickets and scalar acknowledgments grant no cleanup authority. Full
+//! return queues retain the actual owner in persistent held storage. Never-installed and
+//! final-active returns retain distinct physical paths. Control/lifecycle execution records
+//! Pending before destructive takes, retains the first failed payload and remaining owners, and
+//! never reuses occupancy after an incomplete destructor, worker join or page-pool conservation
+//! check.
 use crate::candidate_catalog::{CandidateDomain, CatalogCustody};
 use hex_engine::{
     AudioCandidateDisposed, AudioCandidateIdentity, AudioCandidateOwner, OwnedAudioInputs,
@@ -14,6 +22,8 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
@@ -27,6 +37,12 @@ pub use eligible::{
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
+};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::{NativeEndpointBank, NativeEndpointEnvelope};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use eligible::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
@@ -219,6 +235,20 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value.lock().unwrap_or_else(PoisonError::into_inner)
 }
 impl CandidateRoot {
+    pub(crate) fn actual_control_backing_bytes(&self) -> Option<usize> {
+        self.0.eligible.actual_control_backing_bytes()
+    }
+    pub(crate) fn worker_control_storage_quote(
+        reservation: AudioCandidatePublicationReservation,
+    ) -> Option<usize> {
+        std::mem::size_of::<Inner>()
+            .checked_add(crate::prepared::RETIRED.checked_mul(std::mem::size_of::<Slot>())?)?
+            .checked_add(eligible::pages::signal_data_bytes()?)?
+            .checked_add(crate::prepared::worker_publication_queue_storage_quote()?)?
+            .checked_add(eligible::publication::publication_backing_quote(
+                reservation,
+            )?)
+    }
     pub(crate) fn new(capacity: usize) -> Result<Self, &'static str> {
         let root = NEXT_ROOT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
@@ -432,6 +462,45 @@ impl CandidateRoot {
             .0
             .eligible
             .reserve_runtime_preparation(reservation, domains);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn reserve_runtime_adoption(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring {
+            return Err(AudioCandidatePreparationRefusal {
+                reason: "candidate Root is closing",
+                domains: Vec::new(),
+            });
+        }
+        drop(bank);
+        let result = self.0.eligible.reserve_runtime_adoption(reservation);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn check_current_sampler_preparation_context(
+        &self,
+        token: AudioCandidatePreparationToken,
+        expected: hex_engine::AudioSourceContext,
+    ) -> Result<(), &'static str> {
+        self.0
+            .eligible
+            .check_current_sampler_preparation_context(token, expected)
+    }
+    pub(crate) fn adopt_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        rate: u32,
+        cell: &mut Option<hex_engine::AudioCandidatePreparation>,
+    ) -> Result<(), &'static str> {
+        let result = self
+            .0
+            .eligible
+            .adopt_runtime_preparation(self, token, context, rate, cell);
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
@@ -665,9 +734,11 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        drop(returns);
+        // Native source cancellation may perform control-side descriptor I/O;
+        // it must not run under the ordinary return/terminal lock.
         self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
-        drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
     }
     fn drain_abandoned_on_control(&self) -> bool {
@@ -686,6 +757,13 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                crate::prepared::ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.ingest_native_endpoint(endpoint) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Native(endpoint));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.ingest_pages(pages) {
                         returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));
@@ -1116,6 +1194,40 @@ pub struct AudioCandidateCustodyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vacant_bank_with_contended_thread_observation_still_requires_a_witness() {
+        let root = CandidateRoot::new(1).unwrap();
+        let worker = root.clone();
+        let worker_thread = std::thread::spawn(move || {
+            worker.advance_on_control();
+            std::thread::current().id()
+        })
+        .join()
+        .unwrap();
+        let execution = lock(&root.0.execution);
+        assert_eq!(execution.last_thread, Some(worker_thread));
+        assert_eq!(root.report().occupied_slots, 0);
+        assert!(root.cleanup_thread().is_none()); // contention, not an absent worker
+        let expired = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now(),
+            )
+        }))
+        .expect_err("vacancy alone must not satisfy the thread witness");
+        assert_eq!(
+            expired.downcast_ref::<&str>().copied(),
+            Some("abandoned cleanup required UI polling")
+        );
+        drop(execution);
+        assert_eq!(
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+            ),
+            worker_thread
+        );
+    }
     #[test]
     fn actual_failed_metadata_disposal_closes_new_staging_and_preserves_refused_inputs() {
         let Some(owner) = crate::prepared::candidate_tests::candidate() else {

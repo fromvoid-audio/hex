@@ -378,7 +378,7 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
     });
     visual.simulate_input("p 🎹");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "p 🎹");
+        assert_eq!(view.browser.search.read(cx).text(), "p 🎹");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     visual.update(|window, cx| {
@@ -969,11 +969,14 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            section: None,
+            recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
             project_generation: 0,
             project_revision: state.revision,
-            prepared_revision: prepared,
+            prepared_revision: Some(prepared),
+            device_preview_identity: None,
         },
         fence,
     );
@@ -1041,8 +1044,11 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
         service.submit(request).unwrap();
         receive_service_event(&service)
     };
-    let e = send(Request::Edit(Command::AddMidiTrack {
+    let e = send(Request::Edit(Command::InsertTrackWithDevice {
         name: "held".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }));
     let track = e.state.project.tracks()[0].id();
     let e = send(Request::Edit(Command::PlaceMidiClip {
@@ -1246,8 +1252,11 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     };
     receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "held".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         }))
         .unwrap();
     receive_service_event(&service);
@@ -1329,6 +1338,8 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         );
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
+                worker_requires_preroll: None,
+                observation: None,
                 audio_revision,
                 project_generation: 0,
                 state: state.clone(),

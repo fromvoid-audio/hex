@@ -1,10 +1,17 @@
 //! Clip-local waveform editing. Only selection, viewport and previews live here.
+mod fades;
+mod paint;
+mod pending;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 mod view;
+mod waveform_preview;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod workflow_tests;
 use super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
+use hex_session::service::Request;
 pub(super) use view::view;
 
 #[derive(Default)]
@@ -13,19 +20,34 @@ pub(super) struct State {
     revision: u64,
     pub(super) source_view: bool,
     viewport: Option<Viewport>,
+    // Outer option is a retained fit; inner None preserves automatic full-view mode.
+    fit_back: Option<Option<Viewport>>,
     cursor: u64,
     selected: Option<u64>,
     range: Option<(u64, u64)>,
     grid: SnapGrid,
+    pub(super) fade_key_held: bool,
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
+    pending: Option<pending::Pending>,
+}
+impl State {
+    pub(super) fn clear_fit_back(&mut self) {
+        self.fit_back = None;
+    }
+}
+pub(super) struct AudioFitBaseline {
+    owner: (ClipId, u64),
+    viewport: Option<Viewport>,
+    back: Option<Option<Viewport>>,
 }
 struct Clipboard {
     owner: (ClipId, u64),
     root: AudioClipEdit,
     length: u64,
     events: Vec<AudioEvent>,
+    waveform: Option<waveform_preview::Source>,
 }
 #[derive(Clone)]
 pub(super) struct Gesture {
@@ -43,12 +65,13 @@ enum Kind {
     Move(AudioEvent),
     Leading(AudioEvent),
     Trailing(AudioEvent),
+    Fade(fades::FadeGesture),
 }
 
 impl EditorView {
     fn event_context(&self) -> Option<(ClipId, AudioClipEdit, u64)> {
         let state = self.state.as_ref()?;
-        let clip = self.selected_clip?;
+        let clip = self.detail_clip_id()?;
         let source = state.project.clip(clip)?;
         Some((clip, source.audio_event_root(), state.revision))
     }
@@ -58,24 +81,12 @@ impl EditorView {
                 && self.audio_event_editor.revision == revision
         })
     }
-    fn event_commit(&mut self, operation: AudioEventEdit) {
-        if self.edit_pending() || !self.event_context_current() {
-            return;
-        }
-        let Some((clip, _, _)) = self.event_context() else {
-            return;
-        };
-        self.audio_event_editor.gesture = None;
-        self.enqueue(hex_session::service::Request::Edit(
-            hex_project::Command::EditAudioEvents { clip, operation },
-        ));
-    }
     fn event_range(&self) -> Option<(u64, u64)> {
         if let Some(range) = self.audio_event_editor.range.filter(|(a, b)| a < b) {
             return Some(range);
         }
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.selected_clip?)?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
         let selected = self.audio_event_editor.selected?;
         clip.editable_audio_events()
             .ok()?
@@ -84,7 +95,35 @@ impl EditorView {
             .find(|e| e.id == selected)
             .map(|e| (e.start, e.end))
     }
+    pub(super) fn event_group_selected(&mut self) {
+        if self.audio_event_editor.source_view
+            || !self.event_context_current()
+            || self.edit_pending()
+            || self.audio_event_editor.pending.is_some()
+        {
+            return;
+        }
+        let Some((clip, _, revision)) = self.event_context() else {
+            return;
+        };
+        let Some((start, end)) = self.event_range().filter(|(start, end)| start < end) else {
+            return;
+        };
+        self.enqueue(Request::GroupAudioEvents {
+            project_generation: self.project_generation,
+            revision,
+            clip,
+            start,
+            end,
+        });
+    }
     fn event_copy(&mut self, cut: bool) {
+        if self.edit_pending()
+            || self.audio_event_editor.pending.is_some()
+            || !self.event_context_current()
+        {
+            return;
+        }
         let Some((clip, root, _)) = self.event_context() else {
             return;
         };
@@ -97,8 +136,9 @@ impl EditorView {
         let Some(source) = state.project.clip(clip) else {
             return;
         };
-        self.audio_event_editor.clipboard = Some(Clipboard {
+        let clipboard = Clipboard {
             owner: (clip, self.project_generation),
+            waveform: waveform_preview::Source::capture(clip, &root, state, start, end),
             root,
             length: end - start,
             events: match source.editable_audio_events() {
@@ -108,13 +148,24 @@ impl EditorView {
                     return;
                 }
             },
-        });
-        self.audio_event_editor.cursor = start;
+        };
         if cut {
             self.event_commit(AudioEventEdit::Delete { start, end });
+            if let Some(pending) = self.audio_event_editor.pending.as_mut() {
+                pending.clipboard = Some(clipboard);
+            }
+        } else {
+            self.audio_event_editor.clipboard = Some(clipboard);
+            self.audio_event_editor.cursor = start;
         }
     }
     fn event_paste(&mut self, insert: bool) {
+        if self.edit_pending()
+            || self.audio_event_editor.pending.is_some()
+            || !self.event_context_current()
+        {
+            return;
+        }
         let Some((clip, mut root, _)) = self.event_context() else {
             return;
         };
@@ -162,13 +213,24 @@ impl EditorView {
                 events: clipboard.events.clone(),
             }
         };
+        let waveform = self.state.as_ref().and_then(|state| {
+            clipboard.waveform.as_ref().and_then(|source| {
+                source.preview(
+                    &root,
+                    state.project.tempo_map(),
+                    self.audio_event_editor.cursor,
+                    clipboard.length,
+                )
+            })
+        });
         self.event_commit(operation);
+        if let Some(pending) = &mut self.audio_event_editor.pending {
+            pending.waveform = waveform;
+        }
     }
     fn event_delete(&mut self) {
         if let Some((start, end)) = self.event_range() {
             self.event_commit(AudioEventEdit::Delete { start, end });
-            self.audio_event_editor.range = None;
-            self.audio_event_editor.selected = None;
         }
     }
     fn event_split(&mut self) {
@@ -184,7 +246,7 @@ impl EditorView {
             self.event_commit(AudioEventEdit::Split { at });
         }
     }
-    fn event_viewport(&self, root: &AudioClipEdit) -> Viewport {
+    pub(super) fn event_viewport(&self, root: &AudioClipEdit) -> Viewport {
         let Some(state) = self.state.as_ref() else {
             return Viewport::fit(0);
         };
@@ -203,7 +265,7 @@ impl EditorView {
             .clamp(end - first)
     }
     fn event_project_viewport(&self, root: &AudioClipEdit) -> Option<Viewport> {
-        let clip = self.state.as_ref()?.project.clip(self.selected_clip?)?;
+        let clip = self.state.as_ref()?.project.clip(self.detail_clip_id()?)?;
         let local = self.event_viewport(root);
         Some(Viewport {
             start: clip.start().checked_add(local.start)?,
@@ -232,7 +294,7 @@ impl EditorView {
     }
     fn event_position_from_project_frame(&self, root: &AudioClipEdit, frame: u64) -> Option<u64> {
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.selected_clip?)?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
             .root_frame_at(root.view_start, state.project.tempo_map())
             .ok()?;
@@ -243,7 +305,7 @@ impl EditorView {
     fn event_snap_position(&self, position: u64, platform: bool) -> Option<u64> {
         let (_, root, _) = self.event_context()?;
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.selected_clip?)?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
             .root_frame_at(root.view_start, state.project.tempo_map())
             .ok()?;
@@ -261,7 +323,21 @@ impl EditorView {
             .snap_frame(&state.project, frame, viewport, width)?;
         self.event_position_from_project_frame(&root, frame)
     }
+    // Releasing outside the waveform ends the same edit as releasing
+    // inside it. Only explicit cancellation discards held input.
+    fn event_release_pointer(&mut self, x: f32, platform: bool) {
+        self.event_update_pointer(x, platform);
+        if let Some(gesture) = self.audio_event_editor.gesture.take()
+            && let Some(operation) = gesture.operation
+        {
+            self.event_commit(operation);
+        }
+    }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
+        if let Some(Kind::Fade(fade)) = self.audio_event_editor.gesture.as_ref().map(|g| g.kind) {
+            self.event_update_fade_pointer(x, fade.last_y, platform);
+            return;
+        }
         if !self.event_context_current() || self.edit_pending() {
             self.audio_event_editor.gesture = None;
             return;
@@ -350,6 +426,7 @@ impl EditorView {
                     end: event.end,
                 });
             }
+            Kind::Fade(_) => return,
             Kind::Trailing(event) => {
                 let end = position.clamp(event.start + 1, root.view_end.max(event.start + 1));
                 gesture.operation = Some(AudioEventEdit::Trim {
@@ -439,6 +516,7 @@ impl EditorView {
     }
     fn event_select_all(&mut self) {
         if let Some((_, root, _)) = self.event_context() {
+            self.advance_selection_intent();
             self.audio_event_editor.range = Some((root.view_start, root.view_end));
             self.audio_event_editor.cursor = root.view_start;
         }
@@ -483,6 +561,110 @@ impl EditorView {
             return false;
         };
         self.event_update_pointer(pointer, platform);
+        true
+    }
+    pub(super) fn begin_audio_range_fit(&mut self) -> Option<AudioFitBaseline> {
+        if !self.event_context_current() {
+            return None;
+        }
+        let baseline = AudioFitBaseline {
+            owner: self.audio_event_editor.owner?,
+            viewport: self.audio_event_editor.viewport,
+            back: self.audio_event_editor.fit_back,
+        };
+        self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
+        Some(baseline)
+    }
+    pub(super) fn restore_audio_range_fit(&mut self, baseline: AudioFitBaseline) {
+        if self.audio_event_editor.owner == Some(baseline.owner)
+            && self.project_generation == baseline.owner.1
+            && self.detail_clip_id() == Some(baseline.owner.0)
+        {
+            self.audio_event_editor.viewport = baseline.viewport;
+            self.audio_event_editor.fit_back = baseline.back;
+        }
+    }
+    /// Shared manual/Arrange fit calculation in the retained root's output clock.
+    pub(super) fn fit_audio_interval(&mut self, range: (u64, u64), remember: bool) -> bool {
+        if !self.event_context_current() {
+            return false;
+        }
+        let Some((_, root, _)) = self.event_context() else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let frame = |position| root.root_frame_at(position, state.project.tempo_map()).ok();
+        let Some(first) = frame(root.view_start) else {
+            return false;
+        };
+        let Some(end) = frame(root.view_end) else {
+            return false;
+        };
+        let Some(a) = frame(range.0.clamp(root.view_start, root.view_end)) else {
+            return false;
+        };
+        let Some(b) = frame(range.1.clamp(root.view_start, root.view_end)) else {
+            return false;
+        };
+        let Some(next) = super::zoom_fit::interval(
+            a.saturating_sub(first),
+            b.saturating_sub(first),
+            end.saturating_sub(first),
+            1,
+        ) else {
+            return false;
+        };
+        if next == self.event_viewport(&root) {
+            return false;
+        }
+        if remember {
+            let _ = self.begin_audio_range_fit();
+        }
+        self.audio_event_editor.gesture = None;
+        self.audio_event_editor.viewport = Some(next);
+        true
+    }
+    pub(super) fn event_zoom_back_available(&self) -> bool {
+        self.event_context_current() && self.audio_event_editor.fit_back.is_some()
+    }
+    pub(super) fn event_fit_selection(&mut self, back: bool) -> bool {
+        if !self.event_context_current() {
+            return false;
+        }
+        let Some((_, root, _)) = self.event_context() else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Ok(first) = root.root_frame_at(root.view_start, state.project.tempo_map()) else {
+            return false;
+        };
+        let Ok(end) = root.root_frame_at(root.view_end, state.project.tempo_map()) else {
+            return false;
+        };
+        let horizon = end.saturating_sub(first);
+        if horizon == 0 {
+            return false;
+        }
+        let next = if back {
+            let Some(prior) = self.audio_event_editor.fit_back.take() else {
+                return false;
+            };
+            prior.map(|viewport| viewport.clamp(horizon))
+        } else {
+            let range = self.audio_event_editor.range.and_then(|(a, b)| {
+                let first = a.min(b).clamp(root.view_start, root.view_end);
+                let last = a.max(b).clamp(root.view_start, root.view_end);
+                (first < last).then_some((first, last))
+            });
+            return self
+                .fit_audio_interval(range.unwrap_or((root.view_start, root.view_end)), true);
+        };
+        self.audio_event_editor.gesture = None;
+        self.audio_event_editor.viewport = next;
         true
     }
     fn event_zoom(&mut self, inward: bool) {

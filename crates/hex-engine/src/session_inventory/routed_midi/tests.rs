@@ -10,8 +10,11 @@ fn fixture() -> (Editor, [TrackId; 3], ClipId, ClipId) {
     let mut tracks = Vec::new();
     for _ in 0..3 {
         let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "track".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {
@@ -259,3 +262,5 @@ fn routed_session_fanout_admits_exact_weighted_note_limit_before_reserving_templ
         Err(crate::Invalid("routed Session MIDI note key limit reached"))
     ));
 }
+
+mod volume;

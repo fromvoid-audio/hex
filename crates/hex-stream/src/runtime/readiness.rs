@@ -1,5 +1,11 @@
-//! Exact-pair installed/protected extents, adapted from published177 8d444c06.
-//! This layer validates real cached samples, not engine demand or publication.
+//! Exact-pair installed/protected extents, separate from engine demand or publication.
+//!
+//! A readiness receipt covers the actual endpoint/catalog incarnation and exact engine-generated
+//! chunk extents, including short final pages. Decoded or queued PCM alone is not readiness.
+//! Active, Candidate and Transition roles retain preallocated wanted/protected buffers; promotion
+//! prevalidates every affected role before the nonfallible commit. Stale epochs/windows and
+//! capacity refusal leave active protection intact. Native callers buffer only the uncommitted
+//! remainder on missing readiness; already committed chunks and their clocks remain authoritative.
 use super::*;
 use crate::StreamPageExtent;
 

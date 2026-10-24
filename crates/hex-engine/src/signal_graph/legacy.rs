@@ -9,10 +9,15 @@ impl RendererRuntime {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        let volume_clock = project.midi_volume_timing();
+        let volume_timing = volume_clock
+            .as_ref()
+            .map(|clock| clock as &dyn crate::prepared_tempo::MidiTempoBreaks);
         for chain in self
             .device_chains
             .iter_mut()
             .chain(self.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.main_chain))
         {
             chain.begin_block();
         }
@@ -62,7 +67,13 @@ impl RendererRuntime {
                             } else {
                                 track.render_audio_range(frame, end, &mut audio);
                             }
-                            track.render_instrument_range(frame, end, &mut generator, None);
+                            track.render_instrument_range(
+                                frame,
+                                end,
+                                &mut generator,
+                                None,
+                                volume_timing,
+                            )?;
                             let processed = compensation.process_track(
                                 index,
                                 track,
@@ -146,6 +157,12 @@ impl RendererRuntime {
                     destination[0] += scratch[0][0];
                     destination[1] += scratch[0][1];
                 }
+                compensation.process_main(
+                    &mut self.main_chain,
+                    std::slice::from_mut(destination),
+                    offset,
+                    &mut None,
+                )?;
             }
             Ok::<(), Invalid>(())
         })();
@@ -162,6 +179,7 @@ impl RendererRuntime {
             .device_chains
             .iter_mut()
             .chain(self.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.main_chain))
         {
             chain.commit_block();
         }
