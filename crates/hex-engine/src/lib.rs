@@ -45,6 +45,7 @@ pub use audio_candidate::{
     AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation, AudioCandidateRefusal,
     AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed, AudioCandidateRuntimeStatus,
     AudioCandidateSplitRefusal, AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
+    StreamPlayback,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,

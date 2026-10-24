@@ -5,12 +5,17 @@ use super::*;
 use hex_engine::PlaybackAction;
 use hex_stream::ProtectionRole;
 
+#[derive(Clone, Copy)]
+pub(super) struct Correlation {
+    pub(super) root: u64,
+    pub(super) owner: hex_stream::ReadinessArtifact,
+}
 pub(super) struct StateView<'a> {
-    pub(super) runtime: Option<&'a mut hex_engine::ClaimedAudioCandidateRuntime>,
+    pub(super) runtime: Option<hex_engine::StreamPlayback<'a>>,
     pub(super) streaming: &'a mut Option<Workspace>,
     pub(super) domain_refs: [Option<AudioCandidateDomainToken>; 2],
     pub(super) context_generation: u64,
-    pub(super) stamp: Stamp,
+    pub(super) correlation: Correlation,
 }
 pub(super) struct ActiveView<'a> {
     pub(super) state: StateView<'a>,
@@ -18,11 +23,14 @@ pub(super) struct ActiveView<'a> {
 impl State {
     fn stream_view(&mut self) -> StateView<'_> {
         StateView {
-            runtime: self.runtime.as_mut(),
+            runtime: self.runtime.as_mut().map(|r| r.stream_playback()),
             streaming: &mut self.streaming,
             domain_refs: self.domain_refs,
             context_generation: self.context_generation,
-            stamp: self.stamp,
+            correlation: Correlation {
+                root: self.stamp.root,
+                owner: self.stamp.owner.into(),
+            },
         }
     }
     pub(in crate::candidate_custody::eligible::publication) fn cancel_stream_pending(

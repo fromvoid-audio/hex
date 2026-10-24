@@ -269,6 +269,73 @@ fn registered_sampler_fixture(streamed: bool) {
         let mut actual =
             crate::playback::Playback::try_from_prepared_with_device_resources(mixed, &resources)
                 .unwrap();
+        let context = crate::AudioSourceContext {
+            project_generation: 11,
+            editor_revision: 29,
+        };
+        let action = crate::PlaybackAction::Transport(crate::PlaybackCommand::PlayFrom(0));
+        let prepare_action = |runtime: &mut crate::playback::Playback| {
+            runtime
+                .stream_playback(context)
+                .prepare_stream_action(action)
+                .unwrap()
+        };
+        let wrong_context = crate::AudioSourceContext {
+            editor_revision: 30,
+            ..context
+        };
+        let prepared = prepare_action(&mut actual);
+        let mut wrong = actual.stream_playback(wrong_context);
+        assert!(
+            wrong
+                .visit_prepared_stream_action(&prepared, 8, &mut |_| Ok(()))
+                .is_err()
+        );
+        assert!(wrong.commit_stream_action(prepared).is_err());
+        assert!(!actual.playing());
+        let prepared = prepare_action(&mut actual);
+        assert!(
+            expected
+                .stream_playback(context)
+                .commit_stream_action(prepared)
+                .is_err()
+        );
+        assert!(!actual.playing());
+        assert!(!expected.playing());
+        // Demand preflight borrows the real ordinary predecessor and full native
+        // successor. It does not inherit routes, move graph custody or play.
+        let window = actual
+            .stream_playback(context)
+            .preview_stream_handoff(
+                &mut expected.stream_playback(context),
+                8,
+                Some(true),
+                &mut |extent| {
+                    assert_eq!(extent.source, key);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(window.frames, 8);
+        assert!(!actual.playing());
+        assert!(!expected.playing());
+        let prepared = prepare_action(&mut actual);
+        let mut extents = Vec::new();
+        let window = actual
+            .stream_playback(context)
+            .visit_prepared_stream_action(&prepared, 8, &mut |extent| {
+                extents.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(window.frames, 8);
+        assert!(!extents.is_empty());
+        assert!(extents.iter().all(|extent| extent.source == key));
+        actual
+            .stream_playback(context)
+            .commit_stream_action(prepared)
+            .unwrap();
+        assert!(actual.playing());
         for runtime in [&mut expected, &mut actual] {
             runtime
                 .try_apply_action(crate::PlaybackAction::Transport(
@@ -280,7 +347,10 @@ fn registered_sampler_fixture(streamed: bool) {
             let mut resident = vec![[0.0; 2]; frames];
             let mut streamed = vec![[0.0; 2]; frames];
             expected.render(&mut resident).unwrap();
-            actual.render_with_pages(&mut streamed, &mut pages).unwrap();
+            actual
+                .stream_playback(context)
+                .render_with_pages_and_signal_observers(&mut streamed, &mut pages, None, None)
+                .unwrap();
             assert_eq!(
                 streamed, resident,
                 "original-rate sampler, vector and converted clip share the ordinary render kernel"

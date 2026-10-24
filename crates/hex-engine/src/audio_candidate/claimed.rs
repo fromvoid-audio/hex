@@ -3,7 +3,7 @@
 //! own actual catalog/resource custody until every report is consumed.
 use super::*;
 mod playback;
-pub use playback::AudioCandidateRuntimeStatus;
+pub use playback::{AudioCandidateRuntimeStatus, StreamPlayback};
 
 pub struct AudioCandidateSplitRefusal {
     pub reason: AudioStorageError,

@@ -133,7 +133,7 @@ impl ActiveView<'_> {
         // starts without pending routes, and the single observational slot
         // forbids competing future schedules; any surviving due route is an
         // actual inherited target (partial cancellation can remove others).
-        if self.state.stamp.root != previous.state.stamp.root
+        if self.state.correlation.root != previous.state.correlation.root
             || !self.scheduled_is_pending(scheduled.due)
         {
             return Some(scheduled.ticket);

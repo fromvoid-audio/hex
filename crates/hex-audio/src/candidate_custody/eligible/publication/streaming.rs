@@ -32,7 +32,7 @@ pub(super) struct Workspace {
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) role: Option<hex_stream::ProtectionRole>,
-    pub(super) predecessor: Option<AudioCandidateIdentity>,
+    pub(super) predecessor: Option<hex_stream::ReadinessArtifact>,
     pending_action: Option<PendingAction>,
     scheduled: Option<ScheduledAction>,
     prewarm_stamps: [Option<hex_stream::ReadinessStamp>; 2],

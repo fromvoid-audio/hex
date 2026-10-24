@@ -23,7 +23,7 @@ use crate::{
 };
 pub use claimed::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime,
+    AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime, StreamPlayback,
 };
 pub use groups::{AudioCandidateRuntimeDisposed, AudioCandidateTransfer};
 use std::{

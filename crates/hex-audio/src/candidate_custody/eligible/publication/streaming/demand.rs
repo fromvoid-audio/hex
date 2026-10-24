@@ -99,7 +99,7 @@ impl StateView<'_> {
             .sample_rate()
             .ok_or(hex_engine::Invalid("stream rate unavailable"))?;
         let predecessor = if role == ProtectionRole::Candidate {
-            previous.as_ref().map(|old| old.stamp.owner)
+            previous.as_ref().map(|old| old.correlation.owner)
         } else {
             workspace.predecessor
         };
@@ -206,10 +206,10 @@ impl StateView<'_> {
                 return Err(hex_engine::Invalid("stream worker readiness failed"));
             }
             if let Some(stamp) = stamps[token.slot] {
-                let same = stamp.artifact == self.stamp.owner
+                let same = stamp.artifact == self.correlation.owner
                     && stamp.project_generation == context.project_generation
                     && stamp.editor_revision == context.editor_revision
-                    && stamp.device_epoch == self.stamp.root
+                    && stamp.device_epoch == self.correlation.root
                     && stamp.device_rate == rate
                     && stamp.predecessor == predecessor
                     && stamp.admitted_command_prefix == request.command_prefix
@@ -227,10 +227,10 @@ impl StateView<'_> {
                     .ok_or(hex_engine::Invalid("stream request epoch exhausted"))?;
                 let stamp = ReadinessStamp {
                     request_epoch: epoch,
-                    artifact: self.stamp.owner,
+                    artifact: self.correlation.owner,
                     project_generation: context.project_generation,
                     editor_revision: context.editor_revision,
-                    device_epoch: self.stamp.root,
+                    device_epoch: self.correlation.root,
                     device_rate: rate,
                     predecessor,
                     admitted_command_prefix: request.command_prefix,

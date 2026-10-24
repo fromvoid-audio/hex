@@ -27,17 +27,35 @@ impl ProtectionRole {
         1 << self.index()
     }
 }
+/// Nonowning identity for page-intent correlation. Neither variant grants graph,
+/// endpoint or source custody. Ordinary publication numbers are scoped by the
+/// actual device Root epoch in ReadinessStamp; zero is invalid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadinessArtifact {
+    Constructor(hex_engine::AudioCandidateIdentity),
+    Ordinary { publication: u64 },
+}
+impl From<hex_engine::AudioCandidateIdentity> for ReadinessArtifact {
+    fn from(identity: hex_engine::AudioCandidateIdentity) -> Self {
+        Self::Constructor(identity)
+    }
+}
+impl ReadinessArtifact {
+    fn valid(self) -> bool {
+        !matches!(self, Self::Ordinary { publication: 0 })
+    }
+}
 /// Correlation fields only. Native authorization additionally borrows the actual
-/// constructor owner, covering Root/domain and exact engine-generated extents.
+/// musical owner, covering Root/domain and exact engine-generated extents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadinessStamp {
     pub request_epoch: u64,
-    pub artifact: hex_engine::AudioCandidateIdentity,
+    pub artifact: ReadinessArtifact,
     pub project_generation: u64,
     pub editor_revision: u64,
     pub device_epoch: u64,
     pub device_rate: u32,
-    pub predecessor: Option<hex_engine::AudioCandidateIdentity>,
+    pub predecessor: Option<ReadinessArtifact>,
     pub admitted_command_prefix: u64,
     pub window: hex_engine::StreamChunkWindow,
 }
@@ -115,7 +133,9 @@ impl PreparedReadiness {
         })
     }
     fn valid(&self, stamp: ReadinessStamp, extents: &[StreamPageExtent]) -> bool {
-        if stamp.request_epoch == 0
+        if !stamp.artifact.valid()
+            || stamp.predecessor.is_some_and(|identity| !identity.valid())
+            || stamp.request_epoch == 0
             || stamp.device_epoch == 0
             || stamp.device_rate == 0
             || stamp

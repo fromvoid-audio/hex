@@ -62,6 +62,20 @@ impl PreparedStreamAction {
     ) -> bool {
         self.owner == Some(owner) && self.context == context
     }
+    pub(crate) fn bind_ordinary_context(&mut self, context: crate::AudioSourceContext) {
+        self.context = Some(context);
+    }
+    pub(crate) fn check_ordinary_context(
+        &self,
+        context: crate::AudioSourceContext,
+    ) -> Result<(), PlaybackActionError> {
+        if self.owner.is_some() || self.context != Some(context) {
+            return Err(PlaybackActionError::Session(
+                SessionPlaybackError::InvalidCommand,
+            ));
+        }
+        Ok(())
+    }
     pub(crate) fn action(&self) -> PlaybackAction {
         self.action
     }
