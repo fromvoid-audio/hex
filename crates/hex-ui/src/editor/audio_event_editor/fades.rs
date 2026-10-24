@@ -251,9 +251,8 @@ impl EditorView {
                 else {
                     return;
                 };
-                let frame = (i128::from(fade.source_frame_start)
-                    + i128::from(relative)
-                    + delta.round() as i128)
+                let frame = (i128::from(fade.source_frame_start) + i128::from(relative))
+                    .saturating_add(delta.round() as i128)
                     .clamp(0, i128::from(last_frame)) as u64;
                 let Some(raw) = root.root_position_at(frame, state.project.tempo_map()).ok() else {
                     return;
@@ -503,10 +502,10 @@ impl EditorView {
                     .mt(px(-4.0))
                     .w(px(8.0))
                     .h(px(8.0))
-                    .child(fade_handles::handle_shape(
+                    .children([fade_handles::handle_shape(
                         matches!(handle, Handle::InCurve | Handle::OutCurve),
                         active,
-                    ))
+                    )])
                     .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
                         gpui::CursorStyle::Crosshair
                     } else {

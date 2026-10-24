@@ -1453,3 +1453,35 @@ fn event_fade_curves_and_lower_knots_keep_source_and_resolve_final_snap_modifier
     });
     fade_key(&mut visual, false);
 }
+
+#[gpui::test]
+fn event_fade_lower_pointer_extremes_clamp_and_recover_without_canonical_edits(
+    cx: &mut TestAppContext,
+) {
+    let (_files, mut visual, editor, _) = open(cx);
+    focus_events(&mut visual);
+    fade_key(&mut visual, true);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let down = visual
+        .debug_bounds("audio-event-fade-out-bottom-1")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    for x in [f32::MAX, -f32::MAX] {
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                assert!(v.update_audio_event_fade_pointer(point(px(x), down.y), false, window, cx));
+                assert!(v.audio_event_editor.gesture.is_some());
+                assert!(v.audio_event_editor.pending.is_none());
+                assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            })
+        });
+    }
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.gesture.is_none());
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
