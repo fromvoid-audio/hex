@@ -34,6 +34,16 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    let hierarchy: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|track| json!({"track":track["id"],"group":false,"parent":null}))
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("track_hierarchy"),
+        Some(json!(hierarchy))
+    );
     let groups: Vec<_> = old["tracks"]
         .as_array()
         .unwrap()

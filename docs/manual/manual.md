@@ -100,6 +100,12 @@ remain retained. grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 
+with a positive arrange time selection, **g** instead groups only the included
+pieces, splitting clips at both selection edges and preserving outside material.
+each populated track gets its own clip, preserving track routing; empty tracks
+are skipped. each track must contain one media kind with matching activation.
+the final track's result becomes the selected clip. one undo restores all tracks.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;

@@ -3146,6 +3146,7 @@ impl EditorView {
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
                 | Request::Edit(_)
                 | Request::BounceArrangement { .. }

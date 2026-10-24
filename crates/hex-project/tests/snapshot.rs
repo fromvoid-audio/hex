@@ -35,6 +35,8 @@ fn valid_snapshot() -> Snapshot {
             hex_project::Meter::COMMON_TIME,
         )],
         tracks: vec![TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
@@ -188,6 +190,8 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut tracks = valid_snapshot();
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
