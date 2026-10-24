@@ -1302,10 +1302,10 @@ impl EditorView {
                 .is_none_or(|entry| entry.state() != &creation.expected)
                 || event.state.project.next_identity() != creation.next_id;
             let exact_terminal = expected == Some((ack.phase, ack.sequence));
-            if !refused_begin
-                && !exact_terminal
-                && !(replaced_source && ack.phase == GesturePhase::Cancel)
-            {
+            let retires_creation = refused_begin
+                || exact_terminal
+                || (replaced_source && ack.phase == GesturePhase::Cancel);
+            if !retires_creation {
                 panel.creation = Some(creation);
                 continue;
             }
