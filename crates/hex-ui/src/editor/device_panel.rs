@@ -790,7 +790,8 @@ fn render_track(
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
-        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device }
+        | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
         | GestureTarget::TrackBalance { .. }

@@ -294,6 +294,17 @@ press **command+shift+t** to add a track for notes. select the intended track an
 piano roll. note position, length and pitch belong to the clip; selecting a device
 is a different operation.
 
+choose **envelopes** beside the piano roll to edit **clip volume**, in arrange or
+console. click an empty place to add a point, drag a point to change its source
+beat and gain, or press **backspace** to remove the selected point. the graph uses
+linear gain: **0** is silence, **1** is unity and **4** is the maximum. straight
+lines interpolate between points. the grid button controls snapping; hold
+**command** to invert snapping or **shift** for a fine drag. **escape** or losing
+window focus cancels a held edit. releasing commits one undo step, with the final
+preview retained while the edit finishes. the reset control restores unity.
+choose **notes** to return to note editing. these points belong to the clip and
+are retained by save, reopen, undo and redo.
+
 in arrange, drag a midi clip edge normally to trim its visible region. hold
 **shift** while dragging either edge to stretch its notes: note positions and
 lengths scale together, while pitch and velocity stay the same. the opposite edge
@@ -392,8 +403,9 @@ in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-keep the button held to position the new band in the same gesture. vertical
-movement changes q for a cut or notch, or the gain of a bell. existing
+keep the button held to position the new band and hear its effect during playback.
+release to keep the band as one undoable edit. vertical movement changes q for a
+cut or notch, or the gain of a bell. existing
 nodes keep their own selection and drag targets. press **escape** to cancel.
 
 each visible eq has its own live spectrum, including eqs on return and main

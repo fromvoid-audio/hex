@@ -423,6 +423,11 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
         0
     }
     fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        MUTABLE_RUNTIME_CREATE_COUNTER.with(|counter| {
+            if let Some(counter) = counter.borrow().as_ref() {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        });
         Box::new(ZeroTailMutableRuntime::default())
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -889,14 +894,14 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        // Sampler authority adds eight bytes; tuning custody uses existing
-        // padding. The admission ceilings remain unchanged.
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
+        // Sampler authority and the frozen clip-volume scalar each add eight
+        // bytes; tuning custody uses padding. Admission ceilings stay unchanged.
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 496);
         assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
-        assert_eq!(current_bytes, 16_075_272);
+        assert_eq!(current_bytes, 16_337_416);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_599_560);
+        assert_eq!(scoped_bytes, 16_861_704);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -3149,12 +3154,18 @@ fn mutable_hundred_track_preroll_revision() -> Arc<PreparedRevision> {
 }
 
 fn mutable_checkpoint_fixture(note_duration: u64) -> (Arc<PreparedRevision>, hex_project::TrackId) {
+    mutable_checkpoint_fixture_with_release(note_duration, 8)
+}
+fn mutable_checkpoint_fixture_with_release(
+    note_duration: u64,
+    release_frames: u64,
+) -> (Arc<PreparedRevision>, hex_project::TrackId) {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
             id,
             levels: [0.2, 0.4],
-            release_frames: 8,
+            release_frames,
         },
     };
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
@@ -11751,7 +11762,10 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
 
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
-    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    // Isolate the count ceiling with the existing tiny, truthful zero-tail
+    // factory. The larger occurrence ledger must not make this accidentally
+    // hit the independent byte ceiling before the sixteenth capture.
+    let (revision, track) = mutable_checkpoint_fixture_with_release(8 << 32, 0);
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut count_limited = MutableRuntimeCheckpointStore::new();
@@ -11947,3 +11961,80 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
 }
 
 mod cue_isolation;
+
+#[test]
+fn analytic_clip_volume_survives_track_stop_and_removed_track_handoffs() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    for session in [false, true] {
+        for removed in [false, true] {
+            let run = |volume: bool| {
+                let mut editor = Editor::new(project(0.5, 0, 8 << 32), 8).unwrap();
+                let track = editor.project().tracks()[0].id();
+                let clip = if session {
+                    revision(editor.project(), Arc::new(hex_devices::SineTable::new()))
+                        .session()
+                        .midi_clips()[0]
+                        .id
+                } else {
+                    editor.project().track(track).unwrap().midi_clips()[0].id()
+                };
+                if volume {
+                    let curve = MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            MidiClipGain::new(0.25).unwrap(),
+                        )],
+                        editor.project().midi_source(clip).unwrap().source_length(),
+                    )
+                    .unwrap();
+                    editor
+                        .execute(Command::ReplaceMidiClipVolume {
+                            clip,
+                            volume: curve,
+                        })
+                        .unwrap();
+                }
+                let table = Arc::new(hex_devices::SineTable::new());
+                let mut playback =
+                    SessionPlayback::new(revision(editor.project(), Arc::clone(&table))).unwrap();
+                if session {
+                    playback
+                        .apply(SessionPlaybackCommand::LaunchClip {
+                            clip,
+                            quantization: LaunchQuantization::Immediate,
+                        })
+                        .unwrap();
+                }
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                playback.render(&mut [[0.0; 2]; 64]).unwrap();
+                if removed {
+                    editor.execute(Command::RemoveTrack(track)).unwrap();
+                    let mut next = SessionPlayback::new(revision(editor.project(), table)).unwrap();
+                    next.try_inherit_state_from(&mut playback).unwrap();
+                    playback = next;
+                } else {
+                    playback
+                        .apply(SessionPlaybackCommand::StopTrack {
+                            track,
+                            quantization: LaunchQuantization::Immediate,
+                        })
+                        .unwrap();
+                }
+                let mut tail = [[0.0; 2]; 64];
+                playback.render(&mut tail).unwrap();
+                tail
+            };
+            let baseline = run(false);
+            let actual = run(true);
+            assert!(baseline.iter().any(|v| v[0].abs() > 1e-5));
+            for (a, b) in actual.iter().zip(baseline) {
+                for c in 0..2 {
+                    assert!(
+                        (a[c] - b[c] * 0.25).abs() < 1e-7,
+                        "session={session} removed={removed}: {a:?} vs {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}

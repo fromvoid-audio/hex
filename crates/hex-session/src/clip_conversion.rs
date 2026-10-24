@@ -284,7 +284,7 @@ mod volume_tests {
         BeatTime, Command, Created, Editor, MidiClipGain, MidiClipVolume, MidiClipVolumePoint,
     };
     #[test]
-    fn isolated_console_and_arrangement_bounce_preserve_volume_before_preparation_refuses() {
+    fn isolated_console_and_arrangement_bounce_preserve_prepared_volume() {
         for console in [false, true] {
             let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
             let Created::Track(track) = editor
@@ -354,7 +354,7 @@ mod volume_tests {
             assert!(isolated.midi_clip(clip).unwrap().active());
             assert_eq!(owner, track);
             assert_eq!(isolated.midi_clip(clip).unwrap().volume(), &volume);
-            assert!(hex_engine::compile::project(&isolated, &BTreeMap::new()).is_err());
+            assert!(hex_engine::compile::project(&isolated, &BTreeMap::new()).is_ok());
             let mut snapshot = editor.project().snapshot();
             if console {
                 let hex_project::SessionCellContentSnapshot::Midi(cell) =

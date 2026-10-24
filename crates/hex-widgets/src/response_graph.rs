@@ -26,8 +26,11 @@ pub use axes::ResponseGraphAxes;
 pub use creation_hint::ResponseGraphCreationHint;
 pub use scroll::{ResponseGraphScrollEvent, ResponseGraphScrollPhase};
 
-const MAX_CURVE_POINTS: usize = 256;
-const MAX_NODES: usize = 64;
+// Bounded dense source-envelope models, including distinct incoming/right
+// values at each of at most 1,024 authored points. Storage remains control-side.
+const MAX_CURVE_POINTS: usize = 2_050;
+const MAX_NODES: usize = 1_024;
+const MAX_ANALYZER_POINTS: usize = 256;
 const PLOT_INSET: f32 = 7.0;
 const NODE_RADIUS: f32 = 8.0;
 
@@ -86,19 +89,15 @@ impl ResponseGraphModel {
             || self.primary.len() > MAX_CURVE_POINTS
             || self.secondary.len() != self.primary.len()
             || self.analyzer.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.input_analyzer.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.nodes.len() > MAX_NODES
             || !valid_curve(&self.primary)
             || !valid_curve(&self.secondary)
-            || self
-                .nodes
-                .iter()
-                .enumerate()
-                .any(|(index, node)| self.nodes[..index].iter().any(|prior| prior.id == node.id))
+            || duplicate_node_ids(&self.nodes)
             || self.nodes.iter().any(|node| {
                 !node.position[0].is_finite()
                     || !node.position[1].is_finite()
@@ -110,6 +109,18 @@ impl ResponseGraphModel {
         }
         Ok(())
     }
+}
+
+fn duplicate_node_ids(nodes: &[ResponseGraphNode]) -> bool {
+    if nodes.len() > MAX_NODES {
+        return true;
+    }
+    let mut ids = [0; MAX_NODES];
+    for (slot, node) in ids.iter_mut().zip(nodes) {
+        *slot = node.id;
+    }
+    ids[..nodes.len()].sort_unstable();
+    ids[..nodes.len()].windows(2).any(|pair| pair[0] == pair[1])
 }
 
 fn valid_curve(points: &[[f32; 2]]) -> bool {
