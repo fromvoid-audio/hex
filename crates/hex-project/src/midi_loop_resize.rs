@@ -66,10 +66,23 @@ impl MidiClipLoopResize {
 }
 
 fn first_boundary(start: BeatTime, playback: MidiSourcePlayback) -> Option<BeatTime> {
-    let (_, end) = playback.loop_range()?;
-    let phase = playback.source_phase_at_elapsed(BeatTime::ZERO)?;
-    let remaining = end.raw().checked_sub(phase.raw()).filter(|n| *n > 0)?;
-    start.raw().checked_add(remaining).map(BeatTime::from_raw)
+    start
+        .raw()
+        .checked_add(playback.first_repeat_boundary()?.raw())
+        .map(BeatTime::from_raw)
+}
+
+impl MidiSourcePlayback {
+    /// Elapsed beats until the first repeat boundary after this window's start.
+    /// This is not an absolute Arrangement beat. One-shots have no repeat marker.
+    pub fn first_repeat_boundary(self) -> Option<BeatTime> {
+        let (_, end) = self.loop_range()?;
+        let phase = self.source_phase_at_elapsed(BeatTime::ZERO)?;
+        end.raw()
+            .checked_sub(phase.raw())
+            .filter(|n| *n > 0)
+            .map(BeatTime::from_raw)
+    }
 }
 
 impl MidiClip {
@@ -190,7 +203,8 @@ impl MidiClip {
             true,
             MidiOneShotBoundary::LoopEnd,
         )?;
-        self.volume().validate_source_length(next.source_length)?;
+        // Extent only grows. Existing note/volume bounds remain valid without
+        // scanning either authored collection during a pointer preview.
         next.source_playback()?;
         Ok(next)
     }

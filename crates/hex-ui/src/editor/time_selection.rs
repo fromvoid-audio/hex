@@ -1096,8 +1096,19 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end, 4.0)
-                    .map(|ordinary| (ordinary, false))
+                handle_hit(preview.frame_start, preview.frame_end, 4.0).map(|ordinary| {
+                    (
+                        ordinary
+                            || super::trim::loop_handles::midi_controls(
+                                clip,
+                                &state.project,
+                                *lane,
+                                viewport,
+                            )
+                            .is_some_and(|c| c.hit(x, y)),
+                        false,
+                    )
+                })
             })
             .or_else(|| {
                 track.clips().iter().rev().find_map(|clip| {
@@ -1107,7 +1118,14 @@ impl EditorView {
                     let end = clip.start().checked_add(clip.duration())?;
                     handle_hit(clip.start(), end, 3.0).map(|ordinary| {
                         (
-                            ordinary,
+                            ordinary
+                                || super::trim::loop_handles::audio_controls(
+                                    clip,
+                                    &state.project,
+                                    *lane,
+                                    viewport,
+                                )
+                                .is_some_and(|c| c.hit(x, y)),
                             self.fade_handle_hit(state, track.id(), clip, x, y, viewport),
                         )
                     })

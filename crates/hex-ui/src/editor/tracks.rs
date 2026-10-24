@@ -14,7 +14,7 @@ use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb, rgba,
 };
-use hex_project::{BeatTime, Clip, MidiClip, MidiSourcePlayback, Track};
+use hex_project::{BeatTime, Clip, MidiClip, Track};
 
 struct ClipGhostGeometry {
     left: f32,
@@ -227,28 +227,7 @@ pub(super) fn midi_trim_note_shapes(
     visible_end: u64,
 ) -> Vec<(f32, f32, u8)> {
     let trim = trim.into();
-    let shifted = |beat| trim.source_beat(beat);
-    let Some(source_length) = shifted(clip.source_length()) else {
-        return Vec::new();
-    };
-    let Some(loop_start) = shifted(clip.loop_start()) else {
-        return Vec::new();
-    };
-    let Some(loop_end) = shifted(clip.loop_end()) else {
-        return Vec::new();
-    };
-    let Some(initial_end) = shifted(clip.source().effective_end()) else {
-        return Vec::new();
-    };
-    let playback = MidiSourcePlayback::new_with_initial_end(
-        source_length,
-        trim.source_start(),
-        clip.looping().then_some((loop_start, loop_end)),
-        trim.length(),
-        initial_end,
-    )
-    .and_then(|playback| playback.with_playback_offset(trim.playback_offset()));
-    let Ok(playback) = playback else {
+    let Ok(playback) = trim.source_playback(clip) else {
         return Vec::new();
     };
     let plans: Vec<_> = clip
