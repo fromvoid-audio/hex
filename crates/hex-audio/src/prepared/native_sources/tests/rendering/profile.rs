@@ -47,7 +47,13 @@ fn actual_native_queued_graph_callback_profile() {
         let mut previous_start = None;
         let mut output = [[0.0; 2]; QUANTUM];
         let mut host = [0.0_f32; QUANTUM * 2];
-        let mut target = Instant::now();
+        // Keep preparation/helper startup on control. Only this dedicated
+        // simulated callback thread requests latency-sensitive QoS; its policy
+        // ends with the thread. This remains NRT, not CPAL/Mach audio scheduling.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                qos_threads::set_current_thread(qos_threads::Qos::High).unwrap();
+                let mut target = Instant::now();
         for block in 0..WARMUP + MEASURED {
             if let Some(remaining) = target.checked_duration_since(Instant::now()) {
                 std::thread::sleep(remaining);
@@ -164,6 +170,8 @@ fn actual_native_queued_graph_callback_profile() {
             }
             target = next_target;
         }
+            }).join().unwrap();
+        });
         // The paced stream ended. Observe its final actual completion on
         // control before requesting retirement, outside the measurement.
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -218,7 +226,7 @@ fn actual_native_queued_graph_callback_profile() {
             .collect::<Vec<_>>()
             .join(",");
         println!(
-            "{{\"scope\":\"original-root-native-graph-paced\",\"owner\":{location},\"rate\":48000,\"quantum\":{QUANTUM},\"warmup\":{WARMUP},\"period_ns\":{},\"delivered_blocks\":{delivered_blocks},\"failure\":\"{failure:?}\",\"callback_ns\":{callback_ns:?},\"callback_cpu_ns\":{callback_cpu_ns:?},\"callback_phase_ns\":{callback_phase_ns:?},\"observed_reply_ns\":[{replies}],\"pacing_lateness_ns\":{lateness_ns:?},\"callback_gap_ns\":{gap_ns:?},\"published_before\":{published_before:?},\"pending_before\":{pending_before:?}}}",
+            "{{\"scope\":\"original-root-native-graph-paced\",\"driver_qos\":\"user-initiated-nrt\",\"owner\":{location},\"rate\":48000,\"quantum\":{QUANTUM},\"warmup\":{WARMUP},\"period_ns\":{},\"delivered_blocks\":{delivered_blocks},\"failure\":\"{failure:?}\",\"callback_ns\":{callback_ns:?},\"callback_cpu_ns\":{callback_cpu_ns:?},\"callback_phase_ns\":{callback_phase_ns:?},\"observed_reply_ns\":[{replies}],\"pacing_lateness_ns\":{lateness_ns:?},\"callback_gap_ns\":{gap_ns:?},\"published_before\":{published_before:?},\"pending_before\":{pending_before:?}}}",
             period.as_nanos()
         );
         assert!(
