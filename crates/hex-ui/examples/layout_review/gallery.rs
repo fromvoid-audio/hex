@@ -12,9 +12,9 @@ use gpui::{
     px, rgb,
 };
 use hex_widgets::{
-    DiscreteControlAppearance, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, ResponseGraphModel, Selector,
-    SelectorConfig, Toggle, ToggleConfig,
+    NumericControl, NumericControlConfig, NumericControlPresentation, NumericScale, NumericSpec,
+    ResponseGraph, ResponseGraphModel, Selector, SelectorAppearance, SelectorConfig, Toggle,
+    ToggleAppearance, ToggleConfig,
 };
 use std::collections::HashMap;
 
@@ -162,43 +162,41 @@ impl Fixture {
         let mut numeric = Vec::new();
         for index in 0..numbers {
             let (appearance, width, height) = match entry {
-                Entry::Vector if index >= 24 => (NumericControlAppearance::InlineValue, 46.0, 14.0),
+                Entry::Vector if index >= 24 => {
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
+                }
                 Entry::Vector | Entry::Eq8 => (
-                    NumericControlAppearance::MicroDial,
+                    NumericControlPresentation::MicroDial,
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
                 Entry::Compressor if index >= 3 => {
-                    (NumericControlAppearance::InlineValue, 46.0, 14.0)
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
                 }
-                Entry::Utility if index == 3 => (NumericControlAppearance::InlineValue, 46.0, 14.0),
+                Entry::Utility if index == 3 => {
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
+                }
                 Entry::Instrument | Entry::Effect => {
-                    (NumericControlAppearance::Standard, 136.0, 26.0)
+                    (NumericControlPresentation::HorizontalSlider, 136.0, 26.0)
                 }
-                _ => (NumericControlAppearance::CompactDial, 64.0, 52.0),
+                _ => (NumericControlPresentation::CompactDial, 64.0, 52.0),
             };
-            let role = if appearance == NumericControlAppearance::InlineValue {
+            let role = if appearance == NumericControlPresentation::InlineValue {
                 theme::DeviceStyleRole::Readout
             } else {
                 theme::DeviceStyleRole::Control
             };
             let spec = NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%"))
                 .map_err(|error| error.to_string())?;
-            let kind = if appearance == NumericControlAppearance::Standard {
-                NumericControlKind::HorizontalSlider
-            } else {
-                NumericControlKind::Knob
-            };
             let config = NumericControlConfig::new(
                 format!("fixture-{}-numeric-{index}", entry.key()),
                 theme::text(["amount", "fine", "level"][index % 3]),
-                kind,
+                appearance,
                 spec,
                 50.0,
                 theme::device_style(role),
             )
-            .map_err(|error| error.to_string())?
-            .with_appearance(appearance);
+            .map_err(|error| error.to_string())?;
             let entity = cx.new(|cx| {
                 let mut control = NumericControl::from_config(cx, config);
                 control.set_tab_navigation(true, cx);
@@ -221,9 +219,9 @@ impl Fixture {
             )
             .map_err(str::to_owned)?
             .with_appearance(if generic {
-                DiscreteControlAppearance::Standard
+                ToggleAppearance::Standard
             } else {
-                DiscreteControlAppearance::CompactButton
+                ToggleAppearance::CompactButton
             });
             switches.push(cx.new(|cx| {
                 let mut control = Toggle::from_config(cx, config);
@@ -244,9 +242,9 @@ impl Fixture {
             )
             .map_err(str::to_owned)?
             .with_appearance(if generic {
-                DiscreteControlAppearance::Standard
+                SelectorAppearance::Standard
             } else {
-                DiscreteControlAppearance::CompactSelector
+                SelectorAppearance::CompactSelector
             });
             choices.push(cx.new(|cx| {
                 let mut control = Selector::from_config(cx, config);

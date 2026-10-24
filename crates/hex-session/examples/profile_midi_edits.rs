@@ -43,6 +43,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),

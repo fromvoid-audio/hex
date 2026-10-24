@@ -46,11 +46,10 @@ impl Sample {
     pub fn prepare_scoped(item: Item, prefix: &str) -> Result<Prepared, String> {
         let id = |name: &str| format!("{prefix}{name}");
         let style = theme::control_style();
-        let (kind, appearance, layout, scale) = match item.demo {
-            Demo::Numeric(k, a, l, s) => (k, a, l, s),
+        let (appearance, layout, scale) = match item.demo {
+            Demo::Numeric(a, l, s) => (a, l, s),
             _ => (
-                NumericControlKind::HorizontalSlider,
-                NumericControlAppearance::CompactSlider,
+                NumericControlPresentation::CompactSlider,
                 DialLayout::ReadoutGap,
                 NumericScale::Linear,
             ),
@@ -68,13 +67,12 @@ impl Sample {
             let config = NumericControlConfig::new(
                 id(&format!("sandbox-number-{i}")),
                 theme::text(["minimum", "middle", "maximum"][i]),
-                kind,
+                appearance,
                 spec.clone(),
                 spec.from_normalized(initial).map_err(|e| e.to_string())?,
                 style,
             )
             .map_err(|e| e.to_string())?
-            .with_appearance(appearance)
             .with_dial_layout(layout);
             numbers.push(config);
         }
@@ -83,9 +81,9 @@ impl Sample {
                 .with_appearance(match item.demo {
                     Demo::Toggle(a) => a,
                     Demo::Frame("device header" | "device frame") => {
-                        DiscreteControlAppearance::CompactSquare
+                        ToggleAppearance::CompactSquare
                     }
-                    _ => DiscreteControlAppearance::Standard,
+                    _ => ToggleAppearance::Standard,
                 });
         let choices = if matches!(item.demo, Demo::Curve) {
             vec![theme::text("horizontal grid"), theme::text("centered grid")]
@@ -95,7 +93,7 @@ impl Sample {
         let selector_config = SelectorConfig::new(id("sandbox-selector"), choices, 0, style)?
             .with_appearance(match item.demo {
                 Demo::Selector(a) => a,
-                _ => DiscreteControlAppearance::Standard,
+                _ => SelectorAppearance::Standard,
             })
             .with_accessibility_name(theme::text(if matches!(item.demo, Demo::Curve) {
                 "plot grid"
@@ -237,7 +235,7 @@ impl Sample {
     fn refresh_meters(&mut self, cx: &mut Context<Self>) {
         if !matches!(
             self.item.demo,
-            Demo::Numeric(_, NumericControlAppearance::DeviceMeters, _, _)
+            Demo::Numeric(NumericControlPresentation::DeviceMeters, _, _)
         ) {
             return;
         }
@@ -557,11 +555,12 @@ impl Sample {
     fn content(&self, cx: &mut Context<Self>) -> Div {
         let s = theme::control_style();
         match self.item.demo {
-            Demo::Numeric(kind, appearance, _, _) => {
+            Demo::Numeric(appearance, _, _) => {
+                let kind = appearance.kind();
                 device_layout(DeviceLayout::Wrapped).children(self.numbers.iter().map(|n| {
                     div()
                         .w(px(
-                            if appearance == NumericControlAppearance::WideMicroDial {
+                            if appearance == NumericControlPresentation::WideMicroDial {
                                 88.0
                             } else {
                                 140.0

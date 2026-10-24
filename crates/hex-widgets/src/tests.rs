@@ -1,6 +1,6 @@
 use crate::{
-    ControlStyle, DialLayout, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, Selector, Toggle,
+    ControlStyle, DialLayout, NumericControl, NumericControlConfig, NumericControlKind,
+    NumericControlPresentation, NumericScale, NumericSpec, ResponseGraph, Selector, Toggle,
 };
 use gpui::{
     AppContext, Context, Empty, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
@@ -250,7 +250,7 @@ fn open_numeric_control_with_spec(
     spec: NumericSpec,
     value: f64,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
-    open_numeric_control_appearance(cx, kind, spec, value, NumericControlAppearance::Standard)
+    open_numeric_control_appearance(cx, kind, spec, value, kind.into())
 }
 
 fn open_numeric_control_appearance(
@@ -258,7 +258,7 @@ fn open_numeric_control_appearance(
     kind: NumericControlKind,
     spec: NumericSpec,
     value: f64,
-    appearance: NumericControlAppearance,
+    appearance: NumericControlPresentation,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
     open_numeric_control_layout(cx, kind, spec, value, appearance, DialLayout::ReadoutGap)
 }
@@ -268,7 +268,7 @@ fn open_numeric_control_layout(
     kind: NumericControlKind,
     spec: NumericSpec,
     value: f64,
-    appearance: NumericControlAppearance,
+    appearance: NumericControlPresentation,
     layout: DialLayout,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
     cx.update(crate::bind_numeric_control_keys);
@@ -280,7 +280,7 @@ fn open_numeric_control_layout(
                 let config =
                     NumericControlConfig::new("test-control", "gain", kind, spec, value, STYLE)
                         .expect("numeric control")
-                        .with_appearance(appearance)
+                        .with_presentation(appearance)
                         .with_dial_layout(layout);
                 NumericControl::from_config(cx, config)
             });
@@ -318,7 +318,7 @@ fn open_micro_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
                 STYLE,
             )
             .expect("valid MicroDial config")
-            .with_appearance(NumericControlAppearance::MicroDial);
+            .with_presentation(NumericControlPresentation::MicroDial);
             NumericControl::from_config(cx, config)
         });
         window.replace_root(cx, |_, cx| TestRoot {
@@ -1574,12 +1574,12 @@ fn value_cursor_cancellation_focus_loss_and_removal_release_override(cx: &mut Te
 #[gpui::test]
 fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAppContext) {
     for appearance in [
-        NumericControlAppearance::Standard,
-        NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MicroDial,
-        NumericControlAppearance::InlineValue,
+        NumericControlPresentation::Knob,
+        NumericControlPresentation::CompactDial,
+        NumericControlPresentation::MicroDial,
+        NumericControlPresentation::InlineValue,
     ] {
-        let kind = if appearance == NumericControlAppearance::InlineValue {
+        let kind = if appearance == NumericControlPresentation::InlineValue {
             NumericControlKind::HorizontalSlider
         } else {
             NumericControlKind::Knob
@@ -1603,7 +1603,7 @@ fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAp
                 "test-control-value"
             })
             .expect("target");
-        if appearance == NumericControlAppearance::MicroDial {
+        if appearance == NumericControlPresentation::MicroDial {
             assert_eq!(
                 idle.size,
                 size(px(crate::MICRO_DIAL_WIDTH), px(crate::MICRO_DIAL_HEIGHT))
@@ -1704,9 +1704,9 @@ fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAp
 #[gpui::test]
 fn numeric_dial_bounds_stay_fixed_through_press_drag_text_and_release(cx: &mut TestAppContext) {
     for appearance in [
-        NumericControlAppearance::Standard,
-        NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MicroDial,
+        NumericControlPresentation::Knob,
+        NumericControlPresentation::CompactDial,
+        NumericControlPresentation::MicroDial,
     ] {
         let spec = NumericSpec::new(
             20.0,
@@ -1767,7 +1767,7 @@ fn pan_marker_resets_to_neutral_without_starting_drag(cx: &mut TestAppContext) {
         NumericControlKind::Knob,
         spec,
         0.75,
-        NumericControlAppearance::CompactDial,
+        NumericControlPresentation::CompactDial,
         DialLayout::Pan,
     );
     let phases = Rc::new(RefCell::new(Vec::new()));
@@ -1819,7 +1819,7 @@ fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut Te
             NumericControlKind::VerticalSlider,
             spec,
             -12.0,
-            NumericControlAppearance::DeviceMeters,
+            NumericControlPresentation::DeviceMeters,
         );
         control.update(cx, |control, cx| {
             control.set_meter_readout(
@@ -2493,4 +2493,36 @@ fn numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_e
     });
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     assert!(events.borrow().is_empty());
+}
+
+#[gpui::test]
+fn fixed_numeric_presentations_match_their_public_tile_dimensions(cx: &mut TestAppContext) {
+    for (kind, appearance, width, height) in [
+        (
+            NumericControlKind::Knob,
+            NumericControlPresentation::CompactDial,
+            crate::COMPACT_DIAL_WIDTH,
+            crate::COMPACT_DIAL_HEIGHT,
+        ),
+        (
+            NumericControlKind::Knob,
+            NumericControlPresentation::MicroDial,
+            crate::MICRO_DIAL_WIDTH,
+            crate::MICRO_DIAL_HEIGHT,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlPresentation::InlineValue,
+            crate::INLINE_VALUE_WIDTH,
+            crate::INLINE_VALUE_HEIGHT,
+        ),
+    ] {
+        let spec =
+            NumericSpec::new(0.0, 1.0, 0.5, NumericScale::Linear, 2, None::<String>).unwrap();
+        let (handle, _) = open_numeric_control_appearance(cx, kind, spec, 0.5, appearance);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("test-control").expect("numeric tile");
+        assert_eq!(bounds.size, size(px(width), px(height)), "{appearance:?}");
+    }
 }

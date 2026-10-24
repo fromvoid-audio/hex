@@ -145,6 +145,8 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(workload.instrument_position),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),

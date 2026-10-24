@@ -147,15 +147,20 @@ impl EditorView {
         // track/clip to paint one piano-roll cursor.
         let track = state.project.track(self.selected_track?)?;
         let placement = track.midi_clips().iter().find(|item| item.id() == clip);
-        let source = if let Some(placement) = placement {
-            placement.source()
+        let (source, offset) = if let Some(placement) = placement {
+            if !placement.active() {
+                return None;
+            }
+            (placement.source(), placement.playback_offset())
         } else {
             let (selected_track, scene) = self.selected_cell?;
             if selected_track != track.id() {
                 return None;
             }
             match state.project.session_cell(selected_track, scene)? {
-                SessionCellContent::Midi(item) if item.id() == clip => item.source(),
+                SessionCellContent::Midi(item) if item.id() == clip && item.active() => {
+                    (item.source(), item.playback_offset())
+                }
                 _ => return None,
             }
         };
@@ -201,15 +206,10 @@ impl EditorView {
             };
             route.active_origin?.elapsed_at(beat)?
         };
-        let playback = hex_project::MidiSourcePlayback::new(
-            source.source_length(),
-            source.source_start(),
-            source
-                .looping()
-                .then_some((source.loop_start(), source.loop_end())),
-            source.source_length(),
-        )
-        .ok()?;
+        let playback = source
+            .playback_for_duration(BeatTime::from_raw(1))
+            .and_then(|playback| playback.with_playback_offset(offset))
+            .ok()?;
         let phase = playback.source_phase_at_elapsed(elapsed)?;
         // A publication can change during scalar reads; never paint it against
         // another compiled revision's mapping.

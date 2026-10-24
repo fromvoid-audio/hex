@@ -1148,7 +1148,15 @@ fn resized_midi_clip_roundtrips_retained_notes_and_source_marker() {
     assert_eq!(resized.notes(), notes);
     assert_eq!(resized.start(), beat(7));
     assert_eq!(resized.length(), beat(4));
-    assert_eq!(resized.source_start(), beat(3));
+    assert_eq!(resized.source_start(), BeatTime::ZERO);
+    assert_eq!(resized.playback_offset(), beat(3));
+    assert_eq!(
+        resized
+            .source_playback()
+            .unwrap()
+            .source_phase_at_elapsed(BeatTime::ZERO),
+        Some(beat(3))
+    );
     assert_eq!(resized.source_length(), beat(8));
     let right = restored.midi_clip(right_id).expect("split right clip");
     assert_eq!(right.start(), beat(11));

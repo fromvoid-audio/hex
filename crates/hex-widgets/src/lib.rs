@@ -48,8 +48,8 @@ pub use dial::{
     DialLayout, MICRO_DIAL_DIAMETER, MICRO_DIAL_HEIGHT, MICRO_DIAL_WIDTH, WIDE_MICRO_DIAL_WIDTH,
 };
 pub use discrete::{
-    DiscreteControlAppearance, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged,
-    ToggleConfig, panel_tab,
+    Selector, SelectorAppearance, SelectorChanged, SelectorConfig, Toggle, ToggleAppearance,
+    ToggleChanged, ToggleConfig, panel_tab,
 };
 pub use frame::{
     DEVICE_BODY_INSET, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_GAP,
@@ -61,8 +61,9 @@ pub use frame::{
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
+    COMPACT_DIAL_HEIGHT, COMPACT_DIAL_WIDTH, INLINE_VALUE_HEIGHT, INLINE_VALUE_WIDTH,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
+    NumericControlKind, NumericControlPresentation, NumericEscape, NumericEventPhase,
     bind_numeric_control_keys,
 };
 pub use response_graph::{

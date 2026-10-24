@@ -1433,7 +1433,6 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
         assert!(drag.snap_modifier.get());
         let preview = drag.preview.borrow().expect("left trim preview");
         assert!(preview.start() > BeatTime::ONE);
-        assert!(preview.source_start() > BeatTime::ZERO);
         let canonical = view
             .state
             .as_ref()
@@ -1443,6 +1442,12 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
             .unwrap();
         assert_eq!(canonical.start(), BeatTime::ONE);
         assert_eq!(canonical.source_start(), BeatTime::ZERO);
+        assert_eq!(preview.source_start(), canonical.source_start());
+        assert_eq!(
+            preview.playback_offset().raw(),
+            preview.start().raw() - canonical.start().raw(),
+            "inward trim advances the retained source window"
+        );
         assert_eq!(
             canonical.notes().len(),
             2,

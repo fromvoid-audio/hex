@@ -29,6 +29,8 @@ impl PreparedMidiSourceTemplate {
             sample_rate: _,
             admitted_max_micro_bpm: _,
             first_pass: _,
+            intro_iteration: _,
+            repeat_iteration: _,
             period: _,
             source: _,
             intro,

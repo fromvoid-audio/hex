@@ -364,7 +364,7 @@ impl EditorView {
     }
 
     pub(super) fn session_grid(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.state.clone() else {
             return div().flex_1().min_h_0();
         };
         let revision = state.revision;
@@ -426,8 +426,19 @@ impl EditorView {
                     .iter()
                     .map(|track| {
                         let track_id = track.id();
+                        let header_focus = self.track_header_focus(track_id, cx);
+                        let click_focus = header_focus.clone();
                         let header = div()
                             .id(("session-track", track.id().value()))
+                            .track_focus(&header_focus)
+                            .key_context("hex_track_header")
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.select_track(track_id, window);
+                                view.selected_cell = None;
+                                view.selected_scene = None;
+                                click_focus.focus(window);
+                                cx.notify();
+                            }))
                             .debug_selector(move || format!("session-track-{}", track_id.value()))
                             .relative()
                             .child(
@@ -981,17 +992,30 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
                             selected_cell,
+                            clip.active(),
                         )))
-                        .text_color(rgb(match clip.flavor() {
-                            hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
-                            }
-                            hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                        .text_color(rgb(if !clip.active() {
+                            theme::readable_text(
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    false,
+                                ),
+                                theme::color(theme::PaletteRole::Text),
+                            )
+                        } else {
+                            match clip.flavor() {
+                                hex_project::ClipFlavor::Muted => {
+                                    theme::element_colors(track.color()).muted_text
+                                }
+                                hex_project::ClipFlavor::Accent => {
+                                    theme::element_colors(track.color()).accent_text
+                                }
                             }
                         }))
                         .on_mouse_down(
@@ -1077,17 +1101,30 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
                             selected_cell,
+                            clip.active(),
                         )))
-                        .text_color(rgb(match clip.flavor() {
-                            hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
-                            }
-                            hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                        .text_color(rgb(if !clip.active() {
+                            theme::readable_text(
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    false,
+                                ),
+                                theme::color(theme::PaletteRole::Text),
+                            )
+                        } else {
+                            match clip.flavor() {
+                                hex_project::ClipFlavor::Muted => {
+                                    theme::element_colors(track.color()).muted_text
+                                }
+                                hex_project::ClipFlavor::Accent => {
+                                    theme::element_colors(track.color()).accent_text
+                                }
                             }
                         }))
                         .on_mouse_down(

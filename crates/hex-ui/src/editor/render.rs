@@ -631,6 +631,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.activation_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape"
                     && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
                 {

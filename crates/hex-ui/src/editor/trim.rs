@@ -75,6 +75,12 @@ impl MidiEdgePreview {
             Self::Stretch(p) => p.source_start(),
         }
     }
+    pub(super) fn playback_offset(self) -> BeatTime {
+        match self {
+            Self::Trim(p) => p.playback_offset(),
+            Self::Stretch(p) => p.playback_offset(),
+        }
+    }
     pub(super) fn note_interval(
         self,
         note: &hex_project::MidiNote,
@@ -1366,6 +1372,7 @@ impl EditorView {
         if preview.start() == drag.clip.start()
             && preview.length() == drag.clip.length()
             && preview.source_start() == drag.clip.source_start()
+            && preview.playback_offset() == drag.clip.playback_offset()
         {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;

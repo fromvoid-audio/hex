@@ -43,6 +43,56 @@ struct MutableCandidateSpan {
     end_frame: u64,
 }
 
+/// A narrower gate is authorized only by an actual dispatched occurrence and
+/// a canonical retained source prefix. Generic same-key edits remain refused.
+#[derive(Clone, Copy)]
+struct GateShortening {
+    deadline_frame: u64,
+}
+fn mutable_prefix_shortening(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    span: MutableCandidateSpan,
+    release_frames: u64,
+) -> Option<GateShortening> {
+    let key = span.signature.key();
+    let (prefix_end, _) = previous.revision.retained_midi_prefix_end(candidate, key)?;
+    let (onset, gate, pitch, channel, velocity) = span.signature.details();
+    if gate != prefix_end {
+        return None;
+    }
+    let matches = |proof: crate::mutable_instrument::MutableOccurrence| {
+        let (old_onset, old_gate, old_pitch, old_channel, old_velocity) = proof.signature.details();
+        proof.signature.key() == key
+            && !proof.note_off_sent
+            && proof.onset_frame < previous.performance_frame
+            && proof.gate_end_frame > previous.performance_frame
+            && (old_onset, old_pitch, old_channel, old_velocity)
+                == (onset, pitch, channel, velocity)
+            && gate < old_gate
+    };
+    let actual = previous
+        .routes
+        .iter()
+        .position(|route| route.id == key.track)
+        .and_then(|index| previous.mutable_instruments.get(index))
+        .and_then(Option::as_ref)
+        .is_some_and(|runtime| runtime.proofs().any(matches))
+        || previous
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .filter(|tail| tail.track_id == key.track)
+            .any(|tail| tail.runtime.proofs().any(matches));
+    actual
+        .then(|| {
+            span.end_frame
+                .checked_sub(release_frames)
+                .map(|deadline_frame| GateShortening { deadline_frame })
+        })
+        .flatten()
+}
+
 impl SessionPlayback {
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
         revision: &PreparedRevision,
@@ -1165,6 +1215,21 @@ impl SessionPlayback {
                     entry.mutable_signature() == Some(candidate.signature)
                         && entry.until_frame > previous.performance_frame
                 });
+                let shortening = (!timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && matches!(candidate_owner, RouteOwner::Arrangement))
+                .then(|| {
+                    mutable_prefix_shortening(
+                        previous,
+                        &self.revision,
+                        candidate,
+                        runtime
+                            .as_ref()
+                            .map_or(0, |runtime| runtime.max_release_tail_frames()),
+                    )
+                })
+                .flatten();
                 let same_key =
                     mutable_key_has_live_proof(previous, new_route.id, candidate.signature.key())
                         || previous.suppressions.iter().any(|entry| {
@@ -1181,6 +1246,7 @@ impl SessionPlayback {
                 if candidate.source_frame < source_frame
                     && exact.is_none()
                     && !carried
+                    && shortening.is_none()
                     && !fresh_mutable_install[new_index]
                     && !(newly_authored_notes[new_index]
                         && previous.revision.newly_authored_mutable_note(
@@ -1191,7 +1257,7 @@ impl SessionPlayback {
                 {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                if same_key && exact.is_none() && !carried {
+                if same_key && exact.is_none() && !carried && shortening.is_none() {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
             }
@@ -1830,6 +1896,33 @@ impl SessionPlayback {
                 &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
+                let shortening = (!timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && matches!(route.owner, RouteOwner::Arrangement))
+                .then(|| {
+                    mutable_prefix_shortening(
+                        previous,
+                        &self.revision,
+                        candidate,
+                        self.mutable_instruments[new_index]
+                            .as_ref()
+                            .map_or(0, |runtime| runtime.max_release_tail_frames()),
+                    )
+                })
+                .flatten();
+                if let Some(shortening) = shortening {
+                    add_or_extend_suppression(
+                        &mut self.suppression_scratch,
+                        self.release_capacity,
+                        MidiOccurrenceSuppression::mutable_shortening(
+                            candidate.signature,
+                            candidate.end_frame,
+                            shortening.deadline_frame,
+                        ),
+                    )?;
+                    continue;
+                }
                 let proof_deadline =
                     mutable_proof_deadline(previous, route.id, candidate.signature);
                 let carried_deadline = previous
@@ -3259,6 +3352,58 @@ impl SessionPlayback {
             }
         }
 
+        // All refusal checks precede these scalar ledger cuts. Keep each old
+        // runtime/DSP owner, including tails from earlier publications; release
+        // only proofs whose exact clip has become inactive in the candidate.
+        let revision = &self.revision;
+        for runtime in self.mutable_instruments.iter_mut().flatten().chain(
+            self.tail_mutable_instruments
+                .iter_mut()
+                .flatten()
+                .map(|tail| &mut tail.runtime),
+        ) {
+            runtime.reconcile_gate_deadlines_at(previous.performance_frame, |signature| {
+                let key = signature.key();
+                if revision.midi_clip_inactive(key.track, key.clip)
+                    || (!timing_changed
+                        && old_loop == new_loop
+                        && !midi_layout_changed
+                        && key.loop_pass == previous.arrangement_loop_pass
+                        && previous
+                            .routes
+                            .iter()
+                            .position(|route| route.id == key.track)
+                            .is_some_and(|index| {
+                                effective_midi_route(&previous.revision, &previous.routes, index)
+                                    .is_ok_and(|route| route.owner == RouteOwner::Arrangement)
+                            })
+                        && previous
+                            .revision
+                            .retained_midi_prefix_end(revision, key)
+                            .is_some_and(|(end_beat, end)| {
+                                end <= previous.arrangement_frame
+                                    && signature.details().1 > end_beat
+                            }))
+                {
+                    return Some(previous.performance_frame);
+                }
+                let (onset, old_gate, pitch, channel, velocity) = signature.details();
+                self.suppressions
+                    .iter()
+                    .filter_map(|entry| {
+                        let candidate = entry.mutable_signature()?;
+                        let (new_onset, new_gate, new_pitch, new_channel, new_velocity) =
+                            candidate.details();
+                        (candidate.key() == key
+                            && (new_onset, new_pitch, new_channel, new_velocity)
+                                == (onset, pitch, channel, velocity)
+                            && new_gate < old_gate)
+                            .then(|| entry.gate_cutoff_frame())
+                            .flatten()
+                    })
+                    .min()
+            });
+        }
         if let Some(groups) = groups {
             groups.commit();
         }
@@ -3497,7 +3642,7 @@ fn add_or_extend_suppression(
             entry.mutable_signature(),
         )
     }) {
-        existing.until_frame = existing.until_frame.max(entry.until_frame);
+        existing.merge_expiry_and_cutoff(entry);
         return Ok(());
     }
     if suppressions.len() >= capacity {

@@ -9758,7 +9758,7 @@ mod service_tests {
     }
 
     #[test]
-    fn midi_edge_resize_compiles_before_commit_and_undo_restores_source_marker() {
+    fn midi_edge_resize_compiles_before_commit_and_undo_restores_source_window() {
         let service = Service::new(48_000, 8, 0).expect("service");
         let _initial = next_event(&service);
         let beat = |n| hex_project::BeatTime::from_quarters(n).expect("small beat");
@@ -9809,7 +9809,15 @@ mod service_tests {
         );
         let result = resized.state.project.midi_clip(clip).expect("clip");
         assert_eq!(result.start(), beat(7));
-        assert_eq!(result.source_start(), beat(3));
+        assert_eq!(result.source_start(), original.source_start());
+        assert_eq!(result.playback_offset(), beat(3));
+        assert_eq!(
+            result
+                .source_playback()
+                .unwrap()
+                .source_phase_at_elapsed(hex_project::BeatTime::ZERO),
+            Some(beat(3))
+        );
         assert_eq!(result.notes(), original.notes());
         service.submit(Request::Undo).expect("undo");
         let undone = next_event(&service);

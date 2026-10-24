@@ -965,7 +965,7 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
     for device in [effect, instrument] {
         let point = title(&mut visual, device);
         visual.simulate_click(point, Modifiers::default());
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("a");
         pump_until(&editor, cx, settled);
         let changed = editor.read_with(cx, |view, _| {
             let actual = &view.state.as_ref().unwrap().project;

@@ -78,6 +78,8 @@ pub fn project_with_operators(
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),

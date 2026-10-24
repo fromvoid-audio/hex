@@ -314,6 +314,22 @@ pub fn clip_fill(
     if selected { lighten(base, 22) } else { base }
 }
 
+/// Activation is independent of the persisted color flavor. Keep inactive clips
+/// visible and retain selection borders while reducing their fill saturation.
+pub fn clip_activity_fill(
+    color: hex_project::ElementColor,
+    flavor: hex_project::ClipFlavor,
+    selected: bool,
+    active: bool,
+) -> u32 {
+    let fill = clip_fill(color, flavor, selected);
+    if active {
+        fill
+    } else {
+        mix(self::color(PaletteRole::Surface), fill, 0.18)
+    }
+}
+
 /// Restrained Main section surfaces; selection changes the whole fill and is also
 /// marked with a check in the lane. Hover remains distinct in both states.
 pub(crate) fn section_colors(

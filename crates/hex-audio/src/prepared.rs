@@ -3603,6 +3603,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -3741,6 +3742,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -3867,6 +3869,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -4005,6 +4008,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -6947,6 +6951,7 @@ mod tests {
                     track: 1,
                     scene: 2,
                     content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                        active: true,
                         flavor: hex_project::ClipFlavor::default(),
                         gain: hex_project::ClipGain::UNITY,
                         id: 3,

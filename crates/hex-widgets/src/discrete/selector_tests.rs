@@ -34,7 +34,7 @@ impl Render for Root {
 }
 fn fixture(
     cx: &mut TestAppContext,
-    appearance: DiscreteControlAppearance,
+    appearance: SelectorAppearance,
 ) -> (gpui::AnyWindowHandle, Entity<Selector>, Entity<Root>) {
     let handle = *cx.add_window(|_, _| Empty);
     let (selector, root) = cx
@@ -71,8 +71,8 @@ fn background(visual: &mut VisualTestContext, name: &'static str, color: u32) {
 #[gpui::test]
 fn popup_options_hover_without_choosing_and_keep_aligned_sizes(cx: &mut TestAppContext) {
     for appearance in [
-        DiscreteControlAppearance::Standard,
-        DiscreteControlAppearance::CompactSelector,
+        SelectorAppearance::Standard,
+        SelectorAppearance::CompactSelector,
     ] {
         let (handle, selector, root) = fixture(cx, appearance);
         let changed = Rc::new(RefCell::new(Vec::new()));
@@ -125,7 +125,7 @@ fn popup_options_hover_without_choosing_and_keep_aligned_sizes(cx: &mut TestAppC
 
 #[gpui::test]
 fn compact_segments_focus_only_chosen_option_and_share_widths(cx: &mut TestAppContext) {
-    let (handle, selector, _) = fixture(cx, DiscreteControlAppearance::CompactSegments);
+    let (handle, selector, _) = fixture(cx, SelectorAppearance::CompactSegments);
     let changed = Rc::new(RefCell::new(Vec::new()));
     let captured = changed.clone();
     let _subscription = cx.update(|app| {
