@@ -199,6 +199,7 @@ pub(super) fn bind_keys(cx: &mut App) {
             "cmd-r",
             "h",
             "l",
+            "w",
             "0",
         ]
         .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_changelog"))),
