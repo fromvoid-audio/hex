@@ -57,16 +57,29 @@ impl AudioCandidateReservationQuote {
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
-        Self::from_counts(
+        let mut quote = Self::from_counts(
             counts,
             project.tracks().len(),
             project.return_tracks().len(),
             sources,
-        )
+        )?;
+        // Cardinalities cannot describe spare capacity retained by canonical
+        // sources. Quote the actual two owning identity tokens per Console clip.
+        let canonical_bytes =
+            crate::session_inventory::audio_assembly::current_midi::canonical_source_metadata_bytes(
+                project,
+            )?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(canonical_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        Ok(quote)
     }
     /// Ceiling from existing canonical cardinality limits, used only to bound
     /// a persistent host's finite reservation. Per-request scratch can use the
     /// much smaller current-project quote. No runtime or bank is constructed.
+    /// Canonical source spare capacity is checked by the actual constructor;
+    /// cardinalities alone cannot certify that every project fits this ceiling.
     pub fn for_supported_limits(sources: usize) -> Result<Self, AudioStorageError> {
         if sources > hex_project::MAX_ASSETS {
             return Err(AudioStorageError::Capacity);
