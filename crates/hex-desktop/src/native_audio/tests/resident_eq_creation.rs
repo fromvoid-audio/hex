@@ -370,6 +370,11 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
     for _ in 0..128 {
         h.render();
     }
-    assert!(h.render().iter().flatten().all(|sample| sample.abs() < 1e-7));
+    assert!(
+        h.render()
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() < 1e-7)
+    );
     assert!(h.publication_refusals.is_empty());
 }
