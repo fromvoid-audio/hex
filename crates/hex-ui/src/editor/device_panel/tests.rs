@@ -255,13 +255,13 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
             )
         })
         .collect();
-    for (prefix, device) in [("instrument-device", instrument), ("effect-device", effect)] {
-        let bounds = visual
+    for device in [instrument, effect] {
+        let title = visual
             .debug_bounds(Box::leak(
-                format!("{prefix}-{}", device.value()).into_boxed_str(),
+                format!("device-drag-title-{}", device.value()).into_boxed_str(),
             ))
-            .expect("device card");
-        let title = point(bounds.origin.x + px(40.0), bounds.origin.y + px(7.0));
+            .expect("device title")
+            .center();
         visual.simulate_click(title, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
@@ -277,10 +277,10 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
     // Right-clicking a different card must not change the left-click selection.
     let bounds = visual
         .debug_bounds(Box::leak(
-            format!("instrument-device-{}", instrument.value()).into_boxed_str(),
+            format!("device-drag-title-{}", instrument.value()).into_boxed_str(),
         ))
         .expect("instrument");
-    let title = point(bounds.origin.x + px(40.0), bounds.origin.y + px(7.0));
+    let title = bounds.center();
     visual.simulate_mouse_down(title, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(title, MouseButton::Right, Modifiers::default());
     editor.read_with(cx, |view, _| {
