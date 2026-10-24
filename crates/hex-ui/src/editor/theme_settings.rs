@@ -1029,6 +1029,7 @@ impl EditorView {
             div()
                 .id("theme settings backdrop")
                 .debug_selector(|| "theme settings backdrop".into())
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
@@ -1329,10 +1330,17 @@ mod tests {
             role.origin.x + role.size.width / 2.0,
             role.origin.y + role.size.height / 2.0,
         );
+        // Exercise modal occlusion independently of which settings row happens
+        // to align with the underlying ruler as sections are added or resized.
+        let overlap = point(center.x, ruler.origin.y + ruler.size.height / 2.0);
+        assert!(ruler.contains(&overlap) && panel.contains(&overlap));
+        visual.simulate_mouse_down(overlap, MouseButton::Left, Modifiers::default());
         assert!(
-            ruler.contains(&center),
-            "fixture must exercise the underlying ruler hit area"
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "the modal surface blocks the underlying ruler"
         );
+        visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         assert!(
             !editor.read_with(cx, |view, _| view.scrub_active()),
