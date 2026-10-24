@@ -79,6 +79,16 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
             editor.read_with(visual, |view, _| view.project_spectrum.detail_height),
             Some(crate::editor::device_panel::DEVICE_PANEL_HEIGHT)
         );
+        let device_pane = visual.debug_bounds("clip-view").unwrap();
+        let down = point(device_pane.center().x, device_pane.origin.y + px(1.0));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        let up = point(down.x, down.y - px(60.0));
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            visual.debug_bounds("clip-view").unwrap().size.height,
+            device_pane.size.height
+        );
         editor.read_with(visual, |view, _| {
             assert!(view.pending_requests.is_empty());
             assert!(view.pending_audio_commands.is_empty());
