@@ -59,7 +59,7 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new("down", NumericDown, Some("hex_numeric_control")),
         KeyBinding::new("shift-up", NumericUpFine, Some("hex_numeric_control")),
         KeyBinding::new("shift-down", NumericDownFine, Some("hex_numeric_control")),
-        // Only owners that opt in use Command for fine steps, including drafts.
+        // Some owners also expose Command as a fine-step alias. Shift is always fine.
         KeyBinding::new(
             "cmd-up",
             NumericUpFine,
@@ -68,16 +68,6 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new(
             "cmd-down",
             NumericDownFine,
-            Some("hex_numeric_control && hex_numeric_command_steps"),
-        ),
-        KeyBinding::new(
-            "shift-up",
-            NumericUp,
-            Some("hex_numeric_control && hex_numeric_command_steps"),
-        ),
-        KeyBinding::new(
-            "shift-down",
-            NumericDown,
             Some("hex_numeric_control && hex_numeric_command_steps"),
         ),
     ]);
@@ -99,9 +89,66 @@ pub enum NumericControlKind {
     VerticalSlider,
 }
 
+/// A complete visual presentation. Each variant determines both control kind
+/// and geometry, so a knob cannot be paired with a slider-only appearance.
+/// All presentations retain the same shared numeric edit entity and events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericControlPresentation {
+    Knob,
+    CompactDial,
+    MicroDial,
+    WideMicroDial,
+    HorizontalSlider,
+    InlineValue,
+    CompactSlider,
+    LabeledSlider,
+    FilledSlider,
+    VerticalSlider,
+    DeviceMeters,
+}
+impl NumericControlPresentation {
+    pub fn kind(self) -> NumericControlKind {
+        match self {
+            Self::Knob | Self::CompactDial | Self::MicroDial | Self::WideMicroDial => {
+                NumericControlKind::Knob
+            }
+            Self::HorizontalSlider
+            | Self::InlineValue
+            | Self::CompactSlider
+            | Self::LabeledSlider
+            | Self::FilledSlider => NumericControlKind::HorizontalSlider,
+            Self::VerticalSlider | Self::DeviceMeters => NumericControlKind::VerticalSlider,
+        }
+    }
+    fn appearance(self) -> NumericControlAppearance {
+        match self {
+            Self::Knob | Self::HorizontalSlider | Self::VerticalSlider => {
+                NumericControlAppearance::Standard
+            }
+            Self::CompactDial => NumericControlAppearance::CompactDial,
+            Self::MicroDial => NumericControlAppearance::MicroDial,
+            Self::WideMicroDial => NumericControlAppearance::WideMicroDial,
+            Self::InlineValue => NumericControlAppearance::InlineValue,
+            Self::CompactSlider => NumericControlAppearance::CompactSlider,
+            Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
+            Self::FilledSlider => NumericControlAppearance::FilledSlider,
+            Self::DeviceMeters => NumericControlAppearance::DeviceMeters,
+        }
+    }
+}
+impl From<NumericControlKind> for NumericControlPresentation {
+    fn from(kind: NumericControlKind) -> Self {
+        match kind {
+            NumericControlKind::Knob => Self::Knob,
+            NumericControlKind::HorizontalSlider => Self::HorizontalSlider,
+            NumericControlKind::VerticalSlider => Self::VerticalSlider,
+        }
+    }
+}
+
 /// Presentation-only geometry that keeps the same shared edit entity and events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NumericControlAppearance {
+enum NumericControlAppearance {
     #[default]
     Standard,
     CompactDial,
@@ -166,23 +213,24 @@ impl NumericControlConfig {
     pub fn new(
         id: impl Into<SharedString>,
         label: impl Into<SharedString>,
-        kind: NumericControlKind,
+        presentation: impl Into<NumericControlPresentation>,
         spec: NumericSpec,
         value: f64,
         style: ControlStyle,
     ) -> Result<Self, NumericError> {
+        let presentation = presentation.into();
         spec.validate(value)?;
         style.validate().map_err(|_| NumericError::InvalidStyle)?;
         let text = spec.format(value)?;
         Ok(Self {
             id: id.into(),
             label: label.into(),
-            kind,
+            kind: presentation.kind(),
             spec,
             value,
             text,
             style,
-            appearance: NumericControlAppearance::Standard,
+            appearance: presentation.appearance(),
             dial_layout: DialLayout::ReadoutGap,
             command_fine_steps: false,
             value_drag_steps: false,
@@ -200,8 +248,8 @@ impl NumericControlConfig {
         Ok(self)
     }
 
-    /// Opt into Command-fine arrow steps and stepping a valid local text draft.
-    /// Shift remains coarse; other controls keep their existing Shift-fine policy.
+    /// Add Command-fine arrows as aliases for the universal Shift-fine keys.
+    /// Every control supports stepping a valid local text draft.
     pub fn with_command_fine_steps(mut self) -> Self {
         self.command_fine_steps = true;
         self
@@ -213,8 +261,10 @@ impl NumericControlConfig {
         self
     }
 
-    pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
-        self.appearance = appearance;
+    /// Replace the complete presentation, including its kind, as one valid value.
+    pub fn with_presentation(mut self, presentation: NumericControlPresentation) -> Self {
+        self.kind = presentation.kind();
+        self.appearance = presentation.appearance();
         self
     }
 }
@@ -898,7 +948,7 @@ impl NumericControl {
         if self.editing {
             // A composing or invalid draft must never be replaced with the old
             // canonical value. Stepping remains local until Enter/blur commits.
-            if !self.command_fine_steps || self.marked.is_some() {
+            if self.marked.is_some() {
                 return;
             }
             if let Ok(current) = self.spec.parse(&self.text)
@@ -1482,7 +1532,7 @@ impl gpui::Render for NumericControl {
                 .flex()
                 .py(px(4.0))
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     crate::device_meters::well(
                         self.id.clone(),
@@ -2086,11 +2136,11 @@ fn filled_slider(
         .w(relative((value - origin).abs()))
         .h_full()
         .bg(rgb(if field.enabled {
-            field.style.accent
+            field.style.numeric_fill
         } else {
             field.style.muted
         }))
-        .opacity(0.35);
+        .when(!field.enabled, |fill| fill.opacity(0.35));
     div()
         .debug_selector(move || slider_id.clone())
         .relative()

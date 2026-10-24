@@ -32,7 +32,7 @@ pub(crate) fn action_style() -> hex_widgets::ActionStyle {
         background: style.raised,
         text: readable_text(style.raised, style.text),
         hover_background: style.hover,
-        hover_text: None,
+        hover_text: Some(style.hover_text),
     }
 }
 

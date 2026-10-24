@@ -46,11 +46,10 @@ impl Sample {
     pub fn prepare_scoped(item: Item, prefix: &str) -> Result<Prepared, String> {
         let id = |name: &str| format!("{prefix}{name}");
         let style = theme::control_style();
-        let (kind, appearance, layout, scale) = match item.demo {
-            Demo::Numeric(k, a, l, s) => (k, a, l, s),
+        let (appearance, layout, scale) = match item.demo {
+            Demo::Numeric(a, l, s) => (a, l, s),
             _ => (
-                NumericControlKind::HorizontalSlider,
-                NumericControlAppearance::CompactSlider,
+                NumericControlPresentation::CompactSlider,
                 DialLayout::ReadoutGap,
                 NumericScale::Linear,
             ),
@@ -68,13 +67,12 @@ impl Sample {
             let config = NumericControlConfig::new(
                 id(&format!("sandbox-number-{i}")),
                 theme::text(["minimum", "middle", "maximum"][i]),
-                kind,
+                appearance,
                 spec.clone(),
                 spec.from_normalized(initial).map_err(|e| e.to_string())?,
                 style,
             )
             .map_err(|e| e.to_string())?
-            .with_appearance(appearance)
             .with_dial_layout(layout);
             numbers.push(config);
         }
@@ -83,9 +81,9 @@ impl Sample {
                 .with_appearance(match item.demo {
                     Demo::Toggle(a) => a,
                     Demo::Frame("device header" | "device frame") => {
-                        DiscreteControlAppearance::CompactSquare
+                        ToggleAppearance::CompactSquare
                     }
-                    _ => DiscreteControlAppearance::Standard,
+                    _ => ToggleAppearance::Standard,
                 });
         let choices = if matches!(item.demo, Demo::Curve) {
             vec![theme::text("horizontal grid"), theme::text("centered grid")]
@@ -95,7 +93,7 @@ impl Sample {
         let selector_config = SelectorConfig::new(id("sandbox-selector"), choices, 0, style)?
             .with_appearance(match item.demo {
                 Demo::Selector(a) => a,
-                _ => DiscreteControlAppearance::Standard,
+                _ => SelectorAppearance::Standard,
             })
             .with_accessibility_name(theme::text(if matches!(item.demo, Demo::Curve) {
                 "plot grid"
@@ -237,7 +235,7 @@ impl Sample {
     fn refresh_meters(&mut self, cx: &mut Context<Self>) {
         if !matches!(
             self.item.demo,
-            Demo::Numeric(_, NumericControlAppearance::DeviceMeters, _, _)
+            Demo::Numeric(NumericControlPresentation::DeviceMeters, _, _)
         ) {
             return;
         }
@@ -276,8 +274,15 @@ impl Sample {
             _ => {}
         }
         if e.phase != BarEditorPhase::Cancel {
-            let i = ((e.position[0] * 32.0) as usize).min(31);
-            self.values[i] = e.position[1].clamp(0.0, 1.0);
+            if matches!(e.mode, BarEditorMode::Clear) {
+                let [first, last] = e.columns;
+                if first <= last && last < 32 {
+                    self.values[first..=last].fill(0.0);
+                }
+            } else {
+                let i = ((e.position[0] * 32.0) as usize).min(31);
+                self.values[i] = e.position[1].clamp(0.0, 1.0);
+            }
         }
         if e.phase == BarEditorPhase::Commit {
             self.bars_before = None;
@@ -412,6 +417,8 @@ impl Sample {
         self.toggle.update(cx, |t, cx| t.set_enabled(enabled, cx));
         self.selector.update(cx, |s, cx| s.set_enabled(enabled, cx));
         self.graph.update(cx, |g, cx| g.set_editable(enabled, cx));
+        self.bars
+            .update(cx, |bars, cx| bars.set_enabled(enabled, cx));
         cx.notify();
     }
     pub fn restyle(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
@@ -442,6 +449,8 @@ impl Sample {
         self.bars = cx.new(|cx| BarEditor::new(cx, self.id("sandbox-bars"), style));
         self.bars
             .update(cx, |b, cx| b.set_values(self.values, 32, cx))?;
+        self.bars
+            .update(cx, |bars, cx| bars.set_enabled(self.enabled, cx));
         self.paint_subscriptions.clear();
         self.paint_subscriptions
             .push(cx.subscribe(&self.bars, |s, _, e: &BarEditorEvent, cx| {
@@ -557,11 +566,12 @@ impl Sample {
     fn content(&self, cx: &mut Context<Self>) -> Div {
         let s = theme::control_style();
         match self.item.demo {
-            Demo::Numeric(kind, appearance, _, _) => {
+            Demo::Numeric(appearance, _, _) => {
+                let kind = appearance.kind();
                 device_layout(DeviceLayout::Wrapped).children(self.numbers.iter().map(|n| {
                     div()
                         .w(px(
-                            if appearance == NumericControlAppearance::WideMicroDial {
+                            if appearance == NumericControlPresentation::WideMicroDial {
                                 88.0
                             } else {
                                 140.0
@@ -675,8 +685,8 @@ impl Render for Sample {
             .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus"))
-            .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
-            .child(theme::text(if matches!(self.item.demo,Demo::Color|Demo::Bars){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
+            .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(if matches!(self.item.demo,Demo::Color){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
 
@@ -684,6 +694,56 @@ impl Render for Sample {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn sandbox_right_drag_clears_skipped_bars_and_disable_survives_restyle(
+        cx: &mut TestAppContext,
+    ) {
+        let item = Item {
+            name: "bar editor",
+            category: "graphics",
+            demo: Demo::Bars,
+        };
+        let handle = cx.add_window(|_, cx| Sample::new(Sample::prepare(item).unwrap(), cx));
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |sample, cx| {
+            sample.values = [0.8; 64];
+            sample.bars.update(cx, |bars, cx| {
+                bars.set_values(sample.values, 32, cx).unwrap()
+            });
+        });
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("sandbox-bars").unwrap();
+        let at = |index: f32| {
+            point(
+                bounds.left() + bounds.size.width * (index + 0.5) / 32.0,
+                bounds.top() + px(2.0),
+            )
+        };
+        visual.simulate_mouse_down(at(3.0), MouseButton::Right, Modifiers::default());
+        view.read_with(cx, |s, _| assert_eq!(s.values[3], 0.0));
+        visual.simulate_mouse_move(at(25.0), Some(MouseButton::Right), Modifiers::default());
+        visual.simulate_mouse_up(at(25.0), MouseButton::Right, Modifiers::default());
+        view.read_with(cx, |s, _| {
+            assert!(s.values[3..=25].iter().all(|v| *v == 0.0));
+            assert_eq!(s.values[2], 0.8);
+            assert_eq!(s.values[26], 0.8);
+        });
+        visual.simulate_mouse_down(at(26.0), MouseButton::Right, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |s, _| assert_eq!(s.values[26], 0.8));
+        view.update(cx, |s, cx| {
+            s.set_enabled(false, cx);
+            s.restyle(cx).unwrap();
+        });
+        visual.run_until_parked();
+        visual.simulate_mouse_down(at(26.0), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(at(31.0), MouseButton::Right, Modifiers::default());
+        view.read_with(cx, |s, _| {
+            assert!(s.values[26..32].iter().all(|v| *v == 0.8))
+        });
+    }
+
     #[gpui::test]
     fn inline_value_catalog_entry_has_no_dial(cx: &mut TestAppContext) {
         let item = super::super::catalog::inventory()

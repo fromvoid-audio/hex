@@ -2,8 +2,8 @@
 use super::*;
 use gpui::{Entity, Subscription};
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 
 pub(crate) struct Binding {
@@ -86,7 +86,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 cx,
                 config
                     .with_command_fine_steps()
-                    .with_appearance(NumericControlAppearance::FilledSlider),
+                    .with_presentation(NumericControlPresentation::FilledSlider),
             )
         });
         let subscription =
