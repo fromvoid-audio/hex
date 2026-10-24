@@ -133,7 +133,14 @@ mod tests {
             projection.root_ranges_for_frames(0..999).unwrap(),
             [None, None]
         );
-        assert!(projection.root_ranges_for_frames(1050..1000).is_err());
+        assert!(
+            projection
+                .root_ranges_for_frames(Range {
+                    start: 1050,
+                    end: 1000
+                })
+                .is_err()
+        );
         edit.placement.as_mut().unwrap().mode = AudioViewMode::Once;
         clip.edit = Some(Arc::new(edit.clone()));
         edit.validate(&clip, tempo, 200).unwrap();
