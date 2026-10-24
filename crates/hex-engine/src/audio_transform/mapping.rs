@@ -1,7 +1,7 @@
 //! Control-side projection of validated canonical warp/tempo boundaries into a
 //! bounded integer-frame map. Collapsed tempo/crop fragments share a sample;
-//! distinct authored markers must retain distinct output frames. Root source
-//! endpoints and surviving marker coordinates remain exact. No callback work.
+//! collapsed authored intervals retain continuous stretch validation before
+//! quantization. Root endpoints and surviving markers remain exact. No callback work.
 use super::*;
 use hex_project::{AudioDomainClock, BeatsPreserve, audio_projection_frame};
 const Q32: i128 = 1_i128 << 32;
@@ -106,26 +106,43 @@ pub(super) fn prepare_map(
     // Tempo crossings and partial root intervals can be arbitrarily close to
     // a marker or crop endpoint. They do not own separate output samples. Keep
     // exact root endpoints, then authored markers, then the latest tempo point
-    // at each rounded frame. Two distinct authored markers still need distinct
-    // frames: coalescing them would hide an unsupported source timing law.
+    // at each rounded frame. Validate collapsed intervals against their original
+    // continuous timing law so rounding cannot hide unsupported source speeds.
     let mut projected: Vec<(u64, u64)> = Vec::new();
     projected
         .try_reserve_exact(boundaries.len())
         .map_err(|_| Invalid("warp projection allocation failed"))?;
-    let mut marker_frame = None;
+    let source = |local: u64| {
+        if local == 0 {
+            Ok(i128::from(domain.source_phase) * Q32)
+        } else {
+            domain.warp_source_position_q32(u128::from(local) + u128::from(phase_beat))
+        }
+    };
+    let mut previous_boundary = None;
     let mut retained_marker = false;
     for (local, marker) in boundaries {
         let frame =
             u64::try_from(audio_projection_frame(tempo, origin + i128::from(local))? - first)
                 .map_err(|_| Invalid("warp output projection overflow"))?;
-        if marker {
-            if marker_frame == Some(frame) {
-                return Err(Invalid(
-                    "warp markers are closer than one prepared output frame",
-                ));
+        if let Some((previous_local, previous_frame)) = previous_boundary {
+            if frame == previous_frame {
+                // Every tempo point is a boundary, so this open interval has
+                // one tempo. Signed invisible context uses tempo at zero.
+                let beat = (origin + i128::from(previous_local)).max(0);
+                let beat = hex_project::BeatTime::from_raw(
+                    u64::try_from(beat).map_err(|_| Invalid("warp beat projection overflow"))?,
+                );
+                let delta = source(local)? - source(previous_local)?;
+                let ratio =
+                    (local - previous_local) as f64 * f64::from(tempo.sample_rate()) * 60_000_000.0
+                        / f64::from(tempo.tempo_at(beat).micro_bpm())
+                        / delta as f64;
+                hex_warp::validate_stretch_ratio(ratio, render_mode(domain)?, domain.pitch_cents)
+                    .map_err(warp_error)?;
             }
-            marker_frame = Some(frame);
         }
+        previous_boundary = Some((local, frame));
         if let Some((previous_local, previous_frame)) = projected.last_mut()
             && *previous_frame == frame
         {
@@ -145,17 +162,10 @@ pub(super) fn prepare_map(
     for pair in projected.windows(2) {
         let (local_start, output_start) = pair[0];
         let (local_end, output_end) = pair[1];
-        let source = |local: u64| {
-            domain.warp_source_position_q32(u128::from(local) + u128::from(phase_beat))
-        };
         segments.push(hex_warp::MapSegment {
             output_start,
             output_end,
-            source_start_q32: if local_start == 0 {
-                i128::from(domain.source_phase) * Q32
-            } else {
-                source(local_start)?
-            },
+            source_start_q32: source(local_start)?,
             source_end_q32: source(local_end)?,
         });
     }

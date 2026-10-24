@@ -90,7 +90,7 @@ impl SessionPlayback {
             return Ok(window);
         }
         let region = (!self.linear_arrangement_export)
-            .then(|| self.revision.arrangement().loop_region())
+            .then(|| self.loop_region())
             .flatten()
             .filter(|region| region.enabled());
         if let Some(region) = region {

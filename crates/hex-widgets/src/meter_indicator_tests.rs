@@ -22,6 +22,7 @@ const CONTROLS: ControlStyle = ControlStyle {
 const STYLE: MeterIndicatorStyle = MeterIndicatorStyle {
     controls: CONTROLS,
     signal: 0x55aa88,
+    near_peak: 0xffcc33,
     peak: 0xdddddd,
     overload: 0xdd5566,
 };
@@ -67,6 +68,58 @@ fn dbfs_scale_and_invalid_style_are_explicit() {
         assert!(meter_indicator("invalid".into(), readout, labels(), style).is_err());
     }
 }
+#[gpui::test]
+fn mono_and_stereo_meter_colors_follow_dbfs_and_supplied_overload(cx: &mut TestAppContext) {
+    let handle = cx.add_window(|_, _| {
+        Fixture(MeterIndicatorReadout::Mono(channel(
+            -30.0,
+            Some(-3.0),
+            false,
+        )))
+    });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    for stereo in [false, true] {
+        for (dbfs, clipping, color) in [
+            (-30.0, false, STYLE.signal),
+            (-6.000_001, false, STYLE.signal),
+            (-6.0, false, STYLE.near_peak),
+            (0.0, false, STYLE.near_peak),
+            (6.0, false, STYLE.near_peak),
+            (-12.0, true, STYLE.overload),
+        ] {
+            view.update(cx, |view, cx| {
+                let value = channel(dbfs, Some(-3.0), clipping);
+                view.0 = if stereo {
+                    MeterIndicatorReadout::Stereo([value; 2])
+                } else {
+                    MeterIndicatorReadout::Mono(value)
+                };
+                cx.notify();
+            });
+            visual.run_until_parked();
+            for index in 0..if stereo { 2 } else { 1 } {
+                let fill = Box::leak(format!("meter-channel-{index}-fill").into_boxed_str());
+                let peak = Box::leak(format!("meter-channel-{index}-peak").into_boxed_str());
+                let above = Box::leak(format!("meter-channel-{index}-above").into_boxed_str());
+                assert_eq!(visual.rendered_background(fill), Some(rgb(color).into()));
+                assert_eq!(
+                    visual.rendered_background(peak),
+                    Some(rgb(STYLE.near_peak).into())
+                );
+                assert_eq!(visual.debug_bounds(above).is_some(), clipping);
+                if clipping {
+                    assert_eq!(
+                        visual.rendered_background(above),
+                        Some(rgb(STYLE.overload).into())
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[gpui::test]
 fn mono_stereo_fills_peaks_overload_and_ticks_render_bounded(cx: &mut TestAppContext) {
     let handle = cx.add_window(|_, _| {

@@ -13,8 +13,25 @@ pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceI
     visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
     visual.run_until_parked();
     let selector = Box::leak(format!("device-bypass-{}", device.value()).into_boxed_str());
+    let indicator =
+        Box::leak(format!("device-bypass-{}-indicator", device.value()).into_boxed_str());
+    let target = visual.debug_bounds(selector).expect("power hit target");
+    let circle = visual.debug_bounds(indicator).expect("power circle");
+    assert_eq!(target.size, size(px(12.0), px(12.0)));
+    assert_eq!(circle.size, size(px(8.0), px(8.0)));
+    assert_eq!(circle.center(), target.center());
     assert_eq!(
         visual.rendered_background(selector),
+        None,
+        "no painted surrounding box"
+    );
+    assert_eq!(
+        visual.rendered_border(selector),
+        None,
+        "no surrounding border"
+    );
+    assert_eq!(
+        visual.rendered_background(indicator),
         Some(
             rgb(theme::color(if enabled {
                 theme::PaletteRole::Primary
@@ -25,6 +42,38 @@ pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceI
         ),
         "canonical power state must keep its semantic fill regardless of header selection"
     );
+}
+
+#[gpui::test]
+fn header_power_circle_hover_and_cancelled_press_keep_canonical_color(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let before = state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert_power_paint(&mut visual, device, true);
+    let selector = Box::leak(format!("device-bypass-{}", device.value()).into_boxed_str());
+    let indicator =
+        Box::leak(format!("device-bypass-{}-indicator", device.value()).into_boxed_str());
+    let target = visual.debug_bounds(selector).unwrap();
+    let paint = visual.rendered_background(indicator);
+    visual.simulate_mouse_move(target.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), None);
+    assert_eq!(visual.rendered_background(indicator), paint);
+    visual.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), None);
+    assert_eq!(visual.rendered_background(indicator), paint);
+    visual.simulate_mouse_up(
+        point(px(0.0), px(0.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
 }
 
 fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {

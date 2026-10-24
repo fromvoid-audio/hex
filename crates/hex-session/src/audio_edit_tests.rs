@@ -68,10 +68,20 @@ fn fixture() -> (
     hex_project::ClipId,
     Arc<hex_engine::PreparedRevision>,
 ) {
-    let mut session = Session::new(16_000, 32, 8_192).unwrap();
+    fixture_at_rate(16_000)
+}
+fn fixture_at_rate(
+    rate: u32,
+) -> (
+    Session,
+    hex_project::ClipId,
+    Arc<hex_engine::PreparedRevision>,
+) {
+    let length = rate / 2;
+    let mut session = Session::new(rate, 32, u64::from(length) + 192).unwrap();
     let audio = Audio::new(
-        16_000,
-        (0..8_000)
+        rate,
+        (0..length)
             .map(|i| {
                 let x = (i as f32 * 0.173).sin() * 0.4;
                 [x, -x]
@@ -82,8 +92,8 @@ fn fixture() -> (
     let waveform = waveform::summarize(&audio, 1_024).unwrap();
     let prepared = PreparedImport {
         path: "root.wav".into(),
-        source_sample_rate: 16_000,
-        source_frames: 8_000,
+        source_sample_rate: rate,
+        source_frames: u64::from(length),
         conversion_version: hex_project::IDENTITY_CONVERSION,
         source_audio: audio.clone(),
         audio,
@@ -95,6 +105,104 @@ fn fixture() -> (
         panic!("import")
     };
     (session, clip, revision)
+}
+
+#[test]
+fn global_bpm_admits_subframe_authored_markers_with_complete_prepared_history() {
+    use hex_project::{BeatTime, Tempo, WarpMarker, WarpMode, default_audio_warp};
+    for rate in [16_000, 44_100, 48_000] {
+        for bpm in [30_000_000, 240_000_000, 480_000_000] {
+            for mode in [
+                WarpMode::RePitch,
+                WarpMode::Tones { grain_ms: 32 },
+                WarpMode::Beats {
+                    preserve: hex_project::BeatsPreserve::Transients,
+                    tail: hex_project::BeatsTail::Forward,
+                    decay: 100,
+                },
+            ] {
+                let (mut session, clip, previous) = fixture_at_rate(rate);
+                let length = u64::from(rate / 2);
+                let mut settings = default_audio_warp(
+                    session.project().clip(clip).unwrap(),
+                    session.project().tempo_map(),
+                    mode,
+                )
+                .unwrap();
+                let tick = BeatTime::ONE.raw() / length;
+                settings.markers.insert(
+                    1,
+                    WarpMarker {
+                        source_frame: 1,
+                        beat: BeatTime::from_raw(tick),
+                    },
+                );
+                settings.markers.insert(
+                    2,
+                    WarpMarker {
+                        source_frame: length - 1,
+                        beat: BeatTime::from_raw(BeatTime::ONE.raw() - tick),
+                    },
+                );
+                let (_, previous) = session
+                    .command_prepared_revision(
+                        Command::SetAudioClipWarp {
+                            clip,
+                            settings: Some(settings),
+                        },
+                        Some(&previous),
+                    )
+                    .unwrap();
+                let before = session.project().clone();
+                let (_, changed) = session
+                    .command_prepared_revision(
+                        Command::SetProjectTempo {
+                            tempo: Tempo::new(bpm).unwrap(),
+                        },
+                        Some(&previous),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "supported global bpm {bpm}, {mode:?} at {rate} must prepare: {error}"
+                        )
+                    });
+                let after = session.project().clone();
+                let output = after.tempo_map().beat_to_frame(BeatTime::ONE).unwrap();
+                assert_eq!(after.clip(clip).unwrap().duration(), output);
+                assert_eq!(
+                    after.clip(clip).unwrap().audio_edit().unwrap().domain,
+                    before.clip(clip).unwrap().audio_edit().unwrap().domain
+                );
+                let render = |revision: &hex_engine::PreparedRevision| {
+                    let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+                    renderer.play();
+                    let mut out = vec![[0.0; 2]; output as usize];
+                    for chunk in out.chunks_mut(63) {
+                        renderer.render(chunk).unwrap();
+                    }
+                    assert!(out.iter().flatten().all(|sample| sample.is_finite()));
+                    assert!(out.iter().any(|frame| frame[0].abs() > 0.01));
+                    out
+                };
+                let pcm = render(&changed);
+                assert_eq!(
+                    render(&session.compile_prepared_revision(None).unwrap()),
+                    pcm
+                );
+                let undone = session
+                    .undo_prepared_revision(Some(&changed))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(session.project(), &before);
+                let redone = session
+                    .redo_prepared_revision(Some(&undone))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(session.project(), &after);
+                assert_eq!(render(&redone), pcm);
+            }
+        }
+    }
 }
 #[test]
 fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_history_and_peaks()
