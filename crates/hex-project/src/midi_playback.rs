@@ -2,6 +2,8 @@
 //! arrangement timeline. Canonical clips persist independent source/start/loop
 //! metadata; ongoing Session templates require a separate scheduling contract.
 use crate::{BeatTime, Invalid};
+#[path = "midi_playback_ranges.rs"]
+mod ranges;
 
 /// Beat-based source and arrangement mapping for one MIDI playback region.
 ///

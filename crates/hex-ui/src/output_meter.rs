@@ -133,7 +133,11 @@ fn field(input: MeterInput) -> Div {
 
 fn control(channel: &'static str, value: Peak) -> Div {
     let background = theme::color(theme::PaletteRole::Raised);
-    let fill = theme::readable_text(background, theme::color(theme::PaletteRole::Primary));
+    let colors = theme::meter_colors();
+    let level = match value {
+        Peak::Level { db, above, .. } => hex_widgets::MeterLevel::from_dbfs(db as f32, above),
+        _ => hex_widgets::MeterLevel::Normal,
+    };
     // Canonical availability/peak interpretation stays here; the shared gauge
     // only receives bounded display geometry and caller-resolved colors.
     hex_widgets::level_meter(
@@ -142,8 +146,8 @@ fn control(channel: &'static str, value: Peak) -> Div {
         value.above(),
         hex_widgets::LevelMeterStyle {
             background,
-            fill,
-            above: background,
+            fill: colors.color(level),
+            above: colors.clipping,
         },
     )
     .w(px(6.0))

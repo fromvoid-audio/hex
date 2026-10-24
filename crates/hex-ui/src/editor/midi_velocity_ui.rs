@@ -302,6 +302,12 @@ impl EditorView {
         let content = div()
             .id("midi-velocity-lane")
             .debug_selector(|| "midi-velocity-lane".into())
+            .children(self.arrange_midi_highlights(
+                self.piano_beat_start.raw(),
+                self.piano_beat_span.raw(),
+                0.0,
+                "arrange-reflected-velocity-range",
+            ))
             .relative()
             .flex_1()
             .h_full()
