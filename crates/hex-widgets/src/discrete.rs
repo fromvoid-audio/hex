@@ -20,6 +20,8 @@ pub enum ToggleAppearance {
     MicroSquare,
     CompactIconButton,
 }
+const COMPACT_SELECTOR_ROW_HEIGHT: f32 = 12.0;
+
 /// Choice presentations; boolean-only geometry cannot be supplied here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectorAppearance {
@@ -561,7 +563,7 @@ pub struct Selector {
     tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
-    measured_size: std::rc::Rc<std::cell::Cell<gpui::Size<gpui::Pixels>>>,
+    measured_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
 }
 
 impl Selector {
@@ -613,7 +615,7 @@ impl Selector {
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
-            measured_size: std::rc::Rc::new(std::cell::Cell::new(gpui::size(px(0.0), px(0.0)))),
+            measured_bounds: Default::default(),
         }
     }
 
@@ -938,7 +940,7 @@ impl gpui::Render for Selector {
                     .flex()
                     .h(px(
                         if self.appearance == SelectorAppearance::CompactSelector {
-                            10.0
+                            COMPACT_SELECTOR_ROW_HEIGHT - 2.0
                         } else {
                             20.0
                         },
@@ -954,7 +956,7 @@ impl gpui::Render for Selector {
                     .items_center()
                     .rounded(px(
                         if self.appearance == SelectorAppearance::CompactSelector {
-                            1.5
+                            0.0
                         } else {
                             2.0
                         },
@@ -983,11 +985,11 @@ impl gpui::Render for Selector {
                     .child(div().flex_1().min_w_0().overflow_hidden().child(selected))
                     .child(div().text_color(rgb(self.style.muted)).child("▾")),
             );
-        let measured_size = self.measured_size.clone();
+        let measured_bounds = self.measured_bounds.clone();
         root = root.child(
             canvas(
                 move |bounds, window, _| {
-                    if measured_size.replace(bounds.size) != bounds.size {
+                    if measured_bounds.replace(bounds) != bounds {
                         window.refresh();
                     }
                 },
@@ -1000,14 +1002,23 @@ impl gpui::Render for Selector {
             .bottom(px(0.0)),
         );
         if self.appearance == SelectorAppearance::CompactSelector {
-            root = root.w_full();
+            root = root.w_full().rounded_none();
         }
         if self.open && self.enabled {
             let options = self.choices.clone();
             let current = self.selected;
             let compact = self.appearance == SelectorAppearance::CompactSelector;
-            let field_height = if compact { 16.0 } else { 22.0 };
-            let option_height = if compact { 18.0 } else { 19.0 };
+            let field_bounds = self.measured_bounds.get();
+            let field_height = if compact {
+                f32::from(field_bounds.size.height)
+            } else {
+                22.0
+            };
+            let option_height = if compact {
+                COMPACT_SELECTOR_ROW_HEIGHT
+            } else {
+                19.0
+            };
             let style = self.style;
             // Absolute children use the selector's content box; account for its one-pixel border
             // on each side so the overlay aligns with the visible field frame.
@@ -1035,10 +1046,28 @@ impl gpui::Render for Selector {
                         .width
                 })
                 .fold(px(0.0), |width, next| width.max(next));
-            let popup_width = (self.measured_size.get().width + px(2.0))
-                .max(label_width + px(12.0))
-                .min((window.viewport_size().width - px(8.0)).max(px(1.0)));
-            let max_popup_height = (window.viewport_size().height - px(8.0)).max(px(1.0));
+            let field_width = field_bounds.size.width + px(2.0);
+            let popup_width = if compact {
+                field_width
+            } else {
+                field_width.max(label_width + px(12.0))
+            }
+            .min((window.viewport_size().width - px(if compact { 0.0 } else { 8.0 })).max(px(1.0)));
+            let preferred_height = px(options.len() as f32 * option_height + 2.0);
+            let below = (window.viewport_size().height - field_bounds.bottom()).max(px(1.0));
+            let above = field_bounds.top().max(px(1.0));
+            let open_above = compact && preferred_height > below && above > below;
+            let max_popup_height = if compact {
+                if open_above { above } else { below }
+            } else {
+                (window.viewport_size().height - px(8.0)).max(px(1.0))
+            };
+            let popup_height = preferred_height.min(max_popup_height);
+            let popup_y = if open_above {
+                -popup_height
+            } else {
+                px(field_height)
+            };
             let mut popup = div()
                 .id(SharedString::from(format!("{}-popup", self.id)))
                 .debug_selector(|| format!("{}-popup", self.id))
@@ -1048,10 +1077,10 @@ impl gpui::Render for Selector {
                 .max_h(max_popup_height)
                 .overflow_y_scroll()
                 .border_1()
-                .border_color(rgb(style.border))
-                .rounded(px(2.0))
+                .border_color(rgb(if compact { style.accent } else { style.border }))
+                .rounded(px(if compact { 0.0 } else { 2.0 }))
                 .bg(rgb(style.surface))
-                .shadow_md()
+                .when(!compact, |popup| popup.shadow_md())
                 .occlude();
             for (index, choice) in options.into_iter().enumerate() {
                 let listener = cx.listener(move |selector, _: &MouseDownEvent, window, cx| {
@@ -1070,9 +1099,9 @@ impl gpui::Render for Selector {
                         .overflow_hidden()
                         .flex_shrink_0()
                         .h(px(option_height))
-                        .px(px(4.0))
+                        .px(px(if compact { 3.0 } else { 4.0 }))
                         .items_center()
-                        .rounded(px(2.0))
+                        .rounded(px(if compact { 0.0 } else { 2.0 }))
                         .border_b_1()
                         .border_color(rgb(self.style.border))
                         .bg(rgb(if index == current {
@@ -1083,7 +1112,7 @@ impl gpui::Render for Selector {
                         .hover(move |hover| {
                             hover.bg(rgb(style.hover)).text_color(rgb(style.hover_text))
                         })
-                        .text_size(px(self.style.font_size))
+                        .text_size(px(if compact { 8.0 } else { style.font_size }))
                         .text_color(rgb(if index == current {
                             style.hover_text
                         } else {
@@ -1091,7 +1120,13 @@ impl gpui::Render for Selector {
                         }))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, listener)
-                        .child(choice)
+                        .child(choice.clone())
+                        .when(compact, |row| {
+                            row.tooltip(move |_, cx| {
+                                cx.new(|_| SelectorOptionTooltip(choice.clone(), style))
+                                    .into()
+                            })
+                        })
                         // Keep the actual selection distinct while another row is hovered.
                         .when(index == current, |option| {
                             option.child(
@@ -1111,7 +1146,7 @@ impl gpui::Render for Selector {
                 deferred(
                     anchored()
                         .anchor(Corner::TopLeft)
-                        .position(point(px(0.0), px(field_height)))
+                        .position(point(px(if compact { -1.0 } else { 0.0 }), popup_y))
                         .position_mode(AnchoredPositionMode::Local)
                         .child(popup),
                 )
@@ -1177,5 +1212,20 @@ mod contrast_tests {
             });
             toggle.read_with(cx, |toggle, _| assert_eq!(toggle.foreground(), 0x202020));
         }
+    }
+}
+
+// A compact popup keeps the field width; full normalized option text remains
+// available on hover instead of widening the detached panel.
+struct SelectorOptionTooltip(SharedString, ControlStyle);
+impl gpui::Render for SelectorOptionTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(4.0))
+            .py(px(2.0))
+            .bg(rgb(self.1.raised))
+            .text_color(rgb(self.1.text))
+            .text_size(px(self.1.font_size))
+            .child(self.0.clone())
     }
 }
