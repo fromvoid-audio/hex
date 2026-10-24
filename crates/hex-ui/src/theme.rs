@@ -13,9 +13,9 @@ mod device;
 // Native review examples include this module and use only a subset of its API.
 #[allow(unused_imports)]
 pub(crate) use device::{
-    DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_frame_style,
-    device_header_action_style, device_identity_style, device_segment_style, device_style,
-    oscillator_identity_color,
+    DeviceActionRole, DeviceStyleRole, device_analyzer_style, device_enable_colors,
+    device_frame_style, device_header_action_style, device_identity_style, device_segment_style,
+    device_style, oscillator_identity_color,
 };
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -23,6 +23,15 @@ use std::cell::Cell;
 /// Common widget palette for device panels, workspace fields and preferences.
 pub(crate) fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
+}
+
+/// Shared product colors for all sample-level meters; widgets own no palette.
+pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
+    hex_widgets::MeterColors {
+        signal: color(PaletteRole::Secondary),
+        near_peak: color(PaletteRole::Primary),
+        clipping: 0xe34b4b,
+    }
 }
 
 /// Common workspace action colors, resolved from the native widget palette.
@@ -37,7 +46,7 @@ pub(crate) fn action_style() -> hex_widgets::ActionStyle {
 }
 
 /// Shared translucency for arranger and clip-editor time ranges.
-pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.22;
 
 /// Explicit track membership stays quieter than time/clip selection overlays.
 pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;

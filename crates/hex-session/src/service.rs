@@ -75,6 +75,12 @@ mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
+// Browser audition is independent of canonical resident-import admission. Bound
+// encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
+// Source and converted PCM can coexist during conversion (512 MiB total);
+// resident decoding can temporarily hold encoded bytes alongside source PCM.
+const BROWSER_PREVIEW_FILE_LIMIT: usize = 512 * 1024 * 1024;
+const BROWSER_PREVIEW_FRAME_LIMIT: usize = 32 * 1024 * 1024;
 const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
@@ -122,6 +128,11 @@ pub struct AudioBatchMemberFailure {
     pub explanation: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiTakeCompletion {
+    pub request_id: u64,
+    pub accepted: bool,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SamplerLoadCompletion {
     pub request_id: u64,
@@ -185,6 +196,8 @@ pub struct Event {
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
     pub sampler_edit_complete: Option<u64>,
     pub computer_keyboard_complete: Option<u64>,
+    /// Exact terminal for a retained MIDI take commit, including refusal.
+    pub midi_take_complete: Option<MidiTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
     /// Correlates one final batch result; contains metadata only, never PCM.
@@ -262,8 +275,8 @@ pub struct AudioPreview {
     pub waveform: Arc<Waveform>,
 }
 
-/// Decode and convert an audio source using the same limits and conversion path
-/// as import, then retain only its bounded waveform summary and playback length.
+/// Decode and convert an audio source under the browser audition limits, then
+/// retain only its bounded waveform summary and full converted playback length.
 pub fn prepare_audio_preview(
     path: impl AsRef<Path>,
     project_sample_rate: u32,
@@ -284,18 +297,24 @@ pub fn prepare_audio_preview(
 
 /// Decode a bounded browser one-shot on a background worker, independent of
 /// canonical project/history. PCM is finite stereo at the actual output rate.
+/// Supports WAV files up to 512 MiB, with at most 33,554,432 frames both before
+/// and after conversion (256 MiB per stereo f32 buffer). Never truncates a source
+/// to fit. Resident import retains its separate, smaller resource ceilings.
 pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
+    let decoded = decode_wav_file(
+        path,
+        Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+    )
+    .map_err(|error| error.to_string().to_lowercase())?;
     let audio = hex_media::resample(
         decoded.audio(),
         output_sample_rate,
         ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: IMPORT_FRAME_LIMIT,
+            max_source_frames: BROWSER_PREVIEW_FRAME_LIMIT,
+            max_output_frames: BROWSER_PREVIEW_FRAME_LIMIT,
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
@@ -463,6 +482,15 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
+    },
+    /// Retains the take through preparation; every path echoes request_id.
+    CommitMidiTake {
+        request_id: u64,
+        project_generation: u64,
+        revision: u64,
+        binding: Arc<crate::midi_recording::MidiTakeBinding>,
+        notes: Arc<[crate::midi_recording::RecordedMidiNote]>,
+        stop_frame: u64,
     },
     ArmGainRecording {
         project_generation: u64,
@@ -639,7 +667,8 @@ impl Request {
     pub fn finalizes_parameter_gesture(&self) -> bool {
         matches!(
             self,
-            Request::Undo
+            Request::CommitMidiTake { .. }
+                | Request::Undo
                 | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
@@ -1718,6 +1747,7 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 computer_keyboard_complete: None,
+                midi_take_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
                 audio_batch_complete: None,
@@ -1752,6 +1782,7 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             computer_keyboard_complete: None,
+            midi_take_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
             audio_batch_complete: None,
@@ -1925,6 +1956,13 @@ fn run_worker(
                 }
             }
         }
+        let mut midi_take_complete = match &request {
+            Request::CommitMidiTake { request_id, .. } => Some(MidiTakeCompletion {
+                request_id: *request_id,
+                accepted: false,
+            }),
+            _ => None,
+        };
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
@@ -2425,6 +2463,7 @@ fn run_worker(
                 Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard {
                         action: TrackClipboardAction::Cut(_)
@@ -2448,6 +2487,7 @@ fn run_worker(
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard { .. }
                     | Request::ReorderTracks { .. }
@@ -4411,6 +4451,57 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::CommitMidiTake {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    binding,
+                    notes,
+                    stop_frame,
+                    ..
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("midi take refused · project changed; take retained".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some("midi take refused · device edit is still applying".into());
+                    } else {
+                        match crate::midi_recording::finish_take(
+                            session.project(),
+                            &binding,
+                            &notes,
+                            stop_frame,
+                        ) {
+                            Ok(Some(command)) => {
+                                let before = session.project().clone();
+                                match resident_audio::execute_command(
+                                    &mut session, command,
+                                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                    hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) },
+                                    &mut events, &mut resident_snapshot,
+                                    export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
+                                        resident_seek.as_ref(), resident_preview.as_ref()),
+                                ) {
+                                    Ok((result, prepared)) if session.project() != &before => {
+                                        unsaved = true;
+                                        replacement_revision = Some(prepared);
+                                        created = Some(result);
+                                        status = Some("midi take committed".into());
+                                        if let Some(completion) = &mut midi_take_complete { completion.accepted = true; }
+                                    }
+                                    Ok(_) => { status = Some("empty midi take".into()); if let Some(completion) = &mut midi_take_complete { completion.accepted = true; } },
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                }
+                            }
+                            Ok(None) => {
+                                status = Some("empty midi take".into());
+                                if let Some(completion) = &mut midi_take_complete {
+                                    completion.accepted = true;
+                                }
+                            }
+                            Err(reason) => error = Some(reason.into()),
+                        }
+                    }
+                }
                 Request::ArmGainRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -5927,6 +6018,7 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 computer_keyboard_complete,
+                midi_take_complete,
                 tuning_audition_complete,
                 live_expression_complete,
                 audio_batch_complete,
@@ -7212,6 +7304,86 @@ mod service_tests {
                     .tempo_map()
                     .beat_to_frame(clip.start())
                     .is_ok_and(|frame| frame == 216_000))
+        );
+    }
+
+    #[test]
+    fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
+        use std::io::{Seek, SeekFrom, Write};
+        let directory = TestDir::new();
+        let path = directory.0.join("large.wav");
+        // Sparse IEEE-float mono audio crosses both old limits without a large
+        // test-construction buffer. The last sample proves no prefix truncation.
+        let frames = IMPORT_FILE_LIMIT / 8 + 1;
+        let data_bytes = u32::try_from(frames * 8).unwrap();
+        let mut header = wav_mono(&[]);
+        header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+        header[20..22].copy_from_slice(&3_u16.to_le_bytes());
+        header[28..32].copy_from_slice(&(48_000_u32 * 8).to_le_bytes());
+        header[32..34].copy_from_slice(&8_u16.to_le_bytes());
+        header[34..36].copy_from_slice(&64_u16.to_le_bytes());
+        header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&header).unwrap();
+        file.set_len(44 + u64::from(data_bytes)).unwrap();
+        file.seek(SeekFrom::End(-8)).unwrap();
+        file.write_all(&0.5_f64.to_le_bytes()).unwrap();
+        drop(file);
+        assert!(fs::metadata(&path).unwrap().len() > IMPORT_FILE_LIMIT as u64);
+        assert!(frames > IMPORT_FRAME_LIMIT);
+
+        let audio = prepare_sample_preview(&path, 48_000).unwrap();
+        assert_eq!(audio.sample_rate(), 48_000);
+        assert_eq!(audio.frames().len(), frames);
+        assert_eq!(audio.frames()[0], [0.0; 2]);
+        assert_eq!(audio.frames().last(), Some(&[0.5; 2]));
+        drop(audio);
+        let preview = prepare_audio_preview(&path, 48_000).unwrap();
+        assert_eq!(preview.playback_frames, frames as u64);
+        assert_eq!(preview.sample_rate, 48_000);
+        assert_eq!(preview.waveform.source_frames, frames);
+        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+        assert_eq!(
+            preview
+                .waveform
+                .peaks_for_frames(frames - 1, frames)
+                .unwrap(),
+            [hex_media::waveform::Peak { min: 0.0, max: 0.5 }; 2]
+        );
+    }
+
+    #[test]
+    fn browser_preview_refuses_excess_source_and_converted_frames() {
+        use std::io::Write;
+        let directory = TestDir::new();
+        let path = directory.0.join("too-long.wav");
+        let frames = u32::try_from(BROWSER_PREVIEW_FRAME_LIMIT + 1).unwrap();
+        let mut header = wav_mono(&[]);
+        header[28..32].copy_from_slice(&48_000_u32.to_le_bytes());
+        header[32..34].copy_from_slice(&1_u16.to_le_bytes());
+        header[34..36].copy_from_slice(&8_u16.to_le_bytes());
+        header[40..44].copy_from_slice(&frames.to_le_bytes());
+        // The odd data payload has a required padding byte.
+        header[4..8].copy_from_slice(&(37 + frames).to_le_bytes());
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&header).unwrap();
+        file.set_len(45 + u64::from(frames)).unwrap();
+        drop(file);
+        assert!(
+            prepare_sample_preview(&path, 48_000)
+                .unwrap_err()
+                .contains("decoded frames")
+        );
+
+        let source_frames = BROWSER_PREVIEW_FRAME_LIMIT / 24 + 1;
+        let mut bytes = wav_mono(&vec![0; source_frames]);
+        bytes[24..28].copy_from_slice(&8_000_u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&16_000_u32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        assert!(
+            prepare_sample_preview(&path, 192_000)
+                .unwrap_err()
+                .contains("output frames")
         );
     }
 
@@ -10622,6 +10794,8 @@ mod service_tests {
 #[cfg(test)]
 #[path = "service/controller_input_tests.rs"]
 mod controller_input_tests;
+#[cfg(test)]
+mod midi_recording_tests;
 
 type TuningInputPublication = (
     Playback,

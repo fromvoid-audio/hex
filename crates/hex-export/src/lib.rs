@@ -1,5 +1,6 @@
 //! # Purpose
-//! Render fixed-block linear PCM16 WAV files and publish create-new outputs.
+//! Render fixed-block PCM16 Arrangement exports and bounded float32 source
+//! bounces, with explicit publication and ordinary prepared runtime custody.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and

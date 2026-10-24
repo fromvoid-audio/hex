@@ -190,11 +190,12 @@ impl SessionPlayback {
                     }
                 }
                 RouteOwner::Session { clip, origin } => {
-                    let prepared = self
-                        .revision
-                        .session()
-                        .midi_clip_for_track(clip, track_id)
-                        .ok_or(SessionPlaybackError::UnknownClip)?;
+                    let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, track_id)
+                    .ok_or(SessionPlaybackError::UnknownClip)?;
                     let timing =
                         timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
                     prepared
@@ -233,11 +234,12 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         let (incoming_voices, incoming_onsets) = match next {
             RouteOwner::Session { clip, origin } => {
-                let prepared = self
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, route.id)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, route.id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 let timing =
                     timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
                 prepared
@@ -245,7 +247,7 @@ impl SessionPlayback {
                     .query_with_origin(origin, &timing, cut, end, &mut self.spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 (
-                    prepared.work.active_voices,
+                    prepared.work().active_voices,
                     self.spans.spans().filter(|s| s.start_frame == cut).count(),
                 )
             }

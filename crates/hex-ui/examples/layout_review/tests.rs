@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Focusable, Modifiers, TestAppContext, VisualTestContext, size};
+use gpui::{Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext, size};
 
 struct RestoreTheme(hex_preferences::ThemePreferences);
 impl Drop for RestoreTheme {
@@ -143,9 +143,86 @@ fn selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footpri
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background("fixture-header-bypass"),
-        Some(gpui::Background::from(rgb(theme::color(
-            theme::PaletteRole::Hover
-        ))))
+        None,
+        "boolean hover must not restore the action box"
+    );
+    assert_eq!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        Some(gpui::Background::from(
+            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Border))).opacity(0.8)
+        ))
+    );
+}
+
+#[gpui::test]
+fn header_power_toggle_keeps_owner_state_when_disabled_and_has_a_full_hit_target(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view) = open(cx, Entry::Utility);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let target = visual.debug_bounds("fixture-header-bypass").unwrap();
+    let indicator_bounds = visual
+        .debug_bounds("fixture-header-bypass-indicator")
+        .unwrap();
+    assert_eq!(target.size, size(px(12.0), px(12.0)));
+    assert_eq!(indicator_bounds.size, size(px(8.0), px(8.0)));
+    assert_eq!(indicator_bounds.center(), target.center());
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry("fixture-header-bypass-indicator")
+            .unwrap()
+            .0
+            .top_left,
+        px(hex_widgets::TOGGLE_CORNER_RADIUS).scale(scale)
+    );
+    assert_eq!(visual.rendered_background("fixture-header-bypass"), None);
+    let on = visual.rendered_background("fixture-header-bypass-indicator");
+    visual.simulate_mouse_move(target.center(), None, Modifiers::default());
+    visual.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_ne!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        on
+    );
+    visual.simulate_mouse_up(target.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |v, _| assert!(v.bypassed));
+    let off = visual.rendered_background("fixture-header-bypass-indicator");
+    assert_ne!(on, off);
+    view.update(cx, |v, cx| {
+        v.disabled = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_click(target.center(), Modifiers::default());
+    view.read_with(cx, |v, _| assert!(v.bypassed));
+    assert_eq!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        off
+    );
+    view.update(cx, |v, cx| {
+        v.disabled = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // The transparent corner outside the dot remains part of the hit target.
+    visual.simulate_click(
+        target.origin + gpui::point(px(0.5), px(0.5)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    view.read_with(cx, |v, _| assert!(!v.bypassed));
+    visual.simulate_mouse_move(
+        gpui::point(px(500.0), px(500.0)),
+        None,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("fixture-header-bypass-indicator"),
+        on
     );
 }
 

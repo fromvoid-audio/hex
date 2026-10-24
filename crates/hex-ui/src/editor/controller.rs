@@ -563,6 +563,11 @@ impl EditorView {
                         audio_revision,
                     );
                     if let Some(metadata) = metadata {
+                        self.midi_recording_published(
+                            context,
+                            metadata.computer_keyboard_request,
+                            audio_revision,
+                        );
                         self.gain_recorder
                             .published(metadata.gain_recording_track, audio_revision);
                     }
@@ -951,6 +956,7 @@ impl EditorView {
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
+        visible_change |= self.tick_midi_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
@@ -983,6 +989,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.midi_service_disconnected();
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -1079,6 +1086,7 @@ impl EditorView {
                         break;
                     }
                     Err(SubmitError::Busy(request)) => {
+                        self.midi_take_not_submitted(&request);
                         if resize_request {
                             self.retire_pending_trim();
                         }
@@ -1123,6 +1131,7 @@ impl EditorView {
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        self.midi_take_not_submitted(&request);
                         self.cancel_new_preparation();
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1282,7 +1291,17 @@ impl EditorView {
                 .clone()
                 .or_else(|| pending.playback.prepared_revision().cloned());
             let policy = if let Some(fence) = pending.fresh_runtime_fence {
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+                self.prepared_seek
+                    .as_ref()
+                    .filter(|seek| Some(seek.request_id) == pending.seek_request_id)
+                    .and_then(|seek| seek.section)
+                    .map_or(
+                        PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                        |section| PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: section.quantization,
+                        },
+                    )
             } else if pending.install_fresh_runtime {
                 PublicationPolicy::InstallFreshRuntime
             } else {
@@ -2025,7 +2044,7 @@ impl EditorView {
                 .is_some_and(|state| state.revision == event.state.revision)
                 && self.controller_input_matches(input)
             {
-                self.connect_prepared_controller();
+                self.controller_expression_prepared();
             } else {
                 input.cancel();
                 return None;
@@ -2076,7 +2095,7 @@ impl EditorView {
             let note_audition =
                 self.midi_audition_preparation_matches(request_id, event.state.revision);
             let current = note_audition
-                || (self.computer_keyboard.enabled
+                || ((self.computer_keyboard.enabled || self.controller_wants_live_notes())
                     && !self.computer_keyboard.suspended
                     && request_id == self.computer_keyboard.request_id
                     && self.computer_keyboard.target
@@ -2093,6 +2112,10 @@ impl EditorView {
                         .as_ref()
                         .is_some_and(|state| state.revision == event.state.revision));
             if current {
+                self.computer_keyboard.prepared = event.error.is_none();
+                if event.error.is_some() {
+                    self.midi_recording_preparation_failed();
+                }
                 let audition_ok = note_audition && event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
@@ -2208,7 +2231,15 @@ impl EditorView {
             &event.state.project,
             event.project_replaced,
         );
+        // Initial population may choose the first clip. Subsequent control
+        // acknowledgements must not recreate a deliberately empty selection.
+        let initialize_clip_selection = self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.project.tracks().is_empty())
+            && !event.state.project.tracks().is_empty();
         self.state = Some(event.state);
+        self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
             self.pending_loop = None;
         }
@@ -2350,6 +2381,13 @@ impl EditorView {
                             && self.normalized_time_selection().is_some()));
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+                if initialize_clip_selection
+                    && self.selected_clip.is_none()
+                    && let Some((_, track, clip)) = selection::neighbor(&state.project, None, true)
+                {
+                    self.selected_track = Some(track);
+                    self.selected_clip = clip;
+                }
                 if time_range_owns_selection {
                     self.selected_clip = None;
                 }
@@ -2474,6 +2512,8 @@ impl EditorView {
             self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
+            self.reconcile_arrangement_focus();
+            self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state
@@ -2824,6 +2864,21 @@ impl EditorView {
             && !recovery_restore
         {
             self.error = Some("finish the current open action before editing".into());
+            return false;
+        }
+        let own_midi_request = match &request {
+            Request::CommitMidiTake { request_id, .. } => {
+                self.midi_recorder.accepts_commit(*request_id)
+            }
+            Request::PrepareComputerKeyboard { .. } | Request::PrepareLiveExpression { .. } => {
+                self.midi_recorder.preparing()
+            }
+            _ => false,
+        };
+        if self.midi_recorder.blocks_edits() && !own_midi_request {
+            self.error = Some(
+                "finish or explicitly discard the midi take before another project action".into(),
+            );
             return false;
         }
         if self.gain_recorder.blocks_edits() {
@@ -3655,6 +3710,11 @@ impl EditorView {
                         })
                 })
             });
+        self.finish_midi_recording();
+        // Publish the MIDI finish intent before any input prefix is revoked.
+        if let Some(audio) = &self.audio {
+            audio.control.stop();
+        }
         self.cancel_tuning_audition();
         self.stop_computer_keyboard();
         self.cancel_scrub();
@@ -3666,9 +3726,6 @@ impl EditorView {
         self.pending_seek_ticket = None;
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
-        if let Some(audio) = &self.audio {
-            audio.control.stop();
-        }
         self.status = "stopped · returned to start".into();
         if restore && self.enqueue(Request::RestoreStoppedPlayback) {
             self.stopped_playback_restore =

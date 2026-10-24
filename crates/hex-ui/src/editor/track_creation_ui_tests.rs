@@ -85,6 +85,125 @@ fn focus(editor: &Entity<EditorView>, visual: &mut VisualTestContext, selected: 
 }
 
 #[gpui::test]
+fn section_focus_keeps_new_active_track_through_authoring_then_filters_on_selection(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    let original = editor.read_with(&visual, |v, _| v.selected_track.unwrap());
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::EditArrangementSection {
+            project_generation: v.project_generation,
+            revision: v.state.as_ref().unwrap().revision,
+            command: Command::AddArrangementSection {
+                name: "focused".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::ONE,
+            },
+        }));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "section setup: {:?}", v.error);
+        assert_eq!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .arrangement_sections()
+                .len(),
+            1
+        );
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.sections.selected =
+                Some(v.state.as_ref().unwrap().project.arrangement_sections()[0].id());
+            v.clip_view_open = false;
+            v.focus.focus(window);
+            v.toggle_arrangement_focus();
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    // Empty, out-of-section and in-section content use the same creation path.
+    for content_start in [None, Some(4), Some(0)] {
+        focus(&editor, &mut visual, Some(original));
+        visual.simulate_keystrokes("cmd-t");
+        pump(&editor, &mut visual);
+        let created = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            let created = v.selected_track.unwrap();
+            assert_ne!(created, original);
+            assert!(
+                v.arrangement_track_visible(created),
+                "new active track is hidden"
+            );
+            created
+        });
+        let header: &'static str =
+            Box::leak(format!("arrangement-track-header-{}", created.value()).into_boxed_str());
+        assert!(visual.debug_bounds(header).is_some());
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::InsertInstrument {
+                track: created,
+                state: hex_project::default_instrument_state().unwrap(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        // Keyboard focus in a track's authoring editor is not a change of active track.
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                v.midi_focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(header).is_some());
+        if content_start.is_none() {
+            visual.update(|window, cx| {
+                editor.update(cx, |v, cx| {
+                    v.select_track(original, window);
+                    v.select_track(created, window);
+                    cx.notify();
+                });
+            });
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds(header).is_none(),
+                "reselection before repaint cannot revive the exception"
+            );
+            continue;
+        }
+        if let Some(start) = content_start {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                    track: created,
+                    start: hex_project::BeatTime::from_quarters(start).unwrap(),
+                    length: hex_project::BeatTime::ONE,
+                })));
+            });
+            pump(&editor, &mut visual);
+            assert!(visual.debug_bounds(header).is_some());
+            editor.read_with(&visual, |v, _| {
+                assert!(v.arrangement_clip_visible(v.selected_clip.unwrap()));
+            });
+        }
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                v.select_track(original, window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds(header).is_some(),
+            content_start == Some(0)
+        );
+    }
+}
+
+#[gpui::test]
 fn keyboard_creation_inserts_after_first_middle_last_with_one_history_step_and_reopen(
     cx: &mut TestAppContext,
 ) {
