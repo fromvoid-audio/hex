@@ -222,7 +222,11 @@ impl Sample {
         }));
         let rectangle = cx.new(|cx| {
             RectangleDemo::new(
-                matches!(item.demo, Demo::Rectangle(true)),
+                match item.demo {
+                    Demo::Rectangle(true) => rectangle_demo::Kind::Section,
+                    Demo::TimeRange => rectangle_demo::Kind::TimeRange,
+                    _ => rectangle_demo::Kind::Clip,
+                },
                 format!("{prefix}sandbox-rectangle"),
                 cx,
             )
@@ -474,7 +478,7 @@ impl Sample {
             }
             Demo::Color => {}
             Demo::Selector(_) => self.selector.focus_handle(cx).focus(window),
-            Demo::Rectangle(_) => self.rectangle.focus_handle(cx).focus(window),
+            Demo::Rectangle(_) | Demo::TimeRange => self.rectangle.focus_handle(cx).focus(window),
             Demo::Bars => self.bars.focus_handle(cx).focus(window),
             Demo::Graph => self.graph.focus_handle(cx).focus(window),
             _ => {
@@ -584,7 +588,9 @@ impl Sample {
             }
             Demo::Toggle(_) => div().w(px(180.0)).h(px(28.0)).child(self.toggle.clone()),
             Demo::Selector(_) => div().w(px(220.0)).h(px(28.0)).child(self.selector.clone()),
-            Demo::Rectangle(_) => div().w_full().h(px(180.0)).child(self.rectangle.clone()),
+            Demo::Rectangle(_) | Demo::TimeRange => {
+                div().w_full().h(px(180.0)).child(self.rectangle.clone())
+            }
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
             Demo::Graph => div().w_full().h(px(220.0)).child(self.graph.clone()),
             Demo::Color => div().w(px(240.0)).h(px(220.0)).child(self.picker.clone()),
@@ -700,7 +706,7 @@ impl Render for Sample {
             .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .when(!matches!(self.item.demo, Demo::Graph), |sample| sample.child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus")))
-            .child(theme::text(match self.item.demo {Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Waveform(_)=>"generated peak fixture · selection start / amplitude / selection end · silence and dc regions · read-only display, no audio",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::TimeRange=>"upper third moves · lower body paints/repaints · shift paints · escape cancels held input · accept or refuse pending paint",Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Waveform(_)=>"generated peak fixture · selection start / amplitude / selection end · silence and dc regions · read-only display, no audio",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
