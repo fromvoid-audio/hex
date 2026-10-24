@@ -90,7 +90,19 @@ impl RenderOnce for Housing {
                         cx.notify();
                     });
                 })
-                .on_key_down(move |event, _, cx| {
+                .on_key_down(move |event, window, cx| {
+                    if event.keystroke.key == "tab"
+                        && !event.keystroke.modifiers.control
+                        && !event.keystroke.modifiers.alt
+                        && !event.keystroke.modifiers.platform
+                    {
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev();
+                        } else {
+                            window.focus_next();
+                        }
+                        cx.stop_propagation();
+                    }
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
                         if !event.is_held {

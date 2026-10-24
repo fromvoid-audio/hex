@@ -687,6 +687,19 @@ fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mu
         .expect("first housing opened");
     assert!(a.contains(&panel.center()));
     assert!(visual.debug_bounds("device-modulator-panel").is_none());
+    visual.simulate_keystrokes("tab enter");
+    visual.run_until_parked();
+    assert!(
+        a.contains(
+            &visual
+                .debug_bounds("device-modulator-panel")
+                .unwrap()
+                .center()
+        )
+    );
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-modulator-panel").is_none());
     visual.simulate_click(mod_b.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
