@@ -30,6 +30,7 @@ pub(super) enum Kind {
     LevelMeter,
     MeterIndicator(MeterChannels),
     RoundAction(RoundActionKind),
+    Splitter(SplitterAxis),
     Button(&'static str),
     ScrollingList,
 }
@@ -53,6 +54,9 @@ pub(super) struct Workspace {
     enabled: bool,
     active: bool,
     count: u64,
+    splitter: Option<SplitterGesture>,
+    splitter_original: f32,
+    splitter_extent: f32,
     scroll: gpui::ScrollHandle,
     status: String,
     _subscriptions: Vec<Subscription>,
@@ -171,6 +175,9 @@ impl Workspace {
             enabled: true,
             active: false,
             count: 0,
+            splitter: None,
+            splitter_original: 80.0,
+            splitter_extent: 80.0,
             scroll: gpui::ScrollHandle::new(),
             status: "local fixture · ready".into(),
             _subscriptions: subscriptions,
@@ -184,6 +191,10 @@ impl Workspace {
             n.update(cx, |n, cx| n.cancel(cx));
         }
         self.menu = None;
+        if self.splitter.take().is_some() {
+            self.splitter_extent = self.splitter_original;
+            self.status = "local splitter cancelled".into();
+        }
         cx.notify();
     }
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -352,6 +363,97 @@ impl Workspace {
                 MeterChannels::Mono => "local dbfs level and held peak · overload is explicit · no audio",
                 MeterChannels::Stereo => "local dbfs level and held peak · right channel adds 6 db · overload is explicit · no audio",
             }))
+    }
+    fn splitter_input(cx: &Context<Self>) -> SplitterInput<Self> {
+        SplitterInput::new(cx.entity(), |view| view.splitter, Self::splitter_event)
+    }
+    fn splitter_event(
+        &mut self,
+        event: SplitterEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match event {
+            SplitterEvent::Begin(gesture) => {
+                if !self.enabled {
+                    return false;
+                }
+                self.splitter_original = self.splitter_extent;
+                self.splitter = Some(gesture);
+                self.focus.focus(window);
+                self.status = "local splitter preview · escape restores the prior size".into();
+            }
+            SplitterEvent::Change(delta) | SplitterEvent::Commit(delta) => {
+                if self.splitter.is_none() {
+                    return false;
+                }
+                self.splitter_extent = (self.splitter_original + delta).clamp(16.0, 140.0);
+                if matches!(event, SplitterEvent::Commit(_)) {
+                    self.splitter = None;
+                    self.count = self.count.saturating_add(1);
+                    self.status = format!(
+                        "local splitter kept · {} px · {} releases",
+                        self.splitter_extent, self.count
+                    );
+                }
+            }
+            SplitterEvent::Cancel(_) => {
+                if self.splitter.take().is_none() {
+                    return false;
+                }
+                self.splitter_extent = self.splitter_original;
+                self.status = "local splitter cancelled".into();
+            }
+        }
+        cx.notify();
+        true
+    }
+    fn splitter_panel(&self, axis: SplitterAxis, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        let input = Self::splitter_input(cx);
+        let style = theme::control_style();
+        let first = div()
+            .debug_selector({
+                let id = self.id("workspace-splitter-first");
+                move || id.clone()
+            })
+            .flex_shrink_0()
+            .overflow_hidden()
+            .bg(rgb(style.raised))
+            .child(theme::text("pane 1"));
+        let first = match axis {
+            SplitterAxis::Horizontal => first.w(px(self.splitter_extent)).h_full(),
+            SplitterAxis::Vertical => first.h(px(self.splitter_extent)).w_full(),
+        };
+        div()
+            .id(gpui::SharedString::from(
+                self.id("workspace-splitter-frame"),
+            ))
+            .track_focus(&self.focus)
+            .capture_key_down(input.escape_listener())
+            .relative()
+            .w_full()
+            .max_w(px(240.0))
+            .h(px(220.0))
+            .flex()
+            .when(axis == SplitterAxis::Vertical, |frame| frame.flex_col())
+            .border_1()
+            .border_color(rgb(style.border))
+            .focus(move |frame| frame.border_color(rgb(style.focus_marker)))
+            .opacity(if self.enabled { 1.0 } else { 0.4 })
+            .child(first)
+            .child(input.handle(
+                self.id("workspace-splitter").into(),
+                SplitterHandleConfig::thin(axis, style.border),
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(theme::text("pane 2")),
+            )
+            .child(input.pointer_layer())
     }
     fn round_action(&self, kind: RoundActionKind, window: &Window, cx: &mut Context<Self>) -> Div {
         let colors = theme::control_style();
@@ -564,6 +666,7 @@ impl Workspace {
             }
             Kind::MeterIndicator(channels) => self.indicator(channels, cx),
             Kind::RoundAction(kind) => self.round_action(kind, window, cx),
+            Kind::Splitter(axis) => div().child(self.splitter_panel(axis, cx)),
             Kind::Button(name) => {
                 let glyph = match name {
                     "play" => "▶",
@@ -690,6 +793,11 @@ impl Workspace {
 }
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.splitter.is_some_and(|gesture| {
+            !gesture.matches_window(window) || !self.focus.is_focused(window)
+        }) {
+            self.cancel(cx);
+        }
         let popup = self.menu.as_ref().map(|menu| {
             gpui::deferred(
                 gpui::anchored()
@@ -1082,6 +1190,128 @@ mod tests {
             });
         }
     }
+    #[gpui::test]
+    fn shared_splitter_sandbox_axes_keep_release_cancel_focus_theme_and_disabled_policy(
+        cx: &mut TestAppContext,
+    ) {
+        struct Restore(hex_preferences::ThemePreferences);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                theme::apply_preferences(self.0);
+            }
+        }
+        let _restore = Restore(theme::preferences());
+        for palette in [
+            hex_preferences::ThemePreferences::default(),
+            hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(225, 229, 238),
+                text: hex_preferences::RgbColor::new(24, 27, 34),
+                primary: hex_preferences::RgbColor::new(145, 25, 45),
+                secondary: hex_preferences::RgbColor::new(16, 70, 145),
+            },
+        ] {
+            theme::apply_preferences(palette);
+            for axis in [SplitterAxis::Horizontal, SplitterAxis::Vertical] {
+                let (mut visual, view) = fixture(cx, Kind::Splitter(axis));
+                visual.simulate_resize(gpui::size(px(420.0), px(420.0)));
+                let along = |origin: gpui::Point<gpui::Pixels>, delta| match axis {
+                    SplitterAxis::Horizontal => origin + point(px(delta), px(0.0)),
+                    SplitterAxis::Vertical => origin + point(px(0.0), px(delta)),
+                };
+                let extent = |visual: &mut VisualTestContext| {
+                    let pane = visual.debug_bounds("workspace-splitter-first").unwrap();
+                    if axis == SplitterAxis::Horizontal {
+                        pane.size.width
+                    } else {
+                        pane.size.height
+                    }
+                };
+                assert_eq!(extent(&mut visual), px(80.0));
+                assert_eq!(
+                    visual.rendered_background("workspace-splitter"),
+                    Some(rgb(theme::control_style().border).into())
+                );
+                let start = visual.debug_bounds("workspace-splitter").unwrap().center();
+                visual.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(
+                    along(start, 28.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(108.0));
+                visual.simulate_mouse_up(
+                    along(start, 44.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(124.0));
+                for _ in 0..3 {
+                    visual.run_until_parked();
+                }
+                view.read_with(&visual, |v, _| {
+                    assert_eq!(v.count, 1);
+                    assert!(v.splitter.is_none());
+                });
+                let start = visual.debug_bounds("workspace-splitter").unwrap().center();
+                visual.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(
+                    along(start, -20.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(104.0));
+                view.read_with(&visual, |v, _| assert!(v.splitter.is_some()));
+                visual.simulate_keystrokes("escape");
+                visual.simulate_mouse_up(
+                    along(start, -40.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(124.0));
+                let start = visual.debug_bounds("workspace-splitter").unwrap().center();
+                visual.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(
+                    along(start, -20.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(104.0));
+                view.read_with(&visual, |v, _| assert!(v.splitter.is_some()));
+                view.update(&mut visual, |v, cx| v.set_enabled(false, cx));
+                visual.simulate_mouse_up(
+                    along(start, -40.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                let start = visual.debug_bounds("workspace-splitter").unwrap().center();
+                visual.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_up(
+                    along(start, 44.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(124.0));
+                view.update(&mut visual, |v, cx| v.set_enabled(true, cx));
+                let start = visual.debug_bounds("workspace-splitter").unwrap().center();
+                visual.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(
+                    along(start, -20.0),
+                    gpui::MouseButton::Left,
+                    Modifiers::default(),
+                );
+                assert_eq!(extent(&mut visual), px(104.0));
+                view.read_with(&visual, |v, _| assert!(v.splitter.is_some()));
+                visual.update(|window, _| window.blur());
+                visual.run_until_parked();
+                assert_eq!(extent(&mut visual), px(124.0));
+                view.read_with(&visual, |v, _| {
+                    assert_eq!(v.count, 1);
+                    assert!(v.splitter.is_none());
+                });
+            }
+        }
+    }
+
     #[gpui::test]
     fn calibrated_meter_fixtures_show_local_dbfs_peaks_and_explicit_states(
         cx: &mut TestAppContext,

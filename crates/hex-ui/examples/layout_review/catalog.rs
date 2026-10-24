@@ -79,6 +79,9 @@ impl Item {
                 "composed layout and chrome",
             ),
             Demo::Compositions => ("device compositions", "compositions", "device_composition"),
+            Demo::Workspace(WorkspaceKind::Splitter(_)) => {
+                ("captured splitter", "layout", "splitter")
+            }
             Demo::Workspace(WorkspaceKind::Text(_)) => ("text input", "workspace", "textinput"),
             Demo::Workspace(WorkspaceKind::Menu(_)) => (
                 "popup menu composition",
@@ -119,6 +122,7 @@ impl Item {
             }
             Demo::Workspace(WorkspaceKind::Button(_)) => "glyph and state configurations",
             Demo::Workspace(WorkspaceKind::RoundAction(_)) => "round momentary configurations",
+            Demo::Workspace(WorkspaceKind::Splitter(_)) => "movement axis configurations",
             Demo::Frame(_) => "composed layout fixtures",
             Demo::Compositions => "device fixtures",
             _ => "configurations",
@@ -367,6 +371,14 @@ pub(super) fn inventory() -> Vec<Item> {
         (
             "round icon action",
             WorkspaceKind::RoundAction(RoundActionKind::Icon),
+        ),
+        (
+            "splitter · horizontal",
+            WorkspaceKind::Splitter(hex_widgets::SplitterAxis::Horizontal),
+        ),
+        (
+            "splitter · vertical",
+            WorkspaceKind::Splitter(hex_widgets::SplitterAxis::Vertical),
         ),
         ("output sample-peak status", WorkspaceKind::OutputMeter),
         ("scrolling list", WorkspaceKind::ScrollingList),

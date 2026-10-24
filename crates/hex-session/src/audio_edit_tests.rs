@@ -205,6 +205,135 @@ fn global_bpm_admits_subframe_authored_markers_with_complete_prepared_history() 
     }
 }
 #[test]
+fn global_bpm_after_warped_section_reorder_prepares_and_roundtrips_complete_history() {
+    use hex_project::{BeatTime, ElementColor, Tempo, WarpMode, default_audio_warp};
+    for rate in [44_100, 48_000] {
+        for mode in [
+            WarpMode::RePitch,
+            WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: hex_project::BeatsTail::Forward,
+                decay: 100,
+            },
+        ] {
+            let (mut session, clip, mut previous) = fixture_at_rate(rate);
+            let settings = default_audio_warp(
+                session.project().clip(clip).unwrap(),
+                session.project().tempo_map(),
+                mode,
+            )
+            .unwrap();
+            (_, previous) = session
+                .command_prepared_revision(
+                    Command::SetAudioClipWarp {
+                        clip,
+                        settings: Some(settings),
+                    },
+                    Some(&previous),
+                )
+                .unwrap();
+            (_, previous) = session
+                .command_prepared_revision(
+                    Command::SetProjectTempo {
+                        tempo: Tempo::new(143_000_000).unwrap(),
+                    },
+                    Some(&previous),
+                )
+                .unwrap();
+            let mut sections = Vec::new();
+            for (start, end) in [(1, 2), (3, 4)] {
+                let (Created::ArrangementSection(id), next) = session
+                    .command_prepared_revision(
+                        Command::AddArrangementSection {
+                            name: "section".into(),
+                            color: ElementColor::Rose,
+                            start: BeatTime::from_raw(BeatTime::ONE.raw() * start / 4),
+                            end: BeatTime::from_raw(BeatTime::ONE.raw() * end / 4),
+                        },
+                        Some(&previous),
+                    )
+                    .unwrap()
+                else {
+                    panic!("section")
+                };
+                sections.push(id);
+                previous = next;
+            }
+            (_, previous) = session
+                .command_prepared_revision(
+                    Command::ReorderSectionBefore {
+                        section: sections[0],
+                        before: sections[1],
+                    },
+                    Some(&previous),
+                )
+                .unwrap();
+            let before = session.project().clone();
+            assert!(
+                before.tracks()[0].clips().iter().all(|c| c
+                    .audio_edit()
+                    .unwrap()
+                    .processing_projection
+                    .is_some())
+            );
+            let (_, changed) = session
+                .command_prepared_revision(
+                    Command::SetProjectTempo {
+                        tempo: Tempo::new(180_000_000).unwrap(),
+                    },
+                    Some(&previous),
+                )
+                .unwrap();
+            let after = session.project().clone();
+            for old in before.tracks()[0].clips() {
+                let new = after.clip(old.id()).unwrap();
+                let edit = new.audio_edit().unwrap();
+                assert!(Arc::ptr_eq(&edit.domain, &old.audio_edit().unwrap().domain));
+                let start = edit.live_musical_start().unwrap();
+                let end = BeatTime::from_raw(start.raw() + edit.view_end - edit.view_start);
+                assert_eq!(new.start(), after.tempo_map().beat_to_frame(start).unwrap());
+                assert_eq!(
+                    new.start() + new.duration(),
+                    after.tempo_map().beat_to_frame(end).unwrap()
+                );
+            }
+            assert_eq!(
+                hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
+                after
+            );
+            let frames = after.tempo_map().beat_to_frame(BeatTime::ONE).unwrap() as usize;
+            let render = |revision: &hex_engine::PreparedRevision, block: usize| {
+                let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+                renderer.play();
+                let mut out = vec![[0.0; 2]; frames];
+                for chunk in out.chunks_mut(block) {
+                    renderer.render(chunk).unwrap();
+                }
+                assert!(out.iter().flatten().all(|s| s.is_finite()));
+                assert!(out.iter().any(|f| f[0].abs() > 0.01));
+                out
+            };
+            let pcm = render(&changed, 63);
+            assert_eq!(
+                render(&session.compile_prepared_revision(None).unwrap(), 257),
+                pcm
+            );
+            let undone = session
+                .undo_prepared_revision(Some(&changed))
+                .unwrap()
+                .unwrap();
+            assert_eq!(session.project(), &before);
+            let redone = session
+                .redo_prepared_revision(Some(&undone))
+                .unwrap()
+                .unwrap();
+            assert_eq!(session.project(), &after);
+            assert_eq!(render(&redone, 127), pcm);
+        }
+    }
+}
+
+#[test]
 fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_history_and_peaks()
 {
     let (mut session, clip, previous) = fixture();
