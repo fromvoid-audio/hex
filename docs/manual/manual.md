@@ -344,14 +344,14 @@ even when live audio output is unavailable.
 
 select one or more audio or midi clips in arrangement, then press `r` to reverse
 what is audible inside each clip. press `r` again to restore its original direction.
-one undo reverses the whole selected group. text fields keep their normal typing behavior.
+one undo restores the whole selected group. text fields keep their normal typing behavior.
 
 original audio files and midi notes remain intact. trim, loop, pitch, source gain
 and warp settings stay editable. frame-based audio reverses in frames; musical
 audio and midi reverse in the clip's beat clock, so tempo changes can change the
 sound of musical audio. fades keep their timeline position.
 
-directed clips cannot yet be transferred to session, and midi recording requires
+directed midi clips cannot yet be transferred to session, and midi recording requires
 a forward clip. an unsupported preparation refuses the complete edit.
 
 # useful shortcuts
