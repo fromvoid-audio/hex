@@ -32,6 +32,11 @@ mod numeric_text;
 mod response_graph;
 mod spectrum_painter;
 mod spectrum_plot;
+mod splitter;
+pub use splitter::{
+    SplitterAxis, SplitterCancel, SplitterEvent, SplitterGesture, SplitterHandleConfig,
+    SplitterInput,
+};
 mod style;
 mod text_case;
 mod text_click_selection;
