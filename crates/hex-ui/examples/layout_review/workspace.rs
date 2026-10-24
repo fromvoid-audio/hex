@@ -1073,7 +1073,12 @@ mod tests {
                     false,
                     theme::color(theme::PaletteRole::Secondary),
                 ),
-                (0.75, -3.0, false, theme::color(theme::PaletteRole::Primary)),
+                (
+                    0.95,
+                    -0.44,
+                    false,
+                    theme::color(theme::PaletteRole::Primary),
+                ),
                 (1.1, 1.0, true, 0xe34b4b),
             ] {
                 view.update(&mut visual.cx, |view, cx| {
@@ -1421,6 +1426,18 @@ mod tests {
                         .is_some(),
                     selected == 3
                 );
+                if selected == 3 {
+                    let cap = visual
+                        .debug_bounds("workspace-indicator-channel-0-above")
+                        .unwrap();
+                    visual.simulate_click(cap.center(), Modifiers::default());
+                    visual.run_until_parked();
+                    assert!(
+                        visual
+                            .debug_bounds("workspace-indicator-channel-0-above")
+                            .is_none()
+                    );
+                }
             }
         }
     }

@@ -21,6 +21,7 @@ pub(super) enum Demo {
     Color,
     Curve,
     Spectrum,
+    Waveform(bool),
     Chrome(&'static str),
     Layout(DeviceLayout),
     Section(u8, DeviceSectionSurface),
@@ -63,6 +64,7 @@ impl Item {
             Demo::Color => ("color picker", "graphics", "colorpicker"),
             Demo::Curve => ("curve plot", "graphics", "curve_plot"),
             Demo::Spectrum => ("spectrum plot", "graphics", "layered_spectrum_plot"),
+            Demo::Waveform(_) => ("waveform", "graphics", "waveform_plot"),
             Demo::Chrome("action" | "device action" | "device segment")
             | Demo::Workspace(WorkspaceKind::Button(_) | WorkspaceKind::RoundAction(_)) => {
                 ("action surface", "chrome", "action_surface")
@@ -113,6 +115,7 @@ impl Item {
     }
     pub fn subgroup(self) -> &'static str {
         match self.demo {
+            Demo::Waveform(_) => "channel configurations",
             Demo::Numeric(p, ..) if p.kind() == Kind::Knob => "knob configurations",
             Demo::Numeric(p, ..) if p.kind() == Kind::HorizontalSlider => {
                 "horizontal slider configurations"
@@ -135,6 +138,9 @@ impl Item {
             }
             Demo::Toggle(appearance) => format!("appearance: {appearance:?}"),
             Demo::Selector(appearance) => format!("appearance: {appearance:?}"),
+            Demo::Waveform(stereo) => {
+                format!("channels: {}", if stereo { "stereo" } else { "mono" })
+            }
             Demo::Layout(layout) => format!("layout: {layout:?}"),
             Demo::Section(density, surface) => format!(
                 "density: {} · surface: {surface:?}",
@@ -268,6 +274,8 @@ pub(super) fn inventory() -> Vec<Item> {
         ("color picker", Demo::Color),
         ("curve plot", Demo::Curve),
         ("layered spectrum plot", Demo::Spectrum),
+        ("mono waveform", Demo::Waveform(false)),
+        ("stereo waveform", Demo::Waveform(true)),
     ] {
         add("graphics", name, demo);
     }

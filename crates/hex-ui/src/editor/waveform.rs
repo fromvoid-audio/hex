@@ -1,7 +1,8 @@
 use crate::theme;
-use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
+use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
@@ -11,7 +12,6 @@ use super::waveform_geometry::{
 
 pub(super) use super::waveform_geometry::WaveformGrid;
 
-const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
@@ -230,22 +230,22 @@ pub(super) fn waveform_canvas(
     grid: Option<WaveformGrid>,
 ) -> Div {
     let mapping = mapping.clone();
-    waveform_surface(canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
+    waveform_plot(
+        move |paint| {
+            let bounds = paint.bounds;
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
             if visible_start >= visible_end || width <= 0.0 || height <= 0.0 {
-                return;
+                return None;
             }
-            let columns = waveform_column_count(width, window.scale_factor());
+            let columns = waveform_column_count(width, paint.scale);
             let geometry = cache.as_ref().and_then(|cache| {
                 let request = WaveformGeometryRequest {
                     mapping: &mapping,
                     visible_start,
                     visible_end,
                     bounds,
-                    scale: window.scale_factor(),
+                    scale: paint.scale,
                     columns,
                     grid,
                 };
@@ -263,30 +263,23 @@ pub(super) fn waveform_canvas(
                 )
                 .map(Arc::new)
             });
-            if let Some(geometry) = geometry {
-                #[cfg(all(test, feature = "ui-test-support"))]
+            #[cfg(all(test, feature = "ui-test-support"))]
+            if let Some(geometry) = &geometry {
                 if let Some(cache) = &cache
                     && let Ok(mut cache) = cache.try_borrow_mut()
                 {
-                    cache.record_paint(bounds, window.content_mask().bounds, &geometry);
-                }
-                for channel in &geometry.channels {
-                    window.paint_path(
-                        channel.centerline.clone(),
-                        rgb(theme::color(theme::PaletteRole::Border)),
-                    );
-                    window.paint_path(channel.waveform.clone(), rgb(0x000000));
+                    cache.record_paint(bounds, paint.mask, geometry);
                 }
             }
+            geometry
         },
-    ))
-}
-
-fn waveform_surface<T: 'static>(canvas: gpui::Canvas<T>) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .children([canvas.absolute().inset_0()])
+        WaveformColors {
+            waveform: 0x000000,
+            inactive: 0x000000,
+            centerline: theme::color(theme::PaletteRole::Border),
+        },
+        WaveformEmphasis::Uniform,
+    )
 }
 
 pub(super) fn waveform_column_count(width: f32, scale: f32) -> usize {
@@ -715,12 +708,18 @@ mod tests {
                         .w(px(width))
                         .h(px(44.0))
                         .relative()
-                        .children([waveform_surface(canvas(
-                            |_, _, _| (),
-                            move |bounds, _, _, _| {
-                                result.set(Some(bounds));
+                        .children([waveform_plot(
+                            move |paint| {
+                                result.set(Some(paint.bounds));
+                                None::<Rc<hex_widgets::WaveformGeometry>>
                             },
-                        ))])
+                            WaveformColors {
+                                waveform: 0,
+                                inactive: 0,
+                                centerline: 0,
+                            },
+                            WaveformEmphasis::Uniform,
+                        )])
                         .into_element()
                 },
             );
