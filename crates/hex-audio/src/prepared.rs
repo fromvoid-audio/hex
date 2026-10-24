@@ -263,7 +263,7 @@ impl ActivePublication {
 enum QueuedPublication {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     NativeEpoch {
-        target: crate::candidate_custody::NativeEpochTarget,
+        target: native_sources::NativeEpochRuntimeTarget,
         fence: StoppedEditFence,
     },
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -319,6 +319,10 @@ pub enum PublicationPolicy {
     /// Authored structural edit: the shared stopped gate remains held until exact
     /// installation. Stop keeps priority; Play cannot run on the old graph.
     InstallUnderStoppedArrangement(StoppedEditFence),
+    /// Same-source native renewal after actual stopped graph/endpoint return.
+    /// Only its ready native gate admits this ordinary successor; it does not
+    /// inherit an old revoked runtime or authorize a different source context.
+    InstallUnderNativeEpoch(StoppedEditFence),
     /// Structural live edit under the same source/command gate; inherit the actual
     /// installation-boundary transport, routes and voice/release state.
     InheritUnderArrangement(StoppedEditFence),
@@ -451,6 +455,7 @@ pub struct Status {
     verified_streaming_mode: AtomicBool,
     applied_source: applied_source::AppliedSourceStatus,
     recording_source: applied_source::AppliedSourceStatus,
+    ordinary_native_revision: AtomicU64,
     pub midi_recording_fault: AtomicBool,
     split_endpoints: AtomicBool,
     client_exposed: AtomicBool,
@@ -619,6 +624,7 @@ impl Status {
             verified_streaming_mode: AtomicBool::new(false),
             applied_source: applied_source::AppliedSourceStatus::default(),
             recording_source: applied_source::AppliedSourceStatus::default(),
+            ordinary_native_revision: AtomicU64::new(0),
             midi_recording_fault: AtomicBool::new(false),
             split_endpoints: AtomicBool::new(false),
             client_exposed: AtomicBool::new(false),
@@ -1514,14 +1520,27 @@ impl PublicationControl {
         forwarded_pcm: bool,
         source_context: Option<hex_engine::AudioSourceContext>,
     ) -> Result<u64, PublishError> {
-        let reason = if self.status.sampler_edit.native_epoch_active() {
+        let native_epoch = match policy {
+            PublicationPolicy::InstallUnderNativeEpoch(token) => Some(token),
+            _ => None,
+        };
+        let reason = if native_epoch.is_some_and(|token| {
+            self.status
+                .sampler_edit
+                .native_epoch_context(token)
+                .is_none()
+                || self.status.sampler_edit.native_epoch_context(token) != source_context
+                || self.status.native_effect_source().is_some()
+        }) {
+            Some("native successor requires its matching stopped returned source")
+        } else if self.status.sampler_edit.native_epoch_active() && native_epoch.is_none() {
             Some("native epoch excludes unrelated graph publication")
         } else if self.status.sampler_edit.active()
-            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
+            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token)
                 if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
         {
             Some("stopped edit excludes unrelated graph publication")
-        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
+        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token) | PublicationPolicy::InstallUnderNativeEpoch(token)
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
@@ -1562,7 +1581,14 @@ impl PublicationControl {
                 playback,
             });
         };
-        if !self.status.publication_pending.reserve_publication() {
+        let reserved = if native_epoch.is_some() {
+            self.status
+                .publication_pending
+                .reserve_native_epoch_publication()
+        } else {
+            self.status.publication_pending.reserve_publication()
+        };
+        if !reserved {
             return Err(PublishError {
                 reason: "playback publication already pending",
                 playback,
@@ -2718,6 +2744,24 @@ impl Callback {
                     (self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
+                PublicationPolicy::InstallUnderNativeEpoch(token) => {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let live = self
+                        .native_sources
+                        .runtime_transports_are_live(&next.playback);
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let live = false;
+                    (self
+                        .status
+                        .sampler_edit
+                        .native_epoch_context(token)
+                        .is_none()
+                        || self.status.sampler_edit.native_epoch_context(token)
+                            != next.source_context
+                        || self.active.is_some()
+                        || !live)
+                        .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             #[cfg(test)]
@@ -2839,6 +2883,7 @@ impl Callback {
                     | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
                     | PublicationPolicy::InstallSectionWhenReady { .. }
                     | PublicationPolicy::InstallUnderStoppedArrangement(_)
+                    | PublicationPolicy::InstallUnderNativeEpoch(_)
             ) {
                 None
             } else {
@@ -3845,6 +3890,23 @@ impl Callback {
         self.status
             .recording_source
             .publish(self.recording_source());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_revision = self
+            .native_sources
+            .ordinary_runtime_requires_sources()
+            .then(|| {
+                self.active
+                    .as_ref()
+                    .and_then(ActivePublication::legacy)
+                    .map(|active| active.revision)
+            })
+            .flatten()
+            .unwrap_or(0);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let native_revision = 0;
+        self.status
+            .ordinary_native_revision
+            .store(native_revision, Release);
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(ActivePublication::Candidate(active)) = self.active.as_ref() {
             if let Some((position, frame, playing)) = active.owner.test_transport() {

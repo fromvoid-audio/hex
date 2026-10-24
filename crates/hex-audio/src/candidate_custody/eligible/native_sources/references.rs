@@ -79,6 +79,9 @@ impl Bank {
             let Some(Owner::Loaned(control)) = cell.owner.as_ref() else {
                 return Err("native graph endpoint is not loaned");
             };
+            if !control.transport_is_live_on_control() {
+                return Err("native graph source is unavailable");
+            }
             if control.constructor_storage_on_control().is_none()
                 || slot.identity != Some(control.identity())
                 || slot.processor != Some(control.prepared())

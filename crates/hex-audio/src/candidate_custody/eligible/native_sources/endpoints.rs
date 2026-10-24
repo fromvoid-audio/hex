@@ -37,6 +37,41 @@ pub(crate) struct NativeEndpointBank {
     ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    pub(crate) fn runtime_transports_are_live(
+        &self,
+        playback: &hex_engine::playback::Playback,
+    ) -> bool {
+        if self.cycle.revoked() {
+            return false;
+        }
+        let mut live = true;
+        playback.visit_foreign_runtime_bindings(&mut |binding| {
+            let Some(binding) = binding else {
+                live = false;
+                return;
+            };
+            match self.routing[..self.routing_len].binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            }) {
+                Ok(position) => {
+                    live &= self.entries[self.routing[position]]
+                        .as_ref()
+                        .and_then(|entry| entry.0.callback.as_ref())
+                        .is_some_and(NativeEffectEntry::transport_is_live);
+                }
+                Err(_) => live = false,
+            }
+        });
+        live
+    }
+    pub(crate) fn ordinary_runtime_requires_sources(&self) -> bool {
+        self.ordinary_requirements
+            && self
+                .entries
+                .iter()
+                .flatten()
+                .any(|entry| entry.0.signal.runtime_required.load(Ordering::Acquire))
+    }
     pub(crate) fn refresh_runtime_requirements(
         &mut self,
         playback: Option<&hex_engine::playback::Playback>,

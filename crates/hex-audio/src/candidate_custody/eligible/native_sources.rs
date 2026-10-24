@@ -590,6 +590,14 @@ impl Custody {
     }
 
     pub(super) fn advance_native_sources(&self, work: &mut Work, abandoned: bool) {
+        // Ordinary tails can release their last runtime requirement after the
+        // introducing graph has already returned. Re-observe that callback
+        // frontier on this existing control pump, not only on constructor-slot
+        // release or the original retirement request.
+        {
+            let bank = lock(&self.bank);
+            bank.sources.request_unreferenced_returns(&bank.publication);
+        }
         for (index, cell) in work.cells.iter_mut().enumerate() {
             let eligible = {
                 let bank = lock(&self.bank);
