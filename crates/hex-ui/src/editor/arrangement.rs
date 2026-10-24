@@ -823,6 +823,7 @@ impl EditorView {
                                 tick.meter_marker || tick.fragmentary_bar,
                             )))
                             .pl_1()
+                            .pb(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
                             .text_size(px(10.0))
                             .text_color(rgb(if tick.meter_marker {
                                 theme::color(theme::PaletteRole::Text)

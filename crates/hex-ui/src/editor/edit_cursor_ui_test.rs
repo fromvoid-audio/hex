@@ -1970,6 +1970,6 @@ fn time_selection_markers_split_live_above_loop_and_follow_visible_endpoints(
     );
     assert!(visual.debug_bounds("time-marker-top-end").is_none());
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().project, original)
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original)
     });
 }
