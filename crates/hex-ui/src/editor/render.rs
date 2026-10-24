@@ -367,6 +367,9 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
@@ -787,8 +790,16 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
-                    | view.cancel_project_spectrum_resize(cx)
-                    | view.cancel_clip_detail_resize(cx)
+                    | view.project_spectrum_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
+                    | view.clip_detail_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()
@@ -1372,7 +1383,7 @@ impl Render for EditorView {
                 view.request_quit(window, cx);
             }))
             .child(self.title_bar(cx))
-            .child(self.transport(cx))
+            .child(self.transport(window, cx))
             .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))

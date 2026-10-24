@@ -322,3 +322,45 @@ fn search_limits_invalid_ranges_and_disabled_input_preserve_text(cx: &mut TestAp
     visual.run_until_parked();
     input.read_with(&visual, |i, _| assert!(i.text().is_empty()));
 }
+
+#[gpui::test]
+fn block_caret_reserves_a_character_cell_at_empty_and_scrolled_end_positions(
+    cx: &mut TestAppContext,
+) {
+    for text in [
+        "",
+        "İA🎛 /Samples/a-very-long-name-that-scrolls-beyond-the-field.WAV",
+    ] {
+        let (handle, input) = fixture(cx, text);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_keystrokes("end");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            let bounds = input.read(cx).last_bounds.expect("painted input");
+            let mut element = TextInputElement {
+                input: input.clone(),
+            };
+            let state = element.prepaint(None, None, bounds, &mut (), window, cx);
+            let caret = state.cursor.expect("collapsed caret").bounds;
+            assert!(caret.size.width > px(1.0));
+            assert_eq!(caret.size.height, bounds.size.height);
+            assert!(caret.left() >= bounds.left() && caret.right() <= bounds.right());
+        });
+        if !text.is_empty() {
+            visual.simulate_keystrokes("cmd-a");
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                let bounds = input.read(cx).last_bounds.expect("painted input");
+                let mut element = TextInputElement {
+                    input: input.clone(),
+                };
+                assert!(
+                    element
+                        .prepaint(None, None, bounds, &mut (), window, cx)
+                        .cursor
+                        .is_none()
+                );
+            });
+        }
+    }
+}

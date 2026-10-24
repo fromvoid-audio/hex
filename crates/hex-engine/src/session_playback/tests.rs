@@ -10996,6 +10996,119 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
 }
 
 #[test]
+fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history() {
+    thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let region = LoopRegion::new(24_000, 48_000, true).unwrap();
+            let source = mutable_feedback_with_stateful_track_and_return();
+            let oracle = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+                snapshot.loop_region = Some(region)
+            });
+            assert!(source.arrangement().loop_region().is_none());
+            let mut expected = SessionPlayback::new(oracle).unwrap();
+            expected.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut preroll = vec![[0.0; 2]; 24_000];
+            for chunk in preroll.chunks_mut(257) {
+                expected.render(chunk).unwrap();
+            }
+            let mut actual = SessionPlayback::prepare_section_arrangement_preroll(
+                Arc::clone(&source),
+                None,
+                region,
+                24_000,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(actual.loop_region(), Some(region));
+            assert!(Arc::ptr_eq(&actual.revision, &source));
+            assert_eq!(
+                (actual.arrangement_frame(), actual.performance_frame()),
+                (24_000, 24_000)
+            );
+            let mut reference = vec![[0.0; 2]; 48_129];
+            let mut rendered = vec![[0.0; 2]; reference.len()];
+            for chunk in reference.chunks_mut(257) {
+                expected.render(chunk).unwrap();
+            }
+            for chunk in rendered.chunks_mut(127) {
+                actual.render(chunk).unwrap();
+            }
+            assert_eq!(
+                rendered, reference,
+                "first pass, loop gates and stateful return history"
+            );
+            assert_eq!(actual.arrangement_frame(), expected.arrangement_frame());
+            assert_eq!(actual.performance_frame(), expected.performance_frame());
+            assert!(
+                source.arrangement().loop_region().is_none(),
+                "saved loop remains unchanged"
+            );
+            assert_eq!(
+                SessionPlayback::prepare_section_arrangement_preroll(
+                    source,
+                    None,
+                    region,
+                    24_000,
+                    &AtomicBool::new(true),
+                )
+                .unwrap_err(),
+                ArrangementPrerollError::Cancelled
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn section_loop_readmits_rounded_timing_without_rebuilding_note_resources() {
+    thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+        let source = project_at_tempo(0.7, 0, 1 << 32, Tempo::new(123_000_000).unwrap());
+        let region = LoopRegion::new(0, 23_415, true).unwrap();
+        let prepared = revision(&source, Arc::new(hex_devices::SineTable::new()));
+        let periodic = PreparedPeriodicSessionTempo::prepare(prepared.session().timing(), region).unwrap();
+        assert_eq!(periodic.view(prepared.session().timing()).max_micro_bpm(), 123_000_001);
+        let quote = SessionPlayback::section_runtime_allowance(&prepared, region).unwrap();
+        let mut actual = SessionPlayback::prepare_section_arrangement_preroll(
+            Arc::clone(&prepared), None, region, 0, &AtomicBool::new(false)).unwrap();
+        assert!(actual.midi_admission.is_some(), "one micro-bpm rounding needs a new proof");
+        assert!(actual.accounted_runtime_storage_bytes().unwrap() <= quote);
+        let original = &prepared.session().midi_clips()[0];
+        let effective = crate::session_inventory::EffectiveSessionMidi::new(prepared.session(), actual.midi_admission.as_ref()).midi_clip(original.id).unwrap();
+        assert!(Arc::ptr_eq(original.instrument_template().note_bank(), effective.instrument_template().note_bank()), "note resources stay shared");
+        assert_eq!(actual.session_work_envelope(), prepared.session().work());
+        let mut snapshot = source.snapshot();
+        snapshot.loop_region = Some(region);
+        let oracle_source = Project::from_snapshot(snapshot).unwrap();
+        let mut expected = SessionPlayback::new(revision(&oracle_source, Arc::new(hex_devices::SineTable::new()))).unwrap();
+        for runtime in [&mut actual, &mut expected] {
+            runtime.apply(SessionPlaybackCommand::LaunchClip { clip: original.id, quantization: LaunchQuantization::Immediate }).unwrap();
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut rendered = vec![[0.0; 2]; 48_013];
+        let mut oracle = rendered.clone();
+        for chunk in rendered.chunks_mut(127) { actual.render(chunk).unwrap(); }
+        for chunk in oracle.chunks_mut(257) { expected.render(chunk).unwrap(); }
+        assert_eq!(rendered, oracle, "effective source, interval index and release timing match a freshly prepared canonical loop");
+        assert!(prepared.arrangement().loop_region().is_none());
+        let playback = Playback::from_interactive_arrangement_preroll(actual).unwrap();
+        let observation = playback.prepare_observation_on_control().unwrap();
+        assert!(observation.retained_bytes_on_control().unwrap() <= playback.observation_storage_quote_on_control().unwrap());
+        // Re-admission still refuses a truly dense periodic source. One note
+        // per quarter is valid at123bpm but exceeds256 edges/256frames here.
+        let mut snapshot = source.snapshot();
+        let SessionCellContentSnapshot::Midi(clip) = &mut snapshot.session.cells[0].content else { panic!("midi fixture") };
+        clip.source.source_length_raw = 1 << 32;
+        clip.source.loop_end_raw = 1 << 32;
+        clip.source.looping = true;
+        let dense_source = Project::from_snapshot(snapshot).unwrap();
+        let dense = revision(&dense_source, Arc::new(hex_devices::SineTable::new()));
+        assert!(matches!(dense.session().midi_clips()[0].source_template().reprepare_for_timing_on_control(2_000_000_000_000), Err(crate::MidiTemplateError::TooManyEdges | crate::MidiTemplateError::TooManyOnsets)));
+    }).unwrap().join().unwrap();
+}
+
+#[test]
 fn arrangement_preroll_keeps_held_mutable_source_and_return_send_history_aligned() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());

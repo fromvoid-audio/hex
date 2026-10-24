@@ -59,7 +59,7 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new("down", NumericDown, Some("hex_numeric_control")),
         KeyBinding::new("shift-up", NumericUpFine, Some("hex_numeric_control")),
         KeyBinding::new("shift-down", NumericDownFine, Some("hex_numeric_control")),
-        // Only owners that opt in use Command for fine steps, including drafts.
+        // Some owners also expose Command as a fine-step alias. Shift is always fine.
         KeyBinding::new(
             "cmd-up",
             NumericUpFine,
@@ -68,16 +68,6 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
         KeyBinding::new(
             "cmd-down",
             NumericDownFine,
-            Some("hex_numeric_control && hex_numeric_command_steps"),
-        ),
-        KeyBinding::new(
-            "shift-up",
-            NumericUp,
-            Some("hex_numeric_control && hex_numeric_command_steps"),
-        ),
-        KeyBinding::new(
-            "shift-down",
-            NumericDown,
             Some("hex_numeric_control && hex_numeric_command_steps"),
         ),
     ]);
@@ -258,8 +248,8 @@ impl NumericControlConfig {
         Ok(self)
     }
 
-    /// Opt into Command-fine arrow steps and stepping a valid local text draft.
-    /// Shift remains coarse; other controls keep their existing Shift-fine policy.
+    /// Add Command-fine arrows as aliases for the universal Shift-fine keys.
+    /// Every control supports stepping a valid local text draft.
     pub fn with_command_fine_steps(mut self) -> Self {
         self.command_fine_steps = true;
         self
@@ -958,7 +948,7 @@ impl NumericControl {
         if self.editing {
             // A composing or invalid draft must never be replaced with the old
             // canonical value. Stepping remains local until Enter/blur commits.
-            if !self.command_fine_steps || self.marked.is_some() {
+            if self.marked.is_some() {
                 return;
             }
             if let Ok(current) = self.spec.parse(&self.text)
@@ -1542,7 +1532,7 @@ impl gpui::Render for NumericControl {
                 .flex()
                 .py(px(4.0))
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     crate::device_meters::well(
                         self.id.clone(),

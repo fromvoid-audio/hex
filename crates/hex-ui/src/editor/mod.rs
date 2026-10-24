@@ -34,7 +34,10 @@ mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod navigation_metrics;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
+mod section_launch;
 mod track_header;
 mod track_header_device_drop;
 mod workspace_view;
@@ -51,6 +54,9 @@ mod test_environment;
 mod activation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod activation_ui_test;
+mod arrange_clip_range;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod arrange_clip_range_ui_tests;
 mod audio_import_settings;
 pub(crate) mod changelog;
 mod clip_detail_resize;
@@ -62,6 +68,7 @@ mod clip_view;
 mod clip_view_ui_test;
 mod close;
 mod computer_keyboard;
+mod console_columns;
 mod console_drop;
 mod context_menu;
 mod controller;
@@ -87,6 +94,7 @@ mod fades;
 mod gain_lane;
 mod gain_recording;
 mod header;
+mod input_quantization;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
@@ -107,6 +115,7 @@ mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;
+mod midi_recording;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -637,12 +646,14 @@ pub(super) struct EditorView {
     project_tempo_control: Option<tempo_input::Binding>,
     track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
+    midi_recorder: midi_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
     sections: arrangement_sections::Sections,
+    section_autoplay: bool,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -773,6 +784,7 @@ pub(super) struct EditorView {
     device_panel_active: bool,
     clip_detail_body_height: f32,
     clip_detail_resize: clip_detail_resize::State,
+    arrange_clip_range: arrange_clip_range::State,
     retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
@@ -839,6 +851,7 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
+    input_quantization: hex_project::InputQuantization,
     #[cfg(test)]
     test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
@@ -1265,6 +1278,9 @@ impl EditorView {
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path.with_file_name("audio-import.json"),
         );
+        let controller_input = controller_input::ControllerInput::new(
+            theme_preferences_path.with_file_name("midi-input.json"),
+        );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -1290,12 +1306,14 @@ impl EditorView {
             project_tempo_control: None,
             track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
+            midi_recorder: midi_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
             sections: arrangement_sections::Sections::default(),
+            section_autoplay: false,
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -1396,7 +1414,7 @@ impl EditorView {
             recovery_failure: None,
             recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
-            controller_input: controller_input::ControllerInput::default(),
+            controller_input,
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             audio_event_editor: audio_event_editor::State::default(),
@@ -1421,6 +1439,7 @@ impl EditorView {
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             clip_detail_resize: clip_detail_resize::State::default(),
+            arrange_clip_range: arrange_clip_range::State::default(),
             retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
@@ -1481,6 +1500,7 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
+            input_quantization: hex_project::InputQuantization::Off,
             #[cfg(test)]
             test_environment,
             browser,
@@ -1516,6 +1536,7 @@ impl EditorView {
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
+        view.start_controller_preferences_load(cx);
         view
     }
 
@@ -1558,6 +1579,7 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
         if let Some(state) = self.state.as_ref() {
             self.gain_lane.change_owner(track, &state.project);
         }
@@ -1802,6 +1824,7 @@ impl EditorView {
             }
         }
         self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {

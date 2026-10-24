@@ -5,16 +5,16 @@ use crate::theme;
 use gpui::{CursorStyle, Div, Stateful, Window, div, prelude::*, px, relative, rgb};
 use hex_project::{Command, TrackId};
 use hex_session::service::Request;
+use hex_widgets::{RangeSelectionTarget, RangeSelectionZones};
 use std::time::Instant;
 
-pub(super) const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
+pub(super) const SELECTION_HANDLE_FRACTION: f32 = hex_widgets::RANGE_HANDLE_FRACTION;
 
 /// A compact row keeps the complete title usable; larger rows retain their
 /// existing proportional move rail. Rendered affordances and hit tests agree.
 pub(super) fn header_hit_height(row_height: f32) -> f32 {
-    (row_height * SELECTION_HANDLE_FRACTION)
-        .max(super::clip_name::CLIP_NAME_HEIGHT)
-        .min(row_height)
+    RangeSelectionZones::new(row_height, super::clip_name::CLIP_NAME_HEIGHT)
+        .map_or(0.0, RangeSelectionZones::handle_height)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,7 +238,12 @@ impl EditorView {
         let lane = self.main_track_lane_bounds.filter(|lane| {
             self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
         })?;
-        if y >= lane.top + header_hit_height(lane.height) {
+        if RangeSelectionZones::new(lane.height, super::clip_name::CLIP_NAME_HEIGHT)?.target(
+            y - lane.top,
+            true,
+            false,
+        ) != Some(RangeSelectionTarget::Move)
+        {
             return None;
         }
         let frame = super::seek::pointer_to_frame(
@@ -414,7 +419,10 @@ impl EditorView {
             return false;
         };
         // The visible title/move rail is the handle; the rest reselects.
-        if y >= lane.top + header_hit_height(lane.height) {
+        if RangeSelectionZones::new(lane.height, super::clip_name::CLIP_NAME_HEIGHT)
+            .and_then(|zones| zones.target(y - lane.top, true, false))
+            != Some(RangeSelectionTarget::Move)
+        {
             return false;
         }
         let Some(track_offset) = range.tracks().iter().position(|item| *item == track) else {
@@ -956,6 +964,7 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
+        self.finish_arrange_range_fit();
         true
     }
 
@@ -977,6 +986,7 @@ impl EditorView {
     pub(super) fn cancel_time_selection_gesture(&mut self) -> bool {
         let had_move = self.cancel_time_range_move_gesture();
         let had_gesture = self.time_selection_gesture.take().is_some();
+        self.cancel_arrange_range_fit();
         if had_move {
             self.advance_selection_intent();
             self.suppress_cursor_click = false;

@@ -2146,7 +2146,9 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestAppContext) {
+fn clip_and_sample_drags_clear_unavailable_targets_and_recover_from_invalid_pointer(
+    cx: &mut TestAppContext,
+) {
     use hex_session::service::AudioPreview;
     use hex_session::{CachedPeak as Peak, CachedWaveform as Waveform};
     use std::cell::Cell;
@@ -2241,7 +2243,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
                 length: clip.length(),
             },
             grab_offset: Rc::new(Cell::new(Some(0))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
             scroll: Default::default(),
@@ -2311,6 +2313,63 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             clip_drag.destination.get(),
             Some(ClipDropDestination::ExistingTrack(track))
         );
+        for (invalid, origin) in [
+            (f32::NAN, None),
+            (f32::INFINITY, None),
+            (f32::NEG_INFINITY, None),
+            (-f32::MAX, Some(f32::MAX)),
+        ] {
+            for target_y in [lane_point.y, lane.top()] {
+                clip_drag.capture.set(None);
+                let (valid, hovered) = view.clip_drag_drop_position(
+                    &clip_drag,
+                    f32::from(lane_point.x),
+                    f32::from(target_y),
+                );
+                assert!(hovered);
+                assert!(clip_drag.destination.get().is_some());
+                if target_y == lane_point.y {
+                    assert!(valid.is_some());
+                } else {
+                    assert!(matches!(
+                        clip_drag.destination.get(),
+                        Some(ClipDropDestination::NewTrack { .. })
+                    ));
+                    assert!(clip_drag.insertion_line_y.get().is_some());
+                }
+                clip_drag.capture.set(origin.and_then(|x| {
+                    hex_widgets::RectangleCapture::begin(
+                        super::drag::ClipPointerKey {
+                            generation: clip_drag.project_generation,
+                            clip: clip_drag.clip,
+                        },
+                        hex_widgets::RectanglePart::Body,
+                        x,
+                        true,
+                    )
+                }));
+                let held = clip_drag.capture.get();
+                let (rejected, hovered) =
+                    view.clip_drag_drop_position(&clip_drag, invalid, f32::from(target_y));
+                assert!(rejected.is_none() && !hovered);
+                assert!(
+                    clip_drag.destination.get().is_none(),
+                    "invalid pointer must clear the previous target"
+                );
+                assert!(clip_drag.insertion_line_y.get().is_none());
+                assert_eq!(clip_drag.capture.get(), held, "retain the finite press");
+                let (recovered, hovered) = view.clip_drag_drop_position(
+                    &clip_drag,
+                    f32::from(lane_point.x),
+                    f32::from(lane_point.y),
+                );
+                assert!(recovered.is_some() && hovered);
+                assert_eq!(
+                    clip_drag.destination.get(),
+                    Some(ClipDropDestination::ExistingTrack(track))
+                );
+            }
+        }
         clip_drag.preview.set(preview);
         let (preview, lane_hovered) = view.clip_drag_drop_position(
             &clip_drag,

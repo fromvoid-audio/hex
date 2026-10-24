@@ -7,6 +7,7 @@ use crate::{MidiTiming, midi_compile::MidiEventKind};
 mod current_sampler;
 mod density;
 mod origin;
+mod readmission;
 pub use origin::SessionMidiOrigin;
 mod spans;
 use density::{DensityEnvelope, DensityEvent, admit_density};
