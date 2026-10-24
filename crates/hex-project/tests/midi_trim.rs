@@ -56,7 +56,8 @@ fn midi_trim_preserves_notes_source_and_history_and_can_reveal_them_again() {
         .expect("preview");
     assert_eq!(candidate.start(), beat(13));
     assert_eq!(candidate.length(), beat(9));
-    assert_eq!(candidate.source_start(), beat(3));
+    assert_eq!(candidate.source_start(), original.source_start());
+    assert_eq!(candidate.playback_offset(), beat(3));
     assert_eq!(editor.project().midi_clip(id), Some(&original));
     editor
         .execute(Command::TrimMidiClipEdge {
@@ -66,6 +67,25 @@ fn midi_trim_preserves_notes_source_and_history_and_can_reveal_them_again() {
         })
         .expect("trim");
     let trimmed = editor.project().midi_clip(id).expect("clip").clone();
+    assert_eq!(
+        trimmed
+            .source_playback()
+            .unwrap()
+            .source_phase_at_elapsed(BeatTime::ZERO),
+        Some(beat(3))
+    );
+    let heard = trimmed
+        .source_playback()
+        .unwrap()
+        .note_occurrences(beat(4), beat(1))
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        (heard.timeline_start(), heard.gate_duration()),
+        (beat(1), beat(1))
+    );
     assert_eq!(trimmed.notes(), original.notes());
     assert_eq!(trimmed.source_length(), original.source_length());
     assert_eq!(trimmed.loop_start(), original.loop_start());
@@ -99,7 +119,18 @@ fn midi_trim_bounds_keep_nonempty_source_and_allow_silent_right_extension() {
     let latest = clip
         .preview_edge_trim(TrimEdge::Left, BeatTime::from_raw(u64::MAX))
         .expect("source bound");
-    assert_eq!(latest.source_start().raw(), beat(8).raw() - 1);
+    assert_eq!(latest.source_start(), clip.source_start());
+    assert_eq!(latest.length().raw(), 1);
+    let silent = clip
+        .source_playback()
+        .unwrap()
+        .with_playback_offset(latest.playback_offset())
+        .unwrap();
+    assert_eq!(silent.source_phase_at_elapsed(BeatTime::ZERO), None);
+    assert_eq!(
+        silent.note_occurrences(beat(4), beat(1)).unwrap().count(),
+        0
+    );
     assert_eq!(latest.start().raw() + latest.length().raw(), beat(22).raw());
     let shortest = clip
         .preview_edge_trim(TrimEdge::Right, BeatTime::ZERO)
@@ -119,7 +150,16 @@ fn midi_loop_left_trim_advances_intro_and_rewinds_loop_phase_without_note_expans
     let advanced = intro
         .preview_edge_trim(TrimEdge::Left, beat(18))
         .expect("wrap intro");
-    assert_eq!(advanced.source_start(), beat(5)); // 1 + 8 -> loop [2,6): 5
+    assert_eq!(advanced.source_start(), intro.source_start());
+    let audible = intro
+        .source_playback()
+        .unwrap()
+        .with_playback_offset(advanced.playback_offset())
+        .unwrap();
+    assert_eq!(
+        audible.source_phase_at_elapsed(BeatTime::ZERO),
+        Some(beat(5))
+    ); // 1 + 8 -> loop [2,6): 5
     let earliest = intro
         .preview_edge_trim(TrimEdge::Left, BeatTime::ZERO)
         .expect("intro bound");
@@ -257,10 +297,19 @@ fn one_shot_left_extension_prepends_blank_time_and_preserves_absolute_notes_and_
         })
         .unwrap();
     let shrunk = editor.project().midi_clip(id).unwrap();
-    assert_eq!(shrunk.source_start(), beat(8));
+    assert_eq!(shrunk.source_start(), BeatTime::ZERO);
+    assert_eq!(
+        shrunk
+            .source_playback()
+            .unwrap()
+            .source_phase_at_elapsed(BeatTime::ZERO),
+        Some(beat(8))
+    );
     assert_eq!(shrunk.notes()[0].id(), old_note.id());
     assert_eq!(
-        shrunk.start().raw() + shrunk.notes()[0].start().raw() - shrunk.source_start().raw(),
+        shrunk.start().raw() + shrunk.notes()[0].start().raw()
+            - shrunk.source_start().raw()
+            - shrunk.playback_offset().raw(),
         absolute as u64
     );
 }

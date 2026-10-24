@@ -207,8 +207,11 @@ impl MidiClip {
     }
     /// Preview an edge edit in O(1) metadata work without copying authored notes.
     /// Right extension may expose silence for a one-shot. Left edits preserve the
-    /// exclusive end and advance/rewind the source marker. A one-shot may grow
-    /// a silent source prefix; loop-phase and intro rewinds retain their law.
+    /// exclusive end. Inward left trims advance an elapsed playback window,
+    /// retaining authored markers/notes and chasing a crossing gate for its
+    /// remaining duration. Left extension consumes that window first, then uses
+    /// the source-marker/blank-prefix rewind law. Silent one-shot tails remain
+    /// valid windows; loop phase is projected from the retained source law.
     pub fn preview_edge_trim(
         &self,
         edge: crate::TrimEdge,
