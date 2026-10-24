@@ -1,4 +1,4 @@
-//! Retained construction refusal. Root may observe cleanup without disposing
+//! Retained construction or epoch refusal. Root may observe cleanup without disposing
 //! the actual lease on an error-return path or inferring completion from Drop.
 use super::*;
 
@@ -8,7 +8,7 @@ pub(super) enum Custody {
     Native(Lease),
 }
 
-/// Physical construction cleanup only. Neither result admits a native source,
+/// Physical native refusal cleanup only. Neither result admits a native source,
 /// acknowledges a graph, or establishes callback/Root return.
 #[derive(Clone, Copy, Debug)]
 pub enum PreparationDisposal {
@@ -18,7 +18,7 @@ pub enum PreparationDisposal {
     Reaped(Retirement),
 }
 
-/// Unique failed-preparation custody. Keep this on the existing control or
+/// Unique failed-preparation/epoch custody. Keep this on the existing control or
 /// lifecycle worker until `poll_disposal_on_control` observes completion. An
 /// error/timeout leaves custody retained; it never permits reuse. Drop remains
 /// a joining control-only fallback, not an observable disposal receipt.

@@ -201,7 +201,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "a",
-                    "arrangement automation view · a · track gain",
+                    "arrangement automation view · track gain",
                     |view, _, cx| {
                         view.toggle_automation_view(cx);
                     },
