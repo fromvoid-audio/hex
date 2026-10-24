@@ -226,7 +226,7 @@ pub(super) fn at_cut(
             }
             let clock = timing_view_for(
                 previous.revision.session(),
-                previous.periodic_tempo,
+                previous.periodic_tempo(),
                 previous.anchor,
             );
             let frame = previous.performance_frame;

@@ -3,6 +3,86 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
+fn event_grid_paints_over_opaque_audio_at_full_and_zoomed_extents(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for viewport in [
+        None,
+        Some(Viewport {
+            start: 12_000,
+            length: 48_000,
+        }),
+    ] {
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.grid = SnapGrid::Quarter;
+            v.audio_event_editor.viewport = viewport;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("audio-events-waveform").unwrap();
+        let grid = visual
+            .debug_bounds("audio-event-musical-grid")
+            .expect("visible event grid");
+        assert!(grid.top() >= body.top() + px(22.0));
+        let frame = editor.read_with(&visual, |v, _| {
+            let root = v.event_context().unwrap().1;
+            let viewport = v.event_project_viewport(&root).unwrap();
+            super::super::musical_time::grid_lines(
+                &v.state.as_ref().unwrap().project,
+                viewport,
+                f32::from(body.size.width),
+                SnapGrid::Quarter,
+            )
+            .into_iter()
+            .find(|l| l.frame > viewport.start && l.frame < viewport.end().unwrap())
+            .unwrap()
+            .frame
+        });
+        let selector = Box::leak(format!("clip-grid-line-{frame}").into_boxed_str());
+        let line = visual.debug_bounds(selector).unwrap();
+        assert!(line.top() >= grid.top() && line.bottom() <= grid.bottom());
+        let lines = visual.rendered_quad_paint_layers(selector, false);
+        let events = visual.rendered_quad_paint_layers("audio-event-1", false);
+        assert!(!lines.is_empty() && !events.is_empty());
+        assert!(
+            lines.iter().map(|x| x.0).min().unwrap() > events.iter().map(|x| x.0).max().unwrap(),
+            "grid must remain visible over the opaque event fill"
+        );
+    }
+}
+
+#[gpui::test]
+fn event_pointer_matches_arrangement_and_retains_move_and_trim_targets(cx: &mut TestAppContext) {
+    let (handle, _, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    for (position, expected) in [
+        (
+            point(b.center().x, b.bottom() - px(15.0)),
+            gpui::CursorStyle::Arrow,
+        ),
+        (
+            point(b.center().x, b.top() + px(26.0)),
+            gpui::CursorStyle::OpenHand,
+        ),
+        (
+            point(b.left() + px(2.0), b.center().y),
+            gpui::CursorStyle::ResizeLeftBracket,
+        ),
+        (
+            point(b.right() - px(2.0), b.center().y),
+            gpui::CursorStyle::ResizeRightBracket,
+        ),
+    ] {
+        visual.simulate_mouse_move(position, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_cursor_style(), Some(expected));
+    }
+}
+
+#[gpui::test]
 fn event_ruler_selection_grid_and_shortcuts_stay_inside_clip_editor(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
@@ -459,6 +539,7 @@ fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
                     start: 0,
                     end: 10,
                     source_start: 70,
+                    fade: None,
                 }],
             },
         })

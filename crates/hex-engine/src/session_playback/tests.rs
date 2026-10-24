@@ -1069,6 +1069,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+            content_view: None,
             active: true,
             playback_offset_raw: 0,
             one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -1211,6 +1212,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -6964,6 +6966,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -8959,6 +8962,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -11148,8 +11152,7 @@ fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect
         .name("hex-engine-loop-preroll-test".into())
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
-            let prepared = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
-                snapshot.loop_region = Some(LoopRegion::new(128, 1024, true).unwrap());
+            let tempo = |snapshot: &mut Snapshot| {
                 snapshot.tempo_points.push(TempoPoint::new(
                     BeatTime::from_ratio(1, 100).unwrap(),
                     Tempo::new(90_000_000).unwrap(),
@@ -11160,18 +11163,29 @@ fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect
                     BeatTime::from_ratio(1, 10).unwrap(),
                     Tempo::new(180_000_000).unwrap(),
                 ));
+            };
+            let linear = mutable_feedback_with_stateful_track_and_return_edited(tempo);
+            let prepared = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+                tempo(snapshot);
+                snapshot.loop_region = Some(LoopRegion::new(128, 1024, true).unwrap());
             });
             for (requested, destination) in [
                 (0, 0),
                 (64, 64),
                 (128, 128),
                 (512, 512),
-                (1024, 128),
-                (1408, 512),
-                (91_008, 512),
+                (1024, 1024),
+                (1408, 1408),
+                (91_008, 91_008),
             ] {
                 for playing in [false, true] {
-                    assert_loop_preroll_continuation(&prepared, requested, destination, playing);
+                    assert_loop_preroll_continuation(
+                        &prepared,
+                        &linear,
+                        requested,
+                        destination,
+                        playing,
+                    );
                 }
             }
         })
@@ -11183,6 +11197,7 @@ fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect
 #[inline(never)]
 fn assert_loop_preroll_continuation(
     prepared: &Arc<PreparedRevision>,
+    linear: &Arc<PreparedRevision>,
     requested: u64,
     destination: u64,
     playing: bool,
@@ -11191,7 +11206,8 @@ fn assert_loop_preroll_continuation(
     {
         // Ordinary uninterrupted playback is independently covered against
         // explicitly authored linear occurrences in transport_loop_tests.
-        let mut oracle = SessionPlayback::new(Arc::clone(prepared)).unwrap();
+        let source = if destination < 1024 { prepared } else { linear };
+        let mut oracle = SessionPlayback::new(Arc::clone(source)).unwrap();
         oracle.apply(SessionPlaybackCommand::Play).unwrap();
         render_checkpoint_partitioned(&mut oracle, &[17, 61, 193], destination as usize);
         oracle.render(&mut expected).unwrap();
@@ -11238,7 +11254,11 @@ fn assert_loop_preroll_continuation(
     );
     assert_eq!(
         candidate.position(),
-        128 + (destination + actual.len() as u64 - 128) % 896
+        if destination < 1024 {
+            128 + (destination + actual.len() as u64 - 128) % 896
+        } else {
+            destination + actual.len() as u64
+        }
     );
 }
 

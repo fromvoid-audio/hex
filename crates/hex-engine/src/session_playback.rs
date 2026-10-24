@@ -41,6 +41,8 @@ pub enum SessionPlaybackCommand {
     Play,
     Pause,
     Stop,
+    /// Absolute first-pass cursor. At/after the loop end, retain the canonical
+    /// linear tempo/source law instead of normalizing backwards into the loop.
     Seek(u64),
     LaunchClip {
         clip: ClipId,
@@ -330,7 +332,7 @@ const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
 
 /// Control-owned source conversion ceiling, separate from general WAV export.
-pub const MAX_FINITE_BOUNCE_FRAMES: u64 = 8_000_000;
+pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderConstruction {
@@ -1170,6 +1172,17 @@ impl SessionPlayback {
         Self::new_with_policy_scoped(revision, false, Some(resources))
     }
 
+    /// Construct an unused interactive candidate with an existing launched loop.
+    /// Control owns construction/admission; callback inheritance supplies its actual clock.
+    pub(crate) fn new_section_candidate(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::section_runtime_allowance(&revision, region)?;
+        Self::new_with_policy_and_loop(revision, false, Some(resources), Some(region))
+    }
+
     fn new_with_policy_scoped(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
@@ -1649,14 +1662,24 @@ impl SessionPlayback {
     }
 
     pub(crate) fn periodic_tempo(&self) -> Option<PreparedPeriodicSessionTempo> {
-        self.periodic_tempo
+        self.periodic_tempo_at(self.arrangement_frame, self.arrangement_loop_pass)
+    }
+
+    fn periodic_tempo_at(
+        &self,
+        frame: u64,
+        loop_pass: u64,
+    ) -> Option<PreparedPeriodicSessionTempo> {
+        self.active_loop_region_at(frame, loop_pass)
+            .and(self.periodic_tempo)
     }
 
     pub fn performance_frame(&self) -> u64 {
         self.performance_frame
     }
 
-    /// One active loop law for rendering, demand, gate admission and capture.
+    /// Configured loop law for capability/admission checks. Rendering and demand
+    /// use `active_loop_region` to respect absolute cursors after the loop.
     /// A transient section loop never changes the immutable saved revision.
     pub(crate) fn loop_region(&self) -> Option<hex_project::LoopRegion> {
         if self.linear_arrangement_export {
@@ -1666,6 +1689,19 @@ impl SessionPlayback {
                 .or_else(|| self.revision.arrangement().loop_region())
                 .filter(|region| region.enabled())
         }
+    }
+
+    /// The saved/audition loop participates only when playback reaches it from
+    /// before its end. An absolute seek at or after the end begins a linear
+    /// first pass; a completed wrap retains the existing periodic loop law.
+    /// This query does not change loop settings or introduce transport state.
+    pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
+        self.active_loop_region_at(self.arrangement_frame, self.arrangement_loop_pass)
+    }
+
+    fn active_loop_region_at(&self, frame: u64, loop_pass: u64) -> Option<hex_project::LoopRegion> {
+        self.loop_region()
+            .filter(|region| loop_pass > 0 || frame < region.end())
     }
 
     /// Exact immutable graph retained by this runtime.
@@ -1740,7 +1776,7 @@ impl SessionPlayback {
         playing: bool,
     ) -> Result<(), SessionPlaybackError> {
         self.require_fresh_candidate()?;
-        self.validate_legacy_transport(performance_frame)?;
+        self.validate_legacy_transport(arrangement_frame, performance_frame)?;
         self.candidate_admission_open = false;
         self.arrangement_frame = arrangement_frame;
         self.performance_frame = performance_frame;
@@ -1750,15 +1786,19 @@ impl SessionPlayback {
 
     pub(crate) fn validate_legacy_transport(
         &self,
+        arrangement_frame: u64,
         performance_frame: u64,
     ) -> Result<(), SessionPlaybackError> {
         use crate::MidiTiming;
         // Legacy finite playback accepts frame positions beyond the Session
         // beat domain. Refuse promotion before modifying the candidate rather
         // than accepting a graph that will fail at its first render/launch.
-        base_timing_for(self.revision.session(), self.periodic_tempo)
-            .frame_to_beat(performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        base_timing_for(
+            self.revision.session(),
+            self.periodic_tempo_at(arrangement_frame, 0),
+        )
+        .frame_to_beat(performance_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
         Ok(())
     }
 
@@ -1808,6 +1848,27 @@ impl SessionPlayback {
                 .is_err()
                 || active
         })
+    }
+
+    /// Offline bounce completion after the isolated source's final gate. Checks
+    /// actual analytic releases and mutable processor state, never output silence.
+    /// The caller must exclude future source events and nonzero latency paths.
+    pub fn arrangement_bounce_is_quiescent(&self) -> bool {
+        !self.has_active_arrangement_voices()
+            && self.releases.is_empty()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|r| r.committed_is_quiescent())
+            && self
+                .device_chains
+                .iter()
+                .chain(self.return_chains.iter())
+                .chain(std::iter::once(&self.main_chain))
+                .all(|c| c.committed_range_is_quiescent(0..c.len()))
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
     }
 
     pub fn release_voice_count(&self) -> usize {
@@ -1892,7 +1953,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn timing_view(&self) -> SessionTimingView<'_> {
-        timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor)
+        timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
     }
 
     fn owner_for_target(

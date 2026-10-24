@@ -137,6 +137,7 @@ impl EditorView {
                         let message = self.status.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: message.clone().into(),
                             })
                             .into()
@@ -217,6 +218,7 @@ impl EditorView {
                     let description = self.audio_admission.description();
                     move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: description.clone().into(),
                         })
                         .into()
@@ -274,6 +276,7 @@ impl EditorView {
         bar = bar.child(
             crate::output_meter::render(meter_input).tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: crate::output_meter::description(meter_input).into(),
                 })
                 .into()
@@ -307,6 +310,7 @@ impl EditorView {
                         let description = diagnostic.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: description.clone().into(),
                             })
                             .into()
@@ -355,6 +359,7 @@ fn status_slot(
         slot = slot
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: full_status.clone().into(),
                 })
                 .into()
@@ -367,6 +372,9 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
@@ -614,6 +622,11 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     cx.notify();
                 }
+                if event.keystroke.key == "f" && view.audio_event_editor.fade_key_held {
+                    view.audio_event_editor.fade_key_held = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
                 if event.keystroke.key == "f" && view.fade_key_held {
                     view.fade_key_held = false;
                     cx.notify();
@@ -629,6 +642,10 @@ impl Render for EditorView {
                     return;
                 }
                 if view.arrangement_view_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if view.reverse_clip_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -784,6 +801,11 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_bounce() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
@@ -1232,6 +1254,16 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &super::BounceInPlace, window, cx| {
+                view.bounce_arrangement_selection(true, window);
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::BounceToNewTracks, window, cx| {
+                    view.bounce_arrangement_selection(false, window);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window);
                 cx.notify();

@@ -135,7 +135,10 @@ fn loop_wraps_retrigger_from_arrangement_grid_and_cut_tail() {
     }
     let mut seeked = playing(source);
     seeked.apply(PlaybackCommand::Seek(8_100));
-    assert_eq!(render_partitioned(&mut seeked, 1, 1), vec![[0.16; 2]]);
+    assert_eq!(render_partitioned(&mut seeked, 1, 1), vec![[0.0; 2]]);
+    assert_eq!(seeked.position(), 8_101);
+    seeked.apply(PlaybackCommand::Seek(12_000));
+    assert_eq!(render_partitioned(&mut seeked, 1, 1), vec![[0.1; 2]]);
 }
 
 #[test]

@@ -13,10 +13,13 @@ use metronome::Metronome;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
-    /// Seek and start in one callback action, resetting the same state as Seek.
+    /// Seek and start at this absolute frame, resetting the same state as Seek.
+    /// A cursor at/after the enabled loop end continues linearly beyond it;
+    /// a cursor before the end enters/wraps the loop without changing its bounds.
     PlayFrom(u64),
     Pause,
     Stop,
+    /// Absolute content cursor; loop participation resumes only before its end.
     Seek(u64),
 }
 
@@ -825,6 +828,25 @@ impl Playback {
         ))
     }
 
+    /// Prepare an unused interactive candidate retaining a launched section loop.
+    /// This performs no seek or replay; the ordinary callback handoff owns clock/state transfer.
+    pub fn try_from_prepared_section_candidate(
+        prepared_revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, crate::SessionPlaybackError> {
+        let runtime = SessionPlayback::new_section_candidate(
+            Arc::clone(&prepared_revision),
+            resources,
+            region,
+        )?;
+        Ok(Self::from_parts(
+            prepared_revision,
+            Some(Box::new(runtime)),
+            None,
+        ))
+    }
+
     /// Install a completed control-prepared Arrangement preroll without
     /// reconstructing or seeking the runtime. The runtime's exact prepared
     /// revision, clocks and play state are retained as-is. This is still the
@@ -1105,7 +1127,7 @@ impl Playback {
                 start,
                 self.session_runtime.as_ref().map_or_else(
                     || self.project.loop_region(),
-                    |runtime| runtime.loop_region(),
+                    |runtime| runtime.active_loop_region(),
                 ),
                 output,
             );
@@ -1510,7 +1532,7 @@ impl Playback {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);
                 }
-                next.validate_legacy_transport(previous.performance_frame)
+                next.validate_legacy_transport(previous.position(), previous.performance_frame)
                     .map_err(PlaybackHandoffError::Session)?;
                 if legacy_arrangement_state_cannot_be_seeded(previous) {
                     return Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured);
@@ -1955,7 +1977,11 @@ impl Playback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
-        let Some(region) = self.project.loop_region().filter(|region| region.enabled()) else {
+        let Some(region) = self
+            .project
+            .loop_region()
+            .filter(|region| region.enabled() && self.position < region.end())
+        else {
             return self.render_linear_with_pages(output, pages);
         };
         output.fill([0.0; 2]);
@@ -1966,10 +1992,6 @@ impl Playback {
         let start = region.start();
         let end = region.end();
         let length = end - start;
-        if self.position >= end {
-            self.position = start + (self.position - start) % length;
-        }
-
         let mut output_offset = 0_usize;
         while output_offset < output.len() {
             if self.position == end {

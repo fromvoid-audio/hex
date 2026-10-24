@@ -1,4 +1,4 @@
-//! One reversible stopped-only control edit fence shared by sampler and Arrangement edits. Scalar transport exclusion,
+//! One reversible control edit fence shared by stopped sampler and Arrangement edits. Scalar transport exclusion,
 //! not a source lease, graph admission or installation receipt.
 use super::*;
 
@@ -20,7 +20,11 @@ pub(super) struct Fence {
     // introduce a pre-fence command after the fence has been released.
     serial: AtomicU64,
     resident: AtomicBool,
+    allow_playing: AtomicBool,
+    playing: AtomicBool,
     position: AtomicU64,
+    loop_start: AtomicU64,
+    loop_end: AtomicU64,
     pub(super) ready_transport_epoch: AtomicU64,
     output: AtomicU64,
     generation: AtomicU64,
@@ -53,13 +57,14 @@ impl Fence {
         source: AppliedAudioSource,
         cut: u64,
     ) -> Result<StoppedEditFence, &'static str> {
-        self.begin_source(source, cut, false)
+        self.begin_source(source, cut, false, false)
     }
     fn begin_source(
         &self,
         source: AppliedAudioSource,
         cut: u64,
         resident: bool,
+        allow_playing: bool,
     ) -> Result<StoppedEditFence, &'static str> {
         self.retire_abort_on_control();
         let prior = self.gate();
@@ -67,6 +72,7 @@ impl Fence {
             .checked_add(1)
             .filter(|n| *n != u64::MAX && prior & 1 == 0)
             .ok_or("sampler edit is busy or its identity is exhausted")?;
+        self.allow_playing.store(allow_playing, SeqCst);
         self.resident.store(resident, SeqCst);
         self.output.store(source.output_identity, SeqCst);
         self.generation
@@ -143,8 +149,11 @@ impl Fence {
             return;
         }
         self.keyboard_epoch.store(keyboard_epoch, SeqCst);
-        self.accepted
-            .store(!faulted && !playing && source == Some(expected), SeqCst);
+        self.playing.store(playing, SeqCst);
+        self.accepted.store(
+            !faulted && (!playing || self.allow_playing.load(SeqCst)) && source == Some(expected),
+            SeqCst,
+        );
         self.ack.store(operation, SeqCst);
     }
     pub(super) fn state(&self, token: StoppedEditFence) -> StoppedEditFenceState {
@@ -183,12 +192,29 @@ impl Status {
     }
 }
 impl PublicationControl {
+    /// Fence a resident structural edit while allowing the existing runtime to keep playing.
+    /// The ready witness selects live inheritance instead of a prepared stopped cursor.
+    pub fn request_live_arrangement_edit_fence(
+        &self,
+        generation: u64,
+        revision: u64,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_arrangement_edit_fence_impl(generation, revision, true)
+    }
     /// Fence an ordinary resident runtime after its admitted command prefix. The
     /// callback, rather than UI telemetry, proves source identity and stopped state.
     pub fn request_arrangement_edit_fence(
         &self,
         generation: u64,
         revision: u64,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_arrangement_edit_fence_impl(generation, revision, false)
+    }
+    fn request_arrangement_edit_fence_impl(
+        &self,
+        generation: u64,
+        revision: u64,
+        allow_playing: bool,
     ) -> Result<StoppedEditFence, &'static str> {
         if self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
@@ -210,13 +236,26 @@ impl PublicationControl {
             },
             self.status.admitted_ticket.load(Acquire),
             true,
+            allow_playing,
         )
     }
-    /// Actual callback-observed stopped frame, available only for this ready gate.
+    /// Actual callback-observed frame, available only for this ready arrangement gate.
     pub fn arrangement_edit_position(&self, token: StoppedEditFence) -> Option<u64> {
         (self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready
             && self.status.sampler_edit.resident.load(Acquire))
         .then(|| self.status.sampler_edit.position.load(Acquire))
+    }
+    /// Playback state from the same callback witness as `arrangement_edit_position`.
+    pub fn arrangement_edit_playing(&self, token: StoppedEditFence) -> Option<bool> {
+        self.arrangement_edit_position(token)
+            .map(|_| self.status.sampler_edit.playing.load(Acquire))
+    }
+    /// Transient launched loop from the exact ready witness, rather than saved markers.
+    pub fn arrangement_edit_section_loop(&self, token: StoppedEditFence) -> Option<(u64, u64)> {
+        self.arrangement_edit_position(token)?;
+        let start = self.status.sampler_edit.loop_start.load(Acquire);
+        let end = self.status.sampler_edit.loop_end.load(Acquire);
+        (start < end).then_some((start, end))
     }
     pub fn request_sampler_edit_fence(
         &self,
@@ -271,6 +310,15 @@ impl Callback {
                     });
             let operation = self.status.sampler_edit.gate();
             if self.status.sampler_edit.ack.load(SeqCst) != operation {
+                let region = active.and_then(|a| a.playback.section_loop());
+                self.status
+                    .sampler_edit
+                    .loop_start
+                    .store(region.map_or(0, |r| r.start()), SeqCst);
+                self.status
+                    .sampler_edit
+                    .loop_end
+                    .store(region.map_or(0, |r| r.end()), SeqCst);
                 self.status
                     .sampler_edit
                     .position

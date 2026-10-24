@@ -9,6 +9,7 @@
 //! admitted before PCM allocation. Unsupported streamed placement preparation
 //! refuses without changing project or media. Ordinary crops keep their path.
 mod budget;
+mod content;
 mod events;
 mod mapping;
 mod view;
@@ -25,6 +26,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+pub use view::AudioPreviewRoot;
 fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     Ok(if domain.warp_enabled {
         match domain
@@ -620,6 +622,11 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        if edit.content_view.is_some() {
+            return self
+                .compile_content(project, clip, edit, asset, source)
+                .map(Some);
+        }
         if edit.placement.is_some() {
             return self
                 .compile_view(project, clip, edit, asset, source)

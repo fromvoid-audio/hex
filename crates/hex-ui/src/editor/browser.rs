@@ -386,7 +386,7 @@ fn browser_audio_drag_ghost(
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .opacity(0.9);
     if let Some((lines, start, end)) = grid {
-        ghost = ghost.children([super::tracks::clip_grid_layer(&lines, start, end)]);
+        ghost = ghost.children(super::tracks::clip_grid_layer(&lines, start, end));
     }
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
@@ -2567,6 +2567,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: description.clone(),
                 })
                 .into()
@@ -2590,6 +2591,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: description.clone(),
                 })
                 .into()

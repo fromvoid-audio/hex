@@ -130,6 +130,27 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
+with the arrange timeline focused, **b** bounces selected material in place;
+**command+b** keeps the originals and inserts bounced audio on a new track below
+each source track. a nonempty time selection takes precedence over selected clips.
+each selected track produces one audio clip spanning its selected clips and gaps.
+clip bounces include instrument and effect release tails. a time selection renders
+exactly its start-to-end interval, retaining earlier state needed for sound inside
+that interval. press **escape** to cancel; one undo restores the entire operation.
+
+stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
+a fresh playback state so live release voices cannot duplicate the baked tails.
+undo and redo of an in-place bounce use the same stopped-edit rule.
+
+bounce writes float audio before the track mixer. mixer automation, sends, returns
+and main processing remain live. in-place bounce removes the baked devices, so it
+refuses if that would change unselected material or a tail would overlap it; use
+**command+b** instead. routed inputs, verified streaming and nonzero-latency device
+paths currently refuse. a release that does not finish within ten seconds refuses
+without applying an edit. source files remain unchanged. while editing text,
+numeric values or midi notes, or using the computer midi keyboard, these arrange
+bounce shortcuts do not run.
+
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
@@ -173,6 +194,23 @@ instead of repeatedly clicking a busy action.
 in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
+
+## audio event fades
+
+select an audio clip and choose **events** in its detail area. focus the event
+waveform and hold **f** to show its fade controls. release **f** to hide default
+controls; edited fades remain visible. the computer midi keyboard must be off.
+
+drag an upper square to change a fade length. drag a diamond horizontally and
+vertically to shape its curve. lower squares trim the event; they move freely by
+default, with **command** opting into the event grid. double-click a fade control
+to reset that event's fades. one undo restores each completed gesture.
+
+the preview becomes prepared audio after release. **escape** or leaving the
+editor cancels a held gesture. splitting retains the source fade, moving keeps
+it attached to the sound, and an explicit trim fits it to the new event window.
+event fades use the same supported resident clips as event editing; a refused
+preparation leaves the project unchanged. original media files stay intact.
 
 # find, preview and import audio
 
@@ -340,10 +378,28 @@ keep the selected outputs separate. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+# reversing clips
+
+select one or more audio or midi clips in arrangement, then press `r` to reverse
+what is audible inside each clip. press `r` again to restore its original direction.
+one undo restores the whole selected group. text fields keep their normal typing behavior.
+
+original audio files and midi notes remain intact. trim, loop, pitch, source gain
+and warp settings stay editable. frame-based audio reverses in frames; musical
+audio and midi reverse in the clip's beat clock, so tempo changes can change the
+sound of musical audio. fades keep their timeline position.
+
+directed midi clips cannot yet be transferred to session, and midi recording requires
+a forward clip. directed clips retain the outer repeat handle; dragging their
+first repeat seam is not available. for directed clips with fades, loop resizing
+updates the waveform after the edit is accepted. an unsupported preparation refuses
+the complete edit.
+
 # useful shortcuts
 
 | action | shortcut |
 | --- | --- |
+| reverse selected arrangement clips | `r` |
 | new project | command+n |
 | open project | command+o |
 | save / save as | command+s / command+shift+s |
@@ -355,6 +411,7 @@ even when live audio output is unavailable.
 | toggle browser / search | command+option+b / command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
+| bounce in place / to a new track | b / command+b |
 | export | command+shift+e |
 | changelog | command+shift+l |
 
