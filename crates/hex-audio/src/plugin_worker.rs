@@ -172,10 +172,24 @@ fn spawn_processor_with(
     }
 }
 fn spawn_transport(
-    mut guard: crate::native_callback_owner::Guard<State>,
+    guard: crate::native_callback_owner::Guard<State>,
     published: Arc<AtomicU64>,
 ) -> std::io::Result<SpawnedTransport> {
-    let run = move || {
+    let run = transport_runner(guard, published);
+    let capture_data_bytes = std::mem::size_of_val(&run);
+    thread::Builder::new()
+        .name("hex-plugin-transport".into())
+        .spawn(run)
+        .map(|join| SpawnedTransport {
+            join,
+            capture_data_bytes,
+        })
+}
+fn transport_runner(
+    mut guard: crate::native_callback_owner::Guard<State>,
+    published: Arc<AtomicU64>,
+) -> impl FnOnce() -> Completion + Send + 'static {
+    move || {
         let mut fault = None;
         loop {
             let Some(state) = guard.owner_mut() else {
@@ -205,15 +219,7 @@ fn spawn_transport(
             }
         }
         Completion { fault }
-    };
-    let capture_data_bytes = std::mem::size_of_val(&run);
-    thread::Builder::new()
-        .name("hex-plugin-transport".into())
-        .spawn(run)
-        .map(|join| SpawnedTransport {
-            join,
-            capture_data_bytes,
-        })
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

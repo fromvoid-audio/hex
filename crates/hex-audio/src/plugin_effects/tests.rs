@@ -11,6 +11,80 @@ use std::{
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
+    for fits in [false, true] {
+        let instance = original_instance_for_binding(binding);
+        let configuration = NativeEffect::configuration_on_control(identity, &instance).unwrap();
+        let quoted = NativeWorker::preconstruction_data_bytes_on_control(&instance).unwrap()
+            + configuration.prepared.total_latency_frames() as usize
+                * std::mem::size_of::<[f32; 2]>();
+        drop(configuration);
+        let limit = quoted - usize::from(!fits);
+        let mut outcome = None;
+        let construct = || {
+            outcome = Some(NativeEffect::prepare_retained_with_data_limit_on_control(
+                identity, instance, limit,
+            ));
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(construct);
+            if !fits {
+                // Normal refusal may reclaim source config/capture on control,
+                // but must not allocate dry/queues/Boxes or a joining context.
+                assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+                assert!(measured.count_current <= 0 && measured.bytes_current <= 0);
+            }
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut construct = construct;
+            construct();
+        }
+        match outcome.unwrap() {
+            Ok(mut effect) => {
+                assert!(fits);
+                assert_eq!(
+                    effect
+                        .constructor_storage_on_control()
+                        .unwrap()
+                        .data_bytes(),
+                    Some(quoted)
+                );
+                let retired = effect.retire_on_control().unwrap();
+                assert!(retired.failure.is_none());
+                assert_eq!(retired.native.terminal.unwrap().blocks, 0);
+            }
+            Err(mut failure) => {
+                assert!(!fits);
+                assert_eq!(failure.binding(), binding);
+                assert!(failure.to_string().contains("data reservation exceeded"));
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    if let Some(disposal) = failure.poll_disposal_on_control().unwrap() {
+                        assert!(matches!(
+                            disposal,
+                            hex_plugin_host::native::PreparationDisposal::Reaped(_)
+                        ));
+                        break;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_effect_storage_counts_spare_dry_capacity_and_retains_the_original_state_alias() {
     let binding = Binding {
         root: 1,

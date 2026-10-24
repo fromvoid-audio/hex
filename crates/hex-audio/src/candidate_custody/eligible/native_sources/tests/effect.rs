@@ -3,6 +3,73 @@ use super::*;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
+    let root = root();
+    let limit = 32 * 1024;
+    root.configure_native_sources(
+        1,
+        NativeSourceDataReservation {
+            max_retained_data_bytes: limit,
+            max_construction_peak_data_bytes: limit + hex_plugin_scan::MAX_BINARY as usize,
+        },
+    )
+    .unwrap();
+    let binding = start(&root);
+    root.complete_native_source(
+        binding,
+        Some(hex_plugin_host::protocol::PresentationLatency {
+            input_frames: 77,
+            output_frames: 91,
+        }),
+    )
+    .unwrap();
+    {
+        let work = root.work.try_lock().unwrap();
+        let Some(Owner::Prepared(instance)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("original prepared source");
+        };
+        assert!(instance.retained_storage_on_control().unwrap().data_bytes < limit);
+        assert!(
+            crate::plugin_worker::NativeWorker::preconstruction_data_bytes_on_control(instance)
+                .unwrap()
+                > limit
+        );
+    }
+    let held = root.usage();
+    root.start_native_effect(binding).unwrap();
+    assert_eq!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Retiring)
+    );
+    assert!(
+        root.native_source_error(binding)
+            .unwrap()
+            .contains("data reservation exceeded")
+    );
+    {
+        let work = root.work.try_lock().unwrap();
+        let Some(Owner::WorkerRefused(failure)) = work.sources.cells[0].owner.as_ref() else {
+            panic!("original source must remain in refusal custody");
+        };
+        assert_eq!(failure.binding(), binding);
+    }
+    assert_eq!(root.usage(), held);
+    assert!(root.native_source_prepared_state(binding).is_none());
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
+    assert!(
+        returned
+            .error
+            .unwrap()
+            .contains("data reservation exceeded")
+    );
+    assert!(returned.cleanup_error.is_none());
+    assert!(root.complete());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
     for close_during_construction in [false, true] {
         let root = root();

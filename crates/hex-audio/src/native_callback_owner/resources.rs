@@ -11,6 +11,18 @@ pub(crate) struct ChannelStorage {
     pub(crate) shared_handles: usize,
 }
 impl ChannelStorage {
+    /// The fixed owner Box and terminal payload requested by `reserve::<T>`.
+    /// The enclosing Guard/Terminal values and Arc/allocator internals are not
+    /// additional DATA here. Only that private factory establishes custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn owner_reservation<T>() -> Option<Self> {
+        Some(Self {
+            data_bytes: std::mem::size_of::<T>()
+                .checked_add(std::mem::size_of::<OnceLock<Mutex<Box<T>>>>())?,
+            shared_groups: 1,
+            shared_handles: 2,
+        })
+    }
     pub(crate) fn ring_bytes<T>(capacity: usize) -> Option<usize> {
         capacity
             .checked_mul(std::mem::size_of::<T>())?

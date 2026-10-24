@@ -12,6 +12,23 @@ pub struct ConstructorStorage {
     pub shared_handle_bound: usize,
 }
 
+/// Known DATA requested by this module's fixed channel factory, before either
+/// ring is allocated. Endpoint values and allocator/Arc implementation overhead
+/// are excluded, as in the actual paired-channel inventory. This quote grants
+/// no source, worker or publication authority.
+pub fn channel_storage_bound() -> Option<ConstructorStorage> {
+    let ring = QUEUE_CAPACITY
+        .checked_mul(std::mem::size_of::<Block>())?
+        .checked_add(std::mem::size_of::<RingBuffer<Block>>())?;
+    Some(ConstructorStorage {
+        data_bytes: ring
+            .checked_mul(2)?
+            .checked_add(std::mem::size_of::<AtomicBool>())?,
+        shared_groups: 3,
+        shared_handle_bound: 7,
+    })
+}
+
 impl Callback {
     /// Visit only this channel's actual rings and revocation payload. Equal
     /// binding/quantum values from another construction do not establish pairing.

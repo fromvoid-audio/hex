@@ -24,7 +24,7 @@ use std::sync::{
 };
 mod storage;
 pub mod wire;
-pub use storage::ConstructorStorage;
+pub use storage::{ConstructorStorage, channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;

@@ -18,9 +18,14 @@ impl Custody {
         let Ok(mut work) = self.work.try_lock() else {
             return Err("native preparation is busy");
         };
-        let (index, identity) = {
+        let (index, identity, max_data_bytes) = {
             let mut bank = lock(&self.bank);
             let index = bank.sources.index(binding).ok_or("native source differs")?;
+            let max_data_bytes = bank
+                .sources
+                .limits
+                .ok_or("native source data is not reserved")?
+                .max_retained_data_bytes;
             let slot = &mut bank.sources.slots[index];
             if slot.phase != Phase::Accepted
                 || slot.retiring
@@ -32,13 +37,17 @@ impl Custody {
             }
             let identity = slot.identity.ok_or("native source identity missing")?;
             slot.starting = true;
-            (index, identity)
+            (index, identity, max_data_bytes)
         };
         let cell = &mut work.sources.cells[index];
         cell.pending = true;
         let result = catch_unwind(AssertUnwindSafe(|| match cell.owner.take() {
             Some(Owner::Prepared(owner)) => {
-                match NativeEffect::prepare_retained_on_control(identity, owner) {
+                match NativeEffect::prepare_retained_with_data_limit_on_control(
+                    identity,
+                    owner,
+                    max_data_bytes,
+                ) {
                     Ok(owner) => cell.owner = Some(Owner::Effect(owner)),
                     Err(owner) => {
                         cell.error = Some(owner.to_string());

@@ -44,6 +44,28 @@ pub struct NativeWorkerStorage {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl NativeWorker {
+    /// Known steady DATA requested by the exact native worker/queue factories,
+    /// before allocating or spawning them. The original Prepared heap payloads
+    /// are already present; their enclosing Box is additional here. Failure
+    /// diagnostics, opaque std thread/allocator resources and transient exchange
+    /// costs remain separate, so this is not complete Root eligibility.
+    pub(crate) fn preconstruction_data_bytes_on_control(
+        instance: &hex_plugin_host::native::Prepared,
+    ) -> Option<usize> {
+        fn capture_bytes<R>(_: fn(Guard<State>, Arc<AtomicU64>) -> R) -> usize {
+            std::mem::size_of::<R>()
+        }
+        instance
+            .retained_storage_on_control()?
+            .data_bytes
+            .checked_add(channel_storage_bound()?.data_bytes)?
+            .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?
+            .checked_add(std::mem::size_of::<hex_plugin_host::native::Prepared>())?
+            .checked_add(std::mem::size_of::<AtomicU64>())?
+            .checked_add(capture_bytes(transport_runner))?
+            .checked_add(std::mem::size_of::<Completion>())
+    }
+
     /// Only the exact constructor-paired callback can inspect this inventory.
     /// State, source Box and terminal were observed before their original move
     /// to the thread, whose capture value was measured before std::thread spawn.

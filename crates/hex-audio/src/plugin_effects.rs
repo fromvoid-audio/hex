@@ -73,14 +73,50 @@ impl NativeEffect {
         identity: ProcessorInstanceIdentity,
         instance: Prepared,
     ) -> Result<Self, NativeWorkerStartFailure> {
-        let (configuration, dry) = match Self::configuration_on_control(identity, &instance) {
-            Ok(parts) => parts,
+        Self::prepare_retained_with_data_limit_on_control(identity, instance, usize::MAX)
+    }
+    /// Root's known steady DATA check, before dry storage, queues, owner Boxes
+    /// or the joining thread are constructed. This subset does not cover error,
+    /// preparation/exchange peak or opaque resource reservations and cannot seal
+    /// a native publication. Refusal retains the original instance for disposal.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn prepare_retained_with_data_limit_on_control(
+        identity: ProcessorInstanceIdentity,
+        mut instance: Prepared,
+        max_data_bytes: usize,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        let configuration = match Self::configuration_on_control(identity, &instance) {
+            Ok(configuration) => configuration,
             Err(cause) => {
                 return Err(NativeWorkerStartFailure::retain_source_on_control(
                     cause, instance,
                 ));
             }
         };
+        // Preserve an already known lease refusal before considering the
+        // budget. Worker transfer validates again against a later close/exit.
+        if let Err(cause) = instance.validate_worker_transfer_on_control() {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                cause, instance,
+            ));
+        }
+        let dry_frames = configuration.prepared.total_latency_frames() as usize;
+        let known_data = NativeWorker::preconstruction_data_bytes_on_control(&instance)
+            .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?));
+        if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native effect data reservation exceeded or unavailable"),
+                instance,
+            ));
+        }
+        let mut dry = Vec::new();
+        if dry.try_reserve_exact(dry_frames).is_err() || dry.capacity() != dry_frames {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native effect dry history allocation refused"),
+                instance,
+            ));
+        }
+        dry.resize(dry_frames, [0.0; 2]);
         let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
         Ok(Self {
             worker,
@@ -97,7 +133,7 @@ impl NativeEffect {
     fn configuration_on_control(
         identity: ProcessorInstanceIdentity,
         instance: &Prepared,
-    ) -> Result<(Configuration, Vec<[f32; 2]>), Error> {
+    ) -> Result<Configuration, Error> {
         let config = instance.configuration();
         if config.binding.instance != identity.device_id()
             || !config.sample_rate.is_finite()
@@ -130,21 +166,13 @@ impl NativeEffect {
         if prepared.total_latency_frames() > hex_engine::compensation::MAX_COMPENSATION_FRAMES {
             return Err(Error::Protocol("native effect latency exceeds graph limit"));
         }
-        let configuration = Configuration {
+        Ok(Configuration {
             identity,
             binding: config.binding,
             sample_rate: config.sample_rate as u32,
             state,
             prepared,
-        };
-        // Reserve before starting the joining worker so allocation refusal
-        // leaves the original prepared source under this control owner.
-        let dry_frames = prepared.total_latency_frames() as usize;
-        let mut dry = Vec::new();
-        dry.try_reserve_exact(dry_frames)
-            .map_err(|_| Error::Protocol("native effect dry history allocation refused"))?;
-        dry.resize(dry_frames, [0.0; 2]);
-        Ok((configuration, dry))
+        })
     }
     pub(crate) fn retire_on_control(
         &mut self,

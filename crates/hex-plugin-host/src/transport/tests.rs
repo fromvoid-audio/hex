@@ -9,6 +9,7 @@ const BINDING: Binding = Binding {
 
 #[test]
 fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_retirement() {
+    let quote = channel_storage_bound().unwrap();
     let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
     let (other_control, other_callback, _) = channel(BINDING, 8).unwrap();
     assert_eq!(
@@ -20,6 +21,7 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
         None
     );
     let storage = callback.constructor_storage_on_control(&control).unwrap();
+    assert_eq!(storage, quote);
     // Both queue allocations retain all slots, even when no blocks are queued.
     assert_eq!(
         storage.data_bytes,
@@ -53,6 +55,7 @@ fn visiting_retained_channel_storage_neither_allocates_nor_reclaims() {
     let (control, callback, worker) = channel(BINDING, 8).unwrap();
     let expected = callback.constructor_storage_on_control(&control);
     let measured = allocation_counter::measure(|| {
+        assert_eq!(channel_storage_bound(), expected);
         assert_eq!(callback.constructor_storage_on_control(&control), expected);
     });
     assert_eq!((measured.count_total, measured.bytes_total), (0, 0));

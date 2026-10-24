@@ -64,10 +64,23 @@ fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap(
     for cancelled in 0..3 {
         let instance = original_instance();
         let source_storage = instance.retained_storage_on_control().unwrap();
+        let quoted_data = NativeWorker::preconstruction_data_bytes_on_control(&instance).unwrap();
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                assert_eq!(
+                    NativeWorker::preconstruction_data_bytes_on_control(&instance),
+                    Some(quoted_data)
+                );
+            });
+            assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+        }
         let cancel = instance.cancellation_on_control();
         let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
         let storage = worker.transport_storage_on_control(&callback).unwrap();
         let constructor = worker.constructor_storage_on_control(&callback).unwrap();
+        assert_eq!(constructor.data_bytes, quoted_data);
         assert_eq!(
             constructor.shared_groups,
             storage.shared_groups + source_storage.shared_groups + 2
