@@ -193,6 +193,7 @@ mod tuning;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
+mod waveform_loop;
 mod waveform_stretch;
 mod zoom_fit;
 

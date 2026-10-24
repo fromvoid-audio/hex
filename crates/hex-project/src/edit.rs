@@ -819,6 +819,12 @@ pub enum Command {
         looping: bool,
         length: crate::BeatTime,
     },
+    /// Recompute a clip-local MIDI loop edit from its current source/window.
+    /// Outer growth uses the common occupancy planner; cycle edits keep length.
+    ResizeMidiClipView {
+        clip: ClipId,
+        operation: crate::MidiViewResizeOperation,
+    },
     /// Replace one clip-owned source-beat volume curve in either MIDI domain.
     ReplaceMidiClipVolume {
         clip: ClipId,
@@ -1759,6 +1765,7 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
+            | Command::ResizeMidiClipView { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::StretchMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }

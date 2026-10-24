@@ -1633,11 +1633,20 @@ fn legacy_promotion_validates_session_time_before_render_or_launch() {
 #[test]
 fn exhausted_legacy_clock_keeps_finite_playback_but_refuses_session_promotion() {
     let fixture = fixture(Some((0, 48_000)), None);
-    let project = Arc::clone(fixture.revision.arrangement());
+    // Exhaust the performance clock by rendering a tiny real loop near the
+    // numeric limit. An absolute post-loop seek no longer normalizes backwards.
+    let project = Arc::new(
+        hex_engine::Project::with_loop_region(
+            48_000,
+            fixture.revision.arrangement().tracks().to_vec(),
+            Some(hex_project::LoopRegion::new(u64::MAX - 8, u64::MAX - 4, true).unwrap()),
+        )
+        .unwrap(),
+    );
     let mut legacy = Playback::from_shared(project);
-    legacy.apply(PlaybackCommand::Seek(u64::MAX));
+    legacy.apply(PlaybackCommand::Seek(u64::MAX - 7));
     legacy.apply(PlaybackCommand::Play);
-    let mut output = [[0.0; 2]; 1];
+    let mut output = [[0.0; 2]; 8];
     legacy.render(&mut output).expect("legacy finite render");
     assert_eq!(legacy.performance_frame(), u64::MAX);
     assert!(legacy.performance_clock_exhausted());

@@ -152,7 +152,8 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::MutableInstrumentChase);
             }
         }
-        let base_timing = base_timing_for(self.revision.session(), self.periodic_tempo);
+        let base_timing =
+            base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0));
         let beat = base_timing
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -262,8 +263,11 @@ impl SessionPlayback {
                 {
                     return Ok(false);
                 }
-                let timing =
-                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                let timing = timing_view_for(
+                    self.revision.session(),
+                    self.periodic_tempo_at(frame, 0),
+                    self.anchor,
+                );
                 prepared
                     .instrument_template()
                     .query_with_origin(origin, &timing, frame, end, &mut self.spans)
@@ -768,7 +772,7 @@ impl SessionPlayback {
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                 let timing =
-                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                    timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
                 let template = prepared.instrument_template();
                 if let Some(floor) = self.historical_floor_for(index) {
                     template
