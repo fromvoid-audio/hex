@@ -28,7 +28,8 @@ fn start_absent(root: &Custody, restore: Option<NativeDeviceState>) -> Binding {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_final_ack_retains_prepared_source_and_original_state_until_disposal() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let binding = start_absent(&root, None);
     assert!(root.native_source_prepared_state(binding).is_none());
     assert!(
@@ -105,7 +106,8 @@ fn actual_root_final_ack_retains_prepared_source_and_original_state_until_dispos
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_missing_required_presentation_retains_refusal_instead_of_prepared_source() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let binding = start(&root);
     root.complete_native_source(binding, None).unwrap();
     assert_eq!(
@@ -131,7 +133,8 @@ fn actual_root_missing_required_presentation_retains_refusal_instead_of_prepared
 fn actual_root_close_during_completion_cancels_exact_source_without_prepared_acceptance() {
     for close_after_ack in [false, true] {
         let root = root();
-        root.configure_native_sources(1).unwrap();
+        root.configure_native_sources(1, source_reservation())
+            .unwrap();
         let binding = start_absent(&root, None);
         root.complete_native_source_between(
             binding,

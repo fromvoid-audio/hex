@@ -1,6 +1,6 @@
 //! Actual native preparation custody in the existing Root, before endpoint
-//! admission. Fixed cells reserve control metadata before helper start. Their
-//! variable native/provenance resources remain explicitly UNSEALED: occupied
+//! admission. Fixed cells and caller-finite DATA allowances are reserved before
+//! helper start. Variable native/provenance resources remain UNSEALED: occupied
 //! cells cannot close a graph/publication resource witness. Final completion
 //! performs native startup/capture in the helper, but no PCM exchange, callback
 //! loan, source reload or canonical acceptance occurs here.
@@ -18,6 +18,30 @@ mod effect;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
+/// Per-cell allowances charged for the whole configured pool before any child
+/// or cancellation pair starts. These are reserved capacity, not allocated bytes
+/// or a producer/resource witness. Complete peak/diagnostic enforcement and
+/// actual endpoint sealing remain necessary before native publication.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeSourceDataReservation {
+    pub max_retained_data_bytes: usize,
+    pub max_construction_peak_data_bytes: usize,
+}
+impl NativeSourceDataReservation {
+    fn validate(self) -> Result<(), &'static str> {
+        let file = usize::try_from(hex_plugin_scan::MAX_BINARY)
+            .map_err(|_| "native validation file bound overflow")?;
+        if self.max_retained_data_bytes == 0
+            || self
+                .max_retained_data_bytes
+                .checked_add(file)
+                .is_none_or(|minimum| minimum > self.max_construction_peak_data_bytes)
+        {
+            return Err("native source data reservation is invalid");
+        }
+        Ok(())
+    }
+}
 pub(super) fn empty_cancellations() -> Cancellations {
     std::array::from_fn(|_| None)
 }
@@ -80,6 +104,9 @@ impl Slot {
 pub(super) struct Bank {
     slots: Vec<Slot>,
     next_epoch: u64,
+    limits: Option<NativeSourceDataReservation>,
+    pub(super) retained_reserved: usize,
+    pub(super) peak_reserved: usize,
 }
 impl Bank {
     pub(super) fn occupied(&self) -> bool {
@@ -138,7 +165,9 @@ impl Custody {
     pub(in crate::candidate_custody) fn configure_native_sources(
         &self,
         capacity: usize,
+        limits: NativeSourceDataReservation,
     ) -> Result<(), &'static str> {
+        limits.validate()?;
         if capacity == 0 || capacity > MAX_SOURCES {
             return Err("native preparation capacity is invalid");
         }
@@ -148,9 +177,21 @@ impl Custody {
         let quote = capacity
             .checked_mul(std::mem::size_of::<Slot>() + std::mem::size_of::<Execution>())
             .ok_or("native preparation metadata overflow")?;
+        let retained = capacity
+            .checked_mul(limits.max_retained_data_bytes)
+            .ok_or("native source reservation overflow")?;
+        let peak = capacity
+            .checked_mul(limits.max_construction_peak_data_bytes)
+            .ok_or("native source reservation overflow")?;
+        let retained_quote = quote
+            .checked_add(retained)
+            .ok_or("native source reservation overflow")?;
+        let peak_quote = quote
+            .checked_add(peak)
+            .ok_or("native source reservation overflow")?;
         {
             let bank = lock(&self.bank);
-            native_pool_preflight(&bank, quote)?;
+            native_pool_preflight(&bank, retained_quote, peak_quote)?;
         }
         let mut slots = Vec::new();
         let mut cells = Vec::new();
@@ -166,13 +207,16 @@ impl Custody {
         slots.resize_with(capacity, Slot::vacant);
         cells.resize_with(capacity, Execution::default);
         let mut bank = lock(&self.bank);
-        if let Err(error) = native_pool_preflight(&bank, quote) {
+        if let Err(error) = native_pool_preflight(&bank, retained_quote, peak_quote) {
             drop(bank); // Refused temporary allocation drops outside the ordinary lock.
             return Err(error);
         }
         bank.sources = Bank {
             slots,
             next_epoch: 1,
+            limits: Some(limits),
+            retained_reserved: retained,
+            peak_reserved: peak,
         };
         bank.metadata_bytes += quote;
         work.sources = Work { cells };
@@ -222,10 +266,20 @@ impl Custody {
         let Ok(mut work) = self.work.try_lock() else {
             return Err("native preparation is busy");
         };
+        let input_data = source
+            .preparation_input_data_bytes_on_control(build, restore.as_ref())
+            .ok_or("native source input storage is invalid or overflowing")?;
         let (index, binding) = {
             let mut bank = lock(&self.bank);
             if !self.enabled() || bank.closing || graph == 0 {
                 return Err("native preparation is closing or invalid");
+            }
+            let limits = bank
+                .sources
+                .limits
+                .ok_or("native source data is not reserved")?;
+            if input_data > limits.max_retained_data_bytes {
+                return Err("native source input exceeds retained data reservation");
             }
             let index = bank
                 .sources
@@ -542,28 +596,32 @@ impl Custody {
 #[cfg(test)]
 mod tests;
 
-fn native_pool_preflight(bank: &NativeBank, quote: usize) -> Result<(), &'static str> {
+fn native_pool_preflight(
+    bank: &NativeBank,
+    retained_quote: usize,
+    peak_quote: usize,
+) -> Result<(), &'static str> {
     if bank.root == 0 || bank.closing || !bank.sources.slots.is_empty() {
         return Err("native preparation reservation is unavailable");
     }
     let data = bank
         .domains
         .iter()
-        .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+        .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
         .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
-        .and_then(|n| n.checked_add(quote))
+        .and_then(|n| n.checked_add(retained_quote))
         .ok_or("native preparation metadata overflow")?;
     let peak = bank
         .domains
         .iter()
-        .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+        .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
         .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
-        .and_then(|n| n.checked_add(quote))
+        .and_then(|n| n.checked_add(peak_quote))
         .ok_or("native preparation metadata overflow")?;
     if data > bank.reservation.max_retained_data_bytes
         || peak > bank.reservation.max_construction_peak_data_bytes
     {
-        return Err("native preparation metadata reservation exceeded");
+        return Err("native preparation pool reservation exceeded");
     }
     Ok(())
 }
@@ -579,9 +637,10 @@ impl CandidateRoot {
     pub(crate) fn configure_native_source_preparation(
         &self,
         capacity: usize,
+        limits: NativeSourceDataReservation,
     ) -> Result<(), &'static str> {
         self.require_native_source_control_open()?;
-        self.0.eligible.configure_native_sources(capacity)
+        self.0.eligible.configure_native_sources(capacity, limits)
     }
     #[allow(clippy::too_many_arguments)] // Same complete source request as the public control boundary.
     pub(crate) fn begin_native_source_preparation(

@@ -8,11 +8,13 @@ fn root_compiler_borrow_selects_exact_source_epoch_with_equal_device_state() {
     let outer = CandidateRoot::new(2).unwrap();
     outer
         .configure_domains(AudioCandidateDomainReservation {
-            max_retained_data_bytes: 8 * 1024 * 1024,
-            max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            max_retained_data_bytes: 64 * 1024 * 1024,
+            max_construction_peak_data_bytes: 64 * 1024 * 1024,
         })
         .unwrap();
-    outer.configure_native_source_preparation(2).unwrap();
+    outer
+        .configure_native_source_preparation(2, source_reservation())
+        .unwrap();
     let root = &outer.0.eligible;
     let mut bindings = Vec::new();
     for _ in 0..2 {

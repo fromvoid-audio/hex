@@ -37,7 +37,9 @@ pub use eligible::{
     AudioCandidatePublicationReservation,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use eligible::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
+pub use eligible::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

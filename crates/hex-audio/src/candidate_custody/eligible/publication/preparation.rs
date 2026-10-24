@@ -110,12 +110,12 @@ impl Custody {
             let mut retained = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
                 .ok_or("candidate preparation DATA overflow")?;
             let mut peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
                 .ok_or("candidate preparation peak overflow")?;
             let mut members = reservation.member_rows;
             let mut transfers = reservation.transfer_rows;
@@ -299,14 +299,14 @@ impl Custody {
             let retained = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
                 .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
                 .and_then(|n| n.checked_add(metadata))
                 .ok_or("candidate DATA overflow")?;
             let peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
                 .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .and_then(|n| n.checked_add(metadata))
                 .ok_or("candidate peak overflow")?;
@@ -831,6 +831,47 @@ mod tests {
             asset,
             hex_engine::Audio::new(48000, vec![[0.25; 2]; 8]).unwrap(),
         )
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn native_pool_allowances_are_not_available_to_runtime_preparation() {
+        let baseline = root();
+        let base = &baseline.0.eligible;
+        let token = base
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .unwrap_or_else(|refusal| panic!("baseline preparation: {}", refusal.reason));
+        assert!(base.cancel_runtime_preparation(token));
+        for _ in 0..4 {
+            base.advance_on_control(false);
+        }
+
+        let original = root();
+        let custody = &original.0.eligible;
+        custody
+            .configure_native_sources(
+                1,
+                crate::NativeSourceDataReservation {
+                    max_retained_data_bytes: 4 * 1024 * 1024,
+                    max_construction_peak_data_bytes: 48 * 1024 * 1024,
+                },
+            )
+            .unwrap();
+        let held = custody.usage();
+        let refusal = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .err()
+            .expect("runtime cannot spend the native allowance");
+        assert_eq!(refusal.reason, "candidate preparation reservation exceeded");
+        assert_eq!(custody.usage(), held);
+        let bank = lock(&custody.bank);
+        assert!(
+            bank.publication
+                .slots
+                .iter()
+                .all(|slot| slot.phase == Phase::Vacant)
+        );
+        assert!(bank.publication.archives.iter().all(|occupied| !occupied));
     }
     #[test]
     fn reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup() {

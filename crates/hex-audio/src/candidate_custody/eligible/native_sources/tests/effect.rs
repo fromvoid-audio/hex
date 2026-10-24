@@ -6,7 +6,8 @@ use super::*;
 fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
     for close_during_construction in [false, true] {
         let root = root();
-        root.configure_native_sources(1).unwrap();
+        root.configure_native_sources(1, source_reservation())
+            .unwrap();
         let binding = start(&root);
         assert!(
             root.start_native_effect(binding).is_err(),
@@ -106,7 +107,8 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_effect_constructor_refusal_retains_the_source_until_observed_disposal() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let (build, source, preparation) = input_for(
         "effect",
         [

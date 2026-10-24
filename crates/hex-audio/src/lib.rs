@@ -30,7 +30,9 @@ pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use candidate_custody::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
+pub use candidate_custody::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 pub mod gain_recording;
 mod lifecycle;
 mod native_callback_owner;

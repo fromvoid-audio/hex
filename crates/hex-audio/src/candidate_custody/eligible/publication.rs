@@ -689,12 +689,12 @@ impl super::Custody {
         let mut retained_total = bank
             .domains
             .iter()
-            .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+            .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
             .ok_or("constructor domain DATA overflow")?;
         let mut peak_total = bank
             .domains
             .iter()
-            .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+            .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
             .ok_or("constructor domain construction overflow")?;
         let resources = resources::for_candidate(&bank, summary, reserved_slot)?;
         let mut members = summary.member_rows;

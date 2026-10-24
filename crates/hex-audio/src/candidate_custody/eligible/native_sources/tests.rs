@@ -8,7 +8,13 @@ use std::{
 };
 
 fn root() -> Custody {
-    super::super::tests::configured(8 * 1024 * 1024)
+    super::super::tests::configured(64 * 1024 * 1024)
+}
+fn source_reservation() -> NativeSourceDataReservation {
+    NativeSourceDataReservation {
+        max_retained_data_bytes: 4 * 1024 * 1024,
+        max_construction_peak_data_bytes: 24 * 1024 * 1024,
+    }
 }
 mod completion;
 mod definition;
@@ -88,26 +94,153 @@ fn dispose(root: &Custody, binding: Binding) {
 }
 
 #[test]
-fn native_preparation_cells_require_finite_metadata_reservation() {
+fn native_preparation_cells_require_finite_pool_reservations() {
     let small = super::super::tests::configured(1024);
-    assert!(small.configure_native_sources(1).is_err());
+    assert!(
+        small
+            .configure_native_sources(1, source_reservation())
+            .is_err()
+    );
     assert!(!lock(&small.bank).sources.occupied());
     let root = root();
-    assert!(root.configure_native_sources(0).is_err());
-    assert!(root.configure_native_sources(MAX_SOURCES + 1).is_err());
+    assert!(
+        root.configure_native_sources(0, source_reservation())
+            .is_err()
+    );
+    assert!(
+        root.configure_native_sources(MAX_SOURCES + 1, source_reservation())
+            .is_err()
+    );
     let before = root.actual_control_backing_bytes().unwrap();
-    root.configure_native_sources(2).unwrap();
+    root.configure_native_sources(2, source_reservation())
+        .unwrap();
     let expected = 2 * (std::mem::size_of::<Slot>() + std::mem::size_of::<Execution>());
     assert_eq!(root.actual_control_backing_bytes(), Some(before + expected));
-    assert!(root.configure_native_sources(2).is_err());
+    let usage = root.usage().unwrap();
+    assert_eq!(
+        usage.retained_data_reservation,
+        before + expected + 2 * source_reservation().max_retained_data_bytes
+    );
+    assert_eq!(
+        usage.construction_peak_data_reservation,
+        before + expected + 2 * source_reservation().max_construction_peak_data_bytes
+    );
+    assert!(
+        root.configure_native_sources(2, source_reservation())
+            .is_err()
+    );
     assert!(root.complete());
+}
+
+#[test]
+fn native_pool_refuses_invalid_and_overflowing_allowances_without_installing_cells() {
+    let root = root();
+    let before = root.usage();
+    for limits in [
+        NativeSourceDataReservation {
+            max_retained_data_bytes: 0,
+            ..source_reservation()
+        },
+        NativeSourceDataReservation {
+            max_construction_peak_data_bytes: 1,
+            ..source_reservation()
+        },
+        NativeSourceDataReservation {
+            max_retained_data_bytes: usize::MAX,
+            max_construction_peak_data_bytes: usize::MAX,
+        },
+        NativeSourceDataReservation {
+            max_construction_peak_data_bytes: usize::MAX,
+            ..source_reservation()
+        },
+    ] {
+        assert!(root.configure_native_sources(2, limits).is_err());
+        assert!(lock(&root.bank).sources.slots.is_empty());
+        assert_eq!(root.usage(), before);
+    }
+}
+
+#[test]
+fn vacant_native_pool_peak_reservation_blocks_unrelated_domain_admission() {
+    let baseline = root();
+    let admitted = baseline
+        .register_domain(super::super::tests::pair())
+        .ok()
+        .expect("unreserved baseline must admit the same stream constructor");
+    assert!(baseline.retire_domain(admitted));
+    for _ in 0..4 {
+        baseline.advance_on_control(false);
+    }
+    assert!(baseline.recover_domain(admitted).is_some());
+    let root = root();
+    let metadata = root.actual_control_backing_bytes().unwrap();
+    let cells = std::mem::size_of::<Slot>() + std::mem::size_of::<Execution>();
+    let limits = NativeSourceDataReservation {
+        max_construction_peak_data_bytes: 64 * 1024 * 1024 - metadata - cells - 1,
+        ..source_reservation()
+    };
+    root.configure_native_sources(1, limits).unwrap();
+    let held = root.usage();
+    let domain = super::super::tests::pair();
+    let refusal = root
+        .register_domain(domain)
+        .err()
+        .expect("native pool charge must leave only one peak byte");
+    let original = refusal.domain.0.catalog_lease().unwrap();
+    assert!(refusal.domain.1.matches_catalog(&original));
+    drop(original);
+    assert!(
+        refusal
+            .domain
+            .0
+            .shutdown(refusal.domain.1)
+            .unwrap()
+            .accounting_complete
+    );
+    assert_eq!(root.usage(), held);
+    assert_eq!(root.usage().unwrap().occupied_domains, 0);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_input_over_native_allowance_refuses_before_cancellation_or_child_construction() {
+    let root = root();
+    root.configure_native_sources(
+        1,
+        NativeSourceDataReservation {
+            max_retained_data_bytes: 1,
+            max_construction_peak_data_bytes: hex_plugin_scan::MAX_BINARY as usize + 1,
+        },
+    )
+    .unwrap();
+    let before = root.usage();
+    let (build, source, preparation) = input();
+    let result = root.begin_native_source_between(
+        identity(),
+        12,
+        &build,
+        source,
+        preparation,
+        None,
+        native::TrustUserCode::Acknowledged,
+        || panic!("over-budget input must not construct a cancellation pair"),
+        || panic!("over-budget input must not reserve a source"),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        "native source input exceeds retained data reservation"
+    );
+    assert!(!lock(&root.bank).sources.occupied());
+    assert_eq!(lock(&root.bank).sources.next_epoch, 1);
+    assert_eq!(root.usage(), before);
 }
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_recovery() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let metadata = root.actual_control_backing_bytes().unwrap();
     let first = start(&root);
     assert_eq!(
@@ -187,7 +320,8 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
 fn actual_root_close_during_reserved_construction_keeps_custody_without_starting_an_instance() {
     for close_before_pair in [false, true] {
         let root = root();
-        root.configure_native_sources(1).unwrap();
+        root.configure_native_sources(1, source_reservation())
+            .unwrap();
         let (build, source, preparation) = input();
         let binding = root
             .begin_native_source_between(
@@ -238,7 +372,8 @@ fn actual_root_close_during_reserved_construction_keeps_custody_without_starting
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_refused_native_request_retains_original_failure_through_cleanup() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let (build, source, mut preparation) = input();
     preparation.quantum = 0;
     let binding = root
@@ -279,13 +414,15 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
         .configure(
             original.root_id(),
             AudioCandidateDomainReservation {
-                max_retained_data_bytes: 8 * 1024 * 1024,
-                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+                max_retained_data_bytes: 64 * 1024 * 1024,
+                max_construction_peak_data_bytes: 64 * 1024 * 1024,
             },
             std::mem::size_of::<Inner>(),
         )
         .unwrap();
-    original.configure_native_source_preparation(1).unwrap();
+    original
+        .configure_native_source_preparation(1, source_reservation())
+        .unwrap();
     let (build, source, preparation) = input();
     let binding = original
         .begin_native_source_preparation(
@@ -412,7 +549,8 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn root_cancellation_descriptor_does_not_outlive_exact_disposal() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let (build, source, preparation) = input();
     let binding = root
         .begin_native_source(
@@ -446,7 +584,8 @@ fn root_cancellation_descriptor_does_not_outlive_exact_disposal() {
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn root_cancellation_creation_refusal_is_original_pre_spawn_failure() {
     let root = root();
-    root.configure_native_sources(1).unwrap();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
     let (build, source, preparation) = input();
     let binding = root
         .begin_native_source_between(
@@ -486,13 +625,15 @@ fn native_source_controls_refuse_the_retiring_original_root() {
     let outer = CandidateRoot::new(2).unwrap();
     outer
         .configure_domains(AudioCandidateDomainReservation {
-            max_retained_data_bytes: 8 * 1024 * 1024,
-            max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            max_retained_data_bytes: 64 * 1024 * 1024,
+            max_construction_peak_data_bytes: 64 * 1024 * 1024,
         })
         .unwrap();
     outer.announce_retirement();
     assert!(
-        outer.configure_native_source_preparation(1).is_err(),
+        outer
+            .configure_native_source_preparation(1, source_reservation())
+            .is_err(),
         "retiring Root must not create a new native source pool"
     );
     assert!(

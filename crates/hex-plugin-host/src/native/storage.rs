@@ -58,6 +58,22 @@ fn immutable_backing(
 }
 
 impl Source {
+    /// Existing request-input footprint charged against a cell allowance. The
+    /// borrowed helper metadata is charged prospectively for its copy, without
+    /// predicting clone capacity. Configuration copies, capture and transient
+    /// resources remain separate; this is not a complete preparation bound.
+    pub fn preparation_input_data_bytes_on_control(
+        &self,
+        build: &InstanceBuild,
+        restore: Option<&NativeDeviceState>,
+    ) -> Option<usize> {
+        if restore.is_some_and(|state| !state.asset_references().is_empty()) {
+            return None;
+        }
+        self.metadata_backing()?
+            .checked_add(build.retained_storage()?.data_bytes)?
+            .checked_add(restore.map_or(0, |state| state.payload().len()))
+    }
     pub(super) fn metadata_backing(&self) -> Option<usize> {
         self.bundle
             .supplied_path

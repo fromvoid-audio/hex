@@ -1,18 +1,22 @@
 //! Native source control entry points; actual owners stay inside CandidateRoot.
 use super::*;
-use crate::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
+use crate::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_host::native;
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
 impl PublicationControl {
-    /// Reserve fixed control cells before exposing the native output. This is
-    /// preparation custody only; variable native resources and endpoints remain
-    /// unsealed and cannot grant graph/publication eligibility.
+    /// Reserve fixed cells and per-cell variable DATA allowances before exposing
+    /// the output. The whole pool's allowances remain charged, including vacant
+    /// cells, so other admissions cannot spend that capacity. This is not actual
+    /// producer/resource sealing and cannot grant graph/publication eligibility.
     pub fn configure_native_source_preparation(
         &mut self,
         capacity: usize,
+        limits: NativeSourceDataReservation,
     ) -> Result<(), &'static str> {
         if !self.native_custody
             || self.revision != 0
@@ -22,7 +26,7 @@ impl PublicationControl {
             return Err("native preparation requires a vacant native output");
         }
         self.candidate_root
-            .configure_native_source_preparation(capacity)
+            .configure_native_source_preparation(capacity, limits)
     }
     /// Run source preparation on the existing control worker, never UI/audio.
     /// Success parks the actual owner in Root even after refusal/close. The

@@ -12,7 +12,9 @@ pub use preparation::{
 pub(crate) mod native_sources;
 pub(super) mod publication;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use native_sources::{NativeSourcePreparationProgress, NativeSourcePreparationReturn};
+pub use native_sources::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 pub(crate) use pages::DomainEnvelope;
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
@@ -37,6 +39,9 @@ pub struct AudioCandidateDomainRefusal {
     pub reason: &'static str,
     pub domain: CandidateDomain,
 }
+/// Stream occupancy and Root source-budget commitments. DATA totals include
+/// fixed metadata and configured native pool allowances, even when native cells
+/// are vacant; they are reservations, not an actual backing/RSS observation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioCandidateDomainUsage {
     pub occupied_domains: usize,
@@ -113,6 +118,26 @@ impl Default for NativeBank {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             sources: native_sources::Bank::default(),
         }
+    }
+}
+impl NativeBank {
+    /// Budget accounting includes the configured native pool even while its
+    /// cells are vacant. Actual backing and resource witnesses stay separate.
+    fn accounted_base(&self, peak: bool) -> Result<usize, &'static str> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let extra = if peak {
+            self.sources.peak_reserved
+        } else {
+            self.sources.retained_reserved
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let extra = {
+            let _ = peak;
+            0
+        };
+        self.metadata_bytes
+            .checked_add(extra)
+            .ok_or("native source reservation overflow")
     }
 }
 struct DomainExecution {
@@ -250,13 +275,13 @@ impl Custody {
             let used = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
                 .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
                 .ok_or("domain storage overflow")?;
             let used_peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
                 .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .ok_or("domain construction overflow")?;
             let capsule_bytes = if readiness.is_some() {
@@ -619,11 +644,15 @@ impl Custody {
             retained_data_reservation: bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))?,
+                .try_fold(bank.accounted_base(false).ok()?, |n, d| {
+                    n.checked_add(d.data)
+                })?,
             construction_peak_data_reservation: bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))?,
+                .try_fold(bank.accounted_base(true).ok()?, |n, d| {
+                    n.checked_add(d.peak)
+                })?,
         })
     }
 }
@@ -631,7 +660,7 @@ impl Custody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn pair() -> CandidateDomain {
+    pub(super) fn pair() -> CandidateDomain {
         let mut runtime =
             hex_stream::StreamRuntime::new(hex_stream::StreamConfig::with_pool_pages(4), vec![])
                 .unwrap();
