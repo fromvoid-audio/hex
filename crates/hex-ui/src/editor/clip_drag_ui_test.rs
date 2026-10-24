@@ -2702,7 +2702,10 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
             .unwrap();
         let down = source.center();
         let end = point(down.x + px(36.0), down.y);
-        assert!(source.contains(&end), "release still hits the painted source header");
+        assert!(
+            source.contains(&end),
+            "release still hits the painted source header"
+        );
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         // One coalesced motion crosses the native drag threshold. There need
         // not be a second mouse-move before release over the original header.
@@ -2718,7 +2721,11 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
             assert!(app.has_active_drag());
             let destination = {
                 let drag = editor.read(app).active_clip_drag.as_ref().unwrap();
-                let destination = drag.preview.get().expect("valid destination preview").position;
+                let destination = drag
+                    .preview
+                    .get()
+                    .expect("valid destination preview")
+                    .position;
                 assert_ne!(destination, drag.position);
                 destination
             };
@@ -2748,8 +2755,12 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
             let project = &v.state.as_ref().unwrap().project;
             assert_ne!(project.snapshot(), before.snapshot());
             match destination {
-                super::drag::ClipPosition::Midi { start, .. } => assert_eq!(project.midi_clip(clip).unwrap().start(), start),
-                super::drag::ClipPosition::Audio { start, .. } => assert_eq!(project.clip(clip).unwrap().start(), start),
+                super::drag::ClipPosition::Midi { start, .. } => {
+                    assert_eq!(project.midi_clip(clip).unwrap().start(), start)
+                }
+                super::drag::ClipPosition::Audio { start, .. } => {
+                    assert_eq!(project.clip(clip).unwrap().start(), start)
+                }
             }
         });
         let moved = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
@@ -2763,7 +2774,9 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
         });
         visual.simulate_keystrokes("cmd-shift-z");
         pump_move(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| assert_eq!(v.state.as_ref().unwrap().project.snapshot(), moved));
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), moved)
+        });
     }
 }
 
