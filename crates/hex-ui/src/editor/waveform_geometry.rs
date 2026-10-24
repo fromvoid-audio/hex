@@ -194,6 +194,12 @@ impl WaveformGeometryCache {
         &self.painted
     }
 
+    /// Reset diagnostic observations without invalidating retained geometry.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn clear_paint_samples(&mut self) {
+        self.painted.clear();
+    }
+
     /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn rendered_waveforms(&self) -> Vec<RenderedWaveformSample> {

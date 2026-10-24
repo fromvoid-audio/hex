@@ -10,6 +10,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[path = "navigation_profile.rs"]
+mod navigation;
+
 struct Scratch {
     path: PathBuf,
     palette: hex_preferences::ThemePreferences,
