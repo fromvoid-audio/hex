@@ -179,15 +179,11 @@ pub(super) fn at_cut(
                         return;
                     }
                     if previous.arrangement_loop_pass > 0
-                        && previous
-                            .revision
-                            .arrangement()
-                            .loop_region()
-                            .is_some_and(|region| {
-                                region.enabled()
-                                    && span.start < region.start()
-                                    && span.gate_end <= region.start()
-                            })
+                        && previous.loop_region().is_some_and(|region| {
+                            region.enabled()
+                                && span.start < region.start()
+                                && span.gate_end <= region.start()
+                        })
                     {
                         return;
                     }
@@ -218,18 +214,19 @@ pub(super) fn at_cut(
                 return Err(error);
             }
         }
-        RouteOwner::Session { clip, launch } => {
-            let clip = previous
-                .revision
-                .session()
-                .midi_clip_for_track(clip, route.id)
-                .ok_or(SessionPlaybackError::UnknownClip)?;
+        RouteOwner::Session { clip, origin } => {
+            let clip = crate::session_inventory::EffectiveSessionMidi::new(
+                previous.revision.session(),
+                previous.midi_admission.as_ref(),
+            )
+            .midi_clip_for_track(clip, route.id)
+            .ok_or(SessionPlaybackError::UnknownClip)?;
             if clip.track != route.id {
                 return Err(SessionPlaybackError::ClipTrackMismatch);
             }
             let clock = timing_view_for(
                 previous.revision.session(),
-                previous.periodic_tempo,
+                previous.periodic_tempo(),
                 previous.anchor,
             );
             let frame = previous.performance_frame;
@@ -238,10 +235,10 @@ pub(super) fn at_cut(
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(floor) = previous.historical_floor_for(index) {
                 clip.instrument_template()
-                    .query_after_onset(launch, &clock, frame, end, spans, floor)
+                    .query_after_onset_with_origin(origin, &clock, frame, end, spans, floor)
             } else {
                 clip.instrument_template()
-                    .query(launch, &clock, frame, end, spans)
+                    .query_with_origin(origin, &clock, frame, end, spans)
             }
             .map_err(SessionPlaybackError::Midi)?;
             for span in spans.spans() {

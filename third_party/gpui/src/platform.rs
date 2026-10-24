@@ -221,6 +221,13 @@ pub(crate) trait Platform: 'static {
         &self,
         options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>>;
+    fn prompt_for_paths_with_directory(
+        &self,
+        options: PathPromptOptions,
+        _directory: Option<&Path>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.prompt_for_paths(options)
+    }
     fn prompt_for_new_path(
         &self,
         directory: &Path,
@@ -1465,6 +1472,10 @@ pub enum CursorStyle {
     /// A resize cursor to the left and right
     /// corresponds to the CSS cursor value `ew-resize`
     ResizeLeftRight,
+
+    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
+    /// other platforms retain a horizontal resize fallback.
+    Loop,
 
     /// A resize up cursor
     /// corresponds to the CSS cursor value `n-resize`

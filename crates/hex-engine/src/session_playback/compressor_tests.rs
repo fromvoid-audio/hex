@@ -27,6 +27,7 @@ fn project_with_compressors(
             .expect("threshold patch")
     };
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: track_device,
         bypassed: track_bypassed,
         state: state_with_threshold(track_threshold),
@@ -41,6 +42,7 @@ fn project_with_compressors(
         gain: 0.75,
         muted: false,
         devices: vec![DeviceSnapshot {
+            comparison: None,
             id: return_device,
             bypassed: return_bypassed,
             state: state_with_threshold(return_threshold),

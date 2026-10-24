@@ -94,8 +94,15 @@ impl AudioCandidateDraft {
             revision.arrangement().tracks().len(),
             revision.arrangement().return_buses().len(),
         )?;
+        let sampler_sources = custody.native_sampler_capture()?;
+        let playback = if let Some((sources, _)) = sampler_sources.as_ref() {
+            Playback::new_current_sampler_candidate(revision, sources)?
+        } else {
+            Playback::new_audio_candidate(revision)?
+        };
         self.runtime = Some(Box::new(RuntimeOwner {
-            playback: Playback::new_audio_candidate(revision)?,
+            playback,
+            sampler_sources,
             #[cfg(any(test, feature = "instrument-test-support"))]
             probe: None,
         }));
@@ -168,6 +175,14 @@ impl AudioCandidateDraft {
                 .ok_or(AudioStorageError::Overflow)?,
         )?;
         Ok(())
+    }
+    pub(super) fn transferred_empty(&self) -> bool {
+        self.phase == Phase::Transferred
+            && self.runtime.is_none()
+            && self.groups.capacity() == 0
+            && self.journal.capacity() == 0
+            && self.archive.is_none()
+            && self.first_panic.is_none()
     }
     /// The final ownership transfer has no fallible work after taking custody.
     /// Every destination and actual root association is checked first. Control

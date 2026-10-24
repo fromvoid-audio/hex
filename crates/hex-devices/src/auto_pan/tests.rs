@@ -32,10 +32,10 @@ fn runtime(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn NativeProcess
 }
 
 #[test]
-fn defaults_and_generic_codec_roundtrip_three_controls() {
+fn defaults_and_generic_codec_roundtrip_four_controls() {
     let registry = registry();
     let state = registry.default_state(AUTO_PAN_TYPE_ID).expect("defaults");
-    assert_eq!(state.state_version(), 1);
+    assert_eq!(state.state_version(), AUTO_PAN_STATE_VERSION);
     assert_eq!(state.payload().len(), STATE_BYTES);
     assert_eq!(registry.migrate_state(&state).expect("migration"), state);
     for (id, expected) in [
@@ -81,8 +81,9 @@ fn rejects_malformed_versions_payloads_nonfinite_parameters_and_sample_rates() {
         );
     }
     for length in [STATE_BYTES - 1, STATE_BYTES + 1] {
-        let malformed = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; length])
-            .expect("bounded malformed payload");
+        let malformed =
+            NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, vec![0; length])
+                .expect("bounded malformed payload");
         assert_eq!(
             AUTO_PAN_DEFINITION.migrate_state(&malformed),
             Err(DeviceContractError::MalformedState)
@@ -98,16 +99,20 @@ fn rejects_malformed_versions_payloads_nonfinite_parameters_and_sample_rates() {
         AUTO_PAN_DEFINITION.migrate_state(&wrong),
         Err(DeviceContractError::WrongDeviceType)
     );
-    let future = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 2, state.payload().to_vec())
-        .expect("future version");
+    let future = NativeDeviceState::new(
+        AUTO_PAN_TYPE_ID,
+        AUTO_PAN_STATE_VERSION + 1,
+        state.payload().to_vec(),
+    )
+    .expect("future version");
     assert_eq!(
         AUTO_PAN_DEFINITION.migrate_state(&future),
         Err(DeviceContractError::UnsupportedStateVersion)
     );
     let mut nonfinite = state.payload().to_vec();
     nonfinite[4..8].copy_from_slice(&f32::NAN.to_le_bytes());
-    let nonfinite =
-        NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, nonfinite).expect("bounded nonfinite state");
+    let nonfinite = NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, nonfinite)
+        .expect("bounded nonfinite state");
     assert_eq!(
         AUTO_PAN_DEFINITION.migrate_state(&nonfinite),
         Err(DeviceContractError::InvalidParameterValue)
@@ -448,4 +453,312 @@ fn stateful_auto_pan_declares_zero_latency_and_tail_and_is_quiescent() {
         processor.declared_runtime_bytes(),
         std::mem::size_of::<AutoPanRuntime>()
     );
+}
+
+#[test]
+fn original_sine_pcm_fingerprint() {
+    for (rate, expected) in [
+        (8000, 0xedd6697d940d64a7_u64),
+        (22050, 0x590f0440b4abe9a6_u64),
+        (44100, 0xde98d6caef67dc78_u64),
+        (48000, 0xd5118d20611337d6_u64),
+        (96000, 0xd98e1558236b1ca7_u64),
+        (192000, 0x898e485e23dd7ec4_u64),
+    ] {
+        let state = AUTO_PAN_DEFINITION.default_state().unwrap();
+        let mut frames: Vec<_> = (0..2049)
+            .map(|n| {
+                let x = ((n * 97 % 521) as f32 - 260.0) / 270.0;
+                [x, x * -0.173 + (n % 7) as f32 * 0.013]
+            })
+            .collect();
+        runtime(&state, rate).process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let mut hash = 0xcbf29ce484222325_u64;
+        for value in frames.iter().flatten() {
+            for byte in value.to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        }
+        assert_eq!(hash, expected, "pre-waveform Sine PCM {rate}");
+    }
+}
+
+#[test]
+fn selectable_square_changes_actual_pcm_at_quarter_cycle() {
+    let state = patch(
+        &AUTO_PAN_DEFINITION.default_state().unwrap(),
+        parameter::AMOUNT,
+        1.0,
+    );
+    let square = AUTO_PAN_DEFINITION
+        .patch_parameter(
+            &state,
+            ParameterId::from_static(4),
+            ParameterValue::Choice(4),
+        )
+        .expect("actual waveform choice");
+    let mut signal = [[1.0, -0.25]; 2001];
+    runtime(&square, 8000).process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(signal[2000], [1.0, -0.0]);
+}
+
+fn choice(state: &NativeDeviceState, shape: u32) -> NativeDeviceState {
+    AUTO_PAN_DEFINITION
+        .patch_parameter(state, parameter::WAVEFORM, ParameterValue::Choice(shape))
+        .unwrap()
+}
+
+#[test]
+fn independent_quarter_cycle_channel_oracles_and_zero_amount_cover_all_shapes() {
+    let levels = [
+        [0.5, 1.0, 0.5, 0.0],
+        [0.5, 1.0, 0.5, 0.0],
+        [0.0, 0.25, 0.5, 0.75],
+        [1.0, 0.75, 0.5, 0.25],
+        [1.0, 1.0, 0.0, 0.0],
+    ];
+    for (shape, expected) in levels.iter().enumerate() {
+        for (degrees, offset) in [(0.0, 0), (180.0, 2), (360.0, 0)] {
+            for amount in [0.0_f32, 0.3, 1.0] {
+                let state = patch(
+                    &patch(
+                        &choice(&AUTO_PAN_DEFINITION.default_state().unwrap(), shape as u32),
+                        parameter::AMOUNT,
+                        amount,
+                    ),
+                    parameter::RIGHT_PHASE,
+                    degrees,
+                );
+                for quarter in 0..4 {
+                    // Seed exact rational phases to test signed step boundaries
+                    // independently of floating point clock accumulation.
+                    let prepared = prepared(&state, 48000);
+                    let boxed = prepared.create_runtime();
+                    let initial = boxed.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
+                    let mut pan = AutoPanRuntime {
+                        phase_cycles: quarter as f64 / 4.0,
+                        ..copy_runtime(initial)
+                    };
+                    let input = [0.8, -0.25];
+                    let mut sample = [input];
+                    pan.process_block(&mut sample, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                    for (channel, lfo) in [expected[quarter], expected[(quarter + offset) % 4]]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let gain = 1.0 - f64::from(amount) + f64::from(amount) * lfo;
+                        assert!(
+                            (f64::from(sample[0][channel]) - f64::from(input[channel]) * gain)
+                                .abs()
+                                < 8.0e-8
+                        );
+                        if amount == 0.0 {
+                            assert_eq!(sample[0][channel].to_bits(), input[channel].to_bits());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+fn copy_runtime(p: &AutoPanRuntime) -> AutoPanRuntime {
+    AutoPanRuntime {
+        sample_rate: p.sample_rate,
+        ramp_frames: p.ramp_frames,
+        phase_cycles: p.phase_cycles,
+        amount: p.amount,
+        rate_hz: p.rate_hz,
+        right_phase_degrees: p.right_phase_degrees,
+        waveform_weights: p.waveform_weights,
+        targets: p.targets,
+    }
+}
+
+#[test]
+fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_block_restart() {
+    for rate in [8000_u32, 22050, 44100, 48000, 96000, 192000] {
+        for (from, to) in [(0, 4), (4, 2), (2, 1), (1, 3), (3, 0)] {
+            let base = patch(
+                &AUTO_PAN_DEFINITION.default_state().unwrap(),
+                parameter::RATE,
+                20.0,
+            );
+            let old_state = choice(&base, from);
+            let new_state = choice(&base, to);
+            let source = runtime(&old_state, rate);
+            let mut actual = runtime(&new_state, rate);
+            actual.copy_history_from(source.as_ref());
+            let count = rate.div_ceil(200) as usize;
+            let input = [0.8, -0.21];
+            let mut samples = vec![input; count + 17];
+            let mut a = samples.clone();
+            let mut b = samples.clone();
+            runtime(&old_state, rate).process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            runtime(&new_state, rate).process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            let mut start = 0;
+            for length in [1, 7, 31, 2, 503].into_iter().cycle() {
+                if start == samples.len() {
+                    break;
+                }
+                let end = (start + length).min(samples.len());
+                let mut twin = runtime(&new_state, rate);
+                twin.copy_history_from(actual.as_ref());
+                twin.process_block(
+                    &mut samples[start..end],
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
+                actual = twin;
+                start = end;
+            }
+            for (index, sample) in samples.iter().enumerate() {
+                let t = ((index + 1) as f64 / count as f64).min(1.0);
+                for (channel, value) in sample.iter().enumerate() {
+                    let expected =
+                        (1.0 - t) * f64::from(a[index][channel]) + t * f64::from(b[index][channel]);
+                    assert!(
+                        (f64::from(*value) - expected).abs() < 1.3e-7,
+                        "rate{rate} pair{from}->{to} frame{index}"
+                    );
+                }
+            }
+            let state = actual.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
+            let expected_phase = ((count + 17) as f64 * 20.0 / f64::from(rate)).rem_euclid(1.0);
+            assert!((state.phase_cycles - expected_phase).abs() < 1.0e-12);
+            assert!(state.waveform_weights.iter().all(|w| w.remaining == 0));
+            assert_eq!(
+                source
+                    .as_any()
+                    .downcast_ref::<AutoPanRuntime>()
+                    .unwrap()
+                    .phase_cycles,
+                0.0,
+                "speculative copies never mutate committed source"
+            );
+            let mut bypass = runtime(&new_state, rate);
+            bypass.copy_history_from(source.as_ref());
+            let mut dry = vec![input; count + 17];
+            bypass.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert!(dry.iter().all(|x| *x == input));
+            let mut next = [input; 11];
+            let mut other = next;
+            bypass.process_block(&mut next, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            actual.process_block(&mut other, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert_eq!(next, other);
+            actual.reset();
+            let mut reset = [input; 11];
+            let mut fresh = reset;
+            actual.process_block(&mut reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            runtime(&new_state, rate)
+                .process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            assert_eq!(reset, fresh);
+        }
+    }
+}
+
+#[test]
+fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
+    let base = AUTO_PAN_DEFINITION.default_state().unwrap();
+    let legacy = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 12]).unwrap();
+    assert_eq!(
+        AUTO_PAN_DEFINITION.migrate_state(&legacy),
+        Err(DeviceContractError::UnsupportedStateVersion)
+    );
+    for value in [
+        ParameterValue::Choice(5),
+        ParameterValue::Choice(u32::MAX),
+        ParameterValue::Float(f32::NAN),
+        ParameterValue::Float(1.0),
+        ParameterValue::Bool(true),
+    ] {
+        assert!(
+            AUTO_PAN_DEFINITION
+                .patch_parameter(&base, parameter::WAVEFORM, value)
+                .is_err()
+        );
+    }
+    let mut corrupt = base.payload().to_vec();
+    corrupt[12..16].copy_from_slice(&5_u32.to_le_bytes());
+    assert!(
+        waveform_preview(
+            &NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, corrupt).unwrap()
+        )
+        .is_err()
+    );
+    for shape in 0..5 {
+        let state = choice(&base, shape);
+        assert_eq!(AUTO_PAN_DEFINITION.migrate_state(&state).unwrap(), state);
+        assert_eq!(
+            AUTO_PAN_DEFINITION
+                .read_parameter(&state, parameter::WAVEFORM)
+                .unwrap(),
+            ParameterValue::Choice(shape)
+        );
+        let semantics = AUTO_PAN_DEFINITION
+            .parameter_semantics_for_state(&state, parameter::WAVEFORM)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            semantics.stepping,
+            hex_lattice_contract::ParameterStepping::Choice
+        );
+        let preview = waveform_preview(&state).unwrap();
+        for points in [preview.left, preview.right] {
+            assert!(
+                points
+                    .iter()
+                    .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
+            );
+        }
+        assert_eq!(
+            waveform_preview(&patch(&state, parameter::RATE, 20.0)).unwrap(),
+            preview,
+            "one normalized cycle is rate-independent"
+        );
+    }
+    let old = runtime(&base, 8000);
+    let square = choice(&base, 4);
+    let triangle = choice(&base, 1);
+    let mut change = runtime(&square, 8000);
+    change.copy_history_from(old.as_ref());
+    change.process_block(&mut [[1.0, 1.0]; 20], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let before = change.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
+    let mut rapid = runtime(&triangle, 8000);
+    rapid.copy_history_from(change.as_ref());
+    let after = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
+    assert_eq!(after.phase_cycles, before.phase_cycles);
+    assert_eq!(
+        after.waveform_weights.map(|w| w.current),
+        before.waveform_weights.map(|w| w.current)
+    );
+    rapid.process_block(&mut [[1.0, 1.0]; 40], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let settled = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
+    assert_eq!(settled.waveform_weights[1].current, 1.0);
+}
+
+#[test]
+fn intrinsic_edges_and_harmonic_content_are_explicit_not_alias_free_claims() {
+    let e = 1.0e-9;
+    assert_eq!(Waveform::Square.lfo(0.5 - e), 1.0);
+    assert_eq!(Waveform::Square.lfo(0.5), 0.0);
+    assert!(Waveform::SawUp.lfo(1.0 - e) > 0.999999);
+    assert_eq!(Waveform::SawUp.lfo(0.0), 0.0);
+    assert!((Waveform::Triangle.lfo(0.25 - e) - Waveform::Triangle.lfo(0.25 + e)).abs() < 1.0e-8);
+    // Independent discrete Fourier measurement: intended square has harmonics;
+    // triangle has substantially less third-harmonic energy, Sine virtually none.
+    let energy = |shape: Waveform, k: f64| {
+        let (mut re, mut im) = (0.0, 0.0);
+        for n in 0..1024 {
+            let phase = n as f64 / 1024.0;
+            let y = shape.lfo(phase) - 0.5;
+            let angle = std::f64::consts::TAU * k * phase;
+            re += y * angle.cos();
+            im += y * angle.sin();
+        }
+        re * re + im * im
+    };
+    let square = energy(Waveform::Square, 3.0) / energy(Waveform::Square, 1.0);
+    let triangle = energy(Waveform::Triangle, 3.0) / energy(Waveform::Triangle, 1.0);
+    assert!((square - 1.0 / 9.0).abs() < 1.0e-4);
+    assert!((triangle - 1.0 / 81.0).abs() < 1.0e-4);
+    assert!(energy(Waveform::Sine, 3.0) / energy(Waveform::Sine, 1.0) < 1.0e-20);
 }

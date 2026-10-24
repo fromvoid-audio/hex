@@ -1,4 +1,11 @@
-//! Borrowed native-device resource boundary; ownership and admission stay with the host.
+//! Borrowed native-device resources; ownership and admission stay with the host.
+//!
+//! Each inventory belongs to one exact prepared configuration, including its original sample rate,
+//! channel layout, content and derivation identity. Reusing an authored slot in a later
+//! configuration does not rebind an outgoing voice. The host must retain that voice's actual
+//! original inventory until retirement; an equal digest, asset key or borrowed view cannot
+//! establish source custody. Control validates PCM and numeric bounds; callback queries must be
+//! bounded and free of allocation, blocking, I/O and owning-handle mutation.
 use crate::TuningTable;
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetSlot, DeviceContractError, MAX_DEVICE_ASSET_REFERENCES,

@@ -436,3 +436,56 @@ fn runtime_rejects_combined_ring_storage_exceeding_its_policy() {
         Err(CompensationError::StorageLimit)
     ));
 }
+
+#[test]
+fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
+    for count in [2, 11] {
+        let mut source = delay::RingPair::<Option<TransportStamp>>::new(4).unwrap();
+        source.begin();
+        for frame in 0..count {
+            source.push(Some(TransportStamp {
+                performance_frame: 900 + frame,
+                transport_is_running: frame % 2 == 0,
+                arrangement_frame: frame % 3,
+                loop_pass: frame / 3,
+                performance_beat_raw: (frame << 30) + 27,
+                arrangement_beat_raw: (frame % 2 == 0).then_some(frame << 28),
+            }));
+        }
+        source.commit();
+        let mut target = delay::RingPair::<Option<TransportStamp>>::new(7).unwrap();
+        target.begin();
+        for _ in 0..7 {
+            target.push(Some(TransportStamp {
+                performance_frame: 1,
+                transport_is_running: false,
+                arrangement_frame: 1,
+                loop_pass: 0,
+                performance_beat_raw: 0,
+                arrangement_beat_raw: None,
+            }));
+        }
+        target.commit();
+        let expected: Vec<_> = (0..7).map(|offset| source.at_delay(offset)).collect();
+        target.copy_history_from(&source);
+        for (offset, stamp) in expected.iter().enumerate() {
+            assert_eq!(
+                target.at_delay(offset),
+                *stamp,
+                "all origin fields and unavailable history"
+            );
+        }
+        target.begin();
+        for _ in 0..9 {
+            target.push(None);
+        }
+        target.rollback();
+        for (offset, stamp) in expected.iter().enumerate() {
+            assert_eq!(target.at_delay(offset), *stamp);
+            assert_eq!(source.at_delay(offset), *stamp, "copy cannot mutate donor");
+        }
+        target.reset();
+        assert_eq!(target.at_delay(0), None);
+        assert!(source.at_delay(0).unwrap().is_some());
+    }
+}

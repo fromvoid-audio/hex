@@ -55,15 +55,27 @@ impl Bandlimited {
         Ok(())
     }
     pub(super) fn sample(&self, input: Input<'_>, position_q32: i128) -> [f64; 2] {
+        self.sample_interval(input, position_q32, None)
+    }
+    fn sample_interval(
+        &self,
+        input: Input<'_>,
+        position_q32: i128,
+        interval: Option<(i128, i128)>,
+    ) -> [f64; 2] {
+        // A transient segment may not read the following attack through its
+        // reconstruction filter, including during a tail wrap or reversal.
+        let frame =
+            |at: i128| input.frame(interval.map_or(at, |(start, end)| at.clamp(start, end)));
         let integer = position_q32.div_euclid(Q32);
         let fraction = position_q32.rem_euclid(Q32);
         if fraction == 0 && self.rate <= 1.0 {
-            return input.frame(integer);
+            return frame(integer);
         }
         let phase = (fraction * PHASES as i128 / Q32) as usize;
         let mut result = [0.0; 2];
         for tap in 0..TAPS {
-            let sample = input.frame(integer + tap as i128 - (TAPS / 2 - 1) as i128);
+            let sample = frame(integer + tap as i128 - (TAPS / 2 - 1) as i128);
             let coefficient = self.coefficients[phase * TAPS + tap];
             result[0] += sample[0] * coefficient;
             result[1] += sample[1] * coefficient;
@@ -72,6 +84,19 @@ impl Bandlimited {
     }
     pub(super) fn sample_float(&self, input: Input<'_>, position: f64) -> [f64; 2] {
         self.sample(input, (position * Q32 as f64).round() as i128)
+    }
+    pub(super) fn sample_segment(
+        &self,
+        input: Input<'_>,
+        position: f64,
+        start: i128,
+        end: i128,
+    ) -> [f64; 2] {
+        self.sample_interval(
+            input,
+            (position * Q32 as f64).round() as i128,
+            Some((start, end)),
+        )
     }
 }
 pub(super) fn render(

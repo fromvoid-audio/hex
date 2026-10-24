@@ -3,8 +3,11 @@ use hex_project::{Command, Created, Editor, Invalid, Project, ReturnId, RoutingO
 
 fn track(editor: &mut Editor) -> TrackId {
     let Created::Track(id) = editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     else {

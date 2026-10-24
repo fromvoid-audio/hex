@@ -1,5 +1,5 @@
 //! Shared presentation codecs for native-device numeric controls.
-use hex_widgets::NumericSpec;
+use hex_widgets::{NumericScale, NumericSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NumericDisplayCodec {
@@ -16,6 +16,29 @@ pub(super) enum NumericDisplayCodec {
 
 impl NumericDisplayCodec {
     pub(super) fn apply(self, spec: NumericSpec) -> NumericSpec {
+        // Keep keyboard increments in the same unit the codec actually shows.
+        // This is a view adapter; NumericSpec still validates/clamps the result.
+        let spec = match self {
+            Self::Percent | Self::Balance | Self::MidSide => {
+                spec.with_keyboard_stepper(|value, delta| Some(value + delta / 100.0))
+            }
+            Self::Seconds => spec.with_keyboard_stepper(|value, delta| {
+                Some(value + delta / if value < 1.0 { 1000.0 } else { 1.0 })
+            }),
+            Self::AmplitudeDb if spec.scale() != NumericScale::LinearAmplitudeDecibels => {
+                let silence = spec.clone();
+                spec.with_keyboard_stepper(move |value, delta| {
+                    if value > 0.0 {
+                        Some(value * 10.0_f64.powf(delta / 20.0))
+                    } else if delta > 0.0 {
+                        silence.adjust(value, delta / 100.0).ok()
+                    } else {
+                        Some(value)
+                    }
+                })
+            }
+            _ => spec,
+        };
         spec.with_codec(
             move |value| match self {
                 Self::Percent => format!("{}%", format_number(value * 100.0, 2)),
@@ -164,6 +187,46 @@ fn parse_side(text: &str, negative: &str, positive: &str) -> Option<f64> {
 mod tests {
     use super::NumericDisplayCodec;
     use hex_widgets::{NumericScale, NumericSpec};
+
+    #[test]
+    fn keyboard_steps_follow_actual_percentage_time_and_decibel_readout_units() {
+        let raw = NumericSpec::new(0.0, 4.0, 1.0, NumericScale::Linear, 2, None::<&str>).unwrap();
+        for codec in [
+            NumericDisplayCodec::Percent,
+            NumericDisplayCodec::Balance,
+            NumericDisplayCodec::MidSide,
+        ] {
+            let spec = codec.apply(raw.clone());
+            assert_eq!(spec.step(0.5, 1.0, false), Ok(0.51));
+            assert_eq!(spec.step(0.5, -1.0, true), Ok(0.499));
+        }
+        let seconds = NumericDisplayCodec::Seconds.apply(raw.clone());
+        assert_eq!(
+            seconds
+                .format(seconds.step(0.08, 1.0, false).unwrap())
+                .unwrap(),
+            "81 ms"
+        );
+        assert_eq!(
+            seconds
+                .format(seconds.step(0.08, -1.0, true).unwrap())
+                .unwrap(),
+            "79.9 ms"
+        );
+        assert_eq!(seconds.step(2.0, 1.0, false), Ok(3.0));
+        assert_eq!(seconds.step(2.0, -1.0, true), Ok(1.9));
+        let db = NumericDisplayCodec::AmplitudeDb.apply(raw);
+        assert_eq!(
+            db.format(db.step(1.0, 1.0, false).unwrap()).unwrap(),
+            "1.0 db"
+        );
+        assert_eq!(
+            db.format(db.step(1.0, -1.0, true).unwrap()).unwrap(),
+            "-0.1 db"
+        );
+        assert_eq!(db.step(0.0, -1.0, true), Ok(0.0));
+        assert!(db.step(0.0, 1.0, true).unwrap() > 0.0);
+    }
 
     #[test]
     fn pan_points_show_center_and_accept_typed_sides_without_rescaling_bare_values() {

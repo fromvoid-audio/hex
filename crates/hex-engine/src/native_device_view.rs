@@ -4,6 +4,172 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
+/// Intentional host facade for the provider-owned closed scalar contract.
+pub use hex_devices::sampler::control::SamplerParameter;
+
+pub fn sampler_parameter_value_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+) -> Result<f64, Invalid> {
+    hex_devices::sampler::control::sampler_parameter_value_on_control(parameter, state)
+        .map_err(sampler_control_error)
+}
+
+/// Values remain readable when inactive; this never converts a gate mode.
+pub fn sampler_parameter_active_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+) -> Result<bool, Invalid> {
+    hex_devices::sampler::control::sampler_parameter_active_on_control(parameter, state)
+        .map_err(sampler_control_error)
+}
+
+pub fn patch_sampler_parameter_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+    value: f64,
+) -> Result<NativeDeviceState, Invalid> {
+    hex_devices::sampler::control::patch_sampler_parameter_on_control(parameter, state, value)
+        .map_err(sampler_control_error)
+}
+
+fn sampler_control_error(error: hex_devices::sampler::control::ControlError) -> Invalid {
+    use hex_devices::sampler::control::ControlError;
+    Invalid(match error {
+        ControlError::State(error) => return sampler_state_error(error),
+        ControlError::InvalidValue(parameter) => match parameter {
+            SamplerParameter::AttackMs
+            | SamplerParameter::DecayMs
+            | SamplerParameter::ReleaseMs => {
+                "sampler envelope time must be between zero and 60000 ms"
+            }
+            SamplerParameter::SustainPercent => {
+                "sampler sustain must be between zero and 100 percent"
+            }
+            SamplerParameter::Gain => "sampler gain must be between zero and four",
+            SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
+            SamplerParameter::LoopEnabled => "sampler loop must be off or on",
+            SamplerParameter::StartFrame
+            | SamplerParameter::EndFrame
+            | SamplerParameter::LoopStartFrame
+            | SamplerParameter::LoopEndFrame => {
+                "sampler region endpoints must be bounded whole source frames"
+            }
+        },
+        ControlError::RequiresClassic => "loop controls require classic mode",
+        ControlError::InvalidRegion => {
+            "sampler region must be nonempty and preserve loop and slice bounds"
+        }
+        ControlError::InvalidSetting => "sampler setting is invalid",
+    })
+}
+
+/// Exact asset-free catalog state; all other sampler states require source validation.
+pub fn is_empty_sampler_state_on_control(state: &NativeDeviceState) -> bool {
+    hex_devices::sampler::state::is_empty_state(state)
+}
+
+/// Refuse unsupported modes before the host decodes any replacement media.
+pub fn validate_sampler_replacement_on_control(state: &NativeDeviceState) -> Result<(), Invalid> {
+    if is_empty_sampler_state_on_control(state) {
+        return Ok(());
+    }
+    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
+        .map_err(sampler_state_error)?;
+    if matches!(
+        authored.mode,
+        hex_devices::sampler::state::AuthoredMode::Classic { .. }
+    ) {
+        Ok(())
+    } else {
+        Err(Invalid(
+            "sample replacement currently requires classic mode",
+        ))
+    }
+}
+/// Preserve every non-source setting and host envelope; reset only source bounds
+/// and Classic loop points. The project transaction binds the new asset identity.
+pub fn sampler_replacement_template_on_control(
+    state: &NativeDeviceState,
+    frames: usize,
+) -> Result<(NativeDeviceState, hex_lattice_contract::DeviceAssetSlot), Invalid> {
+    validate_sampler_replacement_on_control(state)?;
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut authored = if is_empty_sampler_state_on_control(state) {
+        SamplerState::for_source_frames(frames).map_err(sampler_state_error)?
+    } else {
+        SamplerState::from_native(state).map_err(sampler_state_error)?
+    };
+    let whole = SamplerState::for_source_frames(frames)
+        .map_err(sampler_state_error)?
+        .region;
+    authored.region = whole;
+    authored.mode = AuthoredMode::Classic {
+        loop_enabled: false,
+        loop_region: whole,
+    };
+    Ok((
+        if is_empty_sampler_state_on_control(state) {
+            authored
+                .to_native()
+                .and_then(|s| s.with_host_metadata_from(state))
+                .map_err(sampler_state_error)?
+        } else {
+            authored.replace_in(state).map_err(sampler_state_error)?
+        },
+        hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
+            .map_err(sampler_state_error)?,
+    ))
+}
+
+/// Classify the closed set of panel configuration fields while preserving every
+/// other codec/host field and the exact source binding. Control thread only.
+pub fn is_sampler_configuration_history_on_control(
+    current: &NativeDeviceState,
+    target: &NativeDeviceState,
+) -> Result<bool, Invalid> {
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut allowed = SamplerState::from_native(current).map_err(sampler_state_error)?;
+    let next = SamplerState::from_native(target).map_err(sampler_state_error)?;
+    allowed.region = next.region;
+    allowed.gain = next.gain;
+    allowed.transpose_semitones = next.transpose_semitones;
+    let hex_devices::sampler::Envelope {
+        attack_seconds,
+        decay_seconds,
+        sustain,
+        release_seconds,
+    } = next.envelope;
+    allowed.envelope.attack_seconds = attack_seconds;
+    allowed.envelope.decay_seconds = decay_seconds;
+    allowed.envelope.sustain = sustain;
+    allowed.envelope.release_seconds = release_seconds;
+    if let (
+        AuthoredMode::Classic {
+            loop_enabled,
+            loop_region,
+        },
+        AuthoredMode::Classic {
+            loop_enabled: next_enabled,
+            loop_region: next_region,
+        },
+    ) = (&mut allowed.mode, &next.mode)
+    {
+        *loop_enabled = *next_enabled;
+        *loop_region = *next_region;
+    }
+    Ok(allowed.replace_in(current).map_err(sampler_state_error)? == *target)
+}
+
+fn sampler_state_error(error: hex_lattice_contract::DeviceContractError) -> Invalid {
+    Invalid(match error {
+        hex_lattice_contract::DeviceContractError::InvalidStateVersion => {
+            "sampler state version is unsupported"
+        }
+        _ => "sampler state is invalid",
+    })
+}
+
 /// Reserved host parameter. Device codecs never own this identifier.
 pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
     hex_lattice_contract::ParameterDescriptor {
@@ -368,7 +534,12 @@ mod tests {
         let state = crate::default_native_device_state(auto_pan.type_id).unwrap();
         let view = native_device_view(&state).unwrap();
         assert_eq!(view.name, "auto pan");
-        assert_eq!(view.parameters.len(), 3);
+        assert_eq!(view.parameters.len(), 4);
+        assert_eq!(
+            view.parameters[3].descriptor.id,
+            hex_lattice_contract::ParameterId::from_static(4)
+        );
+        assert_eq!(view.parameters[3].value, ParameterValue::Choice(0));
     }
 
     #[test]
@@ -478,7 +649,8 @@ mod tests {
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));
         assert!(effects.iter().any(|entry| entry.name == "auto pan"));
-        assert_eq!(instruments.len(), 3);
+        assert_eq!(instruments.len(), 4);
+        assert!(instruments.iter().any(|entry| entry.name == "sampler"));
         let sine = instruments
             .iter()
             .find(|entry| entry.name == "sine")

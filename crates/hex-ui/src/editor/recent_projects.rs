@@ -15,6 +15,10 @@ pub(super) struct RecentProjectsState {
 }
 
 impl RecentProjectsState {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_path(&self) -> &Path {
+        &self.path
+    }
     pub(super) fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -28,34 +32,28 @@ impl RecentProjectsState {
     }
 }
 
+#[cfg(not(test))]
 pub(super) fn default_preferences_path() -> PathBuf {
-    #[cfg(test)]
-    {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "hex-ui-test-recent-{}-{}.json",
-            std::process::id(),
-            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-    #[cfg(not(test))]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
-        hex_preferences::recent_projects_path(&home)
-    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    hex_preferences::recent_projects_path(&home)
 }
 
 impl EditorView {
     pub(super) fn start_recent_projects_load(&mut self, cx: &mut Context<Self>) {
         let path = self.recent_projects.path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::load_recent_projects(&path) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::load_recent_projects(&path)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.recent_projects_loaded(result, cx);
@@ -144,11 +142,17 @@ impl EditorView {
         };
         self.recent_projects.save_in_flight = true;
         let path = self.recent_projects.path.clone();
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hex_preferences::save_recent_projects(&path, &projects) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    hex_preferences::save_recent_projects(&path, &projects)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.recent_projects_saved(result, cx);
@@ -287,8 +291,10 @@ mod tests {
                 editor.update(cx, |view, _| {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: std::collections::BTreeMap::new(),
                         midi_preview: Arc::new(Default::default()),
                         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -329,8 +335,10 @@ mod tests {
             let current = view.state.as_ref().expect("state");
             let dirty = ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -346,7 +354,12 @@ mod tests {
             assert_eq!(view.pending_open_path.as_ref(), Some(&first));
             assert!(!view.opening_project);
             view.open_recent_project(&stale_menu_action);
-            assert!(view.opening_project, "second click confirms the same path");
+            assert!(
+                !view.opening_project,
+                "another click must not bypass confirmation"
+            );
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
             let pending_count = view.pending_requests.len();
             view.opening_project = true;
             view.open_recent_project(&OpenRecentProject {
@@ -389,6 +402,101 @@ mod tests {
         assert_eq!(
             hex_preferences::load_recent_projects(&recent_path).expect("saved merged MRU"),
             editor.read_with(cx, |view, _| view.recent_projects.projects.clone())
+        );
+    }
+
+    #[gpui::test]
+    fn successful_save_as_and_save_current_update_persisted_recent_projects(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::VisualTestContext;
+        use hex_session::service::Request;
+        use std::time::{Duration, Instant};
+
+        fn settle(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                editor.update(&mut *visual, |view, cx| {
+                    view.tick(cx);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                if editor.read_with(&*visual, |view, _| {
+                    !view.edit_pending()
+                        && !view.save_dialog_open
+                        && !view.recent_projects.loading
+                        && !view.recent_projects.save_in_flight
+                        && view.recent_projects.pending_save.is_none()
+                }) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "save/recent-list update stalled");
+                std::thread::yield_now();
+            }
+        }
+
+        let directory = TestDirectory::new();
+        let recent_path = directory.0.join("recent-projects.json");
+        let first = directory.0.join("never-opened.hex");
+        let second = directory.0.join("saved-as.hex");
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        settle(&editor, &mut visual);
+        for path in [&first, &second] {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::SaveNew(path.clone())));
+            });
+            settle(&editor, &mut visual);
+            assert!(path.is_file(), "the real save must publish the project");
+            editor.read_with(&visual, |view, _| {
+                assert!(view.error.is_none(), "{:?}", view.error);
+                assert_eq!(view.recent_projects.projects.paths().first(), Some(path));
+            });
+        }
+        // Another recent entry can be promoted without changing this document.
+        editor.update(&mut visual, |view, cx| {
+            view.record_opened_project(first.clone(), cx);
+            assert!(view.enqueue(Request::SaveCurrent));
+        });
+        settle(&editor, &mut visual);
+        let expected = RecentProjects::new([second.clone(), first.clone()]).unwrap();
+        assert_eq!(
+            hex_preferences::load_recent_projects(&recent_path).unwrap(),
+            expected
+        );
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::SaveCurrent));
+        });
+        settle(&editor, &mut visual);
+        assert_eq!(
+            hex_preferences::load_recent_projects(&recent_path).unwrap(),
+            expected,
+            "repeated saves must not duplicate the path"
+        );
+
+        editor.update(&mut visual, |view, cx| view.save_as_dialog(cx));
+        visual.run_until_parked();
+        assert!(visual.pending_save_options().is_some());
+        visual.simulate_new_path_selection(|_| None);
+        settle(&editor, &mut visual);
+        let invalid = directory.0.join("missing/failed.hex");
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::SaveNew(invalid.clone())));
+        });
+        settle(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_some());
+            assert_eq!(
+                view.state.as_ref().unwrap().document_path.as_ref(),
+                Some(&second)
+            );
+            assert_eq!(view.recent_projects.projects, expected);
+        });
+        assert!(!invalid.exists());
+        assert_eq!(
+            hex_preferences::load_recent_projects(&recent_path).unwrap(),
+            expected,
+            "cancelled and failed saves must preserve the persisted list"
         );
     }
 }

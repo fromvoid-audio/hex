@@ -67,6 +67,31 @@ impl SessionSharedConstruction {
         current_handles: usize,
         limit: usize,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_with_contexts(
+            current_handles,
+            limit,
+            SharedAnalyticContextTable::default(),
+        )
+    }
+    pub(super) fn reserve_current_sampler(
+        &mut self,
+        current_handles: usize,
+        limit: usize,
+        tuning: hex_lattice::TuningTable,
+    ) -> Result<(), AudioStorageError> {
+        self.reserve_with_contexts(
+            current_handles,
+            limit,
+            SharedAnalyticContextTable::current_sampler_table(tuning)
+                .map_err(|_| AudioStorageError::Overflow)?,
+        )
+    }
+    fn reserve_with_contexts(
+        &mut self,
+        current_handles: usize,
+        limit: usize,
+        contexts: SharedAnalyticContextTable,
+    ) -> Result<(), AudioStorageError> {
         if self.sine.is_some()
             || self.arrangement_contexts.is_some()
             || self.session_contexts.is_some()
@@ -98,12 +123,18 @@ impl SessionSharedConstruction {
         #[cfg(test)]
         self.inject(1)?;
         // The owning module's exhaustive check refuses ANY nested/spare owner.
-        self.arrangement_contexts =
-            Some(OwnedShared::new_owned(SharedAnalyticContextTable::default()));
+        self.arrangement_contexts = Some(OwnedShared::new_owned(contexts));
         #[cfg(test)]
         self.inject(2)?;
         self.observe()?;
         Ok(())
+    }
+    pub(crate) fn current_sampler_contexts(
+        &self,
+    ) -> Result<&OwnedShared<SharedAnalyticContextTable>, AudioStorageError> {
+        self.arrangement_contexts
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)
     }
     pub(super) fn construct(&mut self) -> Result<(), AudioStorageError> {
         if self.session_contexts.is_some()

@@ -295,5 +295,5 @@ fn definition_is_admitted_by_builtin_and_explicit_registries() {
             .definition(crate::operator_state::OPERATOR_TYPE_ID)
             .is_some()
     );
-    assert_eq!(builtins.definitions().len(), 3);
+    assert_eq!(builtins.definitions().len(), 4);
 }

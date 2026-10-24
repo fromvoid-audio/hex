@@ -158,6 +158,10 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         let mut previous_offset = 0;
         for event in events.iter().copied() {
             let (offset, occurrence, note_on, pitch) = match event {
+                // This note-only stack fixture has no controller transfer law.
+                NativeInstrumentEvent::Expression { .. } => {
+                    return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
                 NativeInstrumentEvent::NoteOn {
                     frame_offset,
                     occurrence_id,
@@ -298,5 +302,23 @@ impl MutableInstrumentRuntime for ProbeRuntime {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn note_only_stack_probe_refuses_expression_before_state_changes() {
+        let runtime = ProbeRuntime::default();
+        let events = [NativeInstrumentEvent::Expression {
+            frame_offset: 0,
+            expression: hex_lattice::NativeInstrumentExpression::ModWheel(127),
+        }];
+        assert_eq!(
+            runtime.preflight_events(&events, 64, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert!(runtime.is_quiescent());
     }
 }

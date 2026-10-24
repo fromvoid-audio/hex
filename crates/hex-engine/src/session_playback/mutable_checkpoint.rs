@@ -136,6 +136,9 @@ impl MutableRuntimeCheckpointStore {
         track: TrackId,
     ) -> Result<(), MutableRuntimeCheckpointError> {
         let revision = &playback.revision;
+        if revision.requires_control_sampler_sources() {
+            return Err(MutableRuntimeCheckpointError::IncompatiblePreparedRevision);
+        }
         if let Some(stored_revision) = &self.revision
             && !Arc::ptr_eq(stored_revision, revision)
         {

@@ -8,6 +8,8 @@ pub(super) struct ChainWindow {
     pub(super) scroll: ScrollHandle,
     cards: Vec<(DeviceId, f32, f32)>,
     focus: HashMap<DeviceId, FocusHandle>,
+    selection_focus: Option<FocusHandle>,
+    pub(super) refused_delete: Option<super::keyboard::RefusedDelete>,
     width: Rc<Cell<f32>>,
 }
 
@@ -46,6 +48,18 @@ impl ChainWindow {
             .entry(device)
             .or_insert_with(|| cx.focus_handle())
             .clone()
+    }
+
+    pub(super) fn selection_focus(&mut self, cx: &App) -> FocusHandle {
+        self.selection_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    pub(super) fn device_is_focused(&self, device: DeviceId, window: &Window) -> bool {
+        self.focus
+            .get(&device)
+            .is_some_and(|focus| focus.is_focused(window))
     }
 
     fn visible(&self, device: DeviceId, initial_width: Option<f32>) -> bool {
@@ -119,14 +133,15 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>) -> Div {
     let expected_offset = scroll.offset();
     // Observe the already-laid-out rail without introducing a child that
     // could change its scroll extent, padding, order or drop geometry.
-    div().on_children_prepainted(move |_, _, cx| {
+    let rail = div().on_children_prepainted(move |_, _, cx| {
         let measured = f32::from(scroll.bounds().size.width);
         let resized = measured.is_finite() && measured > 0.0 && width.replace(measured) != measured;
         if resized || scroll.offset() != expected_offset {
             let entity = entity.clone();
             cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
         }
-    })
+    });
+    super::keyboard::rail(view, cx, rail)
 }
 
 #[cfg(test)]

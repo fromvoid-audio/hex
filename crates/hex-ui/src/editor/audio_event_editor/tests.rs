@@ -3,6 +3,86 @@ use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
+fn event_grid_paints_over_opaque_audio_at_full_and_zoomed_extents(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for viewport in [
+        None,
+        Some(Viewport {
+            start: 12_000,
+            length: 48_000,
+        }),
+    ] {
+        editor.update(&mut visual, |v, cx| {
+            v.audio_event_editor.grid = SnapGrid::Quarter;
+            v.audio_event_editor.viewport = viewport;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("audio-events-waveform").unwrap();
+        let grid = visual
+            .debug_bounds("audio-event-musical-grid")
+            .expect("visible event grid");
+        assert!(grid.top() >= body.top() + px(22.0));
+        let frame = editor.read_with(&visual, |v, _| {
+            let root = v.event_context().unwrap().1;
+            let viewport = v.event_project_viewport(&root).unwrap();
+            super::super::musical_time::grid_lines(
+                &v.state.as_ref().unwrap().project,
+                viewport,
+                f32::from(body.size.width),
+                SnapGrid::Quarter,
+            )
+            .into_iter()
+            .find(|l| l.frame > viewport.start && l.frame < viewport.end().unwrap())
+            .unwrap()
+            .frame
+        });
+        let selector = Box::leak(format!("clip-grid-line-{frame}").into_boxed_str());
+        let line = visual.debug_bounds(selector).unwrap();
+        assert!(line.top() >= grid.top() && line.bottom() <= grid.bottom());
+        let lines = visual.rendered_quad_paint_layers(selector, false);
+        let events = visual.rendered_quad_paint_layers("audio-event-1", false);
+        assert!(!lines.is_empty() && !events.is_empty());
+        assert!(
+            lines.iter().map(|x| x.0).min().unwrap() > events.iter().map(|x| x.0).max().unwrap(),
+            "grid must remain visible over the opaque event fill"
+        );
+    }
+}
+
+#[gpui::test]
+fn event_pointer_matches_arrangement_and_retains_move_and_trim_targets(cx: &mut TestAppContext) {
+    let (handle, _, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    for (position, expected) in [
+        (
+            point(b.center().x, b.bottom() - px(15.0)),
+            gpui::CursorStyle::Arrow,
+        ),
+        (
+            point(b.center().x, b.top() + px(26.0)),
+            gpui::CursorStyle::OpenHand,
+        ),
+        (
+            point(b.left() + px(2.0), b.center().y),
+            gpui::CursorStyle::ResizeLeftBracket,
+        ),
+        (
+            point(b.right() - px(2.0), b.center().y),
+            gpui::CursorStyle::ResizeRightBracket,
+        ),
+    ] {
+        visual.simulate_mouse_move(position, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_cursor_style(), Some(expected));
+    }
+}
+
+#[gpui::test]
 fn event_ruler_selection_grid_and_shortcuts_stay_inside_clip_editor(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
@@ -38,6 +118,171 @@ fn event_ruler_selection_grid_and_shortcuts_stay_inside_clip_editor(cx: &mut Tes
 }
 
 #[gpui::test]
+fn g_extracts_a_selected_audio_event_span_as_one_clip(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (_files, handle, editor) = super::super::clip_drag_ui_test::upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    let clip = editor.update(&mut visual, |view, cx| {
+        let track = &view.state.as_ref().unwrap().project.tracks()[0];
+        let clip = track.clips()[0].id();
+        view.selected_track = Some(track.id());
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        cx.notify();
+        clip
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-events-waveform").is_some());
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 48_000 },
+            },
+        )));
+    });
+    super::super::drag::group_drag_ui_test::pump(&editor, &mut visual);
+    visual.run_until_parked();
+    let bounds = visual
+        .debug_bounds("audio-events-waveform")
+        .expect("event canvas");
+    let down = point(
+        bounds.origin.x + bounds.size.width * 0.2,
+        bounds.origin.y + px(10.0),
+    );
+    let up = point(
+        bounds.origin.x + bounds.size.width * 0.8,
+        bounds.origin.y + px(10.0),
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let before = visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            assert!(view.audio_event_focus.is_focused(window));
+            let range = view.audio_event_editor.range.expect("event range");
+            assert!(range.0 > 0 && range.1 < 96_000);
+            view.state.as_ref().unwrap().project.snapshot()
+        })
+    });
+    visual.simulate_keystrokes("g");
+    super::super::drag::group_drag_ui_test::pump(&editor, &mut visual);
+    let (_grouped, after) = editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        let grouped = view.selected_clip.expect("created event span selected");
+        let item = project.clip(grouped).expect("created clip exists");
+        assert!(item.start() > 0 && item.start() < 96_000);
+        assert!(item.duration() < 96_000);
+        assert!(item.editable_audio_events().unwrap().events.len() >= 2);
+        assert_eq!(project.tracks()[0].clips().len(), 3);
+        (grouped, project.snapshot())
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo));
+    });
+    super::super::drag::group_drag_ui_test::pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let restored = view.state.as_ref().unwrap().project.snapshot();
+        let mut expected = before;
+        expected.next_id = restored.next_id;
+        assert_eq!(restored, expected);
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo));
+    });
+    super::super::drag::group_drag_ui_test::pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after);
+    });
+}
+
+#[gpui::test]
+fn grouped_audio_hides_single_source_view_and_anchor_waveform_fallback(cx: &mut TestAppContext) {
+    use super::super::clip_drag_ui_test::upper_rail_owned_fixture;
+    use super::super::drag::group_drag_ui_test::pump;
+    use hex_session::service::Request;
+
+    cx.update(super::super::bind_editor_keys);
+    let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+
+    let (clip, generation) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.tracks()[0].clips()[0].id(),
+            view.project_generation,
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::DuplicateClip(clip))));
+    });
+    pump(&editor, &mut visual);
+    let clips = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0]
+            .clips()
+            .iter()
+            .map(|clip| clip.id())
+            .collect::<Vec<_>>()
+    });
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::GroupClips {
+            project_generation: generation,
+            revision,
+            clips,
+        }));
+    });
+    pump(&editor, &mut visual);
+
+    editor.update(&mut visual, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let grouped = state.project.clip(view.selected_clip.unwrap()).unwrap();
+        assert!(!grouped.audio_events().sources.is_empty());
+        assert!(state.waveforms.contains_key(&grouped.asset()));
+        view.audio_event_editor.source_view = true;
+        // Exercise the no-prepared-composite case while retaining the original
+        // anchor waveform that used to be incorrectly shown for every event.
+        let mut audio_clip_waveforms = state.audio_clip_waveforms.clone();
+        audio_clip_waveforms.remove(&grouped.id());
+        let changed = hex_session::service::ViewState {
+            canonical_audio_source: state.canonical_audio_source.clone(),
+            comparison_audio: state.comparison_audio.clone(),
+            project: std::sync::Arc::clone(&state.project),
+            waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
+            audio_clip_waveforms,
+            midi_preview: std::sync::Arc::clone(&state.midi_preview),
+            gain_preview: state.gain_preview.clone(),
+            timeline_frames: state.timeline_frames,
+            can_undo: state.can_undo,
+            can_redo: state.can_redo,
+            revision: state.revision,
+            unsaved: state.unsaved,
+            document_path: state.document_path.clone(),
+        };
+        view.state = Some(std::sync::Arc::new(changed));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("audio-source-tab-unavailable")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("audio-events-waveform").is_some());
+    assert!(visual.debug_bounds("audio-event-waveform-1").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.audio_event_editor.source_view)
+    });
+}
+
+#[gpui::test]
 fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
@@ -46,7 +291,7 @@ fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut 
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let down = point(
         bounds.origin.x + bounds.size.width * 0.3,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     let moved = point(down.x + bounds.size.width * 0.2, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -62,8 +307,10 @@ fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut 
         let state = view.state.as_ref().unwrap();
         let changed = hex_session::service::ViewState {
             canonical_audio_source: state.canonical_audio_source.clone(),
+            comparison_audio: None,
             project: state.project.clone(),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -96,8 +343,10 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
             .unwrap();
         let next = hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -119,7 +368,7 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
     let original = visual.debug_bounds("audio-event-1").unwrap();
     let down = point(
         bounds.origin.x + bounds.size.width * 0.125,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     let up = point(bounds.origin.x + bounds.size.width * 0.5, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -158,8 +407,10 @@ fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestA
             .unwrap();
         view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -177,7 +428,7 @@ fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestA
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let click = point(
         bounds.origin.x + bounds.size.width * 0.125,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
@@ -210,8 +461,10 @@ fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestApp
         };
         view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -230,7 +483,7 @@ fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestApp
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let click = point(
         bounds.origin.x + bounds.size.width * 0.25,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
@@ -296,8 +549,10 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
             .unwrap();
         view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -445,10 +700,12 @@ fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
                 at: 0,
                 length: 10,
                 events: vec![AudioEvent {
+                    source: 0,
                     id: 0,
                     start: 0,
                     end: 10,
                     source_start: 70,
+                    fade: None,
                 }],
             },
         })
@@ -491,8 +748,10 @@ fn replace_event_project(view: &mut EditorView, project: hex_project::Project, r
     let state = view.state.as_ref().unwrap();
     view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project: std::sync::Arc::new(project),
         waveforms: state.waveforms.clone(),
+        source_overviews: state.source_overviews.clone(),
         audio_clip_waveforms: Default::default(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: state.gain_preview.clone(),
@@ -647,5 +906,120 @@ fn duplicate_and_clipboard_paste_refuse_beyond_visible_child(cx: &mut TestAppCon
             ),
             "a fitting visible paste must still work"
         );
+    });
+}
+
+#[gpui::test]
+fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    let at = |f| point(b.origin.x + b.size.width * f, b.origin.y + px(10.0));
+    visual.simulate_mouse_down(at(0.75), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(at(0.25), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at(0.25), MouseButton::Left, Modifiers::default());
+    let (before, expected, prior) = editor.update(&mut visual, |v, cx| {
+        let (_, root, _) = v.event_context().unwrap();
+        let state = v.state.as_ref().unwrap();
+        let first = root
+            .root_frame_at(root.view_start, state.project.tempo_map())
+            .unwrap();
+        let (a, b) = v.audio_event_editor.range.unwrap();
+        let a = root
+            .root_frame_at(a.min(b), state.project.tempo_map())
+            .unwrap();
+        let b = root
+            .root_frame_at(
+                v.audio_event_editor
+                    .range
+                    .unwrap()
+                    .0
+                    .max(v.audio_event_editor.range.unwrap().1),
+                state.project.tempo_map(),
+            )
+            .unwrap();
+        let expected = Viewport {
+            start: a - first,
+            length: b - a,
+        };
+        let prior = Viewport {
+            start: 1_000,
+            length: 12_000,
+        };
+        v.audio_event_editor.viewport = Some(prior);
+        cx.notify();
+        (
+            (
+                state.project.snapshot(),
+                state.can_undo,
+                state.can_redo,
+                v.offline_cursor,
+            ),
+            expected,
+            prior,
+        )
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.audio_event_editor.viewport, Some(expected))
+    });
+    visual.simulate_keystrokes("z");
+    let back = visual.debug_bounds("audio-zoom-back").unwrap();
+    visual.simulate_click(back.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.audio_event_editor.viewport, Some(prior))
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.range = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let fit = visual.debug_bounds("audio-zoom-fit").unwrap();
+    visual.simulate_click(fit.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        let (_, root, _) = v.event_context().unwrap();
+        assert_eq!(v.event_viewport(&root).start, 0);
+        let s = v.state.as_ref().unwrap();
+        assert_eq!(
+            (
+                s.project.snapshot(),
+                s.can_undo,
+                s.can_redo,
+                v.offline_cursor
+            ),
+            before
+        );
+    });
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.audio_event_editor.viewport, Some(prior))
+    });
+    visual.simulate_click(fit.center(), Modifiers::default());
+    editor.update(&mut visual, |v, cx| {
+        v.project_generation += 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.fit_back.is_none())
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.viewport = None;
+        v.audio_event_editor.range = Some((12_000, 36_000));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z x");
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.audio_event_editor.viewport.is_none(),
+            "back preserves automatic full-view mode"
+        )
     });
 }

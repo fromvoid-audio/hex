@@ -1,4 +1,8 @@
 //! Compact device meter gain controls; all labels and tooltip text come from the host.
+//! The clipped 8px signal well sits inside a 10px interactive surface. The gain
+//! handle occupies the extra 2px without expanding the host's compact meter strip.
+//! Its 2px height remains inside the well at both gain endpoints; read-only level
+//! meters retain their own clipped presentation and have no gain handle.
 use crate::ControlStyle;
 use gpui::{
     Context, Div, IntoElement, Render, SharedString, Window, div, prelude::*, px, relative, rgb,
@@ -29,61 +33,93 @@ pub(crate) fn well(
     let peak_height = fraction(held);
     let tooltip = readout.tooltips[index].clone();
     let selector = format!("{id}-{}-meter", if index == 0 { "input" } else { "output" });
-    let fill_selector = format!("{selector}-fill");
-    div()
-        .id(SharedString::from(selector.clone()))
-        .debug_selector(move || selector.clone())
-        .relative()
-        .w(px(8.0))
-        .flex_shrink_0()
-        .h_full()
-        .bg(rgb(style.rail))
-        .child(
+    let peak_selector = format!("{selector}-peak");
+    let overload_selector = format!("{selector}-above");
+    let gain = if readout.gain_db.is_finite() {
+        ((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)
+    } else {
+        60.0 / 84.0
+    };
+    let handle_selector = format!("{selector}-gain-handle");
+    // These readouts are actual sample amplitudes supplied by the host. A
+    // reported magnitude strictly above unity is evidence; gain position is not.
+    let above = level.is_finite() && level > 1.0;
+    let held_above = held.is_finite() && held > 1.0;
+    let colors = crate::MeterColors {
+        signal: readout.signal,
+        near_peak: readout.warning,
+        clipping: readout.clipping,
+    };
+    let well = crate::level_meter::meter_body(
+        selector.clone().into(),
+        height,
+        crate::LevelMeterStyle {
+            background: style.rail,
+            fill: colors.color(crate::MeterLevel::from_amplitude(level, above)),
+            above: readout.clipping,
+        },
+    )
+    .w(px(8.0))
+    .h_full()
+    .when(held.is_finite() && held > 0.0, |well| {
+        let top = 1.0 - peak_height;
+        well.child(
             div()
-                .debug_selector(move || fill_selector.clone())
+                .debug_selector(move || peak_selector.clone())
                 .absolute()
-                .bottom(px(0.0))
-                .w_full()
-                .h(relative(height))
-                .bg(rgb(if level >= 1.0 {
-                    readout.clipping
-                } else if level >= 0.5 {
-                    readout.warning
-                } else {
-                    readout.signal
-                })),
-        )
-        .when(held > 0.0, |well| {
-            well.child(
-                div()
-                    .absolute()
-                    .bottom(relative(peak_height))
-                    .w_full()
-                    .h(px(1.0))
-                    .bg(rgb(if held >= 1.0 {
-                        readout.clipping
-                    } else {
-                        style.text
-                    })),
-            )
-        })
-        .child(
-            div()
-                .absolute()
-                .bottom(relative(60.0 / 84.0))
+                .top(relative(top))
+                .mt(px(-top))
                 .w_full()
                 .h(px(1.0))
-                .bg(rgb(style.text))
-                .opacity(0.35),
+                .bg(rgb(
+                    match crate::MeterLevel::from_amplitude(held, held_above) {
+                        crate::MeterLevel::Normal => style.text,
+                        level => colors.color(level),
+                    },
+                )),
         )
+    })
+    .child(
+        div()
+            .absolute()
+            .bottom(relative(60.0 / 84.0))
+            .w_full()
+            .h(px(1.0))
+            .bg(rgb(style.text))
+            .opacity(0.35),
+    );
+    div()
+        .id(SharedString::from(selector))
+        .relative()
+        .w(px(10.0))
+        .h_full()
+        .flex_shrink_0()
+        .child(well)
         .child(
+            // Travel excludes the handle's height, so neither endpoint clips.
             div()
                 .absolute()
-                .bottom(relative(((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)))
+                .top_0()
+                .bottom(px(2.0))
+                .left_0()
                 .w_full()
-                .h(px(2.0))
-                .bg(rgb(readout.warning)),
+                .child(
+                    div()
+                        .debug_selector(move || handle_selector.clone())
+                        .absolute()
+                        .top(relative(1.0 - gain))
+                        .w_full()
+                        .h(px(2.0))
+                        .bg(rgb(readout.warning)),
+                ),
         )
+        // Paint the cap after the handle without a second signal/peak owner.
+        .child(crate::meter_clip::ClipIndicator {
+            id: overload_selector.into(),
+            clipping: above,
+            held_clipping: held_above,
+            color: readout.clipping,
+        })
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }
 fn fraction(amplitude: f32) -> f32 {

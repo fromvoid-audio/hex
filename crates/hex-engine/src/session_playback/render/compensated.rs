@@ -14,11 +14,14 @@ impl SessionPlayback {
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+        let region = self.active_loop_region();
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let beat = timing
             .frame_to_beat(performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -68,12 +71,19 @@ impl SessionPlayback {
                         render_route_source_chunk(
                             RouteSourceContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
                                 route,
                                 historical_floor: self.historical_floor_for(index),
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
-                                raw: false,
+                                // Retained Main history can keep this path active
+                                // after the current graph returns to a fused mix.
+                                // The content-origin fader below owns that mix.
+                                raw: true,
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },
@@ -102,6 +112,10 @@ impl SessionPlayback {
                         render_route_source_chunk(
                             RouteSourceContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
                                 route: effective_midi_route(
                                     &self.revision,
                                     &self.route_scratch,
@@ -111,7 +125,7 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
-                                raw: false,
+                                raw: true,
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },
@@ -125,6 +139,11 @@ impl SessionPlayback {
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
+                                sources,
                                 routes: &self.route_scratch,
                                 runtimes: &mut self.mutable_instruments,
                                 onsets: &mut self.mutable_onsets,
@@ -137,10 +156,7 @@ impl SessionPlayback {
                                 loop_region: if self.linear_arrangement_export {
                                     None
                                 } else {
-                                    self.revision
-                                        .arrangement()
-                                        .loop_region()
-                                        .filter(|region| region.enabled())
+                                    region.filter(|region| region.enabled())
                                 },
                                 timing: &timing,
                             },
@@ -165,7 +181,7 @@ impl SessionPlayback {
                         .as_mut()
                         .ok_or(SessionPlaybackError::DeviceRuntime)?;
                     let processed = compensation
-                        .process_track(
+                        .process_track_with_foreign(
                             index,
                             track,
                             &mut self.device_chains[index],
@@ -173,6 +189,7 @@ impl SessionPlayback {
                             generator[0],
                             frame_offset,
                             self.device_metering,
+                            foreign,
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -217,12 +234,13 @@ impl SessionPlayback {
                     let bus = &self.revision.arrangement().return_buses()[index];
                     let mut frame = self.return_scratch[index][0];
                     compensation
-                        .effects(
+                        .effects_with_foreign(
                             &compensation.graph.returns[index].devices,
                             &mut self.return_chains[index],
                             0,
                             &mut frame,
                             frame_offset,
+                            foreign,
                             observer,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -280,7 +298,7 @@ impl SessionPlayback {
         if self.playing {
             self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
             self.return_effect_tails
-                .render_chunk(output, frame_offset, capture)?;
+                .render_chunk(output, frame_offset, capture, foreign)?;
         }
         Ok(())
     }

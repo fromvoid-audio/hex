@@ -145,6 +145,39 @@ pub struct CompensationRuntime {
 }
 
 impl CompensationRuntime {
+    pub(crate) fn visit_owned_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        let Self {
+            plan,
+            edges,
+            stamps,
+            storage_bytes: _,
+            transaction_active,
+        } = self;
+        if *transaction_active {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        let count = || -> Result<usize, CompensationError> {
+            let mut bytes = add_bytes(plan.storage_bytes()?, vector_bytes(edges)?)?;
+            bytes = add_bytes(bytes, stamps.storage_bytes()?)?;
+            for edge in edges {
+                bytes = add_bytes(bytes, edge.owned_data_bytes()?)?;
+            }
+            Ok(bytes)
+        };
+        let bytes = count().map_err(|_| crate::AudioStorageError::Overflow)?;
+        // All DATA belongs to this private constructor: immutable plan Vecs,
+        // edge rows, each concrete ring pair and the one transport stamp pair.
+        // No owning handle or borrowed device/provider is present.
+        ledger.bytes(
+            Owner::exclusive(self),
+            Location("compensation-owned-data", 0),
+            bytes,
+        )
+    }
     /// Fallible control-only construction. Budgets charge actual Vec capacities,
     /// including the edge table and immutable plan, rather than requested lengths.
     pub fn new(plan: LatencyPlan, limits: CompensationLimits) -> Result<Self, CompensationError> {
@@ -322,6 +355,54 @@ impl CompensationRuntime {
         Ok(())
     }
 
+    pub(crate) fn latest_stamp(&self) -> Option<TransportStamp> {
+        self.stamp_at_delay(0)
+    }
+    pub(crate) fn is_closed(&self) -> bool {
+        !self.transaction_active
+    }
+    pub(crate) fn history_horizon(&self) -> u32 {
+        self.plan.max_latency_frames()
+    }
+    pub(crate) fn can_copy_edge_history_from(
+        &self,
+        target: usize,
+        source: &Self,
+        origin: usize,
+    ) -> bool {
+        self.is_closed()
+            && source.is_closed()
+            && self
+                .edges
+                .get(target)
+                .zip(source.edges.get(origin))
+                .is_some_and(|(target, origin)| target.can_copy_history_from(origin))
+    }
+    pub(crate) fn copy_edge_history_from(
+        &mut self,
+        target: usize,
+        source: &Self,
+        origin: usize,
+    ) -> Result<(), CompensationError> {
+        if !self.can_copy_edge_history_from(target, source, origin) {
+            return Err(CompensationError::InvalidIndex);
+        }
+        self.edges[target].copy_history_from(&source.edges[origin]);
+        Ok(())
+    }
+    pub(crate) fn copy_stamp_history_from(
+        &mut self,
+        source: &Self,
+    ) -> Result<(), CompensationError> {
+        if !self.is_closed()
+            || !source.is_closed()
+            || self.stamps.capacity() < source.stamps.capacity()
+        {
+            return Err(CompensationError::StorageLimit);
+        }
+        self.stamps.copy_history_from(&source.stamps);
+        Ok(())
+    }
     /// Discard both speculative and committed history at a transport epoch change.
     /// This bounded clear must be coordinated with the owner's DSP/clock reset.
     pub fn reset_epoch(&mut self) {

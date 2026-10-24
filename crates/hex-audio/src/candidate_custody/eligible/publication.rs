@@ -46,6 +46,17 @@ pub struct AudioCandidatePublicationReservation {
     pub max_construction_peak_data_bytes: usize,
 }
 impl AudioCandidatePublicationReservation {
+    /// Pure requested-capacity quote for a new normal worker channel and this
+    /// publication bank. It is neither allocator/RSS nor native admission proof.
+    pub fn worker_control_storage_quote(self) -> Option<usize> {
+        if self.runtime_slots == 0
+            || self.archive_slots == 0
+            || self.receipt_rows < self.runtime_slots
+        {
+            return None;
+        }
+        crate::candidate_custody::CandidateRoot::worker_control_storage_quote(self)
+    }
     fn ledger(self) -> AudioStorageLedgerReservation {
         AudioStorageLedgerReservation {
             data_rows: self.data_rows,
@@ -78,6 +89,8 @@ struct RuntimeSlot {
     anchors: Option<AudioCandidateAnchors>,
     domains: Vec<AudioCandidateDomainToken>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_refs: native_sources::References,
     streaming: Option<streaming::Workspace>,
     summary: Option<AudioCandidateConstructorSummary>,
     context_generation: u64,
@@ -107,6 +120,8 @@ impl RuntimeSlot {
             anchors: None,
             domains: Vec::new(),
             domain_refs: [None; 2],
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs: native_sources::References::default(),
             streaming: None,
             summary: None,
             context_generation: 0,
@@ -182,6 +197,8 @@ struct StagePlan {
     retained: usize,
     peak: usize,
     resources: Option<RootResourceWitness>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_refs: native_sources::References,
 }
 struct State {
     stamp: Stamp,
@@ -248,23 +265,9 @@ impl Queued {
     }
 }
 impl Bank {
-    /// All physical cell/receipt/anchor backing and lifecycle handle payloads
-    /// are allocated before the first candidate is accepted. No graph count or
-    /// process/RSS ceiling is introduced by this caller-selected reservation.
-    pub(super) fn prepare(
+    pub(in crate::candidate_custody) fn backing_quote(
         reservation: AudioCandidatePublicationReservation,
-        base_bytes: usize,
-    ) -> Result<(Self, Work), &'static str> {
-        if reservation.runtime_slots == 0
-            || reservation.archive_slots == 0
-            || reservation.receipt_rows < reservation.runtime_slots
-            || reservation.max_construction_peak_data_bytes < reservation.max_retained_data_bytes
-        {
-            return Err("invalid constructor publication reservation");
-        }
-        // Reject impossible caller requests BEFORE reserving, initializing or
-        // allocating per-cell lifecycle payloads. Actual capacities are checked
-        // again below; opaque Arc headers remain bounded RESOURCE groups.
+    ) -> Result<usize, &'static str> {
         let declared = [
             reservation
                 .runtime_slots
@@ -292,8 +295,30 @@ impl Bank {
                 .checked_mul(std::mem::size_of::<Option<BankDrop>>()),
         ]
         .into_iter()
-        .try_fold(base_bytes, |sum, value| sum.checked_add(value?))
+        .try_fold(0usize, |sum, value| sum.checked_add(value?))
         .ok_or("constructor publication metadata overflow")?;
+        Ok(declared)
+    }
+    /// All physical cell/receipt/anchor backing and lifecycle handle payloads
+    /// are allocated before the first candidate is accepted. No graph count or
+    /// process/RSS ceiling is introduced by this caller-selected reservation.
+    pub(super) fn prepare(
+        reservation: AudioCandidatePublicationReservation,
+        base_bytes: usize,
+    ) -> Result<(Self, Work), &'static str> {
+        if reservation.runtime_slots == 0
+            || reservation.archive_slots == 0
+            || reservation.receipt_rows < reservation.runtime_slots
+            || reservation.max_construction_peak_data_bytes < reservation.max_retained_data_bytes
+        {
+            return Err("invalid constructor publication reservation");
+        }
+        // Reject impossible caller requests BEFORE reserving, initializing or
+        // allocating per-cell lifecycle payloads. Actual capacities are checked
+        // again below; opaque Arc headers remain bounded RESOURCE groups.
+        let declared = Self::backing_quote(reservation)?
+            .checked_add(base_bytes)
+            .ok_or("constructor publication metadata overflow")?;
         if declared > reservation.max_retained_data_bytes
             || declared > reservation.max_construction_peak_data_bytes
         {
@@ -371,6 +396,28 @@ pub struct AudioCandidateEligibleStageRefusal {
     pub domains: Vec<AudioCandidateDomainToken>,
 }
 impl super::Custody {
+    pub(in crate::candidate_custody) fn actual_control_backing_bytes(&self) -> Option<usize> {
+        let bank = lock(&self.bank);
+        if !self.enabled() || bank.closing {
+            return None;
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if bank.sources.occupied() {
+            // Preserve the ordinary metadata query without a Work dependency
+            // while native cells are vacant. Occupied cells need their actual
+            // owners; acquire Work before reacquiring the ordinary barrier.
+            drop(bank);
+            let work = self.work.try_lock().ok()?;
+            let bank = lock(&self.bank);
+            if bank.closing {
+                return None;
+            }
+            return bank
+                .metadata_bytes
+                .checked_add(bank.sources.actual_data_bytes(&work.sources)?);
+        }
+        Some(bank.metadata_bytes)
+    }
     #[cfg(test)]
     pub(in crate::candidate_custody) fn test_publication_status(&self) -> String {
         let bank = self.bank.try_lock().ok();
@@ -510,7 +557,27 @@ impl super::Custody {
         header: Header,
         summary: AudioCandidateConstructorSummary,
     ) -> Result<(Queued, AudioCandidateTicket), AudioCandidateEligibleStageRefusal> {
-        let plan = match self.preflight_stage(root, &owner, &domains, header, summary, None) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let work = match self.work.try_lock() {
+            Ok(work) => work,
+            Err(_) => {
+                return Err(AudioCandidateEligibleStageRefusal {
+                    reason: "native source preparation is busy",
+                    owner,
+                    domains,
+                });
+            }
+        };
+        let plan = match self.preflight_stage(
+            root,
+            &owner,
+            &domains,
+            header,
+            summary,
+            None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            &work.sources,
+        ) {
             Ok(plan) => plan,
             Err(reason) => {
                 return Err(AudioCandidateEligibleStageRefusal {
@@ -544,6 +611,7 @@ impl super::Custody {
             },
         ))
     }
+    #[allow(clippy::too_many_arguments)] // Borrows the already-held original source Work; prepared callers must not relock it.
     fn preflight_stage(
         &self,
         root: &CandidateRoot,
@@ -552,6 +620,8 @@ impl super::Custody {
         header: Header,
         summary: AudioCandidateConstructorSummary,
         preparation: Option<AudioCandidatePreparationToken>,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        source_work: &native_sources::Work,
     ) -> Result<StagePlan, &'static str> {
         let Header {
             revision: _,
@@ -659,14 +729,29 @@ impl super::Custody {
         let mut retained_total = bank
             .domains
             .iter()
-            .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+            .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
             .ok_or("constructor domain DATA overflow")?;
         let mut peak_total = bank
             .domains
             .iter()
-            .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+            .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
             .ok_or("constructor domain construction overflow")?;
-        let resources = resources::for_candidate(&bank, summary, reserved_slot)?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_refs = bank.sources.graph_references(owner, source_work)?;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        if owner
+            .requires_effect_graph_custody_on_control()
+            .map_err(|_| "foreign constructor query refused")?
+        {
+            return Err("effect graph source and runtime witness is not sealed");
+        }
+        let resources = resources::for_candidate(
+            &bank,
+            summary,
+            reserved_slot,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            source_work,
+        )?;
         let mut members = summary.member_rows;
         let mut transfers = summary.transfer_rows;
         for (index, slot) in bank.publication.slots.iter().enumerate() {
@@ -769,6 +854,8 @@ impl super::Custody {
             retained,
             peak,
             resources,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs,
         })
     }
     fn publication_state(
@@ -823,6 +910,8 @@ impl super::Custody {
             retained,
             peak,
             resources,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs,
         } = plan;
         let matched = anchors
             .constructor_claims(&runtime)
@@ -843,6 +932,10 @@ impl super::Custody {
         slot.archive = archive;
         slot.domain_refs = std::array::from_fn(|index| domains.get(index).copied());
         slot.domains = domains;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            slot.native_refs = native_refs;
+        }
         state.streaming = slot.streaming.take();
         slot.summary = Some(summary);
         slot.context_generation = context_generation;
@@ -889,6 +982,12 @@ impl super::Custody {
 }
 
 impl Bank {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn references_native_source(&self, index: usize) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.phase != Phase::Vacant && slot.native_refs.contains(index))
+    }
     pub(super) fn occupied(&self) -> Option<usize> {
         self.reservation?;
         Some(
@@ -929,3 +1028,9 @@ impl Bank {
 
 #[cfg(test)]
 mod tests;
+
+pub(in crate::candidate_custody) fn publication_backing_quote(
+    reservation: AudioCandidatePublicationReservation,
+) -> Option<usize> {
+    Bank::backing_quote(reservation).ok()
+}

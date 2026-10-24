@@ -1,6 +1,7 @@
 //! Functional view-local fixtures; no engine, project, audio or settings I/O.
 #[path = "compositions.rs"]
 mod compositions;
+mod eq;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "tests.rs"]
 mod tests;
@@ -11,9 +12,9 @@ use gpui::{
     px, rgb,
 };
 use hex_widgets::{
-    DiscreteControlAppearance, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, ResponseGraphModel, Selector,
-    SelectorConfig, Toggle, ToggleConfig,
+    NumericControl, NumericControlConfig, NumericControlPresentation, NumericScale, NumericSpec,
+    ResponseGraph, ResponseGraphModel, Selector, SelectorAppearance, SelectorConfig, Toggle,
+    ToggleAppearance, ToggleConfig,
 };
 use std::collections::HashMap;
 
@@ -23,6 +24,7 @@ enum Entry {
     Utility,
     Saturator,
     Eq8,
+    Eq,
     Compressor,
     Gate,
     AutoPan,
@@ -31,11 +33,12 @@ enum Entry {
     Unsupported,
     Parts,
 }
-const ENTRIES: [Entry; 11] = [
+const ENTRIES: [Entry; 12] = [
     Entry::Vector,
     Entry::Utility,
     Entry::Saturator,
     Entry::Eq8,
+    Entry::Eq,
     Entry::Compressor,
     Entry::Gate,
     Entry::AutoPan,
@@ -51,6 +54,7 @@ impl Entry {
             Self::Utility => "utility",
             Self::Saturator => "saturator",
             Self::Eq8 => "eq8",
+            Self::Eq => "eq",
             Self::Compressor => "compressor",
             Self::Gate => "gate",
             Self::AutoPan => "auto pan",
@@ -66,6 +70,7 @@ impl Entry {
             Self::Utility => "utility",
             Self::Saturator => "saturator",
             Self::Eq8 => "eq8",
+            Self::Eq => "eq",
             Self::Compressor => "compressor",
             Self::Gate => "gate",
             Self::AutoPan => "auto-pan",
@@ -81,7 +86,7 @@ impl Entry {
             Self::Utility => device_composition::UTILITY_FRAME_WIDTH,
             Self::AutoPan => device_composition::AUTO_PAN_FRAME_WIDTH,
             Self::Saturator => device_composition::SATURATOR_FRAME_WIDTH,
-            Self::Eq8 => device_composition::EQ8_FRAME_WIDTH,
+            Self::Eq8 | Self::Eq => device_composition::EQ8_FRAME_WIDTH,
             Self::Compressor => device_composition::COMPRESSOR_FRAME_WIDTH,
             Self::Gate => device_composition::GATE_FRAME_WIDTH,
             _ => device_composition::GENERIC_FRAME_WIDTH,
@@ -93,6 +98,7 @@ impl Entry {
             Self::Utility
                 | Self::Saturator
                 | Self::Eq8
+                | Self::Eq
                 | Self::Compressor
                 | Self::Gate
                 | Self::AutoPan
@@ -106,6 +112,7 @@ impl Entry {
             Self::Utility => (4, 6, 1),
             Self::Saturator => (3, 0, 1),
             Self::Eq8 => (4, 8, 9),
+            Self::Eq => (4, 9, 3),
             Self::Compressor => (6, 0, 0),
             Self::Gate => (6, 0, 0),
             Self::AutoPan => (3, 0, 0),
@@ -137,6 +144,8 @@ struct Number {
     height: f32,
 }
 struct Fixture {
+    entry: Entry,
+    _subscriptions: Vec<gpui::Subscription>,
     numbers: Vec<Number>,
     toggles: Vec<Entity<Toggle>>,
     selectors: Vec<Entity<Selector>>,
@@ -145,48 +154,49 @@ struct Fixture {
 }
 impl Fixture {
     fn new(entry: Entry, cx: &mut Context<Gallery>) -> Result<Self, String> {
+        if entry == Entry::Eq {
+            return eq::fixture(cx);
+        }
         let (numbers, toggles, selectors) = entry.counts();
         let generic = matches!(entry, Entry::Instrument | Entry::Effect);
         let mut numeric = Vec::new();
         for index in 0..numbers {
             let (appearance, width, height) = match entry {
-                Entry::Vector if index >= 24 => (NumericControlAppearance::InlineValue, 46.0, 14.0),
+                Entry::Vector if index >= 24 => {
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
+                }
                 Entry::Vector | Entry::Eq8 => (
-                    NumericControlAppearance::MicroDial,
+                    NumericControlPresentation::MicroDial,
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
                 Entry::Compressor if index >= 3 => {
-                    (NumericControlAppearance::InlineValue, 46.0, 14.0)
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
                 }
-                Entry::Utility if index == 3 => (NumericControlAppearance::InlineValue, 46.0, 14.0),
+                Entry::Utility if index == 3 => {
+                    (NumericControlPresentation::InlineValue, 46.0, 14.0)
+                }
                 Entry::Instrument | Entry::Effect => {
-                    (NumericControlAppearance::Standard, 136.0, 26.0)
+                    (NumericControlPresentation::HorizontalSlider, 136.0, 26.0)
                 }
-                _ => (NumericControlAppearance::CompactDial, 64.0, 52.0),
+                _ => (NumericControlPresentation::CompactDial, 64.0, 52.0),
             };
-            let role = if appearance == NumericControlAppearance::InlineValue {
+            let role = if appearance == NumericControlPresentation::InlineValue {
                 theme::DeviceStyleRole::Readout
             } else {
                 theme::DeviceStyleRole::Control
             };
             let spec = NumericSpec::new(0.0, 100.0, 50.0, NumericScale::Linear, 2, Some("%"))
                 .map_err(|error| error.to_string())?;
-            let kind = if appearance == NumericControlAppearance::Standard {
-                NumericControlKind::HorizontalSlider
-            } else {
-                NumericControlKind::Knob
-            };
             let config = NumericControlConfig::new(
                 format!("fixture-{}-numeric-{index}", entry.key()),
                 theme::text(["amount", "fine", "level"][index % 3]),
-                kind,
+                appearance,
                 spec,
                 50.0,
                 theme::device_style(role),
             )
-            .map_err(|error| error.to_string())?
-            .with_appearance(appearance);
+            .map_err(|error| error.to_string())?;
             let entity = cx.new(|cx| {
                 let mut control = NumericControl::from_config(cx, config);
                 control.set_tab_navigation(true, cx);
@@ -209,9 +219,9 @@ impl Fixture {
             )
             .map_err(str::to_owned)?
             .with_appearance(if generic {
-                DiscreteControlAppearance::Standard
+                ToggleAppearance::Standard
             } else {
-                DiscreteControlAppearance::CompactButton
+                ToggleAppearance::CompactButton
             });
             switches.push(cx.new(|cx| {
                 let mut control = Toggle::from_config(cx, config);
@@ -226,15 +236,16 @@ impl Fixture {
                 ["sine", "saw", "square", "triangle", "long fixture option"]
                     .map(theme::text)
                     .into_iter()
-                    .chain((0..7).map(|index| theme::text(format!("extra choice {index}")))),
+                    // Keep the compact menu taller than the clipped device body too.
+                    .chain((0..8).map(|index| theme::text(format!("extra choice {index}")))),
                 0,
                 theme::device_style(theme::DeviceStyleRole::Control),
             )
             .map_err(str::to_owned)?
             .with_appearance(if generic {
-                DiscreteControlAppearance::Standard
+                SelectorAppearance::Standard
             } else {
-                DiscreteControlAppearance::CompactSelector
+                SelectorAppearance::CompactSelector
             });
             choices.push(cx.new(|cx| {
                 let mut control = Selector::from_config(cx, config);
@@ -250,6 +261,8 @@ impl Fixture {
             )
         });
         Ok(Self {
+            entry,
+            _subscriptions: Vec::new(),
             numbers: numeric,
             toggles: switches,
             selectors: choices,
@@ -277,6 +290,10 @@ impl Fixture {
                     .set_external_style(theme::device_style(theme::DeviceStyleRole::Control), cx);
                 control.set_enabled(!disabled, cx);
             });
+        }
+        if self.entry == Entry::Eq {
+            eq::sync(self, cx);
+            return;
         }
         self.graph.update(cx, |graph, cx| {
             let _ = graph.set_model(
