@@ -4,7 +4,7 @@
 //! the same level_meter gauge. TextInput covers query and source-value policies.
 //! Musical editors and their project-bound hit regions remain with the app;
 //! this catalog mounts their shared controls rather than a competing DAW model.
-use super::workspace::Kind as WorkspaceKind;
+use super::workspace::{Kind as WorkspaceKind, MeterChannels, RoundActionKind};
 use hex_widgets::{
     DeviceLayout, DeviceSectionSurface, DialLayout, DiscreteControlAppearance as Discrete,
     NumericControlAppearance as Appearance, NumericControlKind as Kind, NumericScale as Scale,
@@ -53,7 +53,7 @@ impl Item {
             Demo::Curve => ("curve plot", "graphics", "curve_plot"),
             Demo::Spectrum => ("spectrum plot", "graphics", "layered_spectrum_plot"),
             Demo::Chrome("action" | "device action" | "device segment")
-            | Demo::Workspace(WorkspaceKind::Button(_)) => {
+            | Demo::Workspace(WorkspaceKind::Button(_) | WorkspaceKind::RoundAction(_)) => {
                 ("action surface", "chrome", "action_surface")
             }
             Demo::Chrome("device caption" | "device inline caption") => {
@@ -79,6 +79,9 @@ impl Item {
                 "compositions",
                 "output_meter::render",
             ),
+            Demo::Workspace(WorkspaceKind::MeterIndicator(_)) => {
+                ("meter indicator", "workspace", "meter_indicator")
+            }
             Demo::Workspace(WorkspaceKind::LevelMeter) => {
                 ("level meter", "workspace", "level_meter")
             }
@@ -100,6 +103,7 @@ impl Item {
             Demo::Numeric(Kind::HorizontalSlider, ..) => "horizontal slider configurations",
             Demo::Numeric(Kind::VerticalSlider, ..) => "vertical slider configurations",
             Demo::Workspace(WorkspaceKind::Button(_)) => "glyph and state configurations",
+            Demo::Workspace(WorkspaceKind::RoundAction(_)) => "round momentary configurations",
             Demo::Frame(_) => "composed layout fixtures",
             Demo::Compositions => "device fixtures",
             _ => "configurations",
@@ -351,6 +355,22 @@ pub(super) fn inventory() -> Vec<Item> {
         ),
         ("popup menu · icon grid", WorkspaceKind::Menu(true)),
         ("level meter", WorkspaceKind::LevelMeter),
+        (
+            "meter indicator · mono",
+            WorkspaceKind::MeterIndicator(MeterChannels::Mono),
+        ),
+        (
+            "meter indicator · stereo",
+            WorkspaceKind::MeterIndicator(MeterChannels::Stereo),
+        ),
+        (
+            "round labeled action",
+            WorkspaceKind::RoundAction(RoundActionKind::Label),
+        ),
+        (
+            "round icon action",
+            WorkspaceKind::RoundAction(RoundActionKind::Icon),
+        ),
         ("output sample-peak status", WorkspaceKind::OutputMeter),
         ("scrolling list", WorkspaceKind::ScrollingList),
     ] {
@@ -441,6 +461,8 @@ mod grouping_tests {
             "device segment",
             "play button",
             "fold disclosure",
+            "round labeled action",
+            "round icon action",
         ] {
             assert_eq!(page(name), page("action"), "{name}");
         }
@@ -454,5 +476,11 @@ mod grouping_tests {
         assert_eq!(page("popup menu · icon grid").category, "compositions");
         assert_eq!(page("output sample-peak status").category, "compositions");
         assert_ne!(page("output sample-peak status"), page("level meter"));
+        assert_eq!(
+            page("meter indicator · mono"),
+            page("meter indicator · stereo")
+        );
+        assert_ne!(page("meter indicator · mono"), page("level meter"));
+        assert_ne!(page("meter indicator · mono"), page("device meters"));
     }
 }

@@ -30,3 +30,25 @@ pub fn action_surface(style: ActionStyle) -> Div {
             }
         })
 }
+
+/// Momentary action presentation with a circular or pill outline. Equal caller
+/// dimensions form a circle; wider dimensions form a labeled pill. The owner
+/// supplies content, identity, focus, accessible meaning and its one-shot callback.
+/// This surface has no checked/selected state: pressed paint is transient and
+/// clears on release. Use it for commands, never for a latched boolean setting.
+pub fn round_action_surface(style: ActionStyle, border: u32) -> Div {
+    action_surface(style)
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(border))
+        .active(move |pressed| {
+            pressed
+                .opacity(0.7)
+                .bg(rgb(style.hover_background))
+                .text_color(rgb(style.hover_text.unwrap_or(style.text)))
+        })
+}
+
+#[cfg(test)]
+#[path = "action_tests.rs"]
+mod tests;

@@ -13,11 +13,23 @@ use hex_widgets::*;
 use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum MeterChannels {
+    Mono,
+    Stereo,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum RoundActionKind {
+    Label,
+    Icon,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Kind {
     Text(TextInputKind),
     Menu(bool),
     OutputMeter,
     LevelMeter,
+    MeterIndicator(MeterChannels),
+    RoundAction(RoundActionKind),
     Button(&'static str),
     ScrollingList,
 }
@@ -35,6 +47,7 @@ pub(super) struct Workspace {
     selector: Entity<Selector>,
     text: Entity<TextInput>,
     focus: FocusHandle,
+    accessibility_lifetime: gpui::AccessibilityLifetime,
     menu: Option<PopupMenu<usize>>,
     menu_anchor: Rc<Cell<Option<gpui::Point<gpui::Pixels>>>>,
     enabled: bool,
@@ -52,8 +65,13 @@ impl Workspace {
     pub fn prepare_scoped(kind: Kind, prefix: &str) -> Result<Prepared, String> {
         let id = |name: &str| format!("{prefix}{name}");
         let style = theme::control_style();
-        let spec = NumericSpec::new(0.0, 2.0, 0.5, NumericScale::Linear, 2, None::<&str>)
-            .map_err(|e| e.to_string())?;
+        let calibrated_meter = matches!(kind, Kind::MeterIndicator(_));
+        let spec = if calibrated_meter {
+            NumericSpec::new(-60.0, 6.0, -24.0, NumericScale::Linear, 1, Some("dbfs"))
+        } else {
+            NumericSpec::new(0.0, 2.0, 0.5, NumericScale::Linear, 2, None::<&str>)
+        }
+        .map_err(|e| e.to_string())?;
         let number = |index, label, value| {
             NumericControlConfig::new(
                 id(&format!("workspace-level-{index}")),
@@ -74,10 +92,23 @@ impl Workspace {
         Ok(Prepared {
             kind,
             prefix: prefix.to_owned(),
-            numbers: [number(0, "left", 0.25)?, number(1, "right", 0.5)?],
+            numbers: if calibrated_meter {
+                [
+                    number(0, "level dbfs", -24.0)?,
+                    number(1, "held peak dbfs", -12.0)?,
+                ]
+            } else {
+                [number(0, "left", 0.25)?, number(1, "right", 0.5)?]
+            },
             selector: SelectorConfig::new(
                 id("workspace-meter-state"),
-                ["signal", "offline", "stopped", "fault", "invalid signal"].map(theme::text),
+                if calibrated_meter {
+                    vec!["signal", "silence", "invalid signal", "overload"]
+                } else {
+                    vec!["signal", "offline", "stopped", "fault", "invalid signal"]
+                }
+                .into_iter()
+                .map(theme::text),
                 0,
                 style,
             )?,
@@ -134,6 +165,7 @@ impl Workspace {
             selector,
             text,
             focus: cx.focus_handle(),
+            accessibility_lifetime: gpui::AccessibilityLifetime::default(),
             menu: None,
             menu_anchor: Rc::new(Cell::new(None)),
             enabled: true,
@@ -181,7 +213,9 @@ impl Workspace {
     pub fn focus_first(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.kind {
             Kind::Text(_) => self.text.focus_handle(cx).focus(window),
-            Kind::OutputMeter | Kind::LevelMeter => self.numbers[0].focus_handle(cx).focus(window),
+            Kind::OutputMeter | Kind::LevelMeter | Kind::MeterIndicator(_) => {
+                self.numbers[0].focus_handle(cx).focus(window)
+            }
             _ => self.focus.focus(window),
         }
     }
@@ -262,6 +296,153 @@ impl Workspace {
             cx.notify();
         }
     }
+    fn press_action(&mut self, cx: &mut Context<Self>) {
+        if self.enabled {
+            self.count = self.count.saturating_add(1);
+            self.status = format!("local action · {} calls", self.count);
+            cx.notify();
+        }
+    }
+    fn indicator_readout(&self, channels: MeterChannels, cx: &gpui::App) -> MeterIndicatorReadout {
+        let state = self.selector.read(cx).selected();
+        let channel = |offset| MeterChannelReadout {
+            level_dbfs: match state {
+                1 => f32::NEG_INFINITY,
+                2 => f32::NAN,
+                _ => self.numbers[0].read(cx).value() as f32 + offset,
+            },
+            held_peak_dbfs: match state {
+                1 => None,
+                2 => Some(f32::INFINITY),
+                _ => Some(self.numbers[1].read(cx).value() as f32 + offset),
+            },
+            clipping: state == 3,
+        };
+        match channels {
+            MeterChannels::Mono => MeterIndicatorReadout::Mono(channel(0.0)),
+            MeterChannels::Stereo => MeterIndicatorReadout::Stereo([channel(0.0), channel(6.0)]),
+        }
+    }
+    fn indicator(&self, channels: MeterChannels, cx: &mut Context<Self>) -> Div {
+        let style = theme::control_style();
+        let readout = self.indicator_readout(channels, cx);
+        let meter = match meter_indicator(
+            self.id("workspace-indicator").into(),
+            readout,
+            METER_INDICATOR_TICKS_DBFS.map(|dbfs| theme::text(format!("{:.0}", -dbfs))),
+            MeterIndicatorStyle {
+                controls: style,
+                signal: style.accent,
+                peak: style.text,
+                overload: theme::color(theme::PaletteRole::Secondary),
+            },
+        ) {
+            Ok(meter) => div().h(px(148.0)).child(meter),
+            Err(error) => div().child(theme::text(format!(
+                "meter indicator unavailable · {error}"
+            ))),
+        };
+        div().flex().flex_col().gap(px(6.0)).w_full()
+            .child(meter)
+            .child(div().w_full().max_w(px(220.0)).child(self.selector.clone()))
+            .children(self.numbers.iter().map(|number|
+                div().w_full().max_w(px(220.0)).h(px(20.0)).child(number.clone())))
+            .child(theme::text(match channels {
+                MeterChannels::Mono => "local dbfs level and held peak · overload is explicit · no audio",
+                MeterChannels::Stereo => "local dbfs level and held peak · right channel adds 6 db · overload is explicit · no audio",
+            }))
+    }
+    fn round_action(&self, kind: RoundActionKind, window: &Window, cx: &mut Context<Self>) -> Div {
+        let colors = theme::control_style();
+        let background = colors.accent;
+        let hover = theme::color(theme::PaletteRole::PrimaryDark);
+        let style = ActionStyle {
+            background,
+            text: theme::readable_text(background, colors.text),
+            hover_background: hover,
+            hover_text: Some(theme::readable_text(hover, colors.text)),
+        };
+        let name = match kind {
+            RoundActionKind::Label => "run local labeled action",
+            RoundActionKind::Icon => "run local icon action",
+        };
+        let entity = cx.entity();
+        let owner = entity.downgrade();
+        let button = round_action_surface(style, colors.border)
+            .id("workspace-round-action")
+            .debug_selector({
+                let id = self.id("workspace-round-action");
+                move || id.clone()
+            })
+            .w(px(if kind == RoundActionKind::Label {
+                40.0
+            } else {
+                20.0
+            }))
+            .h(px(20.0))
+            .child(theme::text(if kind == RoundActionKind::Label {
+                "ext"
+            } else {
+                "▶"
+            }))
+            .track_focus(&self.focus)
+            .focus(move |focus| focus.border_color(rgb(colors.focus_marker)))
+            .opacity(if self.enabled { 1.0 } else { 0.4 })
+            .when(!self.enabled, |button| {
+                button.active(|pressed| pressed.opacity(0.4))
+            })
+            .tooltip(move |_, cx| cx.new(|_| LocalTooltip(theme::text(name))).into())
+            .on_click(cx.listener(|view, _, window, cx| {
+                if view.enabled {
+                    view.focus.focus(window);
+                    view.press_action(cx);
+                }
+            }))
+            .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    if !event.is_held {
+                        view.press_action(cx);
+                    }
+                    cx.stop_propagation();
+                }
+            }))
+            .accessibility(
+                gpui::AccessibilityDescriptor {
+                    id: gpui::AccessibilityId(entity.entity_id().as_u64()),
+                    revision: 0,
+                    lifetime: self.accessibility_lifetime.weak(),
+                    name: theme::text(name),
+                    value: gpui::AccessibilityValue::Button,
+                    enabled: self.enabled,
+                    focused: self.focus.is_focused(window),
+                    status: None,
+                },
+                move |request, window, cx| {
+                    owner
+                        .update(cx, |view, cx| {
+                            if !view.enabled {
+                                return false;
+                            }
+                            match request.action {
+                                gpui::AccessibilityAction::Focus => {
+                                    view.focus.focus(window);
+                                    true
+                                }
+                                gpui::AccessibilityAction::Press => {
+                                    view.focus.focus(window);
+                                    view.press_action(cx);
+                                    true
+                                }
+                                _ => false,
+                            }
+                        })
+                        .unwrap_or(false)
+                },
+            );
+        div().child(button).child(theme::text(
+            "momentary command · each click, enter or space runs once · no toggle state",
+        ))
+    }
     fn signal(&self, cx: &gpui::App) -> MeterInput {
         match self.selector.read(cx).selected() {
             1 => MeterInput::Offline,
@@ -277,7 +458,7 @@ impl Workspace {
             },
         }
     }
-    fn body(&self, cx: &mut Context<Self>) -> Div {
+    fn body(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         match self.kind {
             Kind::Text(kind) => div()
                 .w_full()
@@ -379,6 +560,8 @@ impl Workspace {
                         "local normalized gauge · over-unity values show a marker · no audio".into()
                     }))
             }
+            Kind::MeterIndicator(channels) => self.indicator(channels, cx),
+            Kind::RoundAction(kind) => self.round_action(kind, window, cx),
             Kind::Button(name) => {
                 let glyph = match name {
                     "play" => "▶",
@@ -532,7 +715,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(self.body(cx))
+            .child(self.body(window, cx))
             .child(theme::text(&self.status))
             .children(popup)
     }
@@ -722,6 +905,181 @@ mod tests {
             view.read_with(&visual, |s, cx| {
                 assert!(matches!(s.signal(cx),MeterInput::Last {left,..} if left.is_nan()))
             });
+        }
+    }
+    #[gpui::test]
+    fn round_actions_are_one_shot_for_pointer_keyboard_and_accessibility(cx: &mut TestAppContext) {
+        for kind in [RoundActionKind::Label, RoundActionKind::Icon] {
+            let (mut visual, view) = fixture(cx, Kind::RoundAction(kind));
+            let button = visual.debug_bounds("workspace-round-action").unwrap();
+            assert_eq!(button.size.height, px(20.0));
+            assert_eq!(
+                button.size.width,
+                px(if kind == RoundActionKind::Label {
+                    40.0
+                } else {
+                    20.0
+                })
+            );
+            visual.simulate_mouse_move(point(px(500.0), px(400.0)), None, Modifiers::default());
+            visual.run_until_parked();
+            let idle = visual.rendered_background("workspace-round-action");
+            visual.simulate_mouse_down(
+                button.center(),
+                gpui::MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            view.read_with(&visual, |view, _| assert_eq!(view.count, 0));
+            visual.simulate_mouse_up(
+                button.center(),
+                gpui::MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.simulate_mouse_move(point(px(500.0), px(400.0)), None, Modifiers::default());
+            visual.run_until_parked();
+            view.read_with(&visual, |view, _| {
+                assert_eq!(view.count, 1);
+                assert!(!view.active);
+            });
+            assert_eq!(visual.rendered_background("workspace-round-action"), idle);
+            visual.simulate_keystrokes("space enter");
+            visual.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("space").unwrap(),
+                is_held: true,
+            });
+            visual.run_until_parked();
+            view.read_with(&visual, |view, _| {
+                assert_eq!(view.count, 3);
+                assert!(!view.active);
+            });
+            let id = visual.update(|window, _| {
+                let node = window
+                    .accessibility_nodes()
+                    .find(|node| {
+                        node.descriptor.name.as_ref()
+                            == if kind == RoundActionKind::Label {
+                                "run local labeled action"
+                            } else {
+                                "run local icon action"
+                            }
+                    })
+                    .unwrap();
+                assert_eq!(node.descriptor.value, gpui::AccessibilityValue::Button);
+                node.descriptor.id
+            });
+            assert!(
+                visual.update(|window, cx| window.perform_accessibility_action(
+                    id,
+                    gpui::AccessibilityAction::Press,
+                    cx
+                ))
+            );
+            visual.run_until_parked();
+            view.read_with(&visual, |view, _| {
+                assert_eq!(view.count, 4);
+                assert!(!view.active);
+            });
+            assert_eq!(visual.rendered_background("workspace-round-action"), idle);
+            view.update(&mut visual, |view, cx| view.set_enabled(false, cx));
+            visual.run_until_parked();
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.simulate_keystrokes("space enter");
+            assert!(
+                !visual.update(|window, cx| window.perform_accessibility_action(
+                    id,
+                    gpui::AccessibilityAction::Press,
+                    cx
+                ))
+            );
+            view.read_with(&visual, |view, _| {
+                assert_eq!(view.count, 4);
+                assert!(!view.active);
+            });
+        }
+    }
+    #[gpui::test]
+    fn calibrated_meter_fixtures_show_local_dbfs_peaks_and_explicit_states(
+        cx: &mut TestAppContext,
+    ) {
+        for channels in [MeterChannels::Mono, MeterChannels::Stereo] {
+            let (mut visual, view) = fixture(cx, Kind::MeterIndicator(channels));
+            let first_fill = visual
+                .debug_bounds("workspace-indicator-channel-0-fill")
+                .unwrap();
+            let first_peak = visual
+                .debug_bounds("workspace-indicator-channel-0-peak")
+                .unwrap();
+            assert!(first_fill.size.height > px(0.0));
+            assert_eq!(
+                visual
+                    .debug_bounds("workspace-indicator-channel-1")
+                    .is_some(),
+                channels == MeterChannels::Stereo
+            );
+            visual.simulate_keystrokes("up up");
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("workspace-indicator-channel-0-fill")
+                    .unwrap()
+                    .size
+                    .height
+                    > first_fill.size.height
+            );
+            visual.update(|window, cx| {
+                view.read_with(cx, |view, cx| {
+                    view.numbers[1].focus_handle(cx).focus(window)
+                })
+            });
+            visual.simulate_keystrokes("up up");
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("workspace-indicator-channel-0-peak")
+                    .unwrap()
+                    .top()
+                    < first_peak.top()
+            );
+            for selected in [1, 2, 3, 0] {
+                let selector = visual.debug_bounds("workspace-meter-state").unwrap();
+                visual.simulate_click(selector.center(), Modifiers::default());
+                visual.run_until_parked();
+                let option = visual
+                    .debug_bounds(match selected {
+                        1 => "workspace-meter-state-option-1",
+                        2 => "workspace-meter-state-option-2",
+                        3 => "workspace-meter-state-option-3",
+                        _ => "workspace-meter-state-option-0",
+                    })
+                    .unwrap();
+                visual.simulate_click(option.center(), Modifiers::default());
+                visual.run_until_parked();
+                let fill = visual
+                    .debug_bounds("workspace-indicator-channel-0-fill")
+                    .unwrap();
+                if matches!(selected, 1 | 2) {
+                    assert_eq!(fill.size.height, px(0.0));
+                    assert!(
+                        visual
+                            .debug_bounds("workspace-indicator-channel-0-peak")
+                            .is_none()
+                    );
+                } else {
+                    assert!(fill.size.height > px(0.0));
+                    assert!(
+                        visual
+                            .debug_bounds("workspace-indicator-channel-0-peak")
+                            .is_some()
+                    );
+                }
+                assert_eq!(
+                    visual
+                        .debug_bounds("workspace-indicator-channel-0-above")
+                        .is_some(),
+                    selected == 3
+                );
+            }
         }
     }
 }
