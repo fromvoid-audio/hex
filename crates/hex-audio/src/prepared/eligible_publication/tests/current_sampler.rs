@@ -51,6 +51,36 @@ fn fixture() -> (Project, hex_project::AssetId) {
             state: native,
         })
         .unwrap();
+    // Retain canonical identities in the closed CURRENT Console inventory too.
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "console".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(session_clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "source".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: session_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
     (editor.project().clone(), asset)
 }
 
@@ -251,6 +281,39 @@ fn current_sampler_intact_adoption_preserves_context_and_actual_pcm_without_call
         (0, 0, 0, 0)
     );
     assert_eq!(output, expected);
+    let clip = project
+        .session_cells()
+        .iter()
+        .find_map(|cell| match cell.content() {
+            hex_project::SessionCellContent::Midi(clip) => Some(clip.id()),
+            _ => None,
+        })
+        .unwrap();
+    control
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let counts = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        })
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(
+        output, expected,
+        "canonical Console source plays through the admitted graph"
+    );
     control.request_shutdown();
     data.owner_mut()
         .unwrap()
