@@ -963,10 +963,11 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
 fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker(
     cx: &mut TestAppContext,
 ) {
-    for (drag, bpm, leading_silence) in [
-        (false, 120_000_000, true),
-        (true, 120_000_000, true),
-        (false, 143_000_000, false),
+    for (drag, bpm, leading_silence, reversed) in [
+        (false, 120_000_000, true, false),
+        (true, 120_000_000, true, false),
+        (false, 143_000_000, false, false),
+        (false, 143_000_000, true, true),
     ] {
         let (mut visual, editor, environment, tracks, clips) = fixture(cx);
         let clip = clips[0];
@@ -1004,6 +1005,12 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
         ] {
             editor.update(&mut visual, |view, _| {
                 assert!(view.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        if reversed {
+            editor.update(&mut visual, |view, _| {
+                assert!(view.enqueue(Request::Edit(Command::ReverseClips(vec![clip]))));
             });
             pump(&editor, &mut visual);
         }

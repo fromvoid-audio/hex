@@ -301,6 +301,9 @@ pub(super) fn apply_with_cuts(
                         .filter(|length| *length > 0)
                         .ok_or(Invalid("midi frame prefix collapsed"))?,
                 );
+                if let Some(window) = clip.content_view {
+                    clip.content_view = Some(window.cropped(0..clip.length.raw())?);
+                }
                 count.clip(clip.notes().len())?;
                 push(&mut row.midi, clip)?;
             }

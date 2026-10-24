@@ -1384,14 +1384,15 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
 
 #[test]
 fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
-    for (rate, bpm, tail, leading_silence) in [
-        (48_000, 120_000_000, false, true),
-        (48_000, 120_000_000, true, true),
-        (48_000, 143_000_000, false, true),
-        (48_000, 143_000_000, false, false),
-        (48_000, 143_000_000, true, true),
-        (44_100, 143_000_000, false, true),
-        (44_100, 143_000_000, true, true),
+    for (rate, bpm, tail, leading_silence, reversed) in [
+        (48_000, 120_000_000, false, true, false),
+        (48_000, 120_000_000, true, true, false),
+        (48_000, 143_000_000, false, true, false),
+        (48_000, 143_000_000, false, true, true),
+        (48_000, 143_000_000, false, false, false),
+        (48_000, 143_000_000, true, true, false),
+        (44_100, 143_000_000, false, true, false),
+        (44_100, 143_000_000, true, true, false),
     ] {
         let (mut editor, track) = setup_at_rate(rate);
         editor
@@ -1432,6 +1433,9 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
                 velocity: 100,
             })
             .unwrap();
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
         let mut before = editor.project().snapshot();
         let source_notes = editor.project().midi_clip(clip).unwrap().notes().to_vec();
         assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
