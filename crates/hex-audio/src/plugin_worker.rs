@@ -32,12 +32,16 @@ struct State {
 impl State {
     fn prepare_transport(&mut self) -> Result<(), Fault> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        return self.prepare_transport_with(|| {
-            qos_threads::set_current_thread(qos_threads::Qos::High)
-                .map_err(|error| std::io::Error::from_raw_os_error(error.errno()))
-        });
+        {
+            self.prepare_transport_with(|| {
+                qos_threads::set_current_thread(qos_threads::Qos::High)
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.errno()))
+            })
+        }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        Ok(())
+        {
+            Ok(())
+        }
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn prepare_transport_with(
