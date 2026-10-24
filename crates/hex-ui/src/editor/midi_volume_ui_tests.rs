@@ -128,6 +128,19 @@ fn envelope_escape_blur_lost_pointer_and_stale_source_cancel_without_history(
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         assert!(editor.read_with(&visual, |v, _| v.midi_volume.gesture.is_some()));
+        // A/0 belongs to contextual clip activation only outside nested plot
+        // focus. It must not submit an edit underneath a held envelope node.
+        visual.simulate_keystrokes("a");
+        visual.simulate_keystrokes("0");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_volume.gesture.is_some());
+            assert!(!v.edit_pending());
+            assert_eq!(
+                v.state.as_ref().unwrap().project.clip_active(clip),
+                Some(true)
+            );
+        });
         match reason {
             0 => visual.simulate_keystrokes("escape"),
             1 => visual.update(|window, _| window.blur()),
