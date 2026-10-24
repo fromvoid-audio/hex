@@ -314,7 +314,7 @@ impl EditorView {
                         cx.notify();
                     },
                     cx,
-                )
+                ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "browser-insert-grid".to_owned())
                 .when(
                     self.input_quantization != hex_project::InputQuantization::Off,
@@ -329,7 +329,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "⋮",
                 "show or hide tag editor",
@@ -338,7 +338,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "×",
                 "close browser · cmd+alt+b",
@@ -346,7 +346,7 @@ impl EditorView {
                     view.toggle_browser(window, cx);
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
     }
 
     fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {

@@ -6,8 +6,8 @@ use super::time_move_preview::{
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{
-    ClipTooltip, button, button_with_style, fade_envelope_samples, waveform_source_segment_view,
-    waveform_summary_view,
+    ClipTooltip, button, fade_envelope_samples, toggle_button_with_style,
+    waveform_source_segment_view, waveform_summary_view,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -1200,7 +1200,7 @@ impl EditorView {
                         cx.notify();
                     })),
                 );
-            let activator = button_with_style(
+            let activator = toggle_button_with_style(
                 "",
                 if track.muted() {
                     "activate track"
@@ -1220,7 +1220,7 @@ impl EditorView {
                 view.toggle_mute(track_id);
                 cx.notify();
             }));
-            let solo = button_with_style(
+            let solo = toggle_button_with_style(
                 "s",
                 "solo track · s · cmd+click additive",
                 ("track-solo", track_id.value()),
