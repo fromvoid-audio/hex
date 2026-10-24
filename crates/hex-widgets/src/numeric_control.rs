@@ -2146,11 +2146,11 @@ fn filled_slider(
         .w(relative((value - origin).abs()))
         .h_full()
         .bg(rgb(if field.enabled {
-            field.style.accent
+            field.style.numeric_fill
         } else {
             field.style.muted
         }))
-        .opacity(0.35);
+        .when(!field.enabled, |fill| fill.opacity(0.35));
     div()
         .debug_selector(move || slider_id.clone())
         .relative()
