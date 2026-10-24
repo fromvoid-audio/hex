@@ -33,7 +33,9 @@ impl Gallery {
             div(),
             body,
         )
-        .id("catalog-card")
+        .id(gpui::ElementId::Name(
+            format!("catalog-card-{}", self.entry.key()).into(),
+        ))
         .debug_selector(|| "catalog-card".into())
         .track_focus(&self.header_focus)
         .w(px(self.entry.width()))

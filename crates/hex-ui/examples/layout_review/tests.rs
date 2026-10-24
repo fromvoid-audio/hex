@@ -527,3 +527,19 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
     visual.run_until_parked();
     assert!(visual.debug_bounds("fixture-eq-selector-1-popup").is_none());
 }
+
+#[gpui::test]
+fn shared_housing_visibility_does_not_transfer_to_another_fixture(cx: &mut TestAppContext) {
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, view) = open(cx, Entry::Utility);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(760.0), px(660.0)));
+    visual.run_until_parked();
+    let button = visual.debug_bounds("device-macro-toggle").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("device-macro-panel").is_some());
+    choose(&mut visual, &view, Entry::Saturator);
+    assert!(visual.debug_bounds("device-macro-panel").is_none());
+    assert!(visual.debug_bounds("device-modulator-panel").is_none());
+}
