@@ -2548,10 +2548,10 @@ impl EditorView {
                         mouse_up_payload.clip,
                         None,
                     );
-                    view.clear_clip_drag(
-                        mouse_up_payload.project_generation,
-                        mouse_up_payload.clip,
-                    );
+                    // Mouse-up may arrive before the next repaint removes
+                    // this source header. The lane drop receiver still owns
+                    // release; root cleanup handles drops outside a receiver.
+                    // Retiring here would cancel the move before admission.
                 });
             })
             .on_drag(payload, move |payload, _, window, cx| {

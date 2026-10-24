@@ -2659,6 +2659,103 @@ fn assert_drag_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool, c
     assert_drag_handoff_with_pending_request(cx, midi, vertical, copy, false);
 }
 
+#[gpui::test]
+fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    for midi in [false, true] {
+        let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+        visual.run_until_parked();
+        let (track, audio) = editor.read_with(&visual, |v, _| {
+            let track = &v.state.as_ref().unwrap().project.tracks()[0];
+            (track.id(), track.clips()[0].id())
+        });
+        if midi {
+            for command in [
+                Command::RemoveClip(audio),
+                Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::from_quarters(4).unwrap(),
+                },
+            ] {
+                editor.update(&mut visual, |v, _| {
+                    assert!(v.enqueue(Request::Edit(command)))
+                });
+                pump_move(&editor, &mut visual);
+            }
+        }
+        let (clip, before) = editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            (
+                if midi {
+                    project.track(track).unwrap().midi_clips()[0].id()
+                } else {
+                    audio
+                },
+                project.clone(),
+            )
+        });
+        let down = visual
+            .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
+            .unwrap()
+            .center();
+        let end = point(down.x + px(36.0), down.y);
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        // One coalesced motion crosses the native drag threshold. There need
+        // not be a second mouse-move before release over the original header.
+        visual.update(|window, app| {
+            window.dispatch_input(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position: end,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                app,
+            );
+            assert!(app.has_active_drag());
+            // Dispatch against the same completed frame, as native events can
+            // arrive between display refreshes.
+            window.dispatch_input(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: end,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                app,
+            );
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.worker_requests_pending, 1,
+                "first-motion release must submit the move: {:?}",
+                v.error
+            );
+        });
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            assert_ne!(project.snapshot(), before.snapshot());
+            if midi {
+                assert!(project.midi_clip(clip).unwrap().start() > BeatTime::ZERO);
+            } else {
+                assert!(project.clip(clip).unwrap().start() > 0);
+            }
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before.snapshot()
+            )
+        });
+    }
+}
+
 fn assert_drag_handoff_with_pending_request(
     cx: &mut TestAppContext,
     midi: &[bool],
