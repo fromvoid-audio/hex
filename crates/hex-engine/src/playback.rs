@@ -1578,6 +1578,18 @@ impl Playback {
             .ok_or(Invalid("midi capture session runtime is unavailable"))?
             .arm_midi_capture(binding, clock)
     }
+    /// Negative-only current input/fault check for ending a take before Stop
+    /// resets playback. Unlike the sealed render getter, this checks live input.
+    pub fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.session_runtime
+            .as_ref()?
+            .computer_keyboard
+            .as_ref()?
+            .capture_finish_fault(take_id)
+    }
     pub fn midi_capture_fault(
         &self,
         take_id: u64,

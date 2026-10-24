@@ -227,6 +227,12 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .arm_midi_capture(binding, clock)
     }
+    pub fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.current_playback()?.midi_capture_finish_fault(take_id)
+    }
     pub fn midi_capture_fault(
         &self,
         take_id: u64,

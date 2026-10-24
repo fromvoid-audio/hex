@@ -24,6 +24,7 @@ pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
 pub mod gain_recording;
+pub mod midi_recording;
 mod lifecycle;
 mod native_callback_owner;
 pub use candidate_catalog::CandidateDomain;

@@ -1387,10 +1387,6 @@ impl ComputerKeyboardRuntime {
         if let Some(event) = key_event {
             self.apply_key_event(event, &mut events, &mut len)?;
         }
-        let resources = self
-            .resources
-            .as_ref()
-            .map_or(resources, |lease| lease.resources());
         if output.is_empty() {
             return Ok(());
         }
@@ -1510,6 +1506,10 @@ impl ComputerKeyboardRuntime {
         if let Some(before) = before_voices {
             self.capture_voice_changes(&before, clock);
         }
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
         if let Some(runtime) = &mut self.mutable {
             runtime
                 .process_block_with_clock(&events[..len], output, clock, resources)

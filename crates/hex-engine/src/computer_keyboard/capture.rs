@@ -76,6 +76,31 @@ impl ComputerKeyboardRuntime {
         capture.first_occurrence = self.next_id;
         Ok(())
     }
+    pub(crate) fn capture_finish_fault(&self, take_id: u64) -> Option<MidiCaptureFault> {
+        let capture = self.capture.as_ref().filter(|capture| {
+            capture
+                .binding
+                .is_some_and(|binding| binding.take_id == take_id)
+        })?;
+        if let Some(fault) = capture.faulted {
+            return Some(fault);
+        }
+        let binding = capture.binding?;
+        let input = self.input.lease()?;
+        if input
+            .ordered_keys
+            .as_ref()
+            .is_some_and(|queue| queue.faulted(binding.keys))
+            || binding.hardware.is_some_and(|token| {
+                input
+                    .live_notes()
+                    .is_some_and(|live| live.activation_rejected(token))
+            })
+        {
+            return Some(MidiCaptureFault::Capacity);
+        }
+        (!self.validate_capture_input(binding, None)).then_some(MidiCaptureFault::InputChanged)
+    }
     pub(crate) fn capture_render(
         &self,
         take_id: u64,
@@ -115,7 +140,7 @@ impl ComputerKeyboardRuntime {
             }
         }
     }
-    pub(crate) fn capture_voice_changes(
+    pub(super) fn capture_voice_changes(
         &mut self,
         before: &[Option<Voice>; VOICES],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,

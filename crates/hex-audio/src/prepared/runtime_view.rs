@@ -132,6 +132,27 @@ impl RuntimeRef<'_> {
             Self::Eligible(p) => p.session_route_status(index),
         }
     }
+    pub(super) fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<hex_engine::midi_capture::MidiCaptureRender<'_>>, Invalid> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_render(take_id),
+            Self::Eligible(p) => p.midi_capture_render(take_id),
+        }
+    }
+    pub(super) fn midi_capture_finish_fault(&self, take_id: u64) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self { Self::Legacy(p) => p.midi_capture_finish_fault(take_id), Self::Eligible(p) => p.midi_capture_finish_fault(take_id) }
+    }
+    pub(super) fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_fault(take_id),
+            Self::Eligible(p) => p.midi_capture_fault(take_id),
+        }
+    }
     pub(super) fn gain_recording_ready(&self, track: u64) -> bool {
         match self {
             Self::Legacy(p) => p.gain_recording_ready(track),
@@ -159,6 +180,29 @@ impl RuntimeMut<'_> {
         match self {
             Self::Legacy(p) => RuntimeRef::Legacy(p),
             Self::Eligible(p) => RuntimeRef::Eligible(p),
+        }
+    }
+    pub(super) fn position(&self) -> u64 {
+        self.read().position()
+    }
+    pub(super) fn arm_midi_capture(
+        &mut self,
+        binding: hex_engine::midi_capture::MidiCaptureBinding,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<hex_engine::midi_capture::MidiCaptureClock, Invalid> {
+        match self {
+            Self::Legacy(p) => p.arm_midi_capture(binding, clock),
+            Self::Eligible(p) => p.arm_midi_capture(binding, clock),
+        }
+    }
+    pub(super) fn finish_midi_capture(&mut self, take_id: u64) {
+        match self {
+            Self::Legacy(p) => {
+                let _ = p.finish_midi_capture(take_id);
+            }
+            Self::Eligible(p) => {
+                let _ = p.finish_midi_capture(take_id);
+            }
         }
     }
     pub(super) fn sample_rate(&self) -> u32 {
