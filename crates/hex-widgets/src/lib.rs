@@ -17,6 +17,7 @@ mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 mod color_picker;
 mod curve;
+mod device_housing;
 mod device_meters;
 mod device_parts;
 pub use device_parts::{
