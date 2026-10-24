@@ -429,3 +429,57 @@ fn sampler_boundary_rejects_a_cursor_edit_conflicting_with_the_authored_loop(
         );
     });
 }
+
+#[gpui::test]
+fn unrelated_pending_edit_keeps_sampler_paint_and_blocks_new_controls(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = fixture(cx, 1024, true);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("sampler-source-waveform").unwrap();
+    let at = point(bounds.left() + bounds.size.width * 0.4, bounds.center().y);
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let before = visual.rendered_filled_quads("device-panel");
+    let project = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 1;
+        cx.notify();
+    });
+    for _ in 0..3 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            visual.rendered_filled_quads("device-panel"),
+            before,
+            "unrelated pending edit flashes sampler controls"
+        );
+    }
+    let at = visual
+        .debug_bounds("sampler-start-at-cursor")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.worker_requests_pending, 1);
+        assert!(view.pending_requests.is_empty());
+        assert!(!view.sampler_parameter_pending());
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), project);
+    });
+    editor.update(cx, |view, cx| {
+        view.worker_requests_pending = 0;
+        cx.notify();
+    });
+    visual.simulate_mouse_move(
+        point(bounds.left() + bounds.size.width * 0.4, bounds.center().y),
+        None,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_filled_quads("device-panel"), before);
+}

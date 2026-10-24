@@ -2912,6 +2912,7 @@ mod tests {
             value: crate::device_gesture::ParameterValue::Float(0.5),
             secondary_value: None,
             parameters: None,
+            creation: None,
         };
         resident_preview::device_operation(
             &mut session,

@@ -1039,7 +1039,6 @@ impl EditorView {
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
                 let gain_request = self.pending_gain_matches(&request);
-                let eq_creation_request = self.pending_eq_creation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -1088,9 +1087,6 @@ impl EditorView {
                         if gain_request {
                             self.gain_submitted();
                         }
-                        if let Some(device) = eq_creation_request {
-                            self.eq_creation_submitted(device);
-                        }
                     }
                     Err(SubmitError::Full(request)) => {
                         self.pending_requests.push_front(request);
@@ -1137,9 +1133,6 @@ impl EditorView {
                         }
                         if gain_request {
                             self.retire_pending_gain();
-                        }
-                        if let Some(device) = eq_creation_request {
-                            self.retire_pending_eq_creation(device);
                         }
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1212,9 +1205,6 @@ impl EditorView {
                         if gain_request {
                             self.retire_pending_gain();
                         }
-                        if let Some(device) = eq_creation_request {
-                            self.retire_pending_eq_creation(device);
-                        }
                         break;
                     }
                 }
@@ -1228,7 +1218,6 @@ impl EditorView {
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
-        visible_change |= self.retire_abandoned_eq_creation();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -3109,6 +3098,7 @@ impl EditorView {
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
                 | Request::Edit(_)
                 | Request::BounceArrangement { .. }
@@ -3181,7 +3171,6 @@ impl EditorView {
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
         let gain_request = self.pending_gain_matches(&request);
-        let eq_creation_request = self.pending_eq_creation_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
@@ -3224,9 +3213,6 @@ impl EditorView {
                 }
                 if gain_request {
                     self.gain_submitted();
-                }
-                if let Some(device) = eq_creation_request {
-                    self.eq_creation_submitted(device);
                 }
                 true
             }

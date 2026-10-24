@@ -831,6 +831,18 @@ impl WorkerAudioSink for NativeAudioSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(crate::streamed_export::render)
     }
+    fn resident_file_seek_preparer(
+        &self,
+    ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
+        Some(crate::streamed_export::prepare_resident_seek)
+    }
+    fn resident_file_seek_storage_bytes(
+        &self,
+        prepared: &hex_engine::PreparedRevision,
+        sources: &hex_session::service::ResidentFileSet,
+    ) -> Result<usize, String> {
+        crate::streamed_export::resident_seek_storage_bytes(prepared, sources)
+    }
 
     fn resident_runtime_loop(
         &mut self,

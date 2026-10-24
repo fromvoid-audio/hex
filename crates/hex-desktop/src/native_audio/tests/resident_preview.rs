@@ -70,6 +70,19 @@ impl WorkerAudioSink for ResidentSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
+    fn resident_file_seek_preparer(
+        &self,
+    ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
+        self.inner.resident_file_seek_preparer()
+    }
+    fn resident_file_seek_storage_bytes(
+        &self,
+        prepared: &hex_engine::PreparedRevision,
+        sources: &hex_session::service::ResidentFileSet,
+    ) -> Result<usize, String> {
+        self.inner
+            .resident_file_seek_storage_bytes(prepared, sources)
+    }
 
     fn resident_runtime_loop(
         &mut self,

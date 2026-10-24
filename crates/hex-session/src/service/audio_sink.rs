@@ -5,7 +5,8 @@ use std::time::Duration;
 mod file_sources;
 pub(super) mod native_sampler;
 pub use file_sources::{
-    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSet,
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    ResidentFileSeekRequest, ResidentFileSet,
 };
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
@@ -143,6 +144,23 @@ pub trait WorkerAudioSink: Send {
     /// source custody is not composed with page rendering.
     fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
         None
+    }
+
+    /// Prepare ordinary file-backed history on the existing seek worker, using
+    /// independent bounded offline pages and the exact captured compiler scope.
+    /// This stateless function grants no native submission/readiness authority.
+    fn resident_file_seek_preparer(&self) -> Option<ResidentFileSeekPreparer> {
+        None
+    }
+    /// Conservative listed peak for the independent offline page owner, quoted
+    /// before starting a worker/pool. Opaque allocator/thread/OS costs remain
+    /// separate bounded obligations, not a process-memory receipt.
+    fn resident_file_seek_storage_bytes(
+        &self,
+        _prepared: &PreparedRevision,
+        _sources: &ResidentFileSet,
+    ) -> Result<usize, String> {
+        Err("file-backed seek preparation is unavailable".into())
     }
 
     /// Output ownership policy, independent of device presence or availability. A native consumer

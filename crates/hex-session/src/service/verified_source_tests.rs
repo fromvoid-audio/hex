@@ -980,20 +980,122 @@ fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm(
             source, facts,
             "derived display data must not refresh file facts"
         );
-        let mut cancelled = facts.clone();
+        // Keep the same cancellation point on a source with enough work to
+        // reach it even when contiguous scanning finishes the tiny oracle in
+        // fewer polls. Assert the actual refusal reason, not just any failure.
+        let cancel_path = files.wav("cancel-waveform.wav", source_rate, 65_537, 1000);
+        let mut cancelled = crate::VerifiedAudioFile::inspect(
+            cancel_path,
+            project_rate,
+            reservation(1).reader,
+            || false,
+        )
+        .unwrap();
         let mut polls = 0;
-        assert!(
-            cancelled
-                .prepare_waveform_on_control(|| {
-                    polls += 1;
-                    polls > 10
-                })
-                .is_err()
-        );
+        let refusal = cancelled
+            .prepare_waveform_on_control(|| {
+                polls += 1;
+                polls > 10
+            })
+            .unwrap_err();
+        assert!(polls > 10);
+        assert!(refusal.to_string().contains("cancel"), "{refusal}");
         assert!(cancelled.cached_waveform().is_none());
         files.wav("peaks.wav", source_rate, 5003, 1234);
         let mut changed = facts;
         assert!(changed.prepare_waveform_on_control(|| false).is_err());
         assert!(changed.cached_waveform().is_none());
     }
+}
+
+#[test]
+fn ordinary_reopen_keeps_processed_resident_sources_and_plain_files_with_atomic_refusal() {
+    let files = Files::new();
+    let processed_path = files.wav("processed.wav", 48_000, 8, 8192);
+    let plain_path = files.wav("plain-file.wav", 48_000, 32, 4096);
+    let service = Service::new(48_000, 16, 16).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(processed_path));
+    let processed = first.state.project.tracks()[0].clips()[0].id();
+    run(
+        &service,
+        Request::Edit(Command::SetAudioClipPitch {
+            clip: processed,
+            cents: 137,
+        }),
+    );
+    let imported = run(
+        &service,
+        Request::ImportToNewTrack {
+            path: plain_path,
+            before_track: None,
+            start: 0,
+        },
+    );
+    let plain = imported
+        .state
+        .project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .find(|clip| clip.id() != processed)
+        .unwrap()
+        .id();
+    let path = files.0.join("processed-and-file.hex");
+    run(&service, Request::SaveNew(path.clone()));
+    let expected = hex_storage::load(&path).unwrap();
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let opened = run(&service, Request::Open(path));
+    assert!(opened.open_complete);
+    assert_eq!(opened.state.project.as_ref(), &expected);
+    let source = opened.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(source.audio_mode(), DocumentAudioMode::Resident);
+    assert_eq!(
+        source
+            .sources()
+            .values()
+            .filter(|source| matches!(source, AudioSourceBinding::VerifiedFile(_)))
+            .count(),
+        1
+    );
+    assert_eq!(opened.state.waveforms.len(), 2);
+    service
+        .submit(Request::Edit(Command::SetAudioClipPitch {
+            clip: plain,
+            cents: 137,
+        }))
+        .unwrap();
+    let refused = next(&service);
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("require resident audio")
+    );
+    assert_eq!(refused.state.project, opened.state.project);
+    assert_eq!(refused.state.revision, opened.state.revision);
+    assert_eq!(refused.state.can_undo, opened.state.can_undo);
+    let after = refused.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(after.context(), source.context());
+    let asset = opened.state.project.clip(plain).unwrap().asset();
+    let (AudioSourceBinding::VerifiedFile(before), Some(AudioSourceBinding::VerifiedFile(after))) =
+        (&source.sources()[&asset], after.sources().get(&asset))
+    else {
+        panic!("verified facts")
+    };
+    assert_eq!(before, after);
 }

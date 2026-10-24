@@ -45,6 +45,9 @@ pub(crate) fn validate_constructor_project_with_effects(
     project: &hex_project::Project,
     effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
 ) -> Result<(), AudioStorageError> {
+    if project.has_group_tracks() {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
     let supported = |d: &hex_project::Device| {
         d.state().asset_references().is_empty()
             && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
@@ -1999,6 +2002,37 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    #[test]
+    fn group_tracks_refuse_compilation_and_native_admission_until_submix_support() {
+        use hex_project::{Command, Created, Editor, Project, TrackSelectionIds};
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "child".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        assert!(validate_constructor_project(editor.project()).is_ok());
+        assert!(crate::compile::project(editor.project(), &Default::default()).is_ok());
+        editor
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            validate_constructor_project(editor.project()),
+            Err(AudioStorageError::UnsupportedGraph)
+        ));
+        assert!(crate::compile::project(editor.project(), &Default::default()).is_err());
+        let effects = hex_devices::native_registry().unwrap();
+        assert!(matches!(
+            validate_constructor_project_with_effects(editor.project(), Some(&effects)),
+            Err(AudioStorageError::UnsupportedGraph)
+        ));
+    }
     #[test]
     fn rooted_bank_reservation_refusal_preserves_exact_bank_then_success_transfers_once() {
         if !constructor_supported("rooted_preparation_input") {

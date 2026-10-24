@@ -173,9 +173,8 @@ pub(super) fn open_source_with_limits(
     // File facts alone never promise page readiness or callback application.
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
-        && !has_originals
         && required_pcm > frame_allowance;
-    if mode == DocumentAudioMode::VerifiedStreaming || ordinary_file_backed {
+    if mode == DocumentAudioMode::VerifiedStreaming {
         let reservation = reservation
             .ok_or("verified source reservation is required")?
             .validate()
@@ -212,6 +211,22 @@ pub(super) fn open_source_with_limits(
         candidate.sine_table = current.sine_table();
         return Ok((candidate, project_dir, document, dirty));
     }
+    let mut file_candidate = if ordinary_file_backed {
+        Some(
+            Session::new_with_audio_mode_in_overview_domain(
+                project.sample_rate(),
+                history_capacity,
+                current.max_resident_frames(),
+                DocumentAudioMode::Resident,
+                reservation,
+                current.overview_budget.clone(),
+            )
+            .map_err(|e| e.to_string())?
+            .with_shutdown(Arc::clone(&current.shutdown)),
+        )
+    } else {
+        None
+    };
     let mut prepared_assets = Vec::new();
     prepared_assets
         .try_reserve_exact(project.assets().count())
@@ -228,6 +243,19 @@ pub(super) fn open_source_with_limits(
         };
         if current.shutdown.load(Ordering::Acquire) {
             return Err("project open cancelled".into());
+        }
+        if asset.original_source().is_none()
+            && !asset_requires_resident_processing(&project, asset.id())
+            && let Some(candidate) = file_candidate.as_mut()
+        {
+            let file = candidate
+                .verify_import(media_path)
+                .map_err(|e| e.to_string())?;
+            if !file.matches_asset(asset, project.sample_rate()) {
+                return Err("verified media differs from project metadata".into());
+            }
+            candidate.verified_sources.insert(asset.id(), file);
+            continue;
         }
         let required_frames = if asset.original_source().is_some() {
             asset.source_frames()
@@ -389,8 +417,18 @@ pub(super) fn open_source_with_limits(
     if current.shutdown.load(Ordering::Acquire) {
         return Err("project open cancelled".into());
     }
-    let mut session = if has_originals {
-        Session::from_prepared_with_original_sources(
+    let files = if let Some(candidate) = file_candidate {
+        Some(crate::audio_sources::ReconstructedFileSources {
+            reservation: candidate
+                .source_reservation
+                .ok_or("file recovery reservation missing")?,
+            files: candidate.verified_sources,
+        })
+    } else {
+        None
+    };
+    let mut session = if has_originals || files.is_some() {
+        Session::from_prepared_with_original_and_file_sources(
             project,
             history_capacity,
             current.max_resident_frames(),
@@ -402,6 +440,7 @@ pub(super) fn open_source_with_limits(
                 overview_budget: current.overview_budget.clone(),
                 cancel: &current.shutdown,
             },
+            files,
         )
     } else {
         Session::from_prepared_with_native_limits_in_overview_domain(
@@ -419,7 +458,7 @@ pub(super) fn open_source_with_limits(
         .map(SourcePlanReservation::validate)
         .transpose()
         .map_err(|e| e.to_string())?;
-    if session.source_reservation.is_some() {
+    if session.source_reservation.is_some() && session.semantic_source_epoch == 0 {
         session.semantic_source_epoch =
             crate::audio_sources::fresh_source_epoch().map_err(|e| e.to_string())?;
     }
@@ -429,6 +468,24 @@ pub(super) fn open_source_with_limits(
         document,
         dirty,
     ))
+}
+
+/// Keep every materialized processing dependency resident, including retained
+/// grouped roots. File selection must not turn a valid saved edit into an
+/// unsupported streamed transform merely because another plain asset is large.
+fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
+    let requires = |clip: &hex_project::Clip| {
+        (clip.asset() == asset && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
+            || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
+                .is_some_and(|events| events.sources.iter().any(|root| root.clip.asset() == asset))
+    };
+    // Session audio cells contain only finite source spans and gain; their
+    // current compiler supports those directly with verified pages.
+    project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .any(requires)
 }
 
 pub(super) fn checkpoint_project(

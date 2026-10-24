@@ -124,3 +124,34 @@ pub struct ResidentFilePublication<'a> {
     pub shutdown: &'a AtomicBool,
     pub cancel: Option<&'a AtomicBool>,
 }
+
+/// Stateless control capability executed on the existing bounded seek worker.
+/// Independent pages must be joined/dropped before returning. Native publication
+/// remains a separate operation with its original freshness and resource fences.
+pub type ResidentFileSeekPreparer =
+    fn(
+        ResidentFileSeekRequest<'_>,
+    ) -> Result<hex_engine::playback::Playback, hex_engine::ArrangementPrerollError>;
+
+/// Exact captured job inputs. Only the Session seek worker constructs this
+/// borrow; file facts grant no native reader, endpoint or readiness custody.
+pub struct ResidentFileSeekRequest<'a> {
+    pub(crate) spec: &'a crate::arrangement_seek::ArrangementSeekSpec,
+    pub(crate) resources: &'a hex_engine::native_device_resources::PreparedDeviceResources,
+    pub(crate) sources: &'a ResidentFileSet,
+    pub(crate) cancelled: &'a AtomicBool,
+}
+impl ResidentFileSeekRequest<'_> {
+    pub fn spec(&self) -> &crate::arrangement_seek::ArrangementSeekSpec {
+        self.spec
+    }
+    pub fn resources(&self) -> &hex_engine::native_device_resources::PreparedDeviceResources {
+        self.resources
+    }
+    pub fn sources(&self) -> &ResidentFileSet {
+        self.sources
+    }
+    pub fn cancelled(&self) -> &AtomicBool {
+        self.cancelled
+    }
+}

@@ -1199,3 +1199,130 @@ fn compact_resize_refuses_to_hide_an_unfinished_header_gain_draft(cx: &mut TestA
     );
     assert!(visual.debug_bounds(selector).is_none());
 }
+
+// Compare completed scene fragments rather than only the final model. These
+// regions are unrelated to the edited fader and must survive every repaint.
+fn stable_region(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+) -> (
+    Bounds<Pixels>,
+    Vec<(Bounds<gpui::ScaledPixels>, gpui::Background)>,
+) {
+    (
+        visual.debug_bounds(selector).expect(selector),
+        visual.rendered_filled_quads(selector),
+    )
+}
+
+#[gpui::test]
+fn unrelated_gain_does_not_dim_audio_detail_controls(cx: &mut TestAppContext) {
+    let (handle, editor, audio, _, _files) =
+        super::super::loop_selection_ui_test::fixture_with_bounce_media(cx, true);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    let (source, other) = editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (project.tracks()[0].id(), project.tracks()[1].id())
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            assert!(view.set_selected_clip(source, audio, window, cx));
+            view.clip_view_open = true;
+            view.device_panel_active = false;
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let before = stable_region(&mut visual, "clip-view");
+    let header = Box::leak(format!("track-controls-{}", source.value()).into_boxed_str());
+    let before_header = stable_region(&mut visual, header);
+    let selector = Box::leak(format!("track-volume-{}-slider", other.value()).into_boxed_str());
+    let rail = visual.debug_bounds(selector).unwrap();
+    let down = point(rail.left() + px(10.0), rail.center().y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x, down.y - px(24.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    for _ in 0..3 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            stable_region(&mut visual, "clip-view"),
+            before,
+            "unrelated gain flashes audio controls"
+        );
+        assert_eq!(stable_region(&mut visual, header), before_header);
+    }
+    visual.simulate_mouse_up(
+        point(down.x, down.y - px(24.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    pump(&editor, cx, |view| {
+        !view.device_gesture_pending() && view.worker_requests_pending == 0
+    });
+    visual.run_until_parked();
+    assert_eq!(stable_region(&mut visual, "clip-view"), before);
+    let controls = [
+        "audio-clip-gain",
+        "audio-clip-warp-toggle",
+        "audio-sample-bpm",
+    ];
+    let before_controls = controls.map(|selector| stable_region(&mut visual, selector));
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("cmd-d");
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.worker_requests_pending != 0 || !view.pending_requests.is_empty(),
+            "observe the actual pre-ACK duplication frame"
+        )
+    });
+    for _ in 0..3 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            controls.map(|selector| stable_region(&mut visual, selector)),
+            before_controls,
+            "duplication pending flashes audio controls"
+        );
+    }
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(source)
+                .unwrap()
+                .clips()
+                .len(),
+            2
+        );
+    });
+    for _ in 0..3 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            controls.map(|selector| stable_region(&mut visual, selector)),
+            before_controls,
+            "duplication terminal flashes unchanged audio controls"
+        );
+    }
+}

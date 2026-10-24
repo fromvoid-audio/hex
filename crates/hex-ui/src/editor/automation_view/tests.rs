@@ -60,7 +60,7 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
     }
     for key in [
         "0",
-        "a",
+        "c",
         "cmd-d",
         "cmd-e",
         "b",
@@ -268,9 +268,7 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
 }
 
 #[gpui::test]
-fn activation_keys_preserve_typing_midi_and_held_edits_and_toolbar_is_explicit(
-    cx: &mut TestAppContext,
-) {
+fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) {
     let (handle, editor, audio, _, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -300,9 +298,23 @@ fn activation_keys_preserve_typing_midi_and_held_edits_and_toolbar_is_explicit(
     visual.simulate_keystrokes("a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     editor.update(&mut visual, |v, _| v.computer_keyboard.enabled = false);
-    let button = visual.debug_bounds("automation-view-toggle").unwrap();
-    visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    for enabled in [true, false] {
+        visual.simulate_keystrokes("a");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.automation_view.enabled, enabled);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert_eq!(v.worker_requests_pending, 0);
+        });
+    }
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.track_header_focus(track, cx).focus(window);
+        });
+    });
+    visual.simulate_keystrokes("a");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.automation_view.enabled));
     let track = editor.read_with(&visual, |v, _| {

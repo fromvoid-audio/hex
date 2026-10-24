@@ -367,3 +367,10 @@ impl MediaBank {
         Ok(sources)
     }
 }
+
+/// Recovery-only verified facts. Original device banks retain their independent
+/// authenticated reconstruction boundary; these files contain no resident PCM.
+pub(crate) struct ReconstructedFileSources {
+    pub reservation: SourcePlanReservation,
+    pub files: BTreeMap<AssetId, VerifiedAudioFile>,
+}

@@ -132,7 +132,9 @@ impl SessionPlayback {
     /// Ordinary prepared playback retains its existing keyboard and compensated
     /// render owners. Paused monitoring reads no clip pages; running compensated
     /// playback uses the same one-frame source quantum as the actual renderer.
-    pub(crate) fn visit_ordinary_stream_chunk(
+    /// Control consumers may inspect the same exact ordinary source quantum.
+    /// This pure metadata visit establishes no native page/readiness authority.
+    pub fn visit_ordinary_stream_chunk(
         &self,
         maximum_frames: usize,
         playing: Option<bool>,

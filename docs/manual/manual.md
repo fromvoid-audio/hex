@@ -100,6 +100,12 @@ remain retained. grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 
+with a positive arrange time selection, **g** instead groups only the included
+pieces, splitting clips at both selection edges and preserving outside material.
+each populated track gets its own clip, preserving track routing; empty tracks
+are skipped. each track must contain one media kind with matching activation.
+the final track's result becomes the selected clip. one undo restores all tracks.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;
@@ -218,9 +224,9 @@ transport and audible result; a selected item is not evidence that it is playing
 
 ## arrangement automation view
 
-use the toolbar's **a** control to show track-gain automation over faded clips.
-click it again to return to clip editing. switching views preserves clips,
-selection, automation and undo history. **a** and **0** toggle contextual
+press **a** or use the toolbar's **a** control to show track-gain automation over
+faded clips. repeat to return to clip editing. switching views preserves clips,
+selection, automation and undo history. **c** and **0** toggle contextual
 activation outside automation view: the focused device, track, selected clips,
 or selected time span. a partial time span splits clips at its edges. text fields
 and the computer midi keyboard keep their own input.
@@ -287,12 +293,35 @@ do not assume double-clicking a sample inserts it into a track.
 and channel information; check duration, placement and playback after importing.
 keep source recordings available with the project.
 
+as projects grow, ordinary audio clips can play directly from their original
+files while retaining their complete duration. single-file and bulk imports keep
+this behavior; a bulk drop remains one undo step. keep those files available for
+playback, save/reopen and export.
+
+file-backed clips support placement, playback, clip gain and ordinary device
+processing. processing that materializes audio, including pitch,
+warp, directed content, source envelopes, finite repeat edits and grouping,
+currently requires resident source audio. an unsupported edit refuses before changing the project or history.
+opening a project keeps its supported resident processing alongside plain
+file-backed clips.
+
 # midi and sampler
 
 press **command+shift+t** to add a track for notes. select the intended track and use
 **command+shift+m** to create a midi clip. select the clip to edit its notes in the
 piano roll. note position, length and pitch belong to the clip; selecting a device
 is a different operation.
+
+choose **envelopes** beside the piano roll to edit **clip volume**, in arrange or
+console. click an empty place to add a point, drag a point to change its source
+beat and gain, or press **backspace** to remove the selected point. the graph uses
+linear gain: **0** is silence, **1** is unity and **4** is the maximum. straight
+lines interpolate between points. the grid button controls snapping; hold
+**command** to invert snapping or **shift** for a fine drag. **escape** or losing
+window focus cancels a held edit. releasing commits one undo step, with the final
+preview retained while the edit finishes. the reset control restores unity.
+choose **notes** to return to note editing. these points belong to the clip and
+are retained by save, reopen, undo and redo.
 
 in arrange, drag a midi clip edge normally to trim its visible region. hold
 **shift** while dragging either edge to stretch its notes: note positions and
@@ -392,8 +421,9 @@ in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-keep the button held to position the new band in the same gesture. vertical
-movement changes q for a cut or notch, or the gain of a bell. existing
+keep the button held to position the new band and hear its effect during playback.
+release to keep the band as one undoable edit. vertical movement changes q for a
+cut or notch, or the gain of a bell. existing
 nodes keep their own selection and drag targets. press **escape** to cancel.
 
 each visible eq has its own live spectrum, including eqs on return and main
@@ -432,8 +462,8 @@ keep the selected outputs separate. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
-verified streaming projects export through a separate bounded media worker.
-keep original media available until export completes. hex verifies those files
+file-backed audio in ordinary and verified streaming projects uses offline
+media verification during export. keep original media available until export completes. hex verifies those files
 before reading and again before publishing; missing or changed media, unavailable
 pages and cancellation leave the previous destination intact. choose an export
 path separate from the original media. editing or opening another document does
@@ -473,8 +503,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
-| arrangement automation view | toolbar a control |
-| contextual activation | a / 0 |
+| arrangement automation view | a / toolbar a control |
+| contextual activation | c / 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

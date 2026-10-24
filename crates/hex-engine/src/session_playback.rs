@@ -291,6 +291,7 @@ struct ReleaseEntry {
     mix: crate::PreparedTrackMix,
     continuation: Option<SessionContinuation>,
     inline_tuning_owned: bool,
+    clip_gain: f64,
     voice: MidiReleaseVoice,
 }
 
@@ -2039,6 +2040,7 @@ fn reserve_analytic_continuations()
 }
 
 mod analytic_import;
+mod clip_gain;
 mod commands;
 mod current_sampler_routes;
 mod handoff;
@@ -2055,6 +2057,7 @@ pub use stream_actions::PreparedStreamAction;
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    PreparedPrerollPages,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]

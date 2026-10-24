@@ -7,7 +7,7 @@ use hex_media::{
     waveform::{Peak, Waveform},
 };
 const MAX_BINS: usize = 1024;
-const WINDOW: usize = 32;
+const WINDOW: usize = 4096;
 const MAX_SCRATCH: usize = 4096;
 impl VerifiedAudioFile {
     pub(crate) fn cached_waveform(&self) -> Option<&Arc<Waveform>> {
@@ -57,56 +57,68 @@ impl VerifiedAudioFile {
         let width = frames / count;
         let extra = frames % count;
         let mut cursor = 0usize;
-        for index in 0..count {
-            let end = cursor
-                .checked_add(width)
-                .and_then(|n| n.checked_add(usize::from(index < extra)))
-                .ok_or(SessionError::Invalid("file waveform range overflow"))?;
-            let mut peaks: Option<[Peak; 2]> = None;
-            while cursor < end {
-                if cancelled() {
-                    return Err(SessionError::Invalid("file waveform preparation cancelled"));
-                }
-                let mut take = (end - cursor).min(WINDOW);
-                loop {
-                    let (first, last) = plan.required_source_range(cursor as u64, take)?;
-                    if last
-                        .checked_sub(first)
-                        .is_some_and(|count| count <= scratch_count as u64)
-                    {
-                        break;
-                    }
-                    if take == 1 {
-                        return Err(SessionError::Invalid(
-                            "file waveform source window exceeds reservation",
-                        ));
-                    }
-                    take /= 2;
-                }
-                plan.render_verified_wav_window(
-                    &mut reader,
-                    cursor as u64,
-                    &mut output[..take],
-                    &mut scratch,
-                )?;
-                for frame in &output[..take] {
-                    if let Some(peaks) = peaks.as_mut() {
-                        for (peak, value) in peaks.iter_mut().zip(frame) {
-                            peak.min = peak.min.min(*value);
-                            peak.max = peak.max.max(*value);
-                        }
-                    } else {
-                        peaks = Some(frame.map(|value| Peak {
-                            min: value,
-                            max: value,
-                        }));
-                    }
-                }
-                cursor += take;
+        let mut index = 0usize;
+        let mut end = width + usize::from(extra != 0);
+        let mut peaks: Option<[Peak; 2]> = None;
+        // Decode contiguous bounded windows across peak-bin boundaries. Opening
+        // a fresh verified read for each tiny bin repeatedly hashes the same raw
+        // header/data pages; bin aggregation does not require that extra I/O.
+        while cursor < frames {
+            if cancelled() {
+                return Err(SessionError::Invalid("file waveform preparation cancelled"));
             }
-            bins.push(peaks.ok_or(SessionError::Invalid("empty file waveform bin"))?);
+            let mut take = (frames - cursor).min(WINDOW);
+            loop {
+                let (first, last) = plan.required_source_range(cursor as u64, take)?;
+                if last
+                    .checked_sub(first)
+                    .is_some_and(|count| count <= scratch_count as u64)
+                {
+                    break;
+                }
+                if take == 1 {
+                    return Err(SessionError::Invalid(
+                        "file waveform source window exceeds reservation",
+                    ));
+                }
+                take /= 2;
+            }
+            plan.render_verified_wav_window(
+                &mut reader,
+                cursor as u64,
+                &mut output[..take],
+                &mut scratch,
+            )?;
+            for frame in &output[..take] {
+                if let Some(peaks) = peaks.as_mut() {
+                    for (peak, value) in peaks.iter_mut().zip(frame) {
+                        peak.min = peak.min.min(*value);
+                        peak.max = peak.max.max(*value);
+                    }
+                } else {
+                    peaks = Some(frame.map(|value| Peak {
+                        min: value,
+                        max: value,
+                    }));
+                }
+                cursor += 1;
+                if cursor == end {
+                    bins.push(
+                        peaks
+                            .take()
+                            .ok_or(SessionError::Invalid("empty file waveform bin"))?,
+                    );
+                    index += 1;
+                    if index < count {
+                        end = end
+                            .checked_add(width)
+                            .and_then(|n| n.checked_add(usize::from(index < extra)))
+                            .ok_or(SessionError::Invalid("file waveform range overflow"))?;
+                    }
+                }
+            }
         }
-        if cursor != frames || cancelled() {
+        if cursor != frames || index != count || peaks.is_some() || cancelled() {
             return Err(SessionError::Invalid(
                 "file waveform preparation cancelled or incomplete",
             ));
