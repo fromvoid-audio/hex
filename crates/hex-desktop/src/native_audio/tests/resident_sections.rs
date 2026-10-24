@@ -1,7 +1,7 @@
 //! Real canonical worker, admission, stopped gate and headless native callback.
 use super::resident_preview::ResidentHarness;
 use super::*;
-use hex_project::{BeatTime, Command, Created, ElementColor, SectionId, Tempo};
+use hex_project::{BeatTime, Command, Created, ElementColor, SectionId, Tempo, TrackId};
 
 fn section_request(revision: u64, command: Command) -> Request {
     Request::EditArrangementSection {
@@ -713,6 +713,38 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
         assert!(h.seek_result().result.is_ok());
         (applied, _) = h.applied(applied);
         assert!(h.render().iter().flatten().any(|s| *s != 0.0));
+        // Identical A/B sounds advance canonical history without a new audio
+        // binding. The next ordinary edit may therefore skip source revisions.
+        let instrument = event
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap();
+        let before_comparison = h.render();
+        event = h.run(Request::CompareDevice {
+            owner: hex_session::service::preset::Owner {
+                project_generation: 0,
+                revision: event.state.revision,
+                device: instrument.id(),
+                class: hex_engine::NativeDeviceClass::Instrument,
+                type_id: instrument.state().type_id(),
+            },
+            expected: hex_project::DeviceVariant::A,
+            action: hex_project::DeviceComparisonAction::Switch,
+        });
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+        assert_eq!(h.render(), before_comparison);
         let before_noop = event.state.project.snapshot();
         let noop = run_callback(
             &mut h,
@@ -728,6 +760,27 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
         assert_eq!(noop.state.revision, event.state.revision);
         assert_eq!(noop.state.project.snapshot(), before_noop);
         for command in [
+            Command::RenameArrangementSection {
+                section: intro,
+                name: "renamed".into(),
+            },
+            Command::SetArrangementSectionColor {
+                section: intro,
+                color: ElementColor::Rose,
+            },
+            Command::MoveArrangementSectionMarker {
+                section: intro,
+                start: BeatTime::from_quarters(5).unwrap(),
+            },
+            Command::ResizeArrangementSectionMarker {
+                section: intro,
+                edge: hex_project::TrimEdge::Right,
+                boundary: BeatTime::from_quarters(5).unwrap(),
+            },
+            Command::RenameTrack {
+                track,
+                name: "metadata".into(),
+            },
             Command::DuplicateArrangementSection(intro),
             Command::ReorderSectionAfter {
                 section: intro,
@@ -735,9 +788,15 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             },
         ] {
             let before = event.state.project.snapshot();
-            let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_));
+            let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
+                || !command.requires_section_publication();
             let before_pcm = h.render();
-            event = run_callback(&mut h, section_request(event.state.revision, command));
+            let request = if matches!(&command, Command::RenameTrack { .. }) {
+                Request::Edit(command)
+            } else {
+                section_request(event.state.revision, command)
+            };
+            event = run_callback(&mut h, request);
             assert!(event.error.is_none(), "{:?}", event.error);
             (applied, _) = h.applied(applied);
             assert!(
@@ -754,7 +813,7 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             if unchanged_prefix {
                 assert_eq!(
                     heard, before_pcm,
-                    "duplicating later music must not double the held prefix note"
+                    "metadata or duplicating later music must retain held-note phase and amplitude"
                 );
             }
             event = run_callback(&mut h, Request::Undo);
@@ -834,4 +893,371 @@ fn empty_section_structural_history_retains_the_launched_loop_while_playing() {
             );
         }
     }
+}
+struct MetadataLoop {
+    h: ResidentHarness,
+    event: Event,
+    intro: SectionId,
+    track: TrackId,
+    applied: u64,
+    region: hex_project::LoopRegion,
+}
+fn metadata_loop_fixture() -> MetadataLoop {
+    let mut h = ResidentHarness::with_frame_limit(8_000_000);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let track = h.run(Request::Edit(Command::AddTrack {
+        name: "metadata".into(),
+    }));
+    let Some(Created::Track(track_id)) = track.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    let (first, intro) = add(&mut h, track.state.revision, "intro", 0, 2);
+    (applied, _) = h.applied(applied);
+    let (event, _) = add(&mut h, first.state.revision, "chorus", 4, 7);
+    (applied, _) = h.applied(applied);
+    let region = hex_project::LoopRegion::new(0, 48_000, true).unwrap();
+    let mut intent = h.seek_intent(1, event.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region,
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok());
+    (applied, _) = h.applied(applied);
+    MetadataLoop {
+        h,
+        event,
+        intro,
+        track: track_id,
+        applied,
+        region,
+    }
+}
+fn assert_loop_wraps(h: &ResidentHarness, region: hex_project::LoopRegion) {
+    for _ in 0..800 {
+        h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert!(
+        status.position.load(Acquire) < region.end(),
+        "ordinary metadata publication discarded the applied section loop"
+    );
+}
+#[test]
+fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let MetadataLoop {
+        mut h,
+        mut event,
+        intro,
+        track,
+        mut applied,
+        region,
+    } = metadata_loop_fixture();
+    for command in [
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "renamed".into(),
+        },
+        Command::SetArrangementSectionColor {
+            section: intro,
+            color: ElementColor::Rose,
+        },
+        Command::MoveArrangementSectionMarker {
+            section: intro,
+            start: BeatTime::from_quarters(3).unwrap(),
+        },
+        Command::ResizeArrangementSectionMarker {
+            section: intro,
+            edge: hex_project::TrimEdge::Right,
+            boundary: BeatTime::from_quarters(6).unwrap(),
+        },
+        Command::RenameTrack {
+            track,
+            name: "ordinary metadata".into(),
+        },
+    ] {
+        let before = event.state.project.snapshot();
+        let request = if matches!(&command, Command::RenameTrack { .. }) {
+            Request::Edit(command)
+        } else {
+            section_request(event.state.revision, command)
+        };
+        event = h.run(request);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let after = event.state.project.snapshot();
+        for (request, expected) in [
+            (None, &after),
+            (Some(Request::Undo), &before),
+            (Some(Request::Redo), &after),
+        ] {
+            if let Some(request) = request {
+                event = h.run(request);
+                assert!(event.error.is_none(), "{:?}", event.error);
+            }
+            (applied, _) = h.applied(applied);
+            assert_eq!(&event.state.project.snapshot(), expected);
+            assert_loop_wraps(&h, region);
+            assert!(event.state.project.loop_region().is_none());
+        }
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+}
+
+#[test]
+fn stale_loop_witnesses_and_admission_refusals_preserve_project_redo_and_playback() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let MetadataLoop {
+        mut h,
+        event,
+        intro,
+        mut applied,
+        region,
+        ..
+    } = metadata_loop_fixture();
+    let renamed = h.run(section_request(
+        event.state.revision,
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "redo name".into(),
+        },
+    ));
+    (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert!(undone.state.can_redo);
+    let before = undone.state.project.snapshot();
+    // Output, audio revision, source generation/revision and both loop forms.
+    for fault in 1..=8 {
+        h.loop_witness_fault.store(
+            if fault <= 6 { fault } else { 0 },
+            std::sync::atomic::Ordering::Release,
+        );
+        h.refuse
+            .store(fault == 7, std::sync::atomic::Ordering::Release);
+        h.budget_refuse
+            .store(fault == 8, std::sync::atomic::Ordering::Release);
+        h.service
+            .submit(section_request(
+                undone.state.revision,
+                Command::RenameArrangementSection {
+                    section: intro,
+                    name: "must refuse".into(),
+                },
+            ))
+            .unwrap();
+        let refused = h.next();
+        assert!(refused.error.is_some(), "fault {fault}");
+        assert_eq!(refused.state.revision, undone.state.revision);
+        assert_eq!(refused.state.project.snapshot(), before);
+        assert!(refused.state.can_redo);
+        assert_loop_wraps(&h, region);
+    }
+    h.loop_witness_fault
+        .store(0, std::sync::atomic::Ordering::Release);
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    h.budget_refuse
+        .store(false, std::sync::atomic::Ordering::Release);
+    let restored = h.run(Request::Redo);
+    h.applied(applied);
+    assert_eq!(
+        restored.state.project.snapshot(),
+        renamed.state.project.snapshot()
+    );
+    assert_loop_wraps(&h, region);
+}
+
+#[test]
+fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
+    let initial = h.next();
+    let (added, intro) = add(&mut h, initial.state.revision, "offline", 0, 2);
+    let renamed = h.run(section_request(
+        added.state.revision,
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "still editable".into(),
+        },
+    ));
+    let undone = h.run(Request::Undo);
+    assert_eq!(
+        undone.state.project.snapshot(),
+        added.state.project.snapshot()
+    );
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        renamed.state.project.snapshot()
+    );
+    assert!(h.audio.is_none());
+    assert!(h.submitted.is_none());
+}
+
+#[test]
+fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let MetadataLoop {
+        mut h,
+        event,
+        intro,
+        mut applied,
+        ..
+    } = metadata_loop_fixture();
+    let before = event.state.project.snapshot();
+    let region = hex_project::LoopRegion::new(0, 24_000, true).unwrap();
+    let mut intent = h.seek_intent(2, event.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region,
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok()); // Submitted, deliberately not rendered/applied.
+    h.service
+        .submit(section_request(
+            event.state.revision,
+            Command::RenameArrangementSection {
+                section: intro,
+                name: "pending must refuse".into(),
+            },
+        ))
+        .unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("publication already pending"))
+    );
+    assert_eq!(refused.state.revision, event.state.revision);
+    assert_eq!(refused.state.project.snapshot(), before);
+    (applied, _) = h.applied(applied);
+    let renamed = h.run(section_request(
+        event.state.revision,
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "applied is editable".into(),
+        },
+    ));
+    (applied, _) = h.applied(applied);
+    assert_loop_wraps(&h, region);
+
+    let mut intent = h.seek_intent(3, renamed.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: hex_project::LoopRegion::new(0, 20_000, true).unwrap(),
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    let hex_session::service::ResidentPublicationAcceptance::Submitted {
+        audio_revision: cancelled_revision,
+        ..
+    } = h.seek_result().result.unwrap()
+    else {
+        panic!("active output must submit the conditional launch")
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.playing.load(Acquire));
+    assert_eq!(status.rejected_revision().unwrap().0, cancelled_revision);
+    assert_eq!(status.applied_revision.load(Acquire), applied);
+    let stopped_position = status.position.load(Acquire);
+    h.run(section_request(
+        renamed.state.revision,
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "after cancellation".into(),
+        },
+    ));
+    h.applied(cancelled_revision);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.playing.load(Acquire));
+    assert_eq!(status.position.load(Acquire), stopped_position);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..400 {
+        h.render();
+    }
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire),
+        (stopped_position + 400 * 64) % region.end(),
+        "the cancelled20k loop must not replace the actual24k loop"
+    );
+}
+
+#[test]
+fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let MetadataLoop { mut h, region, .. } = metadata_loop_fixture();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let new = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert!(new.project_replaced);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    let (applied, _) = h.applied(0);
+    let added = h.run(Request::EditArrangementSection {
+        project_generation: 1,
+        revision: new.state.revision,
+        command: Command::AddArrangementSection {
+            name: "fresh".into(),
+            color: ElementColor::Cyan,
+            start: BeatTime::ZERO,
+            end: BeatTime::from_quarters(7).unwrap(),
+        },
+    });
+    assert!(added.state.project.loop_region().is_none());
+    h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..800 {
+        h.render();
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= region.end(),
+        "new document must play beyond the previous audition loop"
+    );
 }

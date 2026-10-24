@@ -10,7 +10,7 @@ use hex_engine::{
 };
 use hex_session::service::{
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationRefusal,
+    ResidentPublicationRefusal, ResidentRuntimeLoop,
 };
 
 pub(super) struct Pending {
@@ -23,7 +23,8 @@ pub(super) struct Pending {
 #[derive(Default)]
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
-    pub(super) current_submission: Option<(AudioSourceContext, u64)>,
+    pub(super) current_submission: Option<ResidentRuntimeLoop>,
+    pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
@@ -59,6 +60,71 @@ impl Resident {
     }
 }
 impl NativeAudioSink {
+    /// Two fixed scalar tags suffice: publication admission allows one pending
+    /// graph. Retain the last applied tag when a successor is cancelled/refused.
+    /// Only this worker publishes graphs; transport commands cannot mutate a
+    /// graph's constructor-owned transient loop. No callback handoff is added.
+    fn remember_applied_loop(&mut self) -> Option<(u64, u64, Option<u64>)> {
+        let control = self.output.as_mut()?.publication.control()?;
+        let output = control.output_identity()?;
+        let revision = control.status.applied_revision.load(Acquire);
+        let rejected = control
+            .status
+            .rejected_revision()
+            .map(|(revision, _)| revision);
+        if let Some(submitted) = self.resident.current_submission
+            && submitted.output_identity == output
+            && submitted.audio_revision == revision
+        {
+            self.resident.applied_loop = Some(submitted);
+        }
+        Some((output, revision, rejected))
+    }
+    pub(super) fn current_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<ResidentRuntimeLoop>, String> {
+        let Some((output, revision, rejected)) = self.remember_applied_loop() else {
+            return Ok(None);
+        };
+        // A queued successor could install between capture and final enqueue.
+        // Only an exact terminal refusal proves that the previous tag is stable.
+        // Applied revision is published before pending admission is released.
+        if let Some(submitted) = self.resident.current_submission
+            && submitted.output_identity == output
+            && submitted.audio_revision != revision
+            && rejected != Some(submitted.audio_revision)
+        {
+            return Err("playback publication already pending".into());
+        }
+        if let Some(source) = self.desired.as_ref().map(|source| source.context())
+            && (source.project_generation != context.project_generation
+                || source.editor_revision > context.editor_revision)
+        {
+            return Err("resident runtime source changed".into());
+        }
+        if revision == 0 {
+            return Ok(Some(ResidentRuntimeLoop {
+                output_identity: output,
+                audio_revision: 0,
+                source_context: None,
+                section_loop: None,
+            }));
+        }
+        let applied = self
+            .resident
+            .applied_loop
+            .filter(|tag| {
+                tag.output_identity == output
+                    && tag.audio_revision == revision
+                    && tag.source_context.is_some_and(|source| {
+                        source.project_generation == context.project_generation
+                            && source.editor_revision <= context.editor_revision
+                    })
+            })
+            .ok_or("resident applied loop is not observed")?;
+        Ok(Some(applied))
+    }
     pub(super) fn resident_runtime_hold(
         &self,
     ) -> Option<hex_session::service::NativeSamplerReservationHold> {
@@ -165,6 +231,7 @@ impl NativeAudioSink {
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        self.remember_applied_loop();
         self.poll_section_edit();
         let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
@@ -206,6 +273,30 @@ impl NativeAudioSink {
                 playback,
                 error: "audio publication observation is waiting for capacity".into(),
             });
+        }
+        let section_loop = playback.section_loop();
+        if let ResidentPublicationPolicy::InheritRuntimeAt(expected) = policy {
+            match self.current_runtime_loop(metadata.context) {
+                Ok(Some(actual)) if actual == expected && section_loop == actual.section_loop => {}
+                Ok(_) => {
+                    return Err(ResidentPublicationRefusal {
+                        playback,
+                        error: "resident runtime changed during preparation".into(),
+                    });
+                }
+                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+            }
+        } else if matches!(policy, ResidentPublicationPolicy::InheritRuntime) {
+            match self.current_runtime_loop(metadata.context) {
+                Ok(Some(actual)) if actual.section_loop.is_some() || section_loop.is_some() => {
+                    return Err(ResidentPublicationRefusal {
+                        playback,
+                        error: "resident audition loop requires an applied witness".into(),
+                    });
+                }
+                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                _ => {}
+            }
         }
         if replacing_document
             && !self.desired.as_ref().is_some_and(|source| {
@@ -252,7 +343,8 @@ impl NativeAudioSink {
                     };
                     policy
                 }
-                ResidentPublicationPolicy::InheritRuntime => {
+                ResidentPublicationPolicy::InheritRuntime
+                | ResidentPublicationPolicy::InheritRuntimeAt(_) => {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
@@ -324,7 +416,12 @@ impl NativeAudioSink {
                     if section_policy.is_some() {
                         self.section_submitted(audio_revision);
                     }
-                    self.resident.current_submission = Some((metadata.context, audio_revision));
+                    self.resident.current_submission = Some(ResidentRuntimeLoop {
+                        output_identity,
+                        audio_revision,
+                        source_context: Some(metadata.context),
+                        section_loop,
+                    });
                     self.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.observe(
@@ -363,7 +460,8 @@ impl NativeAudioSink {
         }
         if matches!(
             policy,
-            ResidentPublicationPolicy::FreshIfUnchanged(_)
+            ResidentPublicationPolicy::InheritRuntimeAt(_)
+                | ResidentPublicationPolicy::FreshIfUnchanged(_)
                 | ResidentPublicationPolicy::SectionWhenReady { .. }
         ) {
             return Err(ResidentPublicationRefusal {
