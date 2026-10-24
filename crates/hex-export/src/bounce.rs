@@ -165,7 +165,7 @@ pub fn render_arrangement_bounce_new(
             *self.cursor = end;
             Ok(())
         }
-        fn before_publication(&self) -> Result<(), ExportError> {
+        fn before_publication(&mut self) -> Result<(), ExportError> {
             self.control.check()
         }
     }

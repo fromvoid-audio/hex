@@ -3,7 +3,8 @@
 //!
 //! # Dependencies
 //! Uses hex-ui/GPUI, hex-session, hex-audio, hex-engine, hex-stream, hex-media, hex-diagnostics,
-//! hex-midi and hex-mts at their existing boundaries.
+//! hex-midi and hex-mts at their existing boundaries. Injects hex-export
+//! with independently verified control-worker stream pages for offline output.
 //!
 //! # Does not own
 //! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
@@ -14,6 +15,7 @@ use std::io::Write;
 mod audio_policy;
 mod native_audio;
 mod native_sources;
+mod streamed_export;
 mod time_selection_profile;
 
 fn main() {

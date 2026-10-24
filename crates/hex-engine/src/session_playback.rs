@@ -291,6 +291,7 @@ struct ReleaseEntry {
     mix: crate::PreparedTrackMix,
     continuation: Option<SessionContinuation>,
     inline_tuning_owned: bool,
+    clip_gain: f64,
     voice: MidiReleaseVoice,
 }
 
@@ -2039,6 +2040,7 @@ fn reserve_analytic_continuations()
 }
 
 mod analytic_import;
+mod clip_gain;
 mod commands;
 mod current_sampler_routes;
 mod handoff;

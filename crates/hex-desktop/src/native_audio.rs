@@ -828,6 +828,10 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        Some(crate::streamed_export::render)
+    }
+
     fn resident_runtime_loop(
         &mut self,
         context: AudioSourceContext,

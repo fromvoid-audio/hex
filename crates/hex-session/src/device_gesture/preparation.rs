@@ -7,6 +7,12 @@ pub(crate) fn command_for_snapshot(
     session: &Session,
     snapshot: GestureSnapshot,
 ) -> Result<Command, SessionError> {
+    if let Some(creation) = snapshot.creation {
+        let GestureTarget::EqNodeCreation { device } = snapshot.target else {
+            return Err(SessionError::Invalid("eq creation target changed"));
+        };
+        return creation.command(session, device, snapshot.sequence);
+    }
     if let Some(parameters) = snapshot.parameters {
         let GestureTarget::DeviceParameterSnapshot { device } = snapshot.target else {
             return Err(SessionError::Invalid("snapshot target changed"));
@@ -88,7 +94,7 @@ pub(crate) fn command_for_snapshot(
             )?;
             Ok(Command::ReplaceDeviceState { device, state })
         }
-        GestureTarget::DeviceParameterSnapshot { .. } => {
+        GestureTarget::DeviceParameterSnapshot { .. } | GestureTarget::EqNodeCreation { .. } => {
             Err(SessionError::Invalid("snapshot parameters are missing"))
         }
     }

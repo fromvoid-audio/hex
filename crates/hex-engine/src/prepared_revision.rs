@@ -410,7 +410,6 @@ impl PreparedRevision {
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
-            crate::midi_compile::require_supported_clip_volume(project)?;
             crate::gain_envelope::validate_project(project)?;
             crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
             let shared_contexts =
@@ -719,6 +718,23 @@ impl PreparedRevision {
 
     pub fn midi_preview(&self) -> &Arc<MidiArrangementPreview> {
         &self.midi_preview
+    }
+
+    /// Borrow the exact source metadata retained by compiled Arrangement clips.
+    /// Duplicate clip references may repeat a source; Session-only clips and
+    /// unused asset records are excluded. This inventory includes inactive clip
+    /// entries and grants no file freshness, page readiness or source custody.
+    /// Offline consumers must budget/deduplicate it and prepare each real demand.
+    pub fn arrangement_stream_sources(
+        &self,
+    ) -> impl Iterator<Item = &crate::StreamedSourceMetadata> {
+        self.arrangement.tracks().iter().flat_map(|track| {
+            track.clips.iter().filter_map(|clip| {
+                clip.metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.streamed.as_deref())
+            })
+        })
     }
 
     pub fn contains_streamed_sources(&self) -> bool {

@@ -640,8 +640,8 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             panic!("track")
         };
         (applied, _) = h.applied(applied);
-        // A 64-frame periodic source makes successive 64-frame blocks an exact
-        // phase oracle as well as a double-note oracle after publication.
+        // Original periodic PCM supplies an independent phase/amplitude oracle
+        // at the actual content position, including non-quantum-aligned wraps.
         let sampler_path = files.wav(48_000, 192_000);
         let mut bytes = fs::read(&sampler_path).unwrap();
         for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
@@ -649,6 +649,12 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 (8192.0 * (std::f64::consts::TAU * (i % 64) as f64 / 64.0).sin()).round() as i16;
             sample.copy_from_slice(&value.to_le_bytes());
         }
+        let source_period: [hex_engine::Frame; 64] = std::array::from_fn(|i| {
+            let offset = 44 + i * 2;
+            let sample =
+                f32::from(i16::from_le_bytes([bytes[offset], bytes[offset + 1]])) / 32768.0;
+            [sample; 2]
+        });
         fs::write(&sampler_path, bytes).unwrap();
         let loaded = h.run(Request::LoadFirstSampler {
             request_id: 1,
@@ -790,6 +796,45 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             let before = event.state.project.snapshot();
             let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
                 || !command.requires_section_publication();
+            if matches!(&command, Command::RenameArrangementSection { .. }) {
+                // Deterministically cross a real non-quantum-aligned seam during
+                // publication, rather than depending on worker/compiler speed.
+                for _ in 0..loop_frames.div_ceil(64) {
+                    if h.audio
+                        .as_ref()
+                        .unwrap()
+                        .status()
+                        .unwrap()
+                        .position
+                        .load(Acquire)
+                        + 128
+                        >= loop_frames
+                    {
+                        break;
+                    }
+                    h.render();
+                }
+                assert!(
+                    h.audio
+                        .as_ref()
+                        .unwrap()
+                        .status()
+                        .unwrap()
+                        .position
+                        .load(Acquire)
+                        + 128
+                        >= loop_frames,
+                    "callback must reach the seam within one admitted loop"
+                );
+            }
+            let before_frame = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
             let before_pcm = h.render();
             let request = if matches!(&command, Command::RenameTrack { .. }) {
                 Request::Edit(command)
@@ -808,12 +853,31 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                     .playing
                     .load(Acquire)
             );
+            let heard_frame = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire);
             let heard = h.render();
             assert!(heard.iter().flatten().any(|s| *s != 0.0));
             if unchanged_prefix {
+                let expected = |start: u64| -> [hex_engine::Frame; 64] {
+                    std::array::from_fn(|i| {
+                        source_period[((start + i as u64) % loop_frames % 64) as usize]
+                    })
+                };
                 assert_eq!(
-                    heard, before_pcm,
-                    "metadata or duplicating later music must retain held-note phase and amplitude"
+                    before_pcm,
+                    expected(before_frame),
+                    "original PCM oracle at the actual content position"
+                );
+                assert_eq!(
+                    heard,
+                    expected(heard_frame),
+                    "metadata or duplicating later music must retain held-note phase and amplitude at content frame {heard_frame}"
                 );
             }
             event = run_callback(&mut h, Request::Undo);

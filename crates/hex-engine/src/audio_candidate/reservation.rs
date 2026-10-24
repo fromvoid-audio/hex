@@ -155,6 +155,19 @@ impl AudioCandidateReservationQuote {
             .metadata_data_bytes
             .checked_add(canonical_bytes)
             .ok_or(AudioStorageError::Overflow)?;
+        // Actual authored curve backings and the two sealed Arrangement row
+        // families are separate from note/cardinality allowances. No media or
+        // prepared owner is allocated to obtain this conservative control quote.
+        for track in project.tracks() {
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(
+                    crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::closed_quote(
+                        track,
+                    )?,
+                )
+                .ok_or(AudioStorageError::Overflow)?;
+        }
         Ok(quote)
     }
     /// Ceiling from existing canonical cardinality limits, used only to bound

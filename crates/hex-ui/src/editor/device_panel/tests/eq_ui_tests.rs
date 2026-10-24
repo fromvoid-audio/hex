@@ -547,11 +547,11 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
             assert_eq!(
                 read(v, device).nodes.len(),
                 index,
-                "held creation is a local preview"
+                "held creation cannot commit canonical state"
             );
             assert!(
-                settled(v),
-                "no worker acknowledgment is needed to keep dragging"
+                v.device_gesture.snapshot().is_some(),
+                "held creation owns its keyed preview"
             );
         });
         assert!(
@@ -697,7 +697,7 @@ fn eq_notch_creation_escape_and_changed_source_cancel_without_reserving_identity
 }
 fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     let (service, state, track, device) = fixture(false);
-    let initial_next = state.project.next_identity();
+    let mut initial_next = state.project.next_identity();
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
@@ -728,14 +728,24 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
             assert!(settled(v));
         });
     }
-    // If worker admission becomes busy between press and release, rejecting
-    // the transaction must also remove the provisional selection immediately.
+    // Other in-flight UI work cannot discard a creation's reserved terminal.
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| v.worker_requests_pending = 1);
+    editor.update(cx, |view, _| view.worker_requests_pending = 1);
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| v.worker_requests_pending = 0);
-    visual.run_until_parked();
-    assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.terminal().is_some())
+    });
+    editor.update(cx, |view, _| view.worker_requests_pending = 0);
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.is_empty()
+    });
+    initial_next = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.next_identity()
+    });
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     // A canonical edit during the held preview invalidates its expected state.

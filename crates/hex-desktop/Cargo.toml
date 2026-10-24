@@ -16,6 +16,7 @@ hex-diagnostics = { path = "../hex-diagnostics" }
 hex-ui = { path = "../hex-ui" }
 hex-audio = { path = "../hex-audio" }
 hex-engine = { path = "../hex-engine" }
+hex-export = { path = "../hex-export" }
 hex-session = { path = "../hex-session" }
 hex-stream = { path = "../hex-stream" }
 hex-media = { path = "../hex-media" }

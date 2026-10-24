@@ -119,6 +119,11 @@ impl MidiSourcePlayback {
     pub fn playback_offset(self) -> BeatTime {
         self.playback_offset
     }
+    /// Direction of the finite retained read window; ongoing Console playback
+    /// remains forward. This query does not rewrite or materialize note data.
+    pub fn playback_reversed(self) -> bool {
+        self.reversed
+    }
 
     /// Construct the current canonical one-shot mapping for a clip.
     pub fn one_shot(length: BeatTime) -> Result<Self, Invalid> {
