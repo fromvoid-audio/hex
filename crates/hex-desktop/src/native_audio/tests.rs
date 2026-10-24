@@ -4,6 +4,7 @@ use super::*;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_export;
+mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
 mod resident_routes;
@@ -218,6 +219,12 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.streamed_exporter()
     }
 
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        self.inner.resident_runtime_loop(context)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }

@@ -19,6 +19,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod automation_view;
 mod bounce;
 mod browser;
 mod browser_input;
@@ -46,6 +47,7 @@ mod workspace_view;
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod group_selection;
 mod midi_pending_drag;
 mod pending_clip_move;
 mod pending_edit;
@@ -367,7 +369,7 @@ actions!(
         TrimRight,
         DeleteClip,
         DeleteSectionMarker,
-        MergeSections,
+        GroupSelection,
         RenameClip,
         RenameTrack,
         CommitTrackName,
@@ -484,7 +486,11 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
         KeyBinding::new("alt-backspace", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new("alt-delete", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("g", MergeSections, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "g",
+            GroupSelection,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_device_selection"),
+        ),
         KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
@@ -535,6 +541,44 @@ fn bind_editor_keys(cx: &mut App) {
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
+    // Background clip shortcuts have no target while the foreground gain lanes
+    // own Arrangement focus. Child text, MIDI and event contexts keep their keys.
+    cx.bind_keys(
+        [
+            "cmd-c",
+            "cmd-shift-c",
+            "cmd-x",
+            "cmd-v",
+            "cmd-shift-v",
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "cmd-r",
+            "cmd-d",
+            "cmd-e",
+            "b",
+            "cmd-b",
+            "r",
+            "g",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_arrangement_automation"))),
+    );
+    // Header commands retain track clipboard/rename semantics; these general
+    // Arrangement commands would otherwise edit the retained background clips.
+    cx.bind_keys(
+        [
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "b",
+            "cmd-b",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_automation_track_header"))),
+    );
 }
 
 fn escape_binding() -> KeyBinding {
@@ -657,6 +701,7 @@ pub(super) struct EditorView {
     selected_track: Option<TrackId>,
     track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
+    automation_view: automation_view::AutomationView,
     audio_clip_controls: arrangement_audio_panel::controls::Controls,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
@@ -1321,6 +1366,7 @@ impl EditorView {
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
             gain_lane: gain_lane::GainLane::default(),
+            automation_view: automation_view::AutomationView::default(),
             audio_clip_controls: Default::default(),
             sample_bpm_control: None,
             project_tempo_control: None,

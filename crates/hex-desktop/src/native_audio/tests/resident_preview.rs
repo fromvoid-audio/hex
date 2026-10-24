@@ -10,11 +10,13 @@ use hex_session::service::{
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationRefusal,
 };
+use std::sync::atomic::AtomicU8;
 
 struct ResidentSink {
     inner: NativeAudioSink,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
+    loop_witness_fault: Arc<AtomicU8>,
     pending_present: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
 }
@@ -23,6 +25,41 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.streamed_exporter()
     }
 
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        let Some(mut actual) = self.inner.resident_runtime_loop(context)? else {
+            return Ok(None);
+        };
+        // Emulate a stale view between capture and final worker publication.
+        // The native owner still observes the real output and refuses this copy.
+        match self.loop_witness_fault.load(Acquire) {
+            1 => actual.output_identity += 1,
+            2 => actual.audio_revision += 1,
+            3 => {
+                if let Some(source) = actual.source_context.as_mut() {
+                    source.project_generation += 1;
+                }
+            }
+            4 => {
+                if let Some(source) = actual.source_context.as_mut() {
+                    source.editor_revision += 1;
+                }
+            }
+            5 => actual.section_loop = None,
+            6 => {
+                if let Some(region) = actual.section_loop {
+                    actual.section_loop = Some(
+                        hex_project::LoopRegion::new(region.start() + 1, region.end(), true)
+                            .unwrap(),
+                    );
+                }
+            }
+            _ => {}
+        }
+        Ok(Some(actual))
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
@@ -133,6 +170,7 @@ pub(super) struct ResidentHarness {
     pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
     pub(super) refuse: Arc<AtomicBool>,
     pub(super) budget_refuse: Arc<AtomicBool>,
+    pub(super) loop_witness_fault: Arc<AtomicU8>,
     pub(super) pending_present: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
     allow_unavailable: bool,
@@ -194,6 +232,7 @@ impl ResidentHarness {
         }));
         let refuse = Arc::new(AtomicBool::new(false));
         let budget_refuse = Arc::new(AtomicBool::new(false));
+        let loop_witness_fault = Arc::new(AtomicU8::new(0));
         let pending_present = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let service = Service::with_audio_sink_and_native_reservation(
@@ -204,6 +243,7 @@ impl ResidentHarness {
                 inner,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
+                loop_witness_fault: Arc::clone(&loop_witness_fault),
                 pending_present: Arc::clone(&pending_present),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
             }),
@@ -218,6 +258,7 @@ impl ResidentHarness {
             submitted: None,
             refuse,
             budget_refuse,
+            loop_witness_fault,
             pending_present,
             pending_observation_generation,
             allow_unavailable,

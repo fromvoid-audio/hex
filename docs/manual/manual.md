@@ -91,6 +91,20 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+with the computer midi keyboard off, select two or more clips on one arrange
+track and press **g** to group them. select only audio clips or only midi clips.
+hex keeps gaps and refuses a group that would cover unselected material. midi
+clips become one finite midi clip with their played notes and volume curves.
+audio clips become events inside one clip; original files and source processing
+remain retained. grouped audio keeps its source timing at the grouping tempo.
+use undo to restore the original clips in one step. grouping requires resident
+audio; unsupported streamed sources refuse before the edit is committed.
+
+in the lower audio editor, **g** makes the selected event or time span its own
+clip and keeps the material on either side. select one visible, nonrepeating
+span. text fields, device controls and the piano editor keep their own key input;
+when the computer midi keyboard is enabled, **g** plays its note.
+
 changing the project bpm keeps clips at their musical start positions. audio with
 warp off keeps its natural playback speed. if a faster bpm makes an audio tail
 reach the next clip on that track, hex crops that tail at the next start. original
@@ -201,6 +215,24 @@ instead of repeatedly clicking a busy action.
 in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
+
+## arrangement automation view
+
+press **a** with arrangement focus, or use the toolbar's **a** control, to show
+track-gain automation over faded clips. press **a** again to return to clip
+editing. switching views preserves clips, selection, automation and undo history.
+**0** remains the clip activation shortcut outside automation view. text fields
+and the computer midi keyboard keep their own input.
+
+click a gain curve to add a point, drag a point to change its time or value, and
+release to apply the edit. **command** gives free beat placement. **escape**
+cancels a held edit; **backspace** removes the selected automation point.
+one undo restores a completed change. background clip edits are unavailable
+while the automation lanes own arrangement focus.
+
+this view currently shows track gain. recorded touch spans are displayed but
+read-only: leave automation view and use the track's gain editor to clear the
+lane before editing its base curve. device-parameter lanes are not offered here.
 
 ## clip loop resizing
 
@@ -440,6 +472,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
+| arrangement automation view | a |
+| activate selected clips | 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

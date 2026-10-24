@@ -148,6 +148,7 @@ impl NativeAudioSink {
         drop(self.output.take());
         self.section_edit = None;
         self.resident.current_submission = None;
+        self.resident.applied_loop = None;
         self.opening = None;
         self.open_pending = false;
         self.pending_open_event = None; // Client close only: endpoint Drop is terminal-owned
@@ -489,7 +490,10 @@ impl NativeAudioSink {
                 let maximum = usize::try_from(MAX_RESIDENT_FRAMES)
                     .ok()?
                     .checked_mul(std::mem::size_of::<hex_engine::Frame>())?;
-                (bytes <= maximum).then_some(())?;
+                let prepared = usize::try_from(quote.prepared_pcm_frames)
+                    .ok()?
+                    .checked_mul(std::mem::size_of::<hex_engine::Frame>())?;
+                (bytes.checked_add(prepared)? <= maximum).then_some(())?;
                 quote.storage_reservation(bytes).ok()
             });
             let Some(storage) = storage else {
@@ -540,6 +544,8 @@ impl NativeAudioSink {
                         input_bytes.unwrap_or(usize::MAX)
                             / std::mem::size_of::<hex_engine::Frame>(),
                     )
+                    .ok()
+                    .and_then(|frames| frames.checked_add(quote.prepared_pcm_frames))
                     .unwrap_or(u64::MAX);
                     self.verified_pcm_frames =
                         self.verified_pcm_frames.saturating_add(copied_frames);
@@ -787,6 +793,12 @@ impl WorkerAudioSink for NativeAudioSink {
         Some(crate::streamed_export::render)
     }
 
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        self.current_runtime_loop(context)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
     }

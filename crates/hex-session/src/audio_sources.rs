@@ -192,11 +192,10 @@ impl MediaBank {
         project: &Project,
     ) -> Result<(), hex_engine::Invalid> {
         for track in project.tracks() {
-            if track
-                .clips()
-                .iter()
-                .any(|clip| self.device_only.contains(&clip.asset()))
-            {
+            if track.clips().iter().any(|clip| {
+                clip.referenced_assets()
+                    .any(|asset| self.device_only.contains(&asset))
+            }) {
                 return Err(hex_engine::Invalid(
                     "device-only source needs an accounted clip derivative",
                 ));

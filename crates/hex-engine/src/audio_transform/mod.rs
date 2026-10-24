@@ -8,9 +8,17 @@
 //! musical full-root work each cap at 16777216; at most 8192 occurrences are
 //! admitted before PCM allocation. Unsupported streamed placement preparation
 //! refuses without changing project or media. Ordinary crops keep their path.
+//! Grouped frame events resolve every retained root before PCM work. Each source
+//! keeps its captured tempo, finite placement and fade/gain order. The container
+//! and summed child finite/full-root work share the 16777216-frame cap; source
+//! count is bounded by MAX_AUDIO_EVENTS and placement by 8192 occurrences. All
+//! child PCM/conversion identities participate in the group cache key. Streamed
+//! roots and outer pitch/warp/source processing refuse before history commit.
 mod budget;
 mod content;
 mod events;
+mod group;
+pub(crate) use group::GroupSource;
 mod mapping;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
@@ -103,6 +111,13 @@ enum EntryKey {
         tempo: Option<Arc<hex_project::TempoMap>>,
         origin: i128,
     },
+    Group {
+        root_only: bool,
+        edit: AudioClipEdit,
+        start: u64,
+        duration: u64,
+        sources: Vec<(Audio, u32, u32)>,
+    },
     View {
         edit: AudioClipEdit,
         tempo: Arc<hex_project::TempoMap>,
@@ -153,6 +168,16 @@ impl Default for AudioTransformPreparation {
     }
 }
 impl AudioTransformPreparation {
+    /// Native constructor bridge: no cache/domain/source owners survive this
+    /// one control-side clip compilation or enter the native storage ledger.
+    pub(crate) fn new_uncached_on_control() -> Self {
+        Self {
+            cache_limit: 0,
+            source_limit: 0,
+            entry_limit: 0,
+            ..Self::default()
+        }
+    }
     pub fn new(shutdown: Arc<AtomicBool>) -> Self {
         Self {
             cache: RefCell::new(Cache {
@@ -431,6 +456,7 @@ impl AudioTransformPreparation {
         self.hits.set(self.hits.get().saturating_add(1));
         Ok(Some(audio))
     }
+    #[cfg(test)]
     fn prepare_audio(
         &self,
         project: &CanonicalProject,
@@ -438,12 +464,21 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: &Audio,
     ) -> Result<Audio, Invalid> {
+        self.prepare_audio_at_tempo(project.tempo_map(), edit, asset, source)
+    }
+    fn prepare_audio_at_tempo(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: &Audio,
+    ) -> Result<Audio, Invalid> {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let (_, length, _, _) = edit.projected_domain(project.tempo_map())?;
+        let (_, length, _, _) = edit.projected_domain(tempo_map)?;
         let tempo = if edit.reference_start_raw().is_some() {
-            Some(self.shared_tempo(edit.processing_tempo(project.tempo_map()))?)
+            Some(self.shared_tempo(edit.processing_tempo(tempo_map))?)
         } else {
             None
         };
@@ -520,7 +555,7 @@ impl AudioTransformPreparation {
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(edit, project.tempo_map(), &self.shutdown)?;
+        let (map, attacks) = mapping::prepare_map(edit, tempo_map, &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -555,16 +590,10 @@ impl AudioTransformPreparation {
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames =
-                events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
+            rendered.frames = events::compose(&rendered.frames, edit, tempo_map, &self.shutdown)?;
         }
         drop(scratch_reservation);
-        mapping::apply_fade(
-            &mut rendered.frames,
-            edit,
-            project.tempo_map(),
-            &self.shutdown,
-        )?;
+        mapping::apply_fade(&mut rendered.frames, edit, tempo_map, &self.shutdown)?;
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
@@ -618,21 +647,30 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Option<Clip>, Invalid> {
+        self.compile_clip_at_tempo(project.tempo_map(), clip, asset, source)
+    }
+    fn compile_clip_at_tempo(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        asset: &Asset,
+        source: PreparedAudioSourceRef<'_>,
+    ) -> Result<Option<Clip>, Invalid> {
         let Some(edit) = clip.audio_edit() else {
             return direct_clip(clip, source).map(Some);
         };
-        edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        edit.validate(clip, tempo_map, asset.playback_frames())?;
         if edit.content_view.is_some() {
             return self
-                .compile_content(project, clip, edit, asset, source)
+                .compile_content(tempo_map, clip, edit, asset, source)
                 .map(Some);
         }
         if edit.placement.is_some() {
             return self
-                .compile_view(project, clip, edit, asset, source)
+                .compile_view(tempo_map, clip, edit, asset, source)
                 .map(Some);
         }
-        let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map())?;
+        let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
         let domain = &edit.domain;
         let direct = domain.events.is_none()
             && domain.pitch_cents == 0
@@ -687,7 +725,7 @@ impl AudioTransformPreparation {
                 "audio events, pitch, warp, source-envelope and fade preparation currently require resident audio; streamed source changes were not committed",
             ));
         };
-        let audio = self.prepare_audio(project, edit, asset, source)?;
+        let audio = self.prepare_audio_at_tempo(tempo_map, edit, asset, source)?;
         Clip::region(
             audio,
             clip.start(),
@@ -739,3 +777,25 @@ fn warp_error(error: hex_warp::Error) -> Invalid {
 
 #[cfg(test)]
 mod tests;
+
+/// Conservative metadata envelope for one sequential uncached native transform.
+/// Bounded growable map boundaries, two maps, attack/gain points, group bindings
+/// and identities, tempo/projection copies and fixed wrappers are independent of
+/// PCM and of the warp library's separate scratch ceiling.
+pub(crate) fn native_metadata_workspace_bytes() -> Option<usize> {
+    use std::mem::size_of;
+    let maps = hex_warp::MAX_MAP_SEGMENTS.checked_mul(
+        4usize
+            .checked_mul(size_of::<(u64, bool)>())?
+            .checked_add(2usize.checked_mul(size_of::<(u64, u64)>())?)?
+            .checked_add(2usize.checked_mul(size_of::<hex_warp::MapSegment>())?)?,
+    )?;
+    let points = hex_project::MAX_AUDIO_POINTS
+        .checked_mul(4usize.checked_mul(size_of::<hex_warp::GainPoint>() + size_of::<u64>())?)?;
+    let sources = hex_project::MAX_AUDIO_EVENTS
+        .checked_mul(size_of::<GroupSource<'static>>() + size_of::<(Audio, u32, u32)>())?;
+    maps.checked_add(points)?
+        .checked_add(sources)?
+        .checked_add(hex_project::MAX_TEMPO_POINTS.checked_mul(128)?)?
+        .checked_add(64 * 1024)
+}

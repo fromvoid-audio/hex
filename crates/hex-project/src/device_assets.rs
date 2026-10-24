@@ -20,7 +20,7 @@ impl Project {
             .tracks()
             .iter()
             .flat_map(|t| t.clips())
-            .map(|c| c.asset())
+            .flat_map(|c| c.referenced_assets())
             .chain(
                 self.session_cells()
                     .iter()
