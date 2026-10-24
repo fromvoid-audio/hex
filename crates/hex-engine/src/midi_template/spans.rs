@@ -652,6 +652,71 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn readmission_quote(&self) -> Result<(usize, usize), MidiTemplateError> {
+        let spans = self
+            .intro
+            .len()
+            .checked_add(self.repeats.len())
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let retained = std::mem::size_of::<Self>()
+            .checked_add(
+                spans
+                    .checked_mul(
+                        std::mem::size_of::<VoiceSpan>() + std::mem::size_of::<IntervalNode>(),
+                    )
+                    .ok_or(MidiTemplateError::ArithmeticOverflow)?,
+            )
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let scratch = density::current_sampler_workspace_quote(spans)
+            .map_err(|_| MidiTemplateError::ArithmeticOverflow)?;
+        Ok((retained, scratch))
+    }
+
+    pub(crate) fn retained_readmission_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.intro
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.repeats
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.intro_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )?
+            .checked_add(
+                self.repeat_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )
+    }
+
+    pub(crate) fn reprepare_for_source_on_control(
+        &self,
+        source: &PreparedMidiSourceTemplate,
+        limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    ) -> Result<Self, MidiTemplateError> {
+        let result = Self::prepare_with_bank_mode(
+            source,
+            std::sync::Arc::clone(&self.bank),
+            std::sync::Arc::clone(&self.shared_contexts),
+            self.event_source.then_some(self.release_frames),
+            self.event_source,
+            limits,
+        )?;
+        if result
+            .retained_readmission_bytes()
+            .is_none_or(|bytes| bytes > self.readmission_quote().map_or(0, |quote| quote.0))
+        {
+            return Err(MidiTemplateError::Allocation);
+        }
+        Ok(result)
+    }
     /// Prepare original sine voices and interval indexes from an already
     /// admitted ongoing source template. Authored notes are never rescanned.
     pub fn prepare(

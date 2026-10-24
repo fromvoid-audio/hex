@@ -39,6 +39,10 @@ pub enum ResidentPublicationPolicy {
     /// This never converts ordinary queue pressure into offline acceptance.
     ReplaceDocument,
     FreshIfUnchanged(ResidentFreshRuntimeFence),
+    SectionWhenReady {
+        fence: ResidentFreshRuntimeFence,
+        quantization: hex_engine::LaunchQuantization,
+    },
 }
 /// Successful worker acceptance is either an actual queue submission or explicit offline custody.
 /// Only the callback's exact output/revision observation establishes application.
