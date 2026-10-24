@@ -214,20 +214,48 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
         editor.update(&mut visual, |v, _| {
             v.time_selection.as_mut().unwrap().anchor_frame = 1;
             v.edit_cursor.as_mut().unwrap().frame = 1;
+            let range = v.normalized_time_selection().unwrap();
+            assert_eq!((range.start(), range.end()), (1, 48_000));
         });
         visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                matches!(
+                    v.last_enqueued_edit,
+                    Some(Command::SetLoopRegion {
+                        start: 1,
+                        end: 48_000,
+                        enabled: true
+                    })
+                ),
+                "exact selection command: {:?}, selection: {:?}, error: {:?}",
+                v.last_enqueued_edit,
+                v.time_selection,
+                v.error
+            );
+        });
         pump(&editor, &mut visual);
         assert_eq!(region(&visual), Some((1, 48_000, true)), "{key}");
-        editor.update(&mut visual, |v, _| {
-            v.time_selection = None;
-            v.edit_cursor = None;
-            v.selected_clip = None;
-            v.clip_selection = Default::default();
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                let track = v.selected_track.unwrap();
+                v.time_selection = None;
+                v.edit_cursor = None;
+                v.select_track(track, window);
+                cx.notify();
+            });
         });
+        visual.run_until_parked();
         for enabled in [false, true] {
             visual.simulate_keystrokes(key);
             pump(&editor, &mut visual);
             assert_eq!(region(&visual), Some((1, 48_000, enabled)), "{key}");
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.selected_clip.is_none(),
+                    "loop ACK preserves empty selection: {key}"
+                )
+            });
         }
     }
 }
