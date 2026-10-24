@@ -437,6 +437,7 @@ impl EditorView {
                     .child(theme::text(if expanded { "−" } else { "+" }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: if expanded {
                                 "collapse spectrum".into()
                             } else {
