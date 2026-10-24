@@ -513,6 +513,7 @@ impl EditorView {
                     })
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::editor::waveform::ClipTooltip {
+                            kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: format!(
                                 "{} · double click to reset event fades",
                                 handle.name().replace('-', " ")

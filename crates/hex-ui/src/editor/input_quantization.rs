@@ -59,6 +59,7 @@ impl EditorView {
         .text_xs()
         .tooltip(|_, cx| {
             cx.new(|_| MiniTooltip {
+                kind: crate::tooltips::Kind::control("input quantization"),
                 description:
                     "input quantization · recorded note starts and browser enter insertion".into(),
             })

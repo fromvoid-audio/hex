@@ -240,6 +240,58 @@ fn render_state(v: &EditorView) -> Vec<hex_engine::Frame> {
 }
 
 #[gpui::test]
+fn event_overlap_accent_covers_only_replaced_audio_and_survives_release(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: 48_000 },
+    );
+    editor.update(&mut visual, |v, _| {
+        v.audio_event_editor.grid = SnapGrid::Off
+    });
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = point(body.left() + body.size.width * 0.125, body.top() + px(26.0));
+    let up = point(body.left() + body.size.width * 0.375, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let overlap = visual
+        .debug_bounds("audio-event-overlap-0")
+        .expect("occupied replacement accent");
+    assert!((overlap.left() - (body.left() + body.size.width * 0.5)).abs() <= px(1.0));
+    assert!((overlap.size.width - body.size.width * 0.25).abs() <= px(1.0));
+    let fill = visual.rendered_background("audio-event-overlap-0").unwrap();
+    let before = editor.read_with(&visual, |v, _| {
+        Arc::clone(&v.state.as_ref().unwrap().project)
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    repaint(&mut visual, &editor);
+    assert!(visual.debug_bounds("audio-event-overlap-0").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-overlap-0"), Some(overlap));
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        assert_eq!(visual.debug_bounds("audio-event-overlap-0"), Some(overlap));
+        assert_eq!(
+            visual.rendered_background("audio-event-overlap-0"),
+            Some(fill)
+        );
+    }
+    pump(&editor, &mut visual);
+    assert!(visual.debug_bounds("audio-event-overlap-0").is_none());
+    assert!(visual.debug_bounds("audio-event-1").is_some());
+}
+
+#[gpui::test]
 fn resampled_source_range_paste_matches_normalized_pcm_offsets(cx: &mut TestAppContext) {
     let (files, mut visual, editor, _) = open(cx);
     let (old_track, path) = editor.read_with(&visual, |v, _| {
@@ -403,9 +455,145 @@ fn duplicate_partial_range_with_gaps_retains_destination_through_real_ack_and_re
 }
 
 #[gpui::test]
+fn released_event_leading_trim_keeps_details_until_ack(cx: &mut TestAppContext) {
+    check_trim_release(cx, true, false);
+}
+
+#[gpui::test]
+fn released_event_trailing_trim_keeps_details_until_ack(cx: &mut TestAppContext) {
+    check_trim_release(cx, false, false);
+}
+
+#[gpui::test]
+fn released_event_leading_trim_outside_keeps_details_until_ack(cx: &mut TestAppContext) {
+    check_trim_release(cx, true, true);
+}
+
+#[gpui::test]
+fn released_event_trailing_trim_outside_keeps_details_until_ack(cx: &mut TestAppContext) {
+    check_trim_release(cx, false, true);
+}
+
+fn check_trim_release(cx: &mut TestAppContext, leading: bool, outside: bool) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: 48_000 },
+    );
+    let before = editor.read_with(&visual, |v, _| {
+        Arc::clone(&v.state.as_ref().unwrap().project)
+    });
+    editor.update(&mut visual, |v, _| {
+        v.audio_event_editor.grid = SnapGrid::Off
+    });
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    // Trim the shared seam inward, retaining a visible gap and both events.
+    let down = point(
+        b.left() + b.size.width * 0.5 + px(if leading { 1.0 } else { -1.0 }),
+        b.top() + px(26.0),
+    );
+    let up = point(
+        b.left() + b.size.width * if leading { 0.625 } else { 0.375 },
+        down.y,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let selector = if leading {
+        "audio-event-2"
+    } else {
+        "audio-event-1"
+    };
+    let waveform = if leading {
+        "audio-event-waveform-2"
+    } else {
+        "audio-event-waveform-1"
+    };
+    let held = visual.debug_bounds(selector).unwrap();
+    let wave = visual.debug_bounds(waveform).unwrap();
+    let fill = visual.rendered_background(selector).unwrap();
+    let panel = visual.debug_bounds("arrangement-audio-controls").unwrap();
+    let (operation, detail, selected, viewport) = editor.read_with(&visual, |v, _| {
+        let gesture = v.audio_event_editor.gesture.as_ref().unwrap();
+        assert!(matches!(gesture.kind, Kind::Leading(_) | Kind::Trailing(_)));
+        (
+            gesture.operation.clone().unwrap(),
+            v.detail_audio_clip_data(),
+            v.audio_event_editor.selected,
+            v.audio_event_editor.viewport,
+        )
+    });
+    assert!(matches!(operation, AudioEventEdit::Trim { .. }));
+    let released = if outside {
+        point(up.x, b.bottom() + px(8.0))
+    } else {
+        up
+    };
+    visual.simulate_mouse_up(released, MouseButton::Left, Modifiers::default());
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        assert_eq!(visual.debug_bounds(selector), Some(held));
+        assert_eq!(visual.debug_bounds(waveform), Some(wave));
+        assert_eq!(visual.rendered_background(selector), Some(fill));
+        assert_eq!(
+            visual.debug_bounds("arrangement-audio-controls"),
+            Some(panel)
+        );
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.gesture.is_none());
+            assert!(v.audio_event_editor.pending.is_some());
+            assert_eq!(v.audio_event_editor.selected, selected);
+            assert_eq!(v.audio_event_editor.viewport, viewport);
+            assert_eq!(v.detail_audio_clip_data(), detail);
+            assert_eq!(v.state.as_ref().unwrap().project, before);
+        });
+    }
+    let mut expected = hex_project::Editor::new((*before).clone(), 8).unwrap();
+    expected
+        .execute(Command::EditAudioEvents { clip, operation })
+        .unwrap();
+    pump(&editor, &mut visual);
+    assert_eq!(visual.debug_bounds(selector), Some(held));
+    assert_eq!(visual.debug_bounds(waveform), Some(wave));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(
+            v.state.as_ref().unwrap().project.as_ref(),
+            expected.project()
+        );
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().project.as_ref(),
+            expected.project()
+        );
+    });
+}
+
+#[gpui::test]
 fn released_event_move_keeps_completed_paint_until_its_real_worker_terminal(
     cx: &mut TestAppContext,
 ) {
+    check_event_move_release(cx, false);
+}
+
+#[gpui::test]
+fn released_event_move_outside_keeps_completed_paint_until_its_real_worker_terminal(
+    cx: &mut TestAppContext,
+) {
+    check_event_move_release(cx, true);
+}
+
+fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
     let (_files, mut visual, editor, clip) = open(cx);
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::DuplicateClip(clip))))
@@ -443,7 +631,12 @@ fn released_event_move_keeps_completed_paint_until_its_real_worker_terminal(
     let held = visual.debug_bounds("audio-event-1").unwrap();
     let fill = visual.rendered_background("audio-event-1");
     assert!(fill.is_some());
-    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    let released = if outside {
+        point(up.x, b.bottom() + px(8.0))
+    } else {
+        up
+    };
+    visual.simulate_mouse_up(released, MouseButton::Left, Modifiers::default());
     for _ in 0..2 {
         repaint(&mut visual, &editor);
         assert_eq!(
