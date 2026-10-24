@@ -199,9 +199,9 @@ impl<'a> Transfer<'a> {
             } else {
                 destination.origin = source.origin.take();
                 destination.present = true;
-                // Replaced chain fields retain an empty inline shell; tail
-                // Options become vacant. Neither shell retains a moved origin.
-                source.present = matches!(source.location.0, 0 | 4 | 14);
+                // Track/Return vector cells retain empty inline shells. Main
+                // backing and tail Options become vacant; none retains an origin.
+                source.present = matches!(source.location.0, 0 | 4);
             }
         }
         *self.runtime_bytes = self.planned_runtime_bytes;

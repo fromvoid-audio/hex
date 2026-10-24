@@ -748,13 +748,25 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        // Fresh constructor storage separately validates the Main chain
-        // against prepared metadata. After a real tail move its inline field
-        // is an empty shell, so disposal enumerates owning locations instead.
-        if live_expression.is_some() || computer_keyboard.is_some() {
+        // Fresh Main metadata must match before any location is emitted.
+        // A real owning transfer can later leave an allocation-free empty
+        // Main field; its now-vacant group is checked against the origin book.
+        let prepared_main = &self.revision.arrangement().main_device_chain;
+        let main_matches = main_chain.len() == prepared_main.len()
+            && main_chain
+                .storage_view()
+                .entries()
+                .zip(prepared_main.iter())
+                .all(|(actual, prepared)| actual.matches_prepared_runtime_storage(prepared));
+        let main_present = main_chain.storage_view().entry_capacity_bytes() != Some(0);
+        let moved_empty_main =
+            !self.candidate_admission_open && main_chain.len() == 0 && !main_present;
+        if (!main_matches && !moved_empty_main)
+            || live_expression.is_some()
+            || computer_keyboard.is_some()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
-        let _: &hex_lattice::NativeRuntimeChain = main_chain; // The inline field always exists.
         for index in 0..device_chains.len() {
             visit(0, index, true)?;
         }
@@ -791,7 +803,7 @@ impl SessionPlayback {
         }
         visit(7, 0, true)?; // this exact Session revision handle
         visit(8, 0, compensation.is_some())?;
-        visit(14, 0, true)?; // actual inline Main chain, including an empty shell
+        visit(14, 0, main_present)?; // actual Main backing; moved-out fields are vacant
         Ok(())
     }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
