@@ -32,8 +32,8 @@ pub(super) struct Item {
     pub category: &'static str,
     pub demo: Demo,
 }
-/// Catalog identity follows the owning control, not its appearance or musical role.
-/// Stateless wrappers share a page when they delegate to the same primitive.
+/// Catalog pages follow the visual control kind within an owning family.
+/// Appearances, layouts and scales of the same kind share a page.
 /// Multi-control fixtures remain explicitly identified as compositions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Page {
@@ -44,7 +44,15 @@ pub(super) struct Page {
 impl Item {
     pub fn page(self) -> Page {
         let (name, category, owner) = match self.demo {
-            Demo::Numeric(..) => ("numeric control", "numeric", "numericcontrol"),
+            Demo::Numeric(kind, ..) => (
+                match kind {
+                    Kind::Knob => "knob",
+                    Kind::HorizontalSlider => "horizontal slider",
+                    Kind::VerticalSlider => "vertical slider",
+                },
+                "numeric",
+                "numericcontrol",
+            ),
             Demo::Toggle(_) => ("toggle", "discrete", "toggle"),
             Demo::Selector(_) => ("selector", "discrete", "selector"),
             Demo::Bars => ("bar editor", "graphics", "bareditor"),
@@ -442,20 +450,42 @@ mod grouping_tests {
     fn appearance_wrappers_share_their_actual_base_and_compositions_stay_explicit() {
         let items = inventory();
         let page = |name| items.iter().find(|item| item.name == name).unwrap().page();
-        for name in [
-            "inline value",
-            "horizontal slider",
-            "vertical slider",
-            "compact slider",
-            "filled slider",
-            "labeled slider",
-            "device meters",
-            "bottom gap dial",
-            "pan dial · bipolar",
-            "frequency dial · logarithmic",
+        for names in [
+            vec![
+                "inline value",
+                "horizontal slider",
+                "compact slider",
+                "filled slider",
+                "labeled slider",
+            ],
+            vec![
+                "standard knob",
+                "compact dial",
+                "micro dial",
+                "wide micro dial",
+                "bottom gap dial",
+                "pan dial · bipolar",
+                "frequency dial · logarithmic",
+            ],
+            vec!["vertical slider", "device meters"],
         ] {
-            assert_eq!(page(name), page("standard knob"), "{name}");
+            for &name in &names {
+                assert_eq!(page(name), page(names[0]), "{name}");
+                assert_eq!(page(name).category, "numeric");
+                assert_eq!(page(name).owner, "numericcontrol");
+            }
         }
+        let numeric_pages: Vec<_> = pages(&items)
+            .into_iter()
+            .filter(|page| page.category == "numeric")
+            .collect();
+        assert_eq!(
+            numeric_pages
+                .iter()
+                .map(|page| page.name)
+                .collect::<Vec<_>>(),
+            ["knob", "horizontal slider", "vertical slider"]
+        );
         for name in [
             "device action",
             "device segment",
