@@ -86,7 +86,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let waveform = state.waveforms.get(&window.asset).cloned();
     let title = lowercase_path_tail(asset.path());
     let mut details = div()
-        .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .w_full()
         .flex_shrink_0()
         .flex()

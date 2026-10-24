@@ -236,7 +236,8 @@ impl Fixture {
                 ["sine", "saw", "square", "triangle", "long fixture option"]
                     .map(theme::text)
                     .into_iter()
-                    .chain((0..7).map(|index| theme::text(format!("extra choice {index}")))),
+                    // Keep the compact menu taller than the clipped device body too.
+                    .chain((0..8).map(|index| theme::text(format!("extra choice {index}")))),
                 0,
                 theme::device_style(theme::DeviceStyleRole::Control),
             )
