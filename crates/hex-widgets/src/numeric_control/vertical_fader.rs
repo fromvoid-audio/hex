@@ -18,7 +18,15 @@ impl NumericControl {
             .w(px(28.0))
             // Reserve half the handle height at both ends of its travel.
             .py(px(4.0))
-            .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|control, event, window, cx| {
+                    control.text_mouse = None;
+                    control.text_click.clear();
+                    control.begin_press(PressTarget::Fader, event, cx);
+                    control.focus.focus(window);
+                }),
+            )
             .child(
                 div()
                     .debug_selector(move || rail_id.clone())
