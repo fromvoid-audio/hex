@@ -129,6 +129,12 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
         let before = f.editor.read_with(&f.visual, |v, _| {
             v.state.as_ref().unwrap().project.snapshot()
         });
+        let handle = f.visual.debug_bounds(selector(&f, "outer")).unwrap();
+        let affordance = f
+            .visual
+            .debug_bounds("clip-loop-corner-affordance")
+            .expect("visible repeat affordance before activation");
+        assert!(handle.contains(&affordance.center()));
         let modifiers = Modifiers {
             shift: true,
             ..Default::default()

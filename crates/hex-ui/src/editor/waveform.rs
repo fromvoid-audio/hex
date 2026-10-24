@@ -43,19 +43,22 @@ pub(super) fn preview_waveform_view_cached(
     if original.id() != preview.id() || original.asset() != preview.asset() {
         return None;
     }
-    if preview
-        .audio_edit()
-        .is_some_and(|edit| edit.placement.is_some())
-    {
-        return super::waveform_loop::loop_waveform_view(
-            request,
-            visible_start,
-            visible_end,
-            cache,
-            grid,
-        );
-    }
     if let Some(edit) = preview.audio_edit() {
+        // A changed processing domain follows the existing stretch projection;
+        // unchanged retained domains can use the placement's loop projection.
+        if edit.placement.is_some()
+            && original
+                .audio_edit()
+                .is_none_or(|old| Arc::ptr_eq(&old.domain, &edit.domain))
+        {
+            return super::waveform_loop::loop_waveform_view(
+                request,
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            );
+        }
         if original
             .audio_edit()
             .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))

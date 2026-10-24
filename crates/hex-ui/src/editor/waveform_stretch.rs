@@ -53,13 +53,24 @@ pub(super) fn stretch_waveform_view(
     let source = if let Some(old) = original.audio_edit() {
         let (_, length, offset, _) = old.projected_domain(tempo).ok()?;
         let accepted = prepared?;
-        if accepted.offset != offset
-            || accepted.length != original.duration()
-            || accepted.waveform.source_frames as u64 != length
-        {
-            return None;
+        if old.placement.is_some() {
+            let root = accepted.preview_root.as_ref()?;
+            if root.waveform.source_frames as u64 != length
+                || (old.reference_start_raw().is_some()
+                    && root.origin != old.processing_origin().ok()?)
+            {
+                return None;
+            }
+            Arc::clone(&root.waveform)
+        } else {
+            if accepted.offset != offset
+                || accepted.length != original.duration()
+                || accepted.waveform.source_frames as u64 != length
+            {
+                return None;
+            }
+            Arc::clone(&accepted.waveform)
         }
-        Arc::clone(&accepted.waveform)
     } else {
         let source = asset?;
         if (source.source_frames as u64) < asset_frames {

@@ -151,7 +151,7 @@ pub(in crate::editor) fn midi_controls(
     )
 }
 
-pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> Div {
+pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>, looping: bool) -> Div {
     let Some(control) = control else {
         return hex_widgets::rectangle_edge(
             super::super::drag::rectangle_part(Some(edge)),
@@ -171,6 +171,19 @@ pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> 
         .flex()
         .items_center()
         .justify_center()
+        .when(
+            control.kind == LoopHandleKind::Outer && !looping,
+            |surface| {
+                surface
+                    .text_size(px(8.0))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .child(
+                        div()
+                            .debug_selector(|| "clip-loop-corner-affordance".into())
+                            .child(theme::text("↻")),
+                    )
+            },
+        )
 }
 
 pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> Stateful<Div> {
