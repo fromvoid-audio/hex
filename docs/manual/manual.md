@@ -218,9 +218,9 @@ transport and audible result; a selected item is not evidence that it is playing
 
 ## arrangement automation view
 
-use the toolbar's **a** control to show track-gain automation over faded clips.
-click it again to return to clip editing. switching views preserves clips,
-selection, automation and undo history. **a** and **0** toggle contextual
+press **a** or use the toolbar's **a** control to show track-gain automation over
+faded clips. repeat to return to clip editing. switching views preserves clips,
+selection, automation and undo history. **c** and **0** toggle contextual
 activation outside automation view: the focused device, track, selected clips,
 or selected time span. a partial time span splits clips at its edges. text fields
 and the computer midi keyboard keep their own input.
@@ -485,8 +485,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
-| arrangement automation view | toolbar a control |
-| contextual activation | a / 0 |
+| arrangement automation view | a / toolbar a control |
+| contextual activation | c / 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

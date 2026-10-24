@@ -1,3 +1,33 @@
+/// Semantic availability is separate from transient edit admission. Busy controls
+/// retain their available appearance while refusing input and accessibility edits.
+/// Numeric transitions to busy cancel an unsubmitted local draft, as disabling did;
+/// callers must keep a control available while it owns an active gesture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlAvailability {
+    #[default]
+    Available,
+    Busy,
+    Unavailable,
+}
+
+impl ControlAvailability {
+    pub fn for_edit(available: bool, busy: bool) -> Self {
+        if !available {
+            Self::Unavailable
+        } else if busy {
+            Self::Busy
+        } else {
+            Self::Available
+        }
+    }
+    pub(crate) fn interactive(self) -> bool {
+        self == Self::Available
+    }
+    pub(crate) fn painted_enabled(self) -> bool {
+        self != Self::Unavailable
+    }
+}
+
 /// Shared boolean-control corner radius, in logical pixels.
 pub const TOGGLE_CORNER_RADIUS: f32 = 2.0;
 

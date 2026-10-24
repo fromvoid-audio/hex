@@ -86,8 +86,8 @@ pub use response_graph::{
     ResponseGraphScrollEvent, ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
-    ActionStyle, CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle,
-    TOGGLE_CORNER_RADIUS,
+    ActionStyle, CONTROL_CORNER_RADIUS, ControlAvailability, ControlStyle, DEVICE_CORNER_RADIUS,
+    DeviceFrameStyle, TOGGLE_CORNER_RADIUS,
 };
 
 #[cfg(test)]
