@@ -77,7 +77,7 @@ pub struct Toggle {
     id: SharedString,
     label: SharedString,
     checked: bool,
-    enabled: bool,
+    availability: crate::ControlAvailability,
     style: ControlStyle,
     appearance: ToggleAppearance,
     tab_navigation: bool,
@@ -125,7 +125,7 @@ impl Toggle {
             id: config.id,
             label: config.label,
             checked: config.checked,
-            enabled: true,
+            availability: crate::ControlAvailability::Available,
             style: config.style,
             appearance: config.appearance,
             tab_navigation: false,
@@ -162,7 +162,7 @@ impl Toggle {
     /// Owners choose participation without changing pointer or edit semantics.
     pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.tab_navigation = enabled;
-        let tab_stop = self.tab_navigation && self.enabled;
+        let tab_stop = self.tab_navigation && self.availability.interactive();
         if self.focus.tab_stop != tab_stop {
             self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
             cx.notify();
@@ -170,14 +170,24 @@ impl Toggle {
     }
 
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.enabled != enabled {
-            self.enabled = enabled;
-            let tab_stop = self.tab_navigation && self.enabled;
-            if self.focus.tab_stop != tab_stop {
-                self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
-            }
-            cx.notify();
+        self.set_availability(crate::ControlAvailability::for_edit(enabled, false), cx);
+    }
+
+    /// Busy blocks pointer, keyboard and accessibility edits without dimming.
+    pub fn set_availability(
+        &mut self,
+        availability: crate::ControlAvailability,
+        cx: &mut Context<Self>,
+    ) {
+        if self.availability == availability {
+            return;
         }
+        self.availability = availability;
+        let tab_stop = self.tab_navigation && self.availability.interactive();
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+        }
+        cx.notify();
     }
 
     fn foreground(&self) -> u32 {
@@ -188,7 +198,7 @@ impl Toggle {
             )
         {
             self.style.accent_text
-        } else if self.enabled {
+        } else if self.availability.painted_enabled() {
             self.style.text
         } else {
             self.style.muted
@@ -196,7 +206,7 @@ impl Toggle {
     }
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.enabled {
+        if self.availability.interactive() {
             self.checked = !self.checked;
             self.focus.focus(window);
             cx.emit(ToggleChanged {
@@ -238,7 +248,7 @@ impl gpui::Render for Toggle {
         } else {
             self.style.rail
         };
-        let text_color = if self.enabled {
+        let text_color = if self.availability.painted_enabled() {
             self.style.text
         } else {
             self.style.muted
@@ -292,10 +302,12 @@ impl gpui::Render for Toggle {
                 self.style.surface
             }))
             .track_focus(&self.focus)
-            .when(self.enabled, |root| root.hover(|hover| hover.opacity(0.8)))
+            .when(self.availability.painted_enabled(), |root| {
+                root.hover(|hover| hover.opacity(0.8))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_key_down(cx.listener(Self::key_down))
-            .cursor(if self.enabled {
+            .cursor(if self.availability.interactive() {
                 gpui::CursorStyle::PointingHand
             } else {
                 gpui::CursorStyle::Arrow
@@ -319,14 +331,15 @@ impl gpui::Render for Toggle {
                     .as_ref()
                     .map(|binding| binding.value.clone())
                     .unwrap_or(gpui::AccessibilityValue::Toggle(self.checked)),
-                enabled: self.enabled
+                enabled: self.availability.interactive()
                     && !self.accessibility_pending
                     && self
                         .accessibility_binding
                         .as_ref()
                         .is_none_or(|binding| !binding.pending && (binding.guard)(cx)),
                 focused: self.focus.is_focused(window),
-                status: if self.accessibility_pending
+                status: if self.availability == crate::ControlAvailability::Busy
+                    || self.accessibility_pending
                     || self
                         .accessibility_binding
                         .as_ref()
@@ -344,7 +357,7 @@ impl gpui::Render for Toggle {
                             .accessibility_binding
                             .as_ref()
                             .is_some_and(|binding| binding.revision != request.revision)
-                            || !control.enabled
+                            || !control.availability.interactive()
                             || control.accessibility_pending
                             || control
                                 .accessibility_binding

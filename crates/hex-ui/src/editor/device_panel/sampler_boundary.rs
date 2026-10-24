@@ -225,12 +225,11 @@ pub(super) fn cursor_action(
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
     let start = parameter == SamplerParameter::StartFrame;
-    let enabled = !view.edit_pending()
-        && view
-            .device_panel
-            .sampler_cursor
-            .cursor
-            .is_some_and(|(target, _)| target.current(view));
+    let enabled = view
+        .device_panel
+        .sampler_cursor
+        .cursor
+        .is_some_and(|(target, _)| target.current(view));
     let selector = if start {
         "sampler-start-at-cursor"
     } else {
@@ -261,7 +260,7 @@ pub(super) fn cursor_action(
         cx.listener(move |view, _, window, cx| {
             window.prevent_default();
             cx.stop_propagation();
-            if !enabled {
+            if !enabled || view.edit_pending() {
                 return;
             }
             if enabled

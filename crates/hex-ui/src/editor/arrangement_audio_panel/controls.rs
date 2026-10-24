@@ -412,15 +412,17 @@ pub(super) fn number(
     let Some(binding) = view.audio_clip_controls.numbers.get(&field) else {
         return div();
     };
-    let enabled = !view.edit_pending()
-        && match field {
-            Field::SourceStart => window.source_end > 1,
-            Field::SourceEnd => window.asset_frames.saturating_sub(window.source_start) > 1,
-            Field::PlayStart => window.source_length > 1,
-            _ => true,
-        };
+    let available = match field {
+        Field::SourceStart => window.source_end > 1,
+        Field::SourceEnd => window.asset_frames.saturating_sub(window.source_start) > 1,
+        Field::PlayStart => window.source_length > 1,
+        _ => true,
+    };
     binding.entity.update(cx, |n, cx| {
-        n.set_enabled(enabled, cx);
+        n.set_availability(
+            hex_widgets::ControlAvailability::for_edit(available, view.edit_pending()),
+            cx,
+        );
         let _ = n.set_external_style(theme::control_style(), cx);
     });
     div()
@@ -515,9 +517,11 @@ pub(super) fn toggle(
     let Some(binding) = view.audio_clip_controls.toggles.get(&warp) else {
         return div();
     };
-    let enabled = !view.edit_pending();
     binding.entity.update(cx, |t, cx| {
-        t.set_enabled(enabled, cx);
+        t.set_availability(
+            hex_widgets::ControlAvailability::for_edit(true, view.edit_pending()),
+            cx,
+        );
         let _ = t.set_external_style(theme::control_style(), cx);
     });
     let tooltip = if warp {
