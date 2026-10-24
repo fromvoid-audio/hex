@@ -1227,6 +1227,9 @@ impl EditorView {
 
 impl Drop for EditorView {
     fn drop(&mut self) {
+        if let Some(control) = &self.bounce_control {
+            control.cancel();
+        }
         self.cancel_browser_sample_playback();
         if let Some(control) = &self.audio_batch {
             control.request_cancel();

@@ -45,6 +45,18 @@ pub(super) fn fixture(
     ClipId,
     Arc<super::test_environment::Environment>,
 ) {
+    fixture_with_bounce_media(cx, false)
+}
+pub(super) fn fixture_with_bounce_media(
+    cx: &mut TestAppContext,
+    bounce: bool,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+    ClipId,
+    Arc<super::test_environment::Environment>,
+) {
     cx.update(super::bind_editor_keys);
     let files = super::test_environment::Environment::new().unwrap();
     let directory = files.root().to_owned();
@@ -68,7 +80,17 @@ pub(super) fn fixture(
         bytes.extend_from_slice(&8192_i16.to_le_bytes());
     }
     std::fs::write(&wav, bytes).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = if bounce {
+        Service::with_recovery(
+            48_000,
+            32,
+            8_000_000,
+            directory.join("recovery/untitled.hex-journal"),
+        )
+    } else {
+        Service::new(48_000, 32, 8_000_000)
+    }
+    .unwrap();
     next(&service);
     service.submit(Request::Import(wav)).unwrap();
     let event = next(&service);

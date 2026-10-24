@@ -73,7 +73,7 @@ impl NativeAudioSink {
             StoppedEditFenceState::Refused => Some(Err(if pending.allow_playing {
                 "arrangement playback changed before section edit"
             } else {
-                "stop playback before resizing or deleting song sections"
+                "stop playback before editing the arrangement"
             }
             .into())),
             StoppedEditFenceState::Ready => Some(
