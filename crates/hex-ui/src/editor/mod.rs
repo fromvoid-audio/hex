@@ -12,6 +12,7 @@ mod arrangement_audio_panel;
 mod arrangement_device_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_device_drop_ui_test;
+mod arrangement_focus;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
 mod arrangement_sections;
@@ -754,6 +755,7 @@ pub(super) struct EditorView {
     _scrub_focus_lifecycle: gpui::Subscription,
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
+    arrangement_focus: arrangement_focus::State,
     track_reorder: track_reorder::TrackReorder,
     #[cfg(all(test, feature = "ui-test-support"))]
     track_row_builds: usize,
@@ -1397,6 +1399,7 @@ impl EditorView {
             _scrub_focus_lifecycle: scrub_focus_blur,
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
+            arrangement_focus: arrangement_focus::State::default(),
             track_reorder: track_reorder::TrackReorder::default(),
             #[cfg(all(test, feature = "ui-test-support"))]
             track_row_builds: 0,
@@ -1619,10 +1622,13 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let choice = self
-            .state
-            .as_ref()
-            .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward));
+        let choice = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+            self.focused_neighbor_track(forward)
+        } else {
+            self.state
+                .as_ref()
+                .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward))
+        };
         if let Some((index, track, clip)) = choice {
             self.select_track(track, window);
             if let Some(clip) = clip
@@ -1630,8 +1636,15 @@ impl EditorView {
             {
                 self.selected_clip = Some(clip);
             }
-            self.track_scroll
-                .scroll_to_item(index, gpui::ScrollStrategy::Top);
+            let row = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+                Some(index)
+            } else {
+                self.arrangement_row_index(index)
+            };
+            if let Some(row) = row {
+                self.track_scroll
+                    .scroll_to_item(row, gpui::ScrollStrategy::Top);
+            }
         }
     }
 

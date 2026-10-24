@@ -380,6 +380,7 @@ impl Render for EditorView {
         }
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
+        self.reconcile_arrangement_focus();
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
@@ -626,7 +627,7 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
-                if view.track_overview_key(event, window, cx) {
+                if view.arrangement_view_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
