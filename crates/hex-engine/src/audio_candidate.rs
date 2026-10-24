@@ -422,6 +422,53 @@ impl AudioCandidateOwner {
     pub fn recover_inputs_on_control(&mut self) -> Option<OwnedAudioInputs> {
         self.inner.recover_inputs_on_control()
     }
+    #[cfg(test)]
+    pub(crate) fn test_render_with_foreign(
+        &mut self,
+        output: &mut [crate::Frame],
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        self.inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?
+            .render_with_foreign_processors(output, None, None, None, foreign)
+    }
+    /// Query the original closed constructor, never a caller-provided summary.
+    /// Source/endpoint admission remains the native audio owner's responsibility.
+    pub fn requires_effect_graph_custody_on_control(&self) -> Result<bool, AudioStorageError> {
+        let revision = self.inner.custody.candidate_root_view(&self.inner.token)?;
+        Ok(!revision.arrangement().main_device_chain.is_empty()
+            || revision
+                .arrangement()
+                .return_buses
+                .iter()
+                .any(|r| !r.device_chain.is_empty())
+            || revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .is_some_and(|g| g.needs_runtime())
+            || revision
+                .arrangement()
+                .tracks
+                .iter()
+                .flat_map(|t| t.device_chain.iter())
+                .chain(
+                    revision
+                        .arrangement()
+                        .return_buses
+                        .iter()
+                        .flat_map(|r| r.device_chain.iter()),
+                )
+                .chain(revision.arrangement().main_device_chain.iter())
+                .any(|d| {
+                    matches!(
+                        &d.definition,
+                        Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                    )
+                }))
+    }
     pub fn dispose_original_inputs_on_control(&mut self) -> Result<(), AudioStorageError> {
         self.inner.dispose_original_inputs_on_control()
     }
@@ -668,14 +715,16 @@ fn validate_runtime_groups(
     Ok(())
 }
 
-// Closed constructor class: no effects/instruments/MIDI, no retained tails or
-// analytic-context fanout, and no signal-graph compensation. Enumeration includes
+// Explicit closed constructor classes permit known fresh chains, sampler and
+// compensation storage. Retained tails and analytic-context fanout remain
+// unsupported; owning compensation moves are refused until origin transfer closes.
+// Enumeration includes
 // every vacant slot; absence is validated, never converted into an owner group.
 fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
     match kind {
-        0 | 2 | 4 | 7 | 9..=12 => Ok(()),
-        1 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
-        1 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
+        0 | 2 | 4 | 7 | 8 | 9..=12 => Ok(()),
+        1 | 3 | 5 | 6 | 13 if !present => Ok(()),
+        1 | 3 | 5 | 6 | 13 => Err(AudioStorageError::UnsupportedGraph),
         _ => Err(AudioStorageError::SourceMismatch),
     }
 }

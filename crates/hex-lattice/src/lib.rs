@@ -521,6 +521,14 @@ impl NativeRuntimeEntryStorage<'_> {
     pub fn is_owned_transaction(&self) -> bool {
         matches!(self.entry.runtime, RuntimeOwnership::Owned(_))
     }
+    /// Borrow only actual scalar foreign facts. This transfers no endpoint or
+    /// source custody and cannot classify another runtime family as foreign.
+    pub fn foreign_processor(&self) -> Option<PreparedForeignProcessor> {
+        match &self.entry.runtime {
+            RuntimeOwnership::Foreign(value) => Some(*value),
+            _ => None,
+        }
+    }
     pub fn primary_payload_bytes(&self) -> Option<usize> {
         self.entry
             .runtime

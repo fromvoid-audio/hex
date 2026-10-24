@@ -69,7 +69,6 @@ impl SessionPlayback {
         } = self;
         if live_expression.is_some()
             || computer_keyboard.is_some()
-            || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
             || mutable_instruments
@@ -150,9 +149,22 @@ impl SessionPlayback {
         for (chain, track) in device_chains.iter().zip(tracks) {
             chain_storage(chain, &track.device_chain, l)?;
         }
-        // Returns stay memoryless/empty in the selected constructor class.
-        for chain in return_chains {
-            chain_storage(chain, &[], l)?;
+        if return_chains.len() != revision.arrangement().return_buses.len() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (chain, bus) in return_chains
+            .iter()
+            .zip(&revision.arrangement().return_buses)
+        {
+            chain_storage(chain, &bus.device_chain, l)?;
+        }
+        if let Some(compensation) = compensation {
+            let graph = revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            compensation.visit_fresh_candidate_storage(graph, l)?;
         }
         chain_storage(main_chain, &revision.arrangement().main_device_chain, l)?;
         Ok(())
@@ -174,14 +186,20 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
-        if prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID
+        let foreign = match &prepared.definition {
+            Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
+            _ => None,
+        };
+        if (foreign.is_none() && prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID)
+            || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let (primary, scratch) = (entry.primary_payload_bytes(), entry.scratch_payload_bytes());
         match (primary, scratch, prepared.definition.is_some()) {
-            (Some(primary), Some(scratch), true) => {
+            (None, None, true) if foreign.is_some() => {}
+            (Some(primary), Some(scratch), true) if foreign.is_none() => {
                 if !entry
                     .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
                 {

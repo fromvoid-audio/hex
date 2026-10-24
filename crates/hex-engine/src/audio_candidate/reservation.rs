@@ -88,6 +88,14 @@ impl AudioCandidateReservationQuote {
             sources,
         )?;
         if effect_payloads {
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+                .ok_or(AudioStorageError::Overflow)?;
             let mut payloads = 0usize;
             let mut largest = 0;
             for device in project

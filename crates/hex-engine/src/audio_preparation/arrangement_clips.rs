@@ -490,6 +490,12 @@ impl ArrangementClips {
             self.preview.restore_revision(preview);
         }
     }
+    pub(super) fn prepare_signal_graph(
+        &mut self,
+        canonical: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        self.root.prepare_signal_graph(canonical)
+    }
     pub(super) fn construct_root(
         &mut self,
         shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
@@ -522,6 +528,7 @@ impl ArrangementClips {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+        self.root.dispose_signal_on_control()?;
         self.root.dispose_main_on_control()?;
         if self.preview.has_next() {
             self.preview.dispose_next()?;

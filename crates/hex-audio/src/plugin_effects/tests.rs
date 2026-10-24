@@ -937,3 +937,134 @@ fn sampler_with_native_effect_on_control() {
     drop(worker);
     assert!(stopped.retire_on_control().unwrap().status.success());
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn actual_sdk_closed_claimed_renderer_track_return_main_has_exact_pcm_and_disposal() {
+    for location in 0..3 {
+        for bypassed in [false, true] {
+            let f = fixture(location, bypassed);
+            let mut owner = {
+                let definition =
+                    NativeEffectDefinition::new(std::slice::from_ref(&f.effect)).unwrap();
+                let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+                let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+                let sources = f
+                    .media
+                    .iter()
+                    .map(|(id, audio)| {
+                        (
+                            *id,
+                            hex_engine::OwnedAudioSource::try_resident(
+                                audio.sample_rate(),
+                                audio.frames().to_vec(),
+                            )
+                            .ok()
+                            .unwrap(),
+                        )
+                    })
+                    .collect();
+                let bank = hex_engine::OwnedAudioInputs::try_new(
+                    sources,
+                    hex_engine::AudioStorageReservation {
+                        allocation_items: 64,
+                        handle_obligations: 256,
+                        max_prepared_data_bytes: usize::MAX,
+                        max_construction_data_bytes: usize::MAX,
+                        caller_retained_bytes: 0,
+                        caller_construction_bytes: 0,
+                    },
+                )
+                .ok()
+                .unwrap();
+                let mut custody =
+                    hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
+                let token = custody
+                    .begin_input_on_control(
+                        hex_engine::AudioArrangementInput::new(f.editor.project(), 11, bank)
+                            .with_audio_prepared_revision()
+                            .with_effect_registry(&registry),
+                    )
+                    .ok()
+                    .unwrap();
+                hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
+                    .ok()
+                    .expect("closed actual SDK graph")
+            };
+            let summary = owner
+                .seal_constructor_on_control(hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 8,
+                    max_retained_bytes: usize::MAX,
+                    max_construction_peak_bytes: usize::MAX,
+                })
+                .unwrap();
+            assert_eq!(summary.data.unknown_storage, 0);
+            assert!(owner.requires_effect_graph_custody_on_control().unwrap());
+            let (mut runtime, anchor) = owner.split_constructor_on_control().ok().unwrap();
+            assert!(anchor.matches_current(&runtime));
+            runtime
+                .apply_action(hex_engine::PlaybackAction::Transport(
+                    hex_engine::PlaybackCommand::Play,
+                ))
+                .unwrap();
+            let (mut workers, mut callback) =
+                NativeEffectCallbacks::from_effects_on_control(vec![f.effect]).unwrap();
+            let mut worker = workers.pop().unwrap();
+            let mut output = [[9.0; 2]; 64];
+            let mut rendered = 0;
+            for chunk in output.chunks_mut(5) {
+                let measured = allocation_counter::measure(|| {
+                    callback.begin_host_callback(chunk.len()).unwrap();
+                    runtime
+                        .render_with_foreign_processors(chunk, None, None, None, &mut callback)
+                        .unwrap();
+                    let accepted = chunk.iter().flatten().all(|sample| sample.is_finite());
+                    callback.finish_host_callback(accepted).unwrap();
+                });
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+                rendered += chunk.len();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while worker.published_blocks_on_control() < (rendered / 8) as u64 {
+                    assert!(Instant::now() < deadline, "original SDK reply publication");
+                    std::thread::yield_now();
+                }
+            }
+            let mut expected = [[0.0; 2]; 64];
+            for (i, sample) in f.samples.iter().enumerate() {
+                let gain = (if bypassed {
+                    1.0
+                } else {
+                    0.5 + (i / 8) as f32 * 0.125
+                }) + if location == 1 { 1.0 } else { 0.0 };
+                expected[i + 16] = [sample[0] * gain, sample[1] * gain];
+            }
+            assert_eq!(
+                output, expected,
+                "closed claimed SDK owner {location}, bypass {bypassed}"
+            );
+            let proof = runtime.dispose_on_control().unwrap();
+            let mut anchors = [Some(anchor)];
+            proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+            let anchor = anchors[0].as_mut().unwrap();
+            anchor.finish_disposal_on_control().unwrap();
+            assert!(anchor.recover_inputs_on_control().is_some());
+            let stopped = worker.quiesce_on_control().unwrap();
+            assert_eq!(stopped.completed_blocks(), 8);
+            drop(callback);
+            drop(worker);
+            let terminal = stopped.retire_on_control().unwrap().terminal.unwrap();
+            assert_eq!((terminal.blocks, terminal.frames), (8, 64));
+        }
+    }
+}

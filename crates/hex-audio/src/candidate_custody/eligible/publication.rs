@@ -707,6 +707,12 @@ impl super::Custody {
             .iter()
             .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
             .ok_or("constructor domain construction overflow")?;
+        if owner
+            .requires_effect_graph_custody_on_control()
+            .map_err(|_| "foreign constructor query refused")?
+        {
+            return Err("effect graph source and runtime witness is not sealed");
+        }
         let resources = resources::for_candidate(&bank, summary, reserved_slot)?;
         let mut members = summary.member_rows;
         let mut transfers = summary.transfer_rows;

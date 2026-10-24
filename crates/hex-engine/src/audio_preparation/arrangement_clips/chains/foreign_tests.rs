@@ -99,6 +99,13 @@ fn setup(location: usize) -> (hex_project::Project, crate::OwnedAudioInputs, Fac
             else {
                 panic!("return")
             };
+            editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track: id,
+                    gain: 1.0,
+                })
+                .unwrap();
             (
                 Command::InsertReturnDevice {
                     return_track: id,
@@ -409,6 +416,48 @@ fn closed_foreign_main_coexists_with_original_sampler_sources() {
     let registry = NativeDeviceRegistry::new(&defs).unwrap();
     let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
     let cancelled = std::sync::atomic::AtomicBool::new(false);
+    // Independent existing Current sampler renderer, with the same original
+    // rate/PCM and authored state but without the Main effect.
+    let mut snapshot = editor.project().snapshot();
+    snapshot.main_devices.clear();
+    let reference_project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let mut reference_sources = Vec::new();
+    for id in [audio_asset, asset] {
+        let bank = inputs.as_ref().unwrap();
+        let view = bank.source_view(&bank.source_token(id).unwrap()).unwrap();
+        reference_sources.push((
+            id,
+            crate::OwnedAudioSource::try_resident(
+                view.sample_rate(),
+                view.resident_frames().unwrap().to_vec(),
+            )
+            .ok()
+            .unwrap(),
+        ));
+    }
+    let mut reference_inputs = Some(
+        crate::OwnedAudioInputs::try_new(reference_sources, limits)
+            .ok()
+            .unwrap(),
+    );
+    let mut reference_custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+    let reference_token = reference_custody
+        .begin_current_sampler_in_place_on_control(
+            &reference_project,
+            11,
+            crate::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            &mut reference_inputs,
+            4,
+            &cancelled,
+        )
+        .unwrap();
+    let mut reference =
+        crate::AudioCandidateOwner::try_new_on_control(reference_custody, reference_token)
+            .ok()
+            .unwrap();
     let construction = custody
         .begin_effect_revision_in_place_on_control(
             editor.project(),
@@ -437,10 +486,56 @@ fn closed_foreign_main_coexists_with_original_sampler_sources() {
         .unwrap();
     assert_eq!(ledger.summary().unwrap().unknown_storage, 0);
     drop(ledger);
-    assert!(custody.cancel(&construction));
-    custody.cleanup_on_control();
-    let inputs = custody
-        .recover_on_control(&construction)
+    let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, construction)
+        .ok()
+        .expect("closed original sampler plus compensated effect runtime");
+    owner
+        .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 8192,
+            handle_rows: 2048,
+            root_rows: 8,
+            max_retained_bytes: usize::MAX,
+            max_construction_peak_bytes: usize::MAX,
+        })
+        .unwrap();
+    for runtime in [&mut owner, &mut reference] {
+        runtime
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+    }
+    let mut actual = [[0.0; 2]; 64];
+    let mut expected_source = [[0.0; 2]; 64];
+    let mut foreign = Borrowed {
+        expected: &facts,
+        ring: [[0.0; 2]; 19],
+        cursor: 0,
+        visited: 0,
+    };
+    for (output, expected) in actual.chunks_mut(8).zip(expected_source.chunks_mut(8)) {
+        owner
+            .test_render_with_foreign(output, &mut foreign)
+            .unwrap();
+        reference.test_render(expected).unwrap();
+    }
+    assert!(
+        expected_source[..16].iter().any(|f| *f != [0.25; 2]),
+        "the reference includes actual MIDI sampler output beside audio"
+    );
+    let mut expected = [[0.0; 2]; 64];
+    for (to, from) in expected[19..].iter_mut().zip(&expected_source) {
+        *to = [from[0] * 0.25, from[1] * 0.25];
+    }
+    assert_eq!(
+        actual, expected,
+        "the same original sampler/PCM must reach the native effect under compensation"
+    );
+    owner.dispose_on_control().unwrap();
+    reference.dispose_on_control().unwrap();
+    assert!(reference.recover_inputs_on_control().is_some());
+    let inputs = owner
+        .recover_inputs_on_control()
         .expect("actual mixed source bank recovery");
     assert_eq!(inputs.sources.as_ptr(), original_bank);
     let source = inputs.source_view(&token).unwrap();
@@ -552,5 +647,94 @@ fn main_effect_data_and_peak_refuse_before_factory_and_source_transfer() {
         bank = inputs.unwrap();
         assert_eq!(bank.sources.as_ptr(), original);
         bank.reservation = original_limits;
+    }
+}
+
+#[test]
+fn closed_compensated_foreign_runtime_has_literal_pcm_and_complete_constructor_data() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    for location in 0..3 {
+        let (project, bank, facts) = setup(location);
+        let original = bank.sources.as_ptr();
+        let defs: [&dyn NativeDeviceDefinition; 1] = [&facts];
+        let registry = NativeDeviceRegistry::new(&defs).unwrap();
+        let mut inputs = Some(bank);
+        let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_effect_revision_in_place_on_control(
+                &project,
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                &mut inputs,
+                None,
+                &registry,
+            )
+            .unwrap();
+        assert_eq!(
+            custody.phase(),
+            crate::AudioPreparationPhase::ArrangementAndSessionSources
+        );
+        assert_eq!(
+            custody
+                .candidate_root_view(&token)
+                .unwrap()
+                .arrangement()
+                .main_output_latency_frames,
+            19
+        );
+        let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .expect("actual closed compensated runtime");
+        let summary = owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                data_rows: 4096,
+                handle_rows: 2048,
+                root_rows: 8,
+                max_retained_bytes: usize::MAX,
+                max_construction_peak_bytes: usize::MAX,
+            })
+            .unwrap();
+        assert_eq!(summary.data.unknown_storage, 0);
+        assert!(
+            summary.data.require_complete().is_err(),
+            "closed DATA is not native publication/disposal authority"
+        );
+        assert!(
+            owner.requires_effect_graph_custody_on_control().unwrap(),
+            "constructor success is not native source admission"
+        );
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut foreign = Borrowed {
+            expected: &facts,
+            ring: [[0.0; 2]; 19],
+            cursor: 0,
+            visited: 0,
+        };
+        let mut output = [[99.0; 2]; 48];
+        for block in output.chunks_mut(8) {
+            owner.test_render_with_foreign(block, &mut foreign).unwrap();
+        }
+        let gain = if location == 1 { 0.3125 } else { 0.0625 };
+        let mut expected = [[0.0; 2]; 48];
+        expected[19..35].fill([gain; 2]);
+        assert_eq!(
+            output, expected,
+            "closed renderer must align the original dry and processed paths"
+        );
+        assert_eq!(foreign.visited, 48);
+        owner.dispose_on_control().unwrap();
+        let inputs = owner
+            .recover_inputs_on_control()
+            .expect("original bank after actual runtime disposal");
+        assert_eq!(inputs.sources.as_ptr(), original);
     }
 }

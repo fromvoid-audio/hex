@@ -1,5 +1,6 @@
 //! Private final Arrangement value and its persistent, reversible staging.
 use super::*;
+mod signal;
 use crate::{
     PreparedMasterGain, Project, ReturnBus, Track, owned_shared::OwnedShared,
     return_feed_plan::ReturnFeedPlan, shared_analytic::SharedAnalyticContextTable,
@@ -12,6 +13,12 @@ pub struct ArrangementRootCapacity {
     pub main_prepared_bytes: usize,
     /// Temporary closed chain Vec/payload overlap, excluded from retained DATA.
     pub main_construction_overlap_bytes: usize,
+    /// Retained ceiling selected before any closed topology construction.
+    pub signal_graph_reserved_bytes: usize,
+    pub signal_graph_data_bytes: usize,
+    /// Known construction DATA policy; opaque builder contexts are separately
+    /// bounded by the existing node/edge cardinalities, not allocator/RSS bytes.
+    pub signal_graph_construction_overlap_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -22,6 +29,12 @@ impl ArrangementRootCapacity {
         self.track_container_bytes
             .checked_add(self.return_container_bytes)
             .and_then(|n| n.checked_add(self.main_prepared_bytes))
+            .and_then(|n| {
+                n.checked_add(
+                    self.signal_graph_reserved_bytes
+                        .max(self.signal_graph_data_bytes),
+                )
+            })
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -49,6 +62,11 @@ pub(super) struct ArrangementRootAssembly {
     main_custody: super::chains::ChainCustody,
     main_handle: u64,
     main_disposal: Disposal,
+    signal_graph: Option<Arc<crate::signal_graph::SignalGraph>>,
+    signal_declaration: Option<crate::owned_shared::SharedDeclaration>,
+    signal_handle: u64,
+    signal_disposal: Disposal,
+    signal_reserved: bool,
     has_feed: bool,
     scalars: Option<Scalars>,
     growth: usize,
@@ -126,6 +144,7 @@ impl ArrangementRootAssembly {
             && self.tracks.capacity() == 0
             && self.returns.capacity() == 0
             && self.main_chain.is_none()
+            && self.signal_graph.is_none()
             && self.contexts.is_none()
             && self.feed.has_no_owned_storage()
     }
@@ -183,6 +202,7 @@ impl ArrangementRootAssembly {
                 .ok_or(AudioStorageError::Overflow)?;
             end = Some(end.map_or(value, |previous: u64| previous.max(value)));
         }
+        self.signal_reserved = effects.is_some();
         self.growth = 0;
         for (old, count, stride) in [
             (
@@ -225,12 +245,12 @@ impl ArrangementRootAssembly {
         &'a self,
         external: Option<&'a Project>,
     ) -> Result<RootStorageView<'a>, AudioStorageError> {
+        self.signal_data_bytes(external)?;
         if self.project.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(project) = self.project.as_ref().or(external) {
             if project.audio_clip_views.capacity() != 0
-                || project.signal_graph.is_some()
                 || project.tempo_map.is_some()
                 || project.midi_routing.capacity() != 0
                 || self.tracks.capacity() != 0
@@ -310,6 +330,17 @@ impl ArrangementRootAssembly {
                 self.main_custody.metadata_bytes()?
             },
             main_construction_overlap_bytes: self.main_custody.construction_overlap(),
+            signal_graph_reserved_bytes: if self.signal_reserved {
+                crate::compensation::MAX_COMPENSATION_BYTES
+            } else {
+                0
+            },
+            signal_graph_data_bytes: self.signal_data_bytes(external)?,
+            signal_graph_construction_overlap_bytes: if self.signal_reserved {
+                crate::compensation::MAX_COMPENSATION_BYTES
+            } else {
+                0
+            },
             previous_growth_backing_bytes: if growth { self.growth } else { 0 },
             installed_tracks: view.tracks.len(),
             installed_returns: view.returns.len(),
@@ -422,7 +453,7 @@ impl ArrangementRootAssembly {
         if let Some(Project {
             project_track_ids: _,
             audio_clip_views: _,
-            signal_graph: _,
+            signal_graph,
             main_output_latency_frames: _,
             tempo_map: _,
             midi_routing: _,
@@ -438,6 +469,7 @@ impl ArrangementRootAssembly {
             shared_contexts,
         }) = self.project.take()
         {
+            self.signal_graph = signal_graph.or(self.signal_graph.take());
             self.main_chain = Some(main_device_chain);
             self.tracks = tracks;
             self.returns = return_buses;
@@ -518,6 +550,11 @@ impl ArrangementRootAssembly {
             main_custody,
             main_handle,
             main_disposal: _,
+            signal_graph: _,
+            signal_declaration: _,
+            signal_handle: _,
+            signal_disposal: _,
+            signal_reserved: _,
             has_feed: _,
             scalars: _,
             growth,
@@ -527,6 +564,7 @@ impl ArrangementRootAssembly {
                 panic_after: _,
         } = self;
         let view = self.view_at(external)?;
+        self.visit_signal_storage(l, external)?;
         l.vec(tracks)?;
         l.vec(returns)?;
         feed.visit_audio_storage(l)?;

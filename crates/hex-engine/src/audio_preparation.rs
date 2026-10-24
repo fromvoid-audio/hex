@@ -167,6 +167,7 @@ struct ReservedStages {
     slots: Vec<SourceSlot>,
     capacity: AudioArrangementCapacity,
     next: u64,
+    signal_graph: bool,
 }
 #[derive(Clone, Copy, Default)]
 struct Stages {
@@ -195,6 +196,7 @@ pub struct AudioArrangementInput<'a> {
     inputs: OwnedAudioInputs,
     stages: Stages,
     source_context: Option<AudioSourceContext>,
+    effects: Option<&'a hex_lattice::NativeDeviceRegistry<'a>>,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -211,7 +213,17 @@ impl<'a> AudioArrangementInput<'a> {
             inputs,
             stages: Stages::default(),
             source_context: None,
+            effects: None,
         }
+    }
+    /// Borrow foreign effect facts for the same closed constructor. No provider
+    /// owner survives preparation and no native source/publication is admitted.
+    pub fn with_effect_registry(
+        mut self,
+        effects: &'a hex_lattice::NativeDeviceRegistry<'a>,
+    ) -> Self {
+        self.effects = Some(effects);
+        self
     }
     /// Low-level correlation bridge. Prefer a Session-owned immutable snapshot
     /// that derives the Project and these counters together; this grants no
@@ -436,6 +448,7 @@ impl AudioPreparationCustody {
             input.generation,
             input.inputs,
             input.stages,
+            input.effects,
         );
         if result.is_ok() {
             self.source_context = input.source_context;
@@ -496,7 +509,7 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(project, generation, inputs, Stages::default())
+        self.begin_stages_on_control(project, generation, inputs, Stages::default(), None)
     }
     fn begin_stages_on_control(
         &mut self,
@@ -504,9 +517,21 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
         stages: Stages,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        match self.reserve_stages_on_control(project, generation, &inputs, stages) {
-            Ok(reserved) => Ok(self.construct_reserved_on_control(Some(inputs), stages, reserved)),
+        match self.reserve_stages_with_resources(
+            project,
+            generation,
+            &inputs,
+            stages,
+            ConstructorResources {
+                sampler: None,
+                effects,
+            },
+        ) {
+            Ok(reserved) => {
+                Ok(self.construct_reserved_on_control(Some(inputs), stages, reserved, project))
+            }
             Err(refusal) => Err(Box::new(AudioArrangementRefusal {
                 reason: refusal.reason,
                 inputs,
@@ -628,24 +653,9 @@ impl AudioPreparationCustody {
                 }));
             }
         };
-        let token = self.construct_reserved_on_control(inputs.take(), stages, reserved);
+        let token = self.construct_reserved_on_control(inputs.take(), stages, reserved, project);
         self.source_context = Some(context);
         Ok(token)
-    }
-    fn reserve_stages_on_control(
-        &mut self,
-        project: &hex_project::Project,
-        generation: u64,
-        inputs: &OwnedAudioInputs,
-        stages: Stages,
-    ) -> Result<ReservedStages, Box<AudioArrangementStartRefusal>> {
-        self.reserve_stages_with_resources(
-            project,
-            generation,
-            inputs,
-            stages,
-            ConstructorResources::default(),
-        )
     }
     fn reserve_stages_with_resources(
         &mut self,
@@ -1045,7 +1055,13 @@ impl AudioPreparationCustody {
                                 capacity
                                     .arrangement_clips
                                     .root
-                                    .main_construction_overlap_bytes,
+                                    .main_construction_overlap_bytes
+                                    .checked_add(
+                                        capacity
+                                            .arrangement_clips
+                                            .root
+                                            .signal_graph_construction_overlap_bytes,
+                                    )?,
                             )
                         })
                         .ok_or(AudioStorageError::Overflow)?;
@@ -1105,6 +1121,7 @@ impl AudioPreparationCustody {
             slots,
             capacity,
             next,
+            signal_graph: effects.is_some(),
         })
     }
     fn construct_reserved_on_control(
@@ -1112,11 +1129,13 @@ impl AudioPreparationCustody {
         inputs: Option<OwnedAudioInputs>,
         stages: Stages,
         reserved: ReservedStages,
+        canonical: &hex_project::Project,
     ) -> AudioPreparationToken {
         let ReservedStages {
             slots,
             capacity,
             next,
+            signal_graph,
         } = reserved;
         let Stages {
             include_session,
@@ -1172,6 +1191,9 @@ impl AudioPreparationCustody {
             }
             if assemble_project {
                 self.arrangement_clips.construct_root(&mut self.shared)?;
+                if signal_graph {
+                    self.arrangement_clips.prepare_signal_graph(canonical)?;
+                }
             }
             if assemble_project {
                 self.arrangement_clips.validate_root_sources(

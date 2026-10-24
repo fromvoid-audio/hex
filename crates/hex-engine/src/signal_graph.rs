@@ -101,6 +101,66 @@ impl SignalGraph {
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<Option<Arc<Self>>, Invalid> {
+        Ok(Some(Arc::new(Self::prepare_value(
+            project, feeds, canonical,
+        )?)))
+    }
+    /// The same private topology constructor, retained by closed preparation.
+    /// No caller Arc or copied graph declaration can enter this path.
+    pub(crate) fn prepare_owned(
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+        canonical: &hex_project::Project,
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        Ok(crate::owned_shared::OwnedShared::new_owned(
+            Self::prepare_value(project, feeds, canonical)?,
+        ))
+    }
+    fn prepare_value(
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+        canonical: &hex_project::Project,
+    ) -> Result<Self, Invalid> {
+        // Bound transient builder/lookup contexts before their first allocation.
+        // BTree nodes are control-only opaque construction contexts, never
+        // retained DATA or callback owners. No allocator/RSS claim is made.
+        let devices = project
+            .tracks
+            .iter()
+            .map(|t| t.device_chain.len())
+            .chain(project.return_buses.iter().map(|r| r.device_chain.len()))
+            .try_fold(project.main_device_chain.len(), |n, count| {
+                n.checked_add(count)
+            })
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let generators = project
+            .tracks
+            .iter()
+            .filter(|t| t.instrument_slot_enabled())
+            .count();
+        let nodes = project
+            .tracks
+            .len()
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(project.return_buses.len().checked_mul(2)?))
+            .and_then(|n| n.checked_add(devices))
+            .and_then(|n| n.checked_add(generators))
+            .and_then(|n| n.checked_add(1))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let sends = project
+            .tracks
+            .iter()
+            .try_fold(0usize, |n, t| n.checked_add(t.sends.len()))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let edges = nodes
+            .checked_sub(1)
+            .and_then(|n| n.checked_add(sends))
+            .and_then(|n| n.checked_add(feeds.len()))
+            .and_then(|n| n.checked_add(canonical.audio_feeds().len()))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        if nodes > MAX_COMPENSATION_NODES || edges > MAX_COMPENSATION_EDGES {
+            return Err(error(CompensationError::GraphLimit));
+        }
         let mut builder = Builder::default();
         let mut tracks = Vec::new();
         for (index, track) in project.tracks.iter().enumerate() {
@@ -390,9 +450,14 @@ impl SignalGraph {
                 "signal graph tables exceed the compensation budget",
             ));
         }
-        Ok(Some(Arc::new(graph)))
+        Ok(graph)
     }
     pub(crate) fn table_bytes(&self) -> Option<usize> {
+        size_of::<Self>()
+            .checked_add(2 * size_of::<usize>())?
+            .checked_add(self.nested_bytes()?)
+    }
+    pub(crate) fn nested_bytes(&self) -> Option<usize> {
         let Self {
             plan,
             tracks,
@@ -403,9 +468,9 @@ impl SignalGraph {
             pre_main_edges,
             typed,
         } = self;
-        let mut total = size_of::<Self>()
-            .checked_add(2 * size_of::<usize>())?
-            .checked_add(plan.storage_bytes().ok()?)?
+        let mut total = plan
+            .storage_bytes()
+            .ok()?
             .checked_add(typed.capacity().checked_mul(size_of::<NodeId>())?)?
             .checked_add(tracks.capacity().checked_mul(size_of::<TrackPlan>())?)?
             .checked_add(returns.capacity().checked_mul(size_of::<ReturnPlan>())?)?
@@ -617,6 +682,31 @@ impl SignalRuntime {
     }
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
         self.storage_bytes_with_graph(&self.graph)
+    }
+    pub(crate) fn visit_fresh_candidate_storage<'a>(
+        &'a self,
+        graph: &'a Arc<SignalGraph>,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        // A fresh runtime has both original fields pointing at this actual
+        // constructor graph. Later history rebinds retain separate origins.
+        if !Arc::ptr_eq(graph, &self.graph) || !Arc::ptr_eq(graph, &self.delay_graph) {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        ledger.existing_shared(
+            &self.graph,
+            Owner::exclusive(self),
+            Location("compensation-graph", 0),
+        )?;
+        ledger.existing_shared(
+            &self.delay_graph,
+            Owner::exclusive(self),
+            Location("compensation-delay-graph", 0),
+        )?;
+        ledger.vec(&self.inputs)?;
+        ledger.vec(&self.main)?;
+        self.delays.visit_owned_candidate_storage(ledger)
     }
     pub(crate) fn can_continue_pre_main(&self, other: &Self) -> bool {
         self.graph.pre_main_compatible(&other.graph)

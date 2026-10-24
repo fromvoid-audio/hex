@@ -711,7 +711,7 @@ impl SessionPlayback {
             route_scratch: _,
             device_chains,
             return_chains,
-            main_chain,
+            main_chain: _,
             return_scratch: _,
             return_effect_tails,
             mutable_instruments,
@@ -748,15 +748,10 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        // Main is inline Session storage in this closed candidate class, not a
-        // separately transferable owner. Inspect prepared and actual runtime
-        // entries independently; retained empty-chain capacity stays inventoried
-        // by the existing fresh-storage walk. Ordinary Main playback is unaffected.
-        if !self.revision.arrangement().main_device_chain.is_empty()
-            || main_chain.storage_view().entries().next().is_some()
-            || live_expression.is_some()
-            || computer_keyboard.is_some()
-        {
+        // Main remains inline Session storage; the exact fresh chain is
+        // inventoried separately. Native handoff still refuses owning Main/
+        // Return/compensation moves until their origin transfer is closed.
+        if live_expression.is_some() || computer_keyboard.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         for index in 0..device_chains.len() {
@@ -1717,6 +1712,25 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        // Fresh construction does not authorize owning moves. The current
+        // origin journal represents Track/Tail chains only; keep Return/Main
+        // and compensation untouched until their transfers are represented.
+        for playback in [&*self, &*previous] {
+            if playback.compensation.is_some()
+                || playback
+                    .main_chain
+                    .storage_view()
+                    .entries()
+                    .next()
+                    .is_some()
+                || playback
+                    .return_chains
+                    .iter()
+                    .any(|chain| chain.storage_view().entries().next().is_some())
+            {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+        }
         if self.linear_arrangement_export
             || previous.linear_arrangement_export
             || self.current_sampler_console
