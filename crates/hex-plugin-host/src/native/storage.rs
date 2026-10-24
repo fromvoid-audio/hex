@@ -1,5 +1,6 @@
 //! Stable backing retained by the actual completed native instance.
 use super::*;
+use hex_lattice_contract::DeviceAssetReference;
 
 /// Listed immutable heap payloads and this owner's resource obligations.
 /// `Prepared` itself (including its packet/channel/child values) belongs to its
@@ -67,12 +68,16 @@ impl Source {
         build: &InstanceBuild,
         restore: Option<&NativeDeviceState>,
     ) -> Option<usize> {
-        if restore.is_some_and(|state| !state.asset_references().is_empty()) {
-            return None;
-        }
+        let asset_bytes = restore.map_or(Some(0), |state| {
+            state
+                .asset_references()
+                .len()
+                .checked_mul(std::mem::size_of::<DeviceAssetReference>())
+        })?;
         self.metadata_backing()?
             .checked_add(build.retained_storage()?.data_bytes)?
-            .checked_add(restore.map_or(0, |state| state.payload().len()))
+            .checked_add(restore.map_or(0, |state| state.payload().len()))?
+            .checked_add(asset_bytes)
     }
     pub(super) fn metadata_backing(&self) -> Option<usize> {
         self.bundle

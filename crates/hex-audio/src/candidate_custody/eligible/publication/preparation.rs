@@ -860,8 +860,7 @@ mod tests {
         let held = custody.usage();
         let refusal = custody
             .reserve_runtime_preparation(reservation(), Vec::new())
-            .err()
-            .expect("runtime cannot spend the native allowance");
+            .unwrap_err();
         assert_eq!(refusal.reason, "candidate preparation reservation exceeded");
         assert_eq!(custody.usage(), held);
         let bank = lock(&custody.bank);

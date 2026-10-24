@@ -182,10 +182,7 @@ fn vacant_native_pool_peak_reservation_blocks_unrelated_domain_admission() {
     root.configure_native_sources(1, limits).unwrap();
     let held = root.usage();
     let domain = super::super::tests::pair();
-    let refusal = root
-        .register_domain(domain)
-        .err()
-        .expect("native pool charge must leave only one peak byte");
+    let refusal = root.register_domain(domain).unwrap_err();
     let original = refusal.domain.0.catalog_lease().unwrap();
     assert!(refusal.domain.1.matches_catalog(&original));
     drop(original);
@@ -400,6 +397,57 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
     assert!(returned.error.is_some() && returned.cleanup_error.is_none());
     assert!(root.native_source_error(binding).is_none());
+    assert!(root.complete());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_root_preserves_host_asset_state_refusal_after_input_accounting() {
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+
+    let root = root();
+    root.configure_native_sources(1, source_reservation())
+        .unwrap();
+    let (build, source, preparation) = input();
+    let state = NativeDeviceState::new(
+        hex_plugin_state::TYPE_ID,
+        hex_plugin_state::STATE_VERSION,
+        vec![],
+    )
+    .unwrap()
+    .with_asset_references(vec![DeviceAssetReference {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        asset: DeviceAssetKey::new(1).unwrap(),
+    }])
+    .unwrap();
+    let binding = root
+        .begin_native_source(
+            identity(),
+            12,
+            &build,
+            source,
+            preparation,
+            Some(state),
+            native::TrustUserCode::Acknowledged,
+        )
+        .unwrap();
+    assert_eq!(
+        root.native_source_progress(binding),
+        Some(NativeSourcePreparationProgress::Retiring)
+    );
+    assert!(
+        root.native_source_error(binding)
+            .is_some_and(|error| error.contains("startup state must be asset free"))
+    );
+    dispose(&root, binding);
+    let returned = root.recover_native_source(binding).unwrap();
+    assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
+    assert!(
+        returned
+            .error
+            .is_some_and(|error| error.contains("startup state must be asset free"))
+    );
+    assert!(returned.cleanup_error.is_none());
     assert!(root.complete());
 }
 
