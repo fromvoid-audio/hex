@@ -621,9 +621,9 @@ fn time_group_merges_midi_per_track_and_can_extract_one_partial_clip() {
 #[test]
 fn time_group_empty_stale_and_late_row_refusals_are_atomic() {
     let (fixture, t, _) = audio_fixture();
-    let mut project = fixture.project().clone();
-    let Created::Track(other) = project
-        .apply(Command::AddTrack {
+    let mut e = Editor::new(fixture.project().clone(), 16).unwrap();
+    let Created::Track(other) = e
+        .execute(Command::AddTrack {
             name: "mixed".into(),
         })
         .unwrap()
@@ -631,32 +631,32 @@ fn time_group_empty_stale_and_late_row_refusals_are_atomic() {
         panic!()
     };
     // A later mixed row must refuse after the earlier row has already split/grouped.
-    let asset = project.tracks()[0].clips()[0].asset();
-    project
-        .apply(Command::PlaceClip {
-            track: other,
-            asset,
-            start: 0,
-            duration: 100,
-            source_offset: 0,
-            source_length: 100,
-            looping: false,
-        })
-        .unwrap();
-    project
-        .apply(Command::PlaceMidiClip {
-            track: other,
-            start: b(1),
-            length: b(1),
-        })
-        .unwrap();
-    let before = project.clone();
+    let asset = e.project().tracks()[0].clips()[0].asset();
+    e.execute(Command::PlaceClip {
+        track: other,
+        asset,
+        start: 0,
+        duration: 100,
+        source_offset: 0,
+        source_length: 100,
+        looping: false,
+    })
+    .unwrap();
+    e.execute(Command::PlaceMidiClip {
+        track: other,
+        start: b(1),
+        length: b(1),
+    })
+    .unwrap();
+    let mut e = Editor::new(e.project().clone(), 16).unwrap();
+    let before = e.project().clone();
     for range in [
         hex_project::TimeRange::new(vec![t], 600, 700).unwrap(),
         hex_project::TimeRange::new(vec![other, t], 50, 450).unwrap(),
         hex_project::TimeRange::new(vec![t, other], 50, 48_000).unwrap(),
     ] {
-        assert!(project.apply(Command::GroupTimeRange(range)).is_err());
-        assert_eq!(project, before);
+        assert!(e.execute(Command::GroupTimeRange(range)).is_err());
+        assert_eq!(e.project(), &before);
+        assert!(!e.can_undo());
     }
 }
