@@ -10,7 +10,7 @@ pub(super) type NumericBeginHook =
     Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
 pub(super) struct BindingPolicy {
     pub(super) tab_navigation: bool,
-    pub(super) toggle_appearance: DiscreteControlAppearance,
+    pub(super) toggle_appearance: ToggleAppearance,
     pub(super) choice_order: Option<Vec<u32>>,
     pub(super) numeric_begin: Option<NumericBeginHook>,
 }
@@ -572,30 +572,22 @@ fn create_parameter_control(
             if let Some(codec) = display_codec {
                 spec = codec.apply(spec);
             }
-            let kind = match presentation {
-                ControlPresentation::CompactDial | ControlPresentation::MicroDial => {
-                    NumericControlKind::Knob
-                }
-                ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
-                _ => NumericControlKind::HorizontalSlider,
-            };
             let appearance = match presentation {
-                ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
-                ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
-                ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
-                ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,
-                _ => NumericControlAppearance::Standard,
+                ControlPresentation::CompactDial => NumericControlPresentation::CompactDial,
+                ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
+                ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
+                ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
+                _ => NumericControlPresentation::HorizontalSlider,
             };
             let config = NumericControlConfig::new(
                 id,
                 theme::text(display_label.unwrap_or(descriptor.label)),
-                kind,
+                appearance,
                 spec,
                 f64::from(value),
                 style,
             )
             .ok()?
-            .with_appearance(appearance)
             .with_dial_layout(
                 if display_codec == Some(numeric_display::NumericDisplayCodec::Balance) {
                     DialLayout::Pan
@@ -747,9 +739,9 @@ fn create_parameter_control(
                 presentation,
                 ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
             ) {
-                DiscreteControlAppearance::CompactSelector
+                SelectorAppearance::CompactSelector
             } else {
-                DiscreteControlAppearance::Standard
+                SelectorAppearance::Standard
             };
             let config = SelectorConfig::new(id, choices, selected, style)
                 .ok()?

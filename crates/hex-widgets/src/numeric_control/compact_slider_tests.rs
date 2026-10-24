@@ -67,7 +67,7 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::CompactSlider),
+                    .with_presentation(NumericControlPresentation::CompactSlider),
                 )
             });
             let root = window.replace_root(cx, |_, _| Root {
@@ -179,8 +179,8 @@ fn horizontal_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut T
     cx.update(bind_numeric_control_keys);
     for (bipolar, appearance) in [false, true].into_iter().flat_map(|b| {
         [
-            NumericControlAppearance::FilledSlider,
-            NumericControlAppearance::LabeledSlider,
+            NumericControlPresentation::FilledSlider,
+            NumericControlPresentation::LabeledSlider,
         ]
         .map(|appearance| (b, appearance))
     }) {
@@ -221,7 +221,7 @@ fn horizontal_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut T
                             STYLE,
                         )
                         .unwrap()
-                        .with_appearance(appearance),
+                        .with_presentation(appearance),
                     )
                 });
                 let root = window.replace_root(cx, |_, _| Root {
@@ -267,7 +267,7 @@ fn horizontal_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut T
                 assert!(bar.right() <= slot.right() && bar.bottom() <= slot.bottom());
                 assert!(fill.left() >= bar.left() && fill.right() <= bar.right());
                 assert_eq!(bar.size.height, px(14.0));
-                if appearance == NumericControlAppearance::LabeledSlider {
+                if appearance == NumericControlPresentation::LabeledSlider {
                     let widget = visual.debug_bounds("filled-volume").unwrap();
                     assert!(bar.top() >= widget.top() + px(15.0));
                 }
@@ -438,7 +438,7 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::FilledSlider),
+                    .with_presentation(NumericControlPresentation::FilledSlider),
                 )
             });
             window.replace_root(cx, |_, _| Root {
@@ -522,28 +522,28 @@ fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut 
     for (kind, appearance) in [
         (
             NumericControlKind::HorizontalSlider,
-            NumericControlAppearance::Standard,
+            NumericControlPresentation::HorizontalSlider,
         ),
         (
             NumericControlKind::HorizontalSlider,
-            NumericControlAppearance::CompactSlider,
+            NumericControlPresentation::CompactSlider,
         ),
         (
             NumericControlKind::HorizontalSlider,
-            NumericControlAppearance::FilledSlider,
+            NumericControlPresentation::FilledSlider,
         ),
         (
             NumericControlKind::HorizontalSlider,
-            NumericControlAppearance::LabeledSlider,
+            NumericControlPresentation::LabeledSlider,
         ),
         (
             NumericControlKind::VerticalSlider,
-            NumericControlAppearance::Standard,
+            NumericControlPresentation::VerticalSlider,
         ),
-        (NumericControlKind::Knob, NumericControlAppearance::Standard),
+        (NumericControlKind::Knob, NumericControlPresentation::Knob),
         (
             NumericControlKind::Knob,
-            NumericControlAppearance::MicroDial,
+            NumericControlPresentation::MicroDial,
         ),
     ] {
         let handle = *cx.add_window(|_, _| Empty);
@@ -566,7 +566,7 @@ fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut 
                     STYLE,
                 )
                 .unwrap()
-                .with_appearance(appearance);
+                .with_presentation(appearance);
                 let control = cx.new(|cx| NumericControl::from_config(cx, config));
                 window.replace_root(cx, |_, _| Root {
                     control: control.clone(),
@@ -654,7 +654,7 @@ fn integer_readout_accumulates_small_pointer_moves_and_refuses_fractional_text(
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::InlineValue),
+                    .with_presentation(NumericControlPresentation::InlineValue),
                 )
             });
             window.replace_root(cx, |_, _| Root {
@@ -753,7 +753,7 @@ fn explicit_unit_readout_drag_accumulates_fine_motion_clamps_and_cancels(cx: &mu
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::InlineValue)
+                    .with_presentation(NumericControlPresentation::InlineValue)
                     .with_value_drag_steps(1.0, 0.1)
                     .unwrap(),
                 )
