@@ -38,7 +38,7 @@ pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
     NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
     ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
-    WorkerAudioSink,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
