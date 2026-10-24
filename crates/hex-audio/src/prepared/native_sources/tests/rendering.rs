@@ -655,12 +655,12 @@ fn cancelled_actual_native_graph_holds_endpoint_until_original_report_recovery()
 
 fn replacement_preparation(
     control: &mut Control,
-    binding: Binding,
+    bindings: &[Binding],
     project: &Project,
     samples: &[[f32; 2]],
 ) -> crate::AudioCandidateTicket {
     let quote = control
-        .with_native_effect_definition(&[binding], |definition| {
+        .with_native_effect_definition(bindings, |definition| {
             let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
             let registry = NativeDeviceRegistry::new(&definitions).unwrap();
             Ok(hex_engine::AudioCandidateEffects::new(&registry)
@@ -686,17 +686,19 @@ fn replacement_preparation(
         });
     // A binding with a different epoch cannot select the original source. The
     // refusal must not consume the reserved destination or invoke its compiler.
-    let stale = Binding {
-        epoch: binding.epoch + 1,
-        ..binding
-    };
-    assert!(
-        control
-            .prepare_audio_candidate_with_native_sources_on_control(token, &[stale], |_, _| {
-                panic!("stale source must not compile")
-            })
-            .is_err()
-    );
+    if let Some(binding) = bindings.first() {
+        let stale = Binding {
+            epoch: binding.epoch + 1,
+            ..*binding
+        };
+        assert!(
+            control
+                .prepare_audio_candidate_with_native_sources_on_control(token, &[stale], |_, _| {
+                    panic!("stale source must not compile")
+                })
+                .is_err()
+        );
+    }
     let asset = project.assets().next().unwrap().id();
     let source = hex_engine::Audio::new(48_000, samples.to_vec()).unwrap();
     let mut preparation_error = None;
@@ -704,7 +706,7 @@ fn replacement_preparation(
         control
             .prepare_audio_candidate_with_native_sources_on_control(
                 token,
-                &[binding],
+                bindings,
                 |cell, effects| {
                     cell.copy_resident_source_on_control(asset, &source)?;
                     effects
@@ -730,7 +732,7 @@ fn replacement_preparation(
         .unwrap();
     assert!(
         control
-            .prepare_audio_candidate_with_native_sources_on_control(token, &[binding], |_, _| {
+            .prepare_audio_candidate_with_native_sources_on_control(token, bindings, |_, _| {
                 panic!("staged token must not compile again")
             })
             .is_err()
@@ -758,6 +760,188 @@ fn actual_native_infinite_main_tail_refuses_removal_without_changing_original_au
     let _serial = serial();
     assert_live_handoff(2, LiveEdit::RefusedRemove);
 }
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_native_main_tail_survives_successors_and_retires_before_backend_shutdown() {
+    let _serial = serial();
+    let PreparedFixture {
+        mut control,
+        mut data,
+        errors,
+        mut retirement,
+        binding,
+        unused,
+        owner,
+        project,
+        samples,
+    } = prepared_fixture_with_source(2, false, "tail");
+    let root = control.native_candidate_root();
+    let mut tickets = vec![
+        control
+            .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
+            .unwrap_or_else(|r| panic!("first graph: {}", r.reason)),
+    ];
+    let mut editor = Editor::new(project, 8).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 64];
+    for (block, chunk) in output.chunks_mut(8).enumerate() {
+        if matches!(block, 1 | 2 | 6) {
+            if block == 1 {
+                editor
+                    .execute(Command::RemoveDevice(
+                        editor.project().main_devices()[0].id(),
+                    ))
+                    .unwrap();
+            } else {
+                // One successor carries the audible original tail. Another
+                // follows its accepted drain, while the backend stays live.
+                editor
+                    .execute(Command::RenameTrack {
+                        track: editor.project().tracks()[0].id(),
+                        name: format!("successor {block}"),
+                    })
+                    .unwrap();
+            }
+            let bindings = if block == 1 {
+                std::slice::from_ref(&binding)
+            } else {
+                &[]
+            };
+            tickets.push(replacement_preparation(
+                &mut control,
+                bindings,
+                editor.project(),
+                &samples,
+            ));
+        }
+        let mut host = [0.0_f32; 16];
+        allocation_free(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                callback.begin_native_effect_callback(8).unwrap();
+                let rendered = callback.render(chunk);
+                assert!(rendered.is_ok(), "successor render: {rendered:?}");
+                assert!(crate::device::finish_host_chunk(
+                    callback,
+                    &mut host,
+                    chunk,
+                    2,
+                    &rendered,
+                    block as u64 * 8,
+                    Instant::now()
+                ));
+            })
+        });
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            tickets.len() as u64
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        if block <= 6 {
+            let expected_blocks = (block as u64 + 1).min(5);
+            while crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
+                &root, binding,
+            )
+            .unwrap()
+                < expected_blocks
+            {
+                assert!(Instant::now() < deadline, "original tail worker completion");
+                std::thread::yield_now();
+            }
+            if block >= 4 {
+                assert_eq!(
+                    crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding),
+                    Some(5)
+                );
+            }
+        }
+        if block == 1 {
+            while !control.retire_native_source_preparation(binding) {
+                assert!(Instant::now() < deadline, "original retirement request");
+                std::thread::yield_now();
+            }
+        }
+        if block == 2 {
+            let old = crate::prepared::candidate_tests::recover(&mut control, &tickets[1]);
+            assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
+            drop(old);
+        }
+        if (1..6).contains(&block) {
+            assert!(control.recover_audio_candidate(&tickets[0]).is_none());
+            assert!(control.recover_native_source_preparation(binding).is_none());
+        }
+        if block == 6 {
+            let old = crate::prepared::candidate_tests::recover(&mut control, &tickets[2]);
+            assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
+            drop(old);
+            let original = crate::prepared::candidate_tests::recover(&mut control, &tickets[0]);
+            assert_eq!(
+                original.return_kind,
+                crate::AudioCandidateReturnKind::Replaced
+            );
+            drop(original);
+        }
+    }
+    let mut expected = [[0.0; 2]; 64];
+    expected[8..32].copy_from_slice(&samples[8..32]);
+    for (i, frame) in samples[..8].iter().enumerate() {
+        for channel in 0..2 {
+            expected[i + 16][channel] += frame[channel] * 0.5;
+            expected[i + 19][channel] += frame[channel] * 0.125;
+        }
+    }
+    assert_eq!(
+        output, expected,
+        "carried original FIR and bridge remain exact"
+    );
+    let returned = recover(&mut control, binding);
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+        panic!("original source must reap while backend is live")
+    };
+    assert!(disposal.status.success());
+    let terminal = disposal.terminal.unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (5, 40));
+
+    drop(data);
+    drop(errors);
+    assert!(!retirement.advance().unwrap());
+    retirement = std::thread::spawn(move || {
+        let mut backend = Some(());
+        let mut pending = false;
+        let mut disposed = false;
+        crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(disposed && backend.is_none());
+        retirement
+    })
+    .join()
+    .unwrap();
+    let current = crate::prepared::candidate_tests::recover(&mut control, &tickets[3]);
+    assert_eq!(
+        current.return_kind,
+        crate::AudioCandidateReturnKind::FinalActive
+    );
+    drop(current);
+    if let Some(unused) = unused {
+        let returned = recover(&mut control, unused);
+        let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+            panic!("original unvisited source disposal")
+        };
+        let terminal = disposal.terminal.unwrap();
+        assert_eq!((terminal.blocks, terminal.frames), (0, 0));
+    }
+    drop(control);
+    finish(&mut retirement);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LiveEdit {
     Bypass,
@@ -811,7 +995,7 @@ fn assert_live_handoff(location: usize, edit: LiveEdit) {
                 .unwrap();
             second = Some(replacement_preparation(
                 &mut control,
-                binding,
+                &[binding],
                 editor.project(),
                 &samples,
             ));

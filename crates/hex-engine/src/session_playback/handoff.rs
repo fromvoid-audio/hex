@@ -368,7 +368,7 @@ impl SessionPlayback {
                     || stamp.performance_frame.checked_add(1) == Some(previous.performance_frame)
             })
         });
-        let clock_transfer = match (&self.compensation, &previous.compensation) {
+        let mut clock_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
                     && donor_epoch_matches
@@ -2238,6 +2238,23 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
         )?;
+        if clock_transfer == 2
+            && self.compensation.is_none()
+            && self
+                .revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .is_some_and(|graph| !graph.needs_runtime())
+            && !return_tail_plan.requires_main_clock(&previous.return_effect_tails)?
+        {
+            // Rebind preflight proved identical pre-Main routing/delays. This
+            // candidate needs no routed/latency runtime and retains no live
+            // Main suffix, so the donor's extended clock has no remaining
+            // consumer. Leave its actual owner with the returning donor; do
+            // not keep that constructor (and its native sources) alive forever.
+            clock_transfer = 0;
+        }
         if !self.main_chain.can_inherit_from_excluding_old_range(
             &previous.main_chain,
             return_tail_plan.main_excluded(previous.main_chain.len()),

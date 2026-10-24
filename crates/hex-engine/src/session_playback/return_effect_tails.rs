@@ -314,6 +314,29 @@ pub(super) struct ReturnEffectTailPlan {
 }
 
 impl ReturnEffectTailPlan {
+    /// Only live Main suffixes need the donor's extended content-origin clock.
+    /// Inactive chains stay with the returning donor rather than extending its
+    /// constructor's resource custody into another zero-latency revision.
+    pub(super) fn requires_main_clock(
+        &self,
+        old: &ReturnEffectTailBank,
+    ) -> Result<bool, SessionPlaybackError> {
+        if self.main_capture.is_some() {
+            return Ok(true);
+        }
+        for (source, _) in self.carry.iter().flatten() {
+            let tail = old
+                .slots
+                .get(*source)
+                .and_then(Option::as_ref)
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if matches!(tail.destination, TailDestination::Main { .. }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(super) fn plan_candidate_origins(
         &self,
         groups: &mut crate::audio_candidate::groups::Transfer<'_>,
