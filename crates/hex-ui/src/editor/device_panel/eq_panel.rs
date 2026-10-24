@@ -23,8 +23,7 @@ pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
 // Existing node hits retain priority through the response graph owner.
 const CUT_CREATION_EDGE: f32 = 0.05;
 
-// Content geometry only: preserve shared device-action paint and tooltip/input
-// behavior, while giving complete labels their intrinsic width and padding.
+// Commands and latched settings share text geometry, retaining distinct paint.
 fn text_action_button(
     id: String,
     label: &'static str,
@@ -32,7 +31,21 @@ fn text_action_button(
     role: theme::DeviceActionRole,
     selected: bool,
 ) -> Stateful<Div> {
-    action_button(id, label, tooltip, role, selected)
+    text_button(action_button(id, label, tooltip, role, selected))
+}
+
+fn text_segment_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    text_button(segment_button(id, label, tooltip, role, selected))
+}
+
+fn text_button(surface: Stateful<Div>) -> Stateful<Div> {
+    surface
         .w_auto()
         .min_w(px(hex_widgets::DEVICE_HEADER_ACTION_SIZE))
         .px(px(3.0))
@@ -305,7 +318,7 @@ pub(super) fn render_body(
     ));
     for (index, label) in ["st", "l", "r", "m", "s"].into_iter().enumerate() {
         toolbar = toolbar.child(
-            text_action_button(
+            text_segment_button(
                 format!("eq-bank-{}-{index}", device.value()),
                 label,
                 "select authored channel bank",
@@ -333,7 +346,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|panel| panel.show_input);
     toolbar = toolbar.child(
-        text_action_button(
+        text_segment_button(
             format!("eq-spectrum-input-{}", device.value()),
             "input",
             "show actual pre-eq input spectrum; output stays visible",
@@ -353,7 +366,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|p| p.armed);
     toolbar = toolbar.child(
-        text_action_button(
+        text_segment_button(
             format!("eq-audition-{}", device.value()),
             "listen",
             "hold a node to audition its filter",

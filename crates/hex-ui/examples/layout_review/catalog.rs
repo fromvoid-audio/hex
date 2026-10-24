@@ -16,10 +16,13 @@ pub(super) enum Demo {
     Toggle(ToggleAppearance),
     Selector(SelectorAppearance),
     Bars,
+    Rectangle(bool),
+    TimeRange,
     Graph,
     Color,
     Curve,
     Spectrum,
+    Waveform(bool),
     Chrome(&'static str),
     Layout(DeviceLayout),
     Section(u8, DeviceSectionSurface),
@@ -56,11 +59,14 @@ impl Item {
             ),
             Demo::Toggle(_) => ("toggle", "discrete", "toggle"),
             Demo::Selector(_) => ("selector", "discrete", "selector"),
+            Demo::Rectangle(_) => ("rectangle", "graphics", "rectangle"),
+            Demo::TimeRange => ("time selection", "graphics", "range_selection"),
             Demo::Bars => ("bar editor", "graphics", "bareditor"),
             Demo::Graph => ("response graph", "graphics", "responsegraph"),
             Demo::Color => ("color picker", "graphics", "colorpicker"),
             Demo::Curve => ("curve plot", "graphics", "curve_plot"),
             Demo::Spectrum => ("spectrum plot", "graphics", "layered_spectrum_plot"),
+            Demo::Waveform(_) => ("waveform", "graphics", "waveform_plot"),
             Demo::Chrome("action" | "device action" | "device segment")
             | Demo::Workspace(WorkspaceKind::Button(_) | WorkspaceKind::RoundAction(_)) => {
                 ("action surface", "chrome", "action_surface")
@@ -77,6 +83,9 @@ impl Item {
                 "composed layout and chrome",
             ),
             Demo::Compositions => ("device compositions", "compositions", "device_composition"),
+            Demo::Workspace(WorkspaceKind::Splitter(_)) => {
+                ("captured splitter", "layout", "splitter")
+            }
             Demo::Workspace(WorkspaceKind::Text(_)) => ("text input", "workspace", "textinput"),
             Demo::Workspace(WorkspaceKind::Menu(_)) => (
                 "popup menu composition",
@@ -94,6 +103,11 @@ impl Item {
             Demo::Workspace(WorkspaceKind::LevelMeter) => {
                 ("level meter", "workspace", "level_meter")
             }
+            Demo::Workspace(WorkspaceKind::TimeMarkers) => (
+                "time selection markers",
+                "workspace",
+                "time_position_marker",
+            ),
             Demo::Workspace(WorkspaceKind::ScrollingList) => (
                 "scrolling list composition",
                 "compositions",
@@ -108,6 +122,7 @@ impl Item {
     }
     pub fn subgroup(self) -> &'static str {
         match self.demo {
+            Demo::Waveform(_) => "channel configurations",
             Demo::Numeric(p, ..) if p.kind() == Kind::Knob => "knob configurations",
             Demo::Numeric(p, ..) if p.kind() == Kind::HorizontalSlider => {
                 "horizontal slider configurations"
@@ -117,6 +132,7 @@ impl Item {
             }
             Demo::Workspace(WorkspaceKind::Button(_)) => "glyph and state configurations",
             Demo::Workspace(WorkspaceKind::RoundAction(_)) => "round momentary configurations",
+            Demo::Workspace(WorkspaceKind::Splitter(_)) => "movement axis configurations",
             Demo::Frame(_) => "composed layout fixtures",
             Demo::Compositions => "device fixtures",
             _ => "configurations",
@@ -129,6 +145,9 @@ impl Item {
             }
             Demo::Toggle(appearance) => format!("appearance: {appearance:?}"),
             Demo::Selector(appearance) => format!("appearance: {appearance:?}"),
+            Demo::Waveform(stereo) => {
+                format!("channels: {}", if stereo { "stereo" } else { "mono" })
+            }
             Demo::Layout(layout) => format!("layout: {layout:?}"),
             Demo::Section(density, surface) => format!(
                 "density: {} · surface: {surface:?}",
@@ -256,10 +275,15 @@ pub(super) fn inventory() -> Vec<Item> {
     }
     for (name, demo) in [
         ("bar editor", Demo::Bars),
+        ("clip rectangle", Demo::Rectangle(false)),
+        ("section rectangle", Demo::Rectangle(true)),
+        ("time selection", Demo::TimeRange),
         ("response graph", Demo::Graph),
         ("color picker", Demo::Color),
         ("curve plot", Demo::Curve),
         ("layered spectrum plot", Demo::Spectrum),
+        ("mono waveform", Demo::Waveform(false)),
+        ("stereo waveform", Demo::Waveform(true)),
     ] {
         add("graphics", name, demo);
     }
@@ -348,6 +372,7 @@ pub(super) fn inventory() -> Vec<Item> {
         ),
         ("popup menu · icon grid", WorkspaceKind::Menu(true)),
         ("level meter", WorkspaceKind::LevelMeter),
+        ("time selection markers", WorkspaceKind::TimeMarkers),
         (
             "meter indicator · mono",
             WorkspaceKind::MeterIndicator(MeterChannels::Mono),
@@ -363,6 +388,14 @@ pub(super) fn inventory() -> Vec<Item> {
         (
             "round icon action",
             WorkspaceKind::RoundAction(RoundActionKind::Icon),
+        ),
+        (
+            "splitter · horizontal",
+            WorkspaceKind::Splitter(hex_widgets::SplitterAxis::Horizontal),
+        ),
+        (
+            "splitter · vertical",
+            WorkspaceKind::Splitter(hex_widgets::SplitterAxis::Vertical),
         ),
         ("output sample-peak status", WorkspaceKind::OutputMeter),
         ("scrolling list", WorkspaceKind::ScrollingList),

@@ -23,6 +23,14 @@ pub(super) struct RetainedClipDetail {
 impl EditorView {
     /// Inspector identity is separate from whole-clip/range selection. Explicit
     /// focus supersedes this context; deletion and replacement query as empty.
+    /// Identity-only stamp for a retained inspector. Consumers must pair this
+    /// with the canonical snapshot revision before reusing a cached projection.
+    pub(super) fn retained_detail_identity(&self) -> Option<hex_project::ClipId> {
+        let owner = self.retained_clip_detail?;
+        (self.mode == EditorMode::Arrangement && owner.generation == self.project_generation)
+            .then_some(owner.clip)
+    }
+
     pub(super) fn detail_clip_id(&self) -> Option<hex_project::ClipId> {
         if let Some(clip) = self.selected_clip {
             return Some(clip);
@@ -238,9 +246,11 @@ impl EditorView {
             } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {
-                self.midi_editor(cx).map(|element| div().child(element))
+                self.midi_editor(window, cx)
+                    .map(|element| div().child(element))
             } else if self.mode == EditorMode::Arrangement {
-                super::arrangement_audio_panel::view(self, cx).map(|element| div().child(element))
+                super::arrangement_audio_panel::view(self, window, cx)
+                    .map(|element| div().child(element))
             } else {
                 None
             }
@@ -290,6 +300,7 @@ impl EditorView {
                 .debug_selector(|| "clip-view-toggle".into())
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: if open {
                             "hide clip view"
                         } else {
@@ -347,6 +358,7 @@ impl EditorView {
                     .child(theme::text("→ audio"))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: "bounce clip to audio in place".into(),
                         })
                         .into()

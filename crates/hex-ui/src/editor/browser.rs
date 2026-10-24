@@ -198,7 +198,6 @@ pub(super) struct BrowserState {
     playback_in_flight: bool,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
-    insert_quantized: bool,
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
@@ -282,7 +281,6 @@ impl BrowserState {
             history: history::History::default(),
             playback_generation: 0,
             auto_audition: true,
-            insert_quantized: false,
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
@@ -388,7 +386,7 @@ fn browser_audio_drag_ghost(
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .opacity(0.9);
     if let Some((lines, start, end)) = grid {
-        ghost = ghost.children([super::tracks::clip_grid_layer(&lines, start, end)]);
+        ghost = ghost.children(super::tracks::clip_grid_layer(&lines, start, end));
     }
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
@@ -2569,6 +2567,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: description.clone(),
                 })
                 .into()
@@ -2592,6 +2591,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: description.clone(),
                 })
                 .into()

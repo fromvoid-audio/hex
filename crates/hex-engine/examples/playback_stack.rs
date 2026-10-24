@@ -371,6 +371,7 @@ fn project_fixture(
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![MidiClipSnapshot {
+                    content_view: None,
                     active: true,
                     playback_offset_raw: 0,
                     one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,

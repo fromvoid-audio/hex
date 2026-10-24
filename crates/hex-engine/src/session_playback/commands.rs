@@ -152,7 +152,8 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::MutableInstrumentChase);
             }
         }
-        let base_timing = base_timing_for(self.revision.session(), self.periodic_tempo);
+        let base_timing =
+            base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0));
         let beat = base_timing
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -251,18 +252,22 @@ impl SessionPlayback {
                 Ok(active)
             }
             RouteOwner::Session { clip, origin } => {
-                let prepared = self
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, self.routes[index].id)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, self.routes[index].id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 if !prepared.instrument_enabled()
                     || !prepared.instrument_template().is_event_source()
                 {
                     return Ok(false);
                 }
-                let timing =
-                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                let timing = timing_view_for(
+                    self.revision.session(),
+                    self.periodic_tempo_at(frame, 0),
+                    self.anchor,
+                );
                 prepared
                     .instrument_template()
                     .query_with_origin(origin, &timing, frame, end, &mut self.spans)
@@ -334,18 +339,19 @@ impl SessionPlayback {
         };
         match command {
             SessionPlaybackCommand::LaunchClip { clip, .. } => {
-                let track = self
-                    .revision
-                    .session()
-                    .midi_clip(clip)
-                    .map(|prepared| prepared.track)
-                    .or_else(|| {
-                        self.revision
-                            .session()
-                            .audio_clip(clip)
-                            .map(|prepared| prepared.track)
-                    })
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let track = crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip(clip)
+                .map(|prepared| prepared.track)
+                .or_else(|| {
+                    self.revision
+                        .session()
+                        .audio_clip(clip)
+                        .map(|prepared| prepared.track)
+                })
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 let index = self.route_index(track)?;
                 self.set_route(index, RouteTarget::Session(clip), moment, None)?;
             }
@@ -363,11 +369,12 @@ impl SessionPlayback {
                 {
                     return Err(SessionPlaybackError::InvalidCommand);
                 }
-                let prepared = self
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, track)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, track)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 let elapsed = prepared
                     .source_template()
                     .earliest_elapsed_for_source(source_beat)
@@ -426,11 +433,12 @@ impl SessionPlayback {
                     let target = match cell.content {
                         crate::PreparedSessionCellContent::Stop => RouteTarget::Silence,
                         crate::PreparedSessionCellContent::Midi(clip) => {
-                            let prepared = self
-                                .revision
-                                .session()
-                                .midi_clip(clip)
-                                .ok_or(SessionPlaybackError::UnknownClip)?;
+                            let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            )
+                            .midi_clip(clip)
+                            .ok_or(SessionPlaybackError::UnknownClip)?;
                             if prepared.track != cell.track {
                                 return Err(SessionPlaybackError::ClipTrackMismatch);
                             }
@@ -507,46 +515,19 @@ impl SessionPlayback {
         }
     }
 
-    fn scheduled_at(
+    pub(crate) fn scheduled_at(
         &self,
         quantization: LaunchQuantization,
     ) -> Result<(u64, BeatTime), SessionPlaybackError> {
-        let timing = self.timing_view();
-        if !self.playing || quantization == LaunchQuantization::Immediate {
-            let beat = timing
-                .frame_to_beat(self.performance_frame)
-                .map_err(|_| SessionPlaybackError::TempoConversion)?;
-            return Ok((self.performance_frame, beat));
-        }
-
-        let current = timing
-            .frame_to_beat(self.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let bar_count = current.raw() / FOUR_QUARTERS_RAW;
-        let last_boundary_raw = bar_count
-            .checked_mul(FOUR_QUARTERS_RAW)
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        let last_boundary = BeatTime::from_raw(last_boundary_raw);
-        if self
-            .anchor
-            .is_none_or(|anchor| last_boundary >= anchor.old_beat)
-            && timing
-                .beat_to_frame(last_boundary)
-                .map_err(|_| SessionPlaybackError::TempoConversion)?
-                == self.performance_frame
-        {
-            return Ok((self.performance_frame, last_boundary));
-        }
-        let next_raw = bar_count
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(FOUR_QUARTERS_RAW))
-            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        let next = BeatTime::from_raw(next_raw);
-        let frame = timing
-            .beat_to_frame(next)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?
-            .max(self.performance_frame);
-        Ok((frame, next))
+        quantization
+            .scheduled_at(
+                &self.timing_view(),
+                self.revision.session().meter_map(),
+                self.performance_frame,
+                self.playing,
+                self.anchor.map(|anchor| anchor.old_beat),
+            )
+            .map_err(|_| SessionPlaybackError::TempoConversion)
     }
 
     fn set_route(
@@ -778,11 +759,12 @@ impl SessionPlayback {
                     entry.voice.detach(&self.analytic_continuations);
                     entry.continuation = None;
                 }
-                let prepared = self
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, self.routes[index].id)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, self.routes[index].id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 if prepared.track != self.routes[index].id {
                     return Err(SessionPlaybackError::ClipTrackMismatch);
                 }
@@ -790,7 +772,7 @@ impl SessionPlayback {
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                 let timing =
-                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                    timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
                 let template = prepared.instrument_template();
                 if let Some(floor) = self.historical_floor_for(index) {
                     template
@@ -875,11 +857,14 @@ impl SessionPlayback {
                 .get(index)
                 .filter(|track| track.has_instrument_source())
                 .map_or(0, |_| MAX_SIMULTANEOUS_VOICES_PER_TRACK),
-            RouteOwner::Session { clip, .. } => self
-                .revision
-                .session()
+            RouteOwner::Session { clip, .. } => {
+                crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
                 .midi_clip_for_track(clip, self.routes[index].id)
-                .map_or(0, |prepared| prepared.work.active_voices),
+                .map_or(0, |prepared| prepared.work().active_voices)
+            }
             RouteOwner::SessionAudio { .. } => 0,
             RouteOwner::Silence => 0,
         }

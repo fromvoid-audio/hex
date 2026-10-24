@@ -78,6 +78,11 @@ fn fixture(
     }
     // The historical schema36 tempo lineage has this same envelope without sections.
     let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // This empty fixture also predates directed Arrangement content views.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("content_views"),
+        Some(serde_json::json!([]))
+    );
     // Schema36 also predates the complete activation/window inventory.
     assert_eq!(
         old.as_object_mut().unwrap().remove("clip_activation"),

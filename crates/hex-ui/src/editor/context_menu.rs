@@ -39,6 +39,14 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    InputQuantization {
+        generation: u64,
+        policy: hex_project::InputQuantization,
+    },
+    LaunchQuantization {
+        generation: u64,
+        quantization: hex_engine::LaunchQuantization,
+    },
     PlaceIcon {
         path: std::path::PathBuf,
         id: Option<&'static str>,
@@ -433,6 +441,21 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::InputQuantization { generation, policy } => {
+                if generation == self.project_generation {
+                    self.set_input_quantization(policy);
+                    cx.notify();
+                }
+            }
+            EditorContextAction::LaunchQuantization {
+                generation,
+                quantization,
+            } => {
+                if generation == self.project_generation {
+                    self.session_quantization = quantization;
+                    cx.notify();
+                }
+            }
             EditorContextAction::Section(action) => self.section_menu_action(action, window, cx),
             EditorContextAction::LoadFirstSampler(target) => self.load_first_sampler(target, cx),
             EditorContextAction::CancelSamplerLoad { request_id } => {
@@ -629,7 +652,9 @@ impl EditorView {
                 EditorContextAction::InsertReturn { generation } => {
                     *generation != self.project_generation
                 }
-                EditorContextAction::AdaptiveGrid { generation, .. } => {
+                EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::LaunchQuantization { generation, .. }
+                | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
                 }
                 EditorContextAction::InsertScene {
@@ -867,6 +892,65 @@ mod tests {
             })
             .unwrap();
         (handle, editor)
+    }
+
+    #[gpui::test]
+    fn global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::AppContext;
+        cx.update(super::super::bind_editor_keys);
+        let (project, _, _, _) = audio_project();
+        let before = project.clone();
+        let directory = ColorTestDirectory::new();
+        let (handle, editor) = color_test_window(cx, project, &directory.0);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("global-launch-quantization").unwrap();
+        let position = bounds.center();
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let menu = view.context_menu.as_ref().unwrap();
+            assert_eq!(
+                menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+                [
+                    "none", "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1/2t", "1/4", "1/4t",
+                    "1/8", "1/8t", "1/16", "1/16t", "1/32"
+                ]
+            );
+            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+        });
+        visual.simulate_keystrokes("down down down down enter");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(view.context_menu.is_none());
+            assert_eq!(
+                view.session_quantization,
+                hex_engine::LaunchQuantization::OneBar
+            );
+            assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                let generation = view.project_generation;
+                view.project_generation += 1;
+                view.select_context_item(
+                    EditorContextAction::LaunchQuantization {
+                        generation,
+                        quantization: hex_engine::LaunchQuantization::Immediate,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    view.session_quantization,
+                    hex_engine::LaunchQuantization::OneBar
+                );
+            });
+        })
+        .unwrap();
     }
 
     #[gpui::test]

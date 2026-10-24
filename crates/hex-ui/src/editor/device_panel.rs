@@ -1066,6 +1066,7 @@ fn render_track(
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: "add native device".into(),
             })
             .into()
@@ -1442,6 +1443,7 @@ fn device_drag_title(
         .cursor(gpui::CursorStyle::OpenHand)
         .tooltip(|_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Help,
                 description: "drag to reorder device".into(),
             })
             .into()
@@ -1502,7 +1504,7 @@ fn render_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
+    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
@@ -1986,7 +1988,7 @@ fn render_instrument(
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
-    let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
+    let leading = bypass_action(device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
     let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
         device_frame(
@@ -2378,26 +2380,29 @@ fn render_add_menu(
 fn bypass_action(
     device: &hex_project::Device,
     class: NativeDeviceClass,
-    selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     let id = device.id();
     let bypassed = device.bypassed();
-    action_button(
-        format!("device-bypass-{}", id.value()),
-        if bypassed { "⊘" } else { "●" },
-        if class == NativeDeviceClass::Instrument {
-            "toggle instrument bypass"
-        } else {
-            "toggle device bypass"
-        },
-        if bypassed {
-            theme::DeviceActionRole::Bypassed
-        } else {
-            theme::DeviceActionRole::Enabled
-        },
-        selected,
+    let (on_color, off_color) = theme::device_enable_colors();
+    let tooltip = if class == NativeDeviceClass::Instrument {
+        "toggle instrument bypass"
+    } else {
+        "toggle device bypass"
+    };
+    hex_widgets::device_state_indicator(
+        format!("device-bypass-{}", id.value()).into(),
+        !bypassed,
+        on_color,
+        off_color,
     )
+    .tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
+            description: tooltip.into(),
+        })
+        .into()
+    })
     .on_click(cx.listener(move |view, _, _, cx| {
         if finalize_controls(view, cx) {
             view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
@@ -2460,19 +2465,46 @@ pub(super) fn action_button(
     role: theme::DeviceActionRole,
     selected: bool,
 ) -> Stateful<Div> {
-    hex_widgets::device_action(
-        theme::text(icon),
-        theme::device_header_action_style(selected, role),
+    button_details(
+        hex_widgets::device_action(
+            theme::text(icon),
+            theme::device_header_action_style(selected, role),
+        ),
+        id,
+        tooltip,
     )
-    .id(ElementId::Name(id.clone().into()))
-    .debug_selector(move || id.clone())
-    .cursor(gpui::CursorStyle::PointingHand)
-    .tooltip(move |_, cx| {
-        cx.new(|_| super::transport::MiniTooltip {
-            description: tooltip.into(),
+}
+
+/// Latched header/toolbar settings retain segment artwork, distinct from commands.
+pub(super) fn segment_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    button_details(
+        hex_widgets::device_segment(
+            theme::text(label),
+            theme::device_header_action_style(selected, role),
+        ),
+        id,
+        tooltip,
+    )
+}
+
+fn button_details(surface: Div, id: String, tooltip: &'static str) -> Stateful<Div> {
+    surface
+        .id(ElementId::Name(id.clone().into()))
+        .debug_selector(move || id.clone())
+        .cursor(gpui::CursorStyle::PointingHand)
+        .tooltip(move |_, cx| {
+            cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
+                description: tooltip.into(),
+            })
+            .into()
         })
-        .into()
-    })
 }
 
 // Host-specific composition policy stays outside the shared bindings.

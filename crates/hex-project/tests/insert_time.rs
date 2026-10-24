@@ -407,6 +407,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
         .try_reserve_exact(MAX_CLIPS)
         .expect("test fixture capacity");
     clips.push(MidiClipSnapshot {
+        content_view: None,
         active: true,
         playback_offset_raw: 0,
         one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
@@ -425,6 +426,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
     });
     for id in 6..(MAX_CLIPS as u64 + 5) {
         clips.push(MidiClipSnapshot {
+            content_view: None,
             active: true,
             playback_offset_raw: 0,
             one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,

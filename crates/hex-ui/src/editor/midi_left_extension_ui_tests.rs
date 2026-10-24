@@ -359,7 +359,8 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
                     .borrow()
                     .and_then(|preview| match preview {
                         super::MidiEdgePreview::Trim(trim) => Some(trim.source_prefix()),
-                        super::MidiEdgePreview::Stretch(_) => None,
+                        super::MidiEdgePreview::Stretch(_) | super::MidiEdgePreview::Loop(_) =>
+                            None,
                     })
                     .is_some_and(|prefix| prefix > BeatTime::ZERO)
             )

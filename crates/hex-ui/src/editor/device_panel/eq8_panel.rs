@@ -322,6 +322,7 @@ fn audition_toggle(
         .flex_shrink_0()
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: if armed {
                     "eq8 band audition armed".into()
                 } else {
@@ -364,7 +365,7 @@ pub(super) fn spectrum_toggle(
                     .to_owned()
             }
         });
-    hex_widgets::device_action(
+    hex_widgets::device_segment(
         theme::text("spectrum"),
         theme::device_segment_style(selected && available),
     )
@@ -377,6 +378,7 @@ pub(super) fn spectrum_toggle(
     .cursor_pointer()
     .tooltip(move |_, cx| {
         cx.new(|_| super::super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
             description: tooltip.clone().into(),
         })
         .into()

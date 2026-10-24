@@ -210,6 +210,9 @@ impl EditorView {
                                 })
                                 .tooltip(|_, cx| {
                                     cx.new(|_| super::transport::MiniTooltip {
+                                        kind: crate::tooltips::Kind::control(
+                                            "randomize velocities",
+                                        ),
                                         description:
                                             "randomize selected velocities only · one undo".into(),
                                     })
@@ -232,6 +235,9 @@ impl EditorView {
                                 .child(theme::text("−"))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| super::transport::MiniTooltip {
+                                        kind: crate::tooltips::Kind::control(
+                                            "reduce velocity variation",
+                                        ),
                                         description:
                                             "reduce velocity randomization amount · minimum 0"
                                                 .into(),
@@ -257,6 +263,9 @@ impl EditorView {
                                 .child(theme::text("+"))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| super::transport::MiniTooltip {
+                                        kind: crate::tooltips::Kind::control(
+                                            "increase velocity variation",
+                                        ),
                                         description:
                                             "increase velocity randomization amount · maximum 126"
                                                 .into(),
@@ -302,6 +311,12 @@ impl EditorView {
         let content = div()
             .id("midi-velocity-lane")
             .debug_selector(|| "midi-velocity-lane".into())
+            .children(self.arrange_midi_highlights(
+                self.piano_beat_start.raw(),
+                self.piano_beat_span.raw(),
+                0.0,
+                "arrange-reflected-velocity-range",
+            ))
             .relative()
             .flex_1()
             .h_full()

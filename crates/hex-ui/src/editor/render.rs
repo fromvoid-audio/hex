@@ -137,6 +137,7 @@ impl EditorView {
                         let message = self.status.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: message.clone().into(),
                             })
                             .into()
@@ -217,6 +218,7 @@ impl EditorView {
                     let description = self.audio_admission.description();
                     move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: description.clone().into(),
                         })
                         .into()
@@ -274,6 +276,7 @@ impl EditorView {
         bar = bar.child(
             crate::output_meter::render(meter_input).tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: crate::output_meter::description(meter_input).into(),
                 })
                 .into()
@@ -307,6 +310,7 @@ impl EditorView {
                         let description = diagnostic.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: description.clone().into(),
                             })
                             .into()
@@ -355,6 +359,7 @@ fn status_slot(
         slot = slot
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: full_status.clone().into(),
                 })
                 .into()
@@ -367,6 +372,9 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
@@ -632,6 +640,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.reverse_clip_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.activation_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -787,8 +799,16 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
-                    | view.cancel_project_spectrum_resize(cx)
-                    | view.cancel_clip_detail_resize(cx)
+                    | view.project_spectrum_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
+                    | view.clip_detail_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()
@@ -1372,7 +1392,7 @@ impl Render for EditorView {
                 view.request_quit(window, cx);
             }))
             .child(self.title_bar(cx))
-            .child(self.transport(cx))
+            .child(self.transport(window, cx))
             .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))

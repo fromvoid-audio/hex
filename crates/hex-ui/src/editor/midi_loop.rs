@@ -97,6 +97,15 @@ impl EditorView {
             beat_text(values.loop_end),
             beat_text(values.loop_end - values.loop_start)
         );
+        let identification = format!(
+            "clip loop {} · {}",
+            if values.looping {
+                "on"
+            } else {
+                "off; markers retained"
+            },
+            label
+        );
         let description = format!(
             "clip loop {} · {} · drag either end or move brace · hold cmd/control to invert snapping",
             if values.looping {
@@ -312,6 +321,7 @@ impl EditorView {
                     .child(theme::text(if values.looping { "↻" } else { "○" }))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::control(identification.clone()),
                             description: description.clone().into(),
                         })
                         .into()

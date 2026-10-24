@@ -46,7 +46,7 @@ fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut 
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let down = point(
         bounds.origin.x + bounds.size.width * 0.3,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     let moved = point(down.x + bounds.size.width * 0.2, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -123,7 +123,7 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
     let original = visual.debug_bounds("audio-event-1").unwrap();
     let down = point(
         bounds.origin.x + bounds.size.width * 0.125,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     let up = point(bounds.origin.x + bounds.size.width * 0.5, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -183,7 +183,7 @@ fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestA
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let click = point(
         bounds.origin.x + bounds.size.width * 0.125,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
@@ -238,7 +238,7 @@ fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestApp
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     let click = point(
         bounds.origin.x + bounds.size.width * 0.25,
-        bounds.center().y + px(12.0),
+        bounds.top() + px(26.0),
     );
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());

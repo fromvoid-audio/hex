@@ -172,10 +172,12 @@ impl Sandbox {
         if let Some(sample) = self.samples.get(&index).cloned() {
             let enabled = sample.read(cx).enabled;
             tools = tools.child(
-                hex_widgets::action(
+                hex_widgets::toggle_action(
                     theme::text(if enabled { "disable" } else { "enable" }),
                     theme::action_style(),
                 )
+                .px(px(4.0))
+                .py(px(2.0))
                 .id(("sample-enable", index))
                 .debug_selector(move || format!("sample-{index}-enable"))
                 .on_click(cx.listener(move |_, _, _, cx| {
@@ -185,7 +187,9 @@ impl Sandbox {
         }
         if let Some(sample) = self.samples.get(&index).cloned() {
             tools = tools.child(
-                hex_widgets::action(theme::text("narrow / wide"), theme::action_style())
+                hex_widgets::toggle_action(theme::text("narrow / wide"), theme::action_style())
+                    .px(px(4.0))
+                    .py(px(2.0))
                     .id(("sample-width", index))
                     .debug_selector(move || format!("sample-{index}-width"))
                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -198,6 +202,8 @@ impl Sandbox {
         }
         tools.child(
             hex_widgets::action(theme::text("reset sample"), theme::action_style())
+                .px(px(4.0))
+                .py(px(2.0))
                 .id(("sample-reset", index))
                 .debug_selector(move || format!("sample-{index}-reset"))
                 .on_click(cx.listener(move |s, _, _, cx| {
@@ -218,10 +224,12 @@ impl Render for Sandbox {
         let mut categories = div().flex().flex_wrap().gap(px(4.0));
         for category in CATEGORIES {
             categories = categories.child(
-                hex_widgets::action(
+                hex_widgets::toggle_action(
                     theme::text(category),
                     theme::device_segment_style(category == self.category),
                 )
+                .px(px(4.0))
+                .py(px(2.0))
                 .id(category)
                 .debug_selector(move || category.into())
                 .on_click(cx.listener(move |s, _, window, cx| {
@@ -258,14 +266,16 @@ impl Render for Sandbox {
                 .filter(|item| item.page() == candidate)
                 .count();
             nav = nav.child(
-                hex_widgets::action(
+                hex_widgets::toggle_action(
                     theme::text(format!("{} · {count}", candidate.name)),
                     theme::device_segment_style(candidate == page),
                 )
                 .id(index)
                 .debug_selector(move || format!("page-{index}"))
                 .w_full()
-                .min_h(px(26.0))
+                .h(px(22.0))
+                .px(px(4.0))
+                .overflow_hidden()
                 .flex_shrink_0()
                 .justify_start()
                 .on_click(cx.listener(move |s, _, window, cx| {
@@ -338,7 +348,7 @@ impl Render for Sandbox {
                 }),
             ));
         }
-        let theme_button = hex_widgets::action(
+        let theme_button = hex_widgets::toggle_action(
             theme::text(
                 if theme::preferences() == hex_preferences::ThemePreferences::default() {
                     "light theme"
@@ -348,6 +358,8 @@ impl Render for Sandbox {
             ),
             theme::action_style(),
         )
+        .px(px(4.0))
+        .py(px(2.0))
         .id("sandbox-theme")
         .debug_selector(|| "sandbox-theme".into())
         .on_click(cx.listener(|s, _, _, cx| s.theme(cx)));

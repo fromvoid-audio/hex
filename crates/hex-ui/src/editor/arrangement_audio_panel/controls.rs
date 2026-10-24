@@ -473,9 +473,12 @@ pub(super) fn toggle(
         ) else {
             return div();
         };
-        let entity = cx.new(|cx| {
-            Toggle::from_config(cx, config.with_appearance(ToggleAppearance::CompactSquare))
-        });
+        let appearance = if warp {
+            ToggleAppearance::CompactButton
+        } else {
+            ToggleAppearance::CompactSquare
+        };
+        let entity = cx.new(|cx| Toggle::from_config(cx, config.with_appearance(appearance)));
         entity.update(cx, |t, cx| t.set_tab_navigation(true, cx));
         let sub = cx.subscribe(&entity, move |view, _, _: &ToggleChanged, cx| {
             if view.edit_pending() || !clip_window_is_current(view, window) {
@@ -531,8 +534,10 @@ pub(super) fn toggle(
             })
             .h(px(20.0))
             .flex_shrink_0()
+            .when(warp, |owner| owner.w(px(44.0)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: theme::text(tooltip),
                 })
                 .into()

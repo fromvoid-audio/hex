@@ -77,7 +77,7 @@ impl SessionPlayback {
             routes: self.route_state_generation,
             playing: self.playing,
             anchor: self.anchor,
-            periodic: self.periodic_tempo,
+            periodic: self.periodic_tempo(),
         }
     }
     pub(crate) fn validate_stream_action(
@@ -117,11 +117,12 @@ impl SessionPlayback {
                     .session()
                     .audio_clip(clip)
                     .is_some_and(|clip| clip.track == track)
-                    || self
-                        .revision
-                        .session()
-                        .midi_clip(clip)
-                        .is_some_and(|clip| clip.track == track)
+                    || crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip(clip)
+                    .is_some_and(|clip| clip.track == track)
             }
             SessionPlaybackCommand::LaunchScene { scene, .. } => self
                 .revision
@@ -251,12 +252,7 @@ impl SessionPlayback {
             .arrangement_frame
             .checked_add(delta)
             .ok_or(Invalid("stream projection overflow"))?;
-        match self
-            .revision
-            .arrangement()
-            .loop_region()
-            .filter(|region| region.enabled())
-        {
+        match self.active_loop_region() {
             Some(region) => {
                 render::normalize_loop_cursor(frame, region, self.arrangement_loop_pass)
                     .map_err(|e| Invalid(e.diagnostic_message()))
@@ -278,7 +274,7 @@ impl SessionPlayback {
             };
             let is_audio = matches!(pending.target,RouteTarget::Session(clip) if self.revision.session().audio_clip(clip).is_some());
             let beat = if matches!(pending.target, RouteTarget::Session(_)) && !is_audio {
-                timing_view_for(self.revision.session(), self.periodic_tempo, anchor)
+                timing_view_for(self.revision.session(), self.periodic_tempo(), anchor)
                     .frame_to_beat(pending.frame)
                     .map_err(|_| Invalid("stream projected beat unavailable"))?
             } else {

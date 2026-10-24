@@ -19,6 +19,7 @@ impl Playback {
             tuning_audition,
             project,
             prepared_revision,
+            resident_pcm_publication,
             session_runtime,
             linear_runtime,
             session_unavailable,
@@ -27,7 +28,11 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
-        if tuning_audition.is_some() || linear_runtime.is_some() || session_unavailable.is_some() {
+        if resident_pcm_publication.is_some()
+            || tuning_audition.is_some()
+            || linear_runtime.is_some()
+            || session_unavailable.is_some()
+        {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let revision = prepared_revision

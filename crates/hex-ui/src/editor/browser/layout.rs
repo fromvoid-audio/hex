@@ -108,6 +108,7 @@ impl BrowserLayout {
 
 pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| super::super::transport::MiniTooltip {
+        kind: crate::tooltips::Kind::Identification,
         description: theme::text(label),
     })
     .into()
@@ -261,6 +262,7 @@ impl EditorView {
             })
             .tooltip(move |_, cx| {
                 cx.new(|_| super::super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: theme::text(if forward { "forward" } else { "back" }),
                 })
                 .into()
@@ -308,17 +310,18 @@ impl EditorView {
             .child(
                 self.browser_icon(
                     "⌗",
-                    "quantized sample input · nearest arrangement grid line · enter",
+                    "toggle input quantization · shared with midi recording · enter inserts on selected grid",
                     |view, _, cx| {
-                        view.browser.insert_quantized = !view.browser.insert_quantized;
+                        view.toggle_input_quantization();
                         cx.notify();
                     },
                     cx,
-                )
+                ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .debug_selector(|| "browser-insert-grid".to_owned())
-                .when(self.browser.insert_quantized, |button| {
-                    button.text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                }),
+                .when(
+                    self.input_quantization != hex_project::InputQuantization::Off,
+                    |button| button.text_color(rgb(theme::color(theme::PaletteRole::Primary))),
+                ),
             )
             .child(self.browser_icon(
                 "≡",
@@ -328,7 +331,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "⋮",
                 "show or hide tag editor",
@@ -337,7 +340,7 @@ impl EditorView {
                     cx.notify();
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
             .child(self.browser_icon(
                 "×",
                 "close browser · cmd+alt+b",
@@ -345,7 +348,7 @@ impl EditorView {
                     view.toggle_browser(window, cx);
                 },
                 cx,
-            ))
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)))
     }
 
     fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {

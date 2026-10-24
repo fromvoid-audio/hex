@@ -44,6 +44,7 @@ pub(super) struct LoopRailGesture {
     moved: bool,
     click_disqualified: bool,
     toggle_on_click: bool,
+    select_extent_on_click: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +70,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
             || self.save_dialog_open
@@ -113,6 +115,7 @@ impl EditorView {
                 moved: false,
                 click_disqualified: false,
                 toggle_on_click: modifiers.platform,
+                select_extent_on_click: super::time_selection::is_extent_selection_click(modifiers),
             });
             return true;
         }
@@ -141,6 +144,7 @@ impl EditorView {
             moved: false,
             click_disqualified: false,
             toggle_on_click: false,
+            select_extent_on_click: false,
         });
         true
     }
@@ -277,6 +281,17 @@ impl EditorView {
         {
             return true;
         }
+        if !gesture.click_disqualified && gesture.select_extent_on_click {
+            if let Some(region) = gesture.loop_region {
+                self.select_project_time_range(
+                    region.start(),
+                    region.end(),
+                    gesture.generation,
+                    gesture.revision,
+                );
+            }
+            return true;
+        }
         if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
             let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
             return true;
@@ -363,8 +378,8 @@ pub(super) fn view(
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
-                        description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free".into(),
+                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("loop range"),
+                        description: "drag empty rail to set loop · drag bar to move · shift-click selects range · shift-drag steps loop length · cmd-click toggles · cmd-drag is free".into(),
                     })
                     .into()
                 })
