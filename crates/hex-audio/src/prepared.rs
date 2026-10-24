@@ -1288,14 +1288,13 @@ impl PublicationControl {
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
     /// Configure this capability even for an initially resource-free project so a later sampler
     /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
-    /// clip PCM remains a separate conservative capacity allowance; its old graph is destroyed on
-    /// control before that allowance is released. Exact runtime leases may migrate into tails and
+    /// clip PCM uses exact control-owned backing records shared across publications. Each record
+    /// releases after its matching graph is destroyed on control. Runtime leases may migrate into tails and
     /// retain their source obligations across returns of the publication which introduced them.
     /// Graph publication for this entire output is permanently worker-owned. Client transport,
     /// Stop and observation remain available; its legacy raw graph-forwarding bridge refuses.
     /// Consumers must route every canonical graph edit, including the resource-free initial graph,
-    /// through the worker sink before enabling this capability. Configuring it alone in the current
-    /// app would strand legacy graph delivery; this API is not enabled by existing UI composition.
+    /// through the worker sink before enabling this capability, as the native resident adapter does.
     pub fn configure_device_resource_publication_on_control(
         &mut self,
         reservation: hex_engine::AudioStorageLedgerReservation,
