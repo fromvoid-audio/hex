@@ -789,7 +789,7 @@ impl EditorView {
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
                     .child(theme::text("main"))
-                    .child(self.section_focus_toggle(cx))
+                    .children([self.section_focus_toggle(cx)])
                     .child(div().flex_1())
                     .children([self.main_track_controls(cx)]),
             )
