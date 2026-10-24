@@ -34,7 +34,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok_or("instrument")?
             .state();
         let factory = hex_devices::operator_state::OPERATOR_METADATA
-            .prepare_instrument(state, 48000)?
+            .prepare_instrument(
+                state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )?
             .prepare_mutable_runtime()?
             .ok_or("factory")?;
         let start = Instant::now();

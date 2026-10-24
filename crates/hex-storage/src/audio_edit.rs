@@ -1,7 +1,8 @@
-//! Version-21 musical audio metadata adapter; no DSP or PCM persistence.
+//! Current musical/frozen audio metadata adapter; no DSP or PCM persistence.
 use crate::StorageError;
 use hex_project::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatTime, BeatsPreserve,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
+    AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
     BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
     WarpSettings,
 };
@@ -11,10 +12,86 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AudioEditDto {
+    #[serde(deserialize_with = "required_processing_projection")]
+    processing_projection: Option<ProcessingProjection>,
+    placement_start_offset: i8,
+    placement_end_offset: i8,
     domain: Domain,
     view_start: u64,
     view_end: u64,
-    musical_start_raw: Option<u64>,
+    timing: Timing,
+    #[serde(deserialize_with = "required_placement")]
+    placement: Option<Placement>,
+}
+fn required_processing_projection<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ProcessingProjection>, D::Error> {
+    Option::deserialize(d)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessingProjection {
+    sample_rate: u32,
+    #[serde(deserialize_with = "bounded_tempo_points")]
+    tempo_points: Vec<Point>,
+    origin_beat_raw: String,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Timing {
+    Frames,
+    Musical {
+        start_raw: u64,
+    },
+    Frozen {
+        reference_start_raw: String,
+        sample_rate: u32,
+        #[serde(deserialize_with = "bounded_tempo_points")]
+        tempo_points: Vec<Point>,
+    },
+}
+fn bounded_tempo_points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Point>, D::Error> {
+    struct Points;
+    impl<'de> serde::de::Visitor<'de> for Points {
+        type Value = Vec<Point>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("bounded frozen audio tempo points")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut points = Vec::new();
+            while let Some(point) = seq.next_element()? {
+                if points.len() == hex_project::MAX_TEMPO_POINTS {
+                    return Err(serde::de::Error::custom(
+                        "frozen audio tempo point limit exceeded",
+                    ));
+                }
+                points.push(point);
+            }
+            Ok(points)
+        }
+    }
+    d.deserialize_seq(Points)
+}
+fn required_placement<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Placement>, D::Error> {
+    Option::deserialize(d)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Placement {
+    mode: ViewMode,
+    outer_length: Clock,
+    cycle_phase: u64,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ViewMode {
+    Once,
+    Repeat,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +102,7 @@ struct Domain {
     looping: bool,
     clock: Clock,
     pitch_cents: i16,
+    sample_micro_bpm: Option<u32>,
     warp_enabled: bool,
     warp: Option<Warp>,
     source_gain: Vec<GainPoint>,
@@ -113,6 +191,23 @@ impl From<AudioClipEdit> for AudioEditDto {
     fn from(edit: AudioClipEdit) -> Self {
         let d = &edit.domain;
         Self {
+            placement_start_offset: edit.placement_start_offset,
+            placement_end_offset: edit.placement_end_offset,
+            processing_projection: edit.processing_projection.as_ref().map(|p| {
+                ProcessingProjection {
+                    sample_rate: p.tempo.sample_rate(),
+                    tempo_points: p
+                        .tempo
+                        .points()
+                        .iter()
+                        .map(|point| Point {
+                            beat_raw: point.beat().raw(),
+                            micro_bpm: point.tempo().micro_bpm(),
+                        })
+                        .collect(),
+                    origin_beat_raw: p.origin_beat_raw.to_string(),
+                }
+            }),
             domain: Domain {
                 source_offset: d.source_offset,
                 source_length: d.source_length,
@@ -125,6 +220,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                     },
                 },
                 pitch_cents: d.pitch_cents,
+                sample_micro_bpm: d.sample_bpm.map(Tempo::micro_bpm),
                 warp_enabled: d.warp_enabled,
                 warp: d.warp.as_ref().map(|warp| Warp {
                     mode: match warp.mode {
@@ -201,7 +297,40 @@ impl From<AudioClipEdit> for AudioEditDto {
             },
             view_start: edit.view_start,
             view_end: edit.view_end,
-            musical_start_raw: edit.musical_start.map(BeatTime::raw),
+            timing: match &edit.timing {
+                AudioClipTiming::Frames => Timing::Frames,
+                AudioClipTiming::Musical(start) => Timing::Musical {
+                    start_raw: start.raw(),
+                },
+                AudioClipTiming::Frozen {
+                    reference_start_raw,
+                    tempo,
+                } => Timing::Frozen {
+                    reference_start_raw: reference_start_raw.to_string(),
+                    sample_rate: tempo.sample_rate(),
+                    tempo_points: tempo
+                        .points()
+                        .iter()
+                        .map(|p| Point {
+                            beat_raw: p.beat().raw(),
+                            micro_bpm: p.tempo().micro_bpm(),
+                        })
+                        .collect(),
+                },
+            },
+            placement: edit.placement.map(|p| Placement {
+                mode: match p.mode {
+                    AudioViewMode::Once => ViewMode::Once,
+                    AudioViewMode::Repeat => ViewMode::Repeat,
+                },
+                outer_length: match p.outer_length {
+                    AudioDomainClock::Frames(length) => Clock::Frames { length },
+                    AudioDomainClock::Beats(length) => Clock::Beats {
+                        length_raw: length.raw(),
+                    },
+                },
+                cycle_phase: p.cycle_phase,
+            }),
         }
     }
 }
@@ -236,7 +365,8 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                     .origin_beat_raw
                     .parse::<i128>()
                     .map_err(|_| StorageError::Invalid("invalid audio fade projection origin"))?;
-                if !(-i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
+                // Match audio_projection_frame: consumed Once phase plus root offset.
+                if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
                     return Err(StorageError::Invalid(
                         "audio fade projection origin exceeds bounded range",
                     ));
@@ -290,7 +420,33 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                 })
                 .collect(),
         });
+        let processing_projection = dto
+            .processing_projection
+            .map(|p| -> Result<_, StorageError> {
+                let points = p
+                    .tempo_points
+                    .into_iter()
+                    .map(|point| {
+                        Tempo::new(point.micro_bpm)
+                            .map(|tempo| TempoPoint::new(BeatTime::from_raw(point.beat_raw), tempo))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| StorageError::Invalid(e.0))?;
+                let tempo =
+                    TempoMap::new(p.sample_rate, points).map_err(|e| StorageError::Invalid(e.0))?;
+                let origin_beat_raw = p.origin_beat_raw.parse::<i128>().map_err(|_| {
+                    StorageError::Invalid("invalid audio processing projection origin")
+                })?;
+                Ok(Arc::new(AudioProcessingProjection {
+                    tempo: Arc::new(tempo),
+                    origin_beat_raw,
+                }))
+            })
+            .transpose()?;
         Ok(AudioClipEdit {
+            processing_projection,
+            placement_start_offset: dto.placement_start_offset,
+            placement_end_offset: dto.placement_end_offset,
             domain: Arc::new(AudioClipDomain {
                 events: None,
                 source_offset: d.source_offset,
@@ -304,6 +460,11 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                     }
                 },
                 pitch_cents: d.pitch_cents,
+                sample_bpm: d
+                    .sample_micro_bpm
+                    .map(Tempo::new)
+                    .transpose()
+                    .map_err(|e| StorageError::Invalid(e.0))?,
                 warp_enabled: d.warp_enabled,
                 warp,
                 source_gain: d
@@ -320,7 +481,50 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             }),
             view_start: dto.view_start,
             view_end: dto.view_end,
-            musical_start: dto.musical_start_raw.map(BeatTime::from_raw),
+            timing: match dto.timing {
+                Timing::Frames => AudioClipTiming::Frames,
+                Timing::Musical { start_raw } => {
+                    AudioClipTiming::Musical(BeatTime::from_raw(start_raw))
+                }
+                Timing::Frozen {
+                    reference_start_raw,
+                    sample_rate,
+                    tempo_points,
+                } => {
+                    let reference_start_raw = reference_start_raw
+                        .parse::<i128>()
+                        .map_err(|_| StorageError::Invalid("invalid frozen audio reference"))?;
+                    let points = tempo_points
+                        .into_iter()
+                        .map(|p| {
+                            Tempo::new(p.micro_bpm)
+                                .map(|tempo| TempoPoint::new(BeatTime::from_raw(p.beat_raw), tempo))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| StorageError::Invalid(e.0))?;
+                    let tempo = TempoMap::new(sample_rate, points)
+                        .map_err(|e| StorageError::Invalid(e.0))?;
+                    hex_project::audio_projection_frame(&tempo, reference_start_raw)
+                        .map_err(|e| StorageError::Invalid(e.0))?;
+                    AudioClipTiming::Frozen {
+                        reference_start_raw,
+                        tempo: Arc::new(tempo),
+                    }
+                }
+            },
+            placement: dto.placement.map(|p| AudioViewPlacement {
+                mode: match p.mode {
+                    ViewMode::Once => AudioViewMode::Once,
+                    ViewMode::Repeat => AudioViewMode::Repeat,
+                },
+                outer_length: match p.outer_length {
+                    Clock::Frames { length } => AudioDomainClock::Frames(length),
+                    Clock::Beats { length_raw } => {
+                        AudioDomainClock::Beats(BeatTime::from_raw(length_raw))
+                    }
+                },
+                cycle_phase: p.cycle_phase,
+            }),
         })
     }
 }

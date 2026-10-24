@@ -87,7 +87,8 @@ struct TestPrompt {
 #[derive(Default)]
 pub(crate) struct TestPrompts {
     multiple_choice: VecDeque<TestPrompt>,
-    new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
+    new_path: VecDeque<(PathBuf, Option<String>, oneshot::Sender<Result<Option<PathBuf>>>)>,
+    paths: VecDeque<(Option<PathBuf>, oneshot::Sender<Result<Option<Vec<PathBuf>>>>)>,
 }
 
 impl TestPlatform {
@@ -131,7 +132,7 @@ impl TestPlatform {
         &self,
         select_path: impl FnOnce(&std::path::Path) -> Option<std::path::PathBuf>,
     ) {
-        let (path, tx) = self
+        let (path, _, tx) = self
             .prompts
             .borrow_mut()
             .new_path
@@ -157,6 +158,38 @@ impl TestPlatform {
             )
         };
         prompt.tx.send(ix).ok();
+    }
+
+    pub(crate) fn did_prompt_for_paths(&self) -> bool {
+        !self.prompts.borrow().paths.is_empty()
+    }
+
+    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
+        let (_, tx) = self
+            .prompts
+            .borrow_mut()
+            .paths
+            .pop_front()
+            .expect("no pending open paths prompt");
+        self.background_executor().set_waiting_hint(None);
+        tx.send(Ok(paths)).ok();
+    }
+
+    pub(crate) fn pending_open_directory(&self) -> Option<Option<PathBuf>> {
+        self.prompts.borrow().paths.front().map(|(directory, _)| directory.clone())
+    }
+    pub(crate) fn pending_save_options(&self) -> Option<(PathBuf, Option<String>)> {
+        self.prompts.borrow().new_path.front().map(|(directory, name, _)| (directory.clone(), name.clone()))
+    }
+    pub(crate) fn simulate_paths_error(&self, message: &str) {
+        let (_, tx) = self.prompts.borrow_mut().paths.pop_front().expect("pending open prompt");
+        self.background_executor().set_waiting_hint(None);
+        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
+    }
+    pub(crate) fn simulate_new_path_error(&self, message: &str) {
+        let (_, _, tx) = self.prompts.borrow_mut().new_path.pop_front().expect("pending save prompt");
+        self.background_executor().set_waiting_hint(None);
+        tx.send(Err(anyhow::anyhow!(message.to_owned()))).ok();
     }
 
     pub(crate) fn has_pending_prompt(&self) -> bool {
@@ -337,15 +370,26 @@ impl Platform for TestPlatform {
 
     fn prompt_for_paths(
         &self,
+        options: crate::PathPromptOptions,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.prompt_for_paths_with_directory(options, None)
+    }
+
+    fn prompt_for_paths_with_directory(
+        &self,
         _options: crate::PathPromptOptions,
-    ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
-        unimplemented!()
+        directory: Option<&Path>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        let (tx, rx) = oneshot::channel();
+        self.background_executor().set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
+        self.prompts.borrow_mut().paths.push_back((directory.map(Path::to_owned), tx));
+        rx
     }
 
     fn prompt_for_new_path(
         &self,
         directory: &std::path::Path,
-        _suggested_name: Option<&str>,
+        suggested_name: Option<&str>,
     ) -> oneshot::Receiver<Result<Option<std::path::PathBuf>>> {
         let (tx, rx) = oneshot::channel();
         self.background_executor()
@@ -353,7 +397,7 @@ impl Platform for TestPlatform {
         self.prompts
             .borrow_mut()
             .new_path
-            .push_back((directory.to_path_buf(), tx));
+            .push_back((directory.to_path_buf(), suggested_name.map(str::to_owned), tx));
         rx
     }
 

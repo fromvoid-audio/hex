@@ -97,12 +97,26 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
         assert!(!upgraded.nodes[39].enabled);
         assert_eq!(upgraded.nodes[39].q, 0.7);
         let mut legacy = definition
-            .prepare_processor(&old, 48000)
+            .prepare_processor(
+                &old,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap()
             .create_runtime();
         let mut new = EQ_DEFINITION
-            .prepare_processor(&upgraded.encode().unwrap(), 48000)
+            .prepare_processor(
+                &upgraded.encode().unwrap(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap()
             .create_runtime();
@@ -110,8 +124,8 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
         a[0] = [1.0, -0.25];
         a[99] = [0.5, 0.75];
         let mut b = a.clone();
-        legacy.process_block(&mut a);
-        new.process_block(&mut b);
+        legacy.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        new.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(a, b, "legacy five-bank PCM at mode {mode}");
     }
 }
@@ -250,7 +264,7 @@ fn audition_targets_stable_node_ids_and_survives_parameter_retarget() {
     assert!(old.transient_audition().unwrap().can_select(selection));
     old.transient_audition().unwrap().select(Some(selection));
     assert!(!old.is_quiescent());
-    old.process_block(&mut [[0.0; 2]; 300]);
+    old.process_block(&mut [[0.0; 2]; 300], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     state.remove(NodeId::new(100).unwrap()).unwrap();
     state.node_mut(NodeId::new(200).unwrap()).unwrap().gain_db = 3.0;
     let updated = runtime::PreparedEq::new(state, 48000).unwrap();
@@ -269,7 +283,7 @@ fn audition_targets_stable_node_ids_and_survives_parameter_retarget() {
             })
     );
     new.transient_audition().unwrap().select(None);
-    new.process_block(&mut [[0.0; 2]; 300]);
+    new.process_block(&mut [[0.0; 2]; 300], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(new.is_quiescent());
     new.transient_audition().unwrap().select(Some(selection));
     new.transient_audition().unwrap().cancel_immediately();
@@ -362,12 +376,20 @@ fn profile_max_density_eq() {
     let mut rt = prepared.create_runtime();
     let mut frames = [[0.01, -0.01]; 256];
     for b in 0..100 {
-        rt.process_block_with_clock(&mut frames, Some(&Clock(b * 256)));
+        rt.process_block_with_clock(
+            &mut frames,
+            Some(&Clock(b * 256)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
     let start = std::time::Instant::now();
     for b in 0..1000 {
         frames.fill([0.01, -0.01]);
-        rt.process_block_with_clock(&mut frames, Some(&Clock((b + 100) * 256)));
+        rt.process_block_with_clock(
+            &mut frames,
+            Some(&Clock((b + 100) * 256)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
     let elapsed = start.elapsed();
     eprintln!(
@@ -431,7 +453,7 @@ fn stopped_frozen_clock_preserves_authored_filter_history_like_unclocked_monitor
     let mut a = [[0.0; 2]; 257];
     a[0] = [1.0, -0.3];
     let mut b = a;
-    reference.process_block(&mut a);
+    reference.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for chunk in b.chunks_mut(17) {
         clocked.process_block_with_clock(
             chunk,
@@ -440,6 +462,7 @@ fn stopped_frozen_clock_preserves_authored_filter_history_like_unclocked_monitor
                 beat: 3 << 32,
                 running: false,
             }),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
         );
     }
     assert_eq!(a, b);
@@ -468,6 +491,7 @@ fn actual_parameter_retarget_refreshes_automated_target_between_cadence_points()
             beat: 0,
             running: true,
         }),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
     // Change an inactive bank to force a real configuration publication while
     // the audible node/automation is identical. Its output must not detour to
@@ -485,8 +509,8 @@ fn actual_parameter_retarget_refreshes_automated_target_between_cadence_points()
         beat: 0,
         running: true,
     };
-    reference.process_block_with_clock(&mut a, Some(&clock));
-    retargeted.process_block_with_clock(&mut b, Some(&clock));
+    reference.process_block_with_clock(&mut a, Some(&clock), &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    retargeted.process_block_with_clock(&mut b, Some(&clock), &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(a.iter().zip(b).all(|(a, b)| (a[0] - b[0]).abs() < 0.00001));
 }
 #[test]
@@ -501,7 +525,7 @@ fn plotted_response_matches_actual_cut_impulse_transform() {
     let mut rt = prepared.create_runtime();
     let mut frames = vec![[0.0; 2]; 16384];
     frames[0] = [1.0; 2];
-    rt.process_block(&mut frames);
+    rt.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for frequency in [200.0, 1000.0, 5000.0] {
         let (mut real, mut imaginary) = (0.0, 0.0);
         for (index, frame) in frames.iter().enumerate() {
@@ -518,6 +542,96 @@ fn plotted_response_matches_actual_cut_impulse_transform() {
     }
 }
 #[test]
+fn plotted_response_matches_actual_impulse_transform_across_shapes_rates_and_extremes() {
+    // Fixed before the UI sampling repair: 0.05db above -80db, otherwise
+    // absolute linear 1e-5. An unsettled impulse is not an acceptable oracle.
+    let mut cases = 0;
+    let mut maximum_db_error = 0.0_f64;
+    for rate in [8000, 44100, 48000, 96000, 192000] {
+        for kind in [
+            NodeKind::Bell,
+            NodeKind::LowShelf,
+            NodeKind::HighShelf,
+            NodeKind::LowCut,
+            NodeKind::HighCut,
+            NodeKind::Notch,
+        ] {
+            let slopes = if matches!(kind, NodeKind::LowCut | NodeKind::HighCut) {
+                4
+            } else {
+                1
+            };
+            for slope in 0..slopes {
+                for (frequency, q, gain) in [
+                    (20.0, 0.1, -12.0),
+                    (1000.0, 18.0, 12.0),
+                    ((rate as f32 * 0.45).min(18000.0), 18.0, -12.0),
+                ] {
+                    let mut settings = EqState::default();
+                    let mut band = node(1);
+                    band.kind = kind;
+                    band.slope = slope;
+                    band.frequency_hz = frequency;
+                    band.q = q;
+                    band.gain_db = gain;
+                    settings.add(band).unwrap();
+                    let prepared = runtime::PreparedEq::new(settings, rate).unwrap();
+                    let mut rt = prepared.create_runtime();
+                    // The original 131072-frame audit was inconclusive for the
+                    // overdamped 20hz/high-rate bell. Extend its measurement
+                    // window, preserving both original evidence and tolerances.
+                    let length = if frequency == 20.0 { 1048576 } else { 131072 };
+                    let mut frames = vec![[0.0; 2]; length];
+                    frames[0] = [1.0, -1.0];
+                    rt.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                    assert!(
+                        frames[frames.len() - 256..]
+                            .iter()
+                            .flatten()
+                            .all(|v| v.abs() < 1e-8),
+                        "unsettled impulse: {rate}/{kind:?}/{slope}/{frequency}/{q}"
+                    );
+                    assert!(
+                        frames.iter().all(|f| f[0].is_finite() && f[0] == -f[1]),
+                        "stereo polarity must not cancel independent channel processing"
+                    );
+                    for query in [frequency * 0.37, frequency, frequency * 1.73] {
+                        if query >= rate as f32 * 0.5 {
+                            continue;
+                        }
+                        let (mut real, mut imaginary) = (0.0, 0.0);
+                        for (index, frame) in frames.iter().enumerate() {
+                            let angle = std::f64::consts::TAU * f64::from(query) * index as f64
+                                / f64::from(rate);
+                            real += f64::from(frame[0]) * angle.cos();
+                            imaginary -= f64::from(frame[0]) * angle.sin();
+                        }
+                        let actual = real.hypot(imaginary);
+                        let shown = f64::from(prepared.frequency_response_at_hz(query).unwrap()[0]);
+                        if actual > 0.0001 {
+                            let error = (20.0 * (shown / actual).log10()).abs();
+                            maximum_db_error = maximum_db_error.max(error);
+                            assert!(
+                                error < 0.05,
+                                "response error {error}db at {rate}/{kind:?}/{slope}/{frequency}/{q} query{query}"
+                            );
+                        } else {
+                            assert!(
+                                (shown - actual).abs() < 0.00001,
+                                "deep transfer differs at {query}hz"
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "pcm response audit: {cases} queries, maximum relative error {maximum_db_error}db; opposite polarity and settled tails verified"
+    );
+}
+#[test]
 fn normalized_automation_endpoints_stay_inside_every_descriptor_domain() {
     let id = NodeId::new(1).unwrap();
     for field in NodeParameter::ALL {
@@ -528,4 +642,104 @@ fn normalized_automation_endpoints_stay_inside_every_descriptor_domain() {
                 .unwrap();
         }
     }
+}
+
+#[test]
+fn declared_semantics_follow_node_identity_and_existing_normalized_laws() {
+    use hex_lattice_contract::{ParameterAutomation as A, validated_parameter_semantics};
+    let mut settings = EqState::default();
+    settings.add(node(7)).unwrap();
+    settings.add(node(12)).unwrap();
+    let id = NodeId::new(7).unwrap();
+    let original = settings.encode().unwrap();
+    for field in NodeParameter::ALL {
+        let parameter = id.parameter(field).unwrap();
+        let semantics = validated_parameter_semantics(&EQ_DEFINITION, &original, parameter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(semantics.automation, A::DeviceArrangementEnvelope);
+        for n in [0.0, 0.125, 0.25, 0.5, 0.9, 1.0] {
+            let expected = field.value(n);
+            let actual = semantics
+                .normalization
+                .denormalize(descriptor(id, field).unwrap(), n)
+                .unwrap();
+            match (actual, expected) {
+                (ParameterValue::Float(a), ParameterValue::Float(b)) => {
+                    assert!((a - b).abs() <= b.abs().max(1.0) * 2e-6)
+                }
+                (a, b) => assert_eq!(a, b),
+            }
+            let actual = semantics
+                .normalization
+                .normalize(descriptor(id, field).unwrap(), expected)
+                .unwrap();
+            assert!((actual - field.normalized(expected).unwrap()).abs() < 2e-6);
+        }
+    }
+    let parameter = id.parameter(NodeParameter::Frequency).unwrap();
+    let before = validated_parameter_semantics(&EQ_DEFINITION, &original, parameter).unwrap();
+    settings.nodes.swap(0, 1);
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &settings.encode().unwrap(), parameter)
+            .unwrap(),
+        before
+    );
+    settings.remove(id).unwrap();
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &settings.encode().unwrap(), parameter),
+        Err(DeviceContractError::UnknownParameter)
+    );
+    assert!(settings.add(node(7)).is_err());
+    settings.add(node(13)).unwrap();
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &settings.encode().unwrap(), parameter),
+        Err(DeviceContractError::UnknownParameter)
+    );
+}
+
+#[test]
+fn legacy_shelf_semantics_report_actual_lane_refusals_without_disabling_authored_values() {
+    use hex_lattice_contract::{ParameterAutomation as A, validated_parameter_semantics};
+    let mut settings = EqState::default();
+    let mut shelf = node(3);
+    shelf.kind = NodeKind::LowShelf;
+    shelf.legacy_shelf = true;
+    settings.add(shelf).unwrap();
+    let state = settings.encode().unwrap();
+    for field in [NodeParameter::Kind, NodeParameter::Gain, NodeParameter::Q] {
+        let semantics = validated_parameter_semantics(
+            &EQ_DEFINITION,
+            &state,
+            shelf.id.parameter(field).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(semantics.automation, A::Unsupported);
+        assert!(
+            settings
+                .set_lane(AutomationLane {
+                    node: shelf.id,
+                    parameter: field,
+                    points: vec![AutomationPoint {
+                        beat: 0,
+                        normalized: 0.5
+                    }]
+                })
+                .is_err()
+        );
+    }
+    let frequency = shelf.id.parameter(NodeParameter::Frequency).unwrap();
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &state, frequency)
+            .unwrap()
+            .unwrap()
+            .automation,
+        A::DeviceArrangementEnvelope
+    );
+    assert!(
+        EQ_DEFINITION
+            .parameter_enabled(&state, shelf.id.parameter(NodeParameter::Gain).unwrap())
+            .unwrap()
+    );
 }

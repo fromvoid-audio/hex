@@ -79,8 +79,11 @@ fn fixture(mute_audio: bool, solo_instrument: bool) -> PlaybackProject {
         .expect("second fades");
 
     let instrument = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "instrument".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("instrument track")
     {

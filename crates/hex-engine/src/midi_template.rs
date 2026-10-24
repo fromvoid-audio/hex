@@ -4,13 +4,16 @@
 //! Queries borrow a prepared tempo map and write into fixed caller-owned
 //! storage. The template ignores finite Arrangement duration by design.
 use crate::{MidiTiming, midi_compile::MidiEventKind};
+mod current_sampler;
 mod density;
+mod origin;
+pub use origin::SessionMidiOrigin;
 mod spans;
 use density::{DensityEnvelope, DensityEvent, admit_density};
 use hex_project::{
     BeatTime, ClipId, MidiClip, MidiNote, MidiSource, MidiSourcePlayback, NoteId, TrackId,
 };
-pub(crate) use spans::MidiOccurrenceSuppression;
+pub(crate) use spans::{MidiOccurrenceSuppression, PreparedMidiGateTemplate};
 
 /// Maximum frame width accepted by one ongoing MIDI edge query.
 pub const MIDI_TEMPLATE_QUERY_FRAMES: u64 = 256;
@@ -127,11 +130,7 @@ pub(crate) fn session_source_note_has_occurrence(source: &MidiSource, note: &Mid
 }
 
 fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
-    let intro_end = if source.looping() {
-        source.loop_end().raw()
-    } else {
-        source.source_length().raw()
-    };
+    let intro_end = source.effective_end().raw();
     note.start().raw() >= source.source_start().raw() && note.start().raw() < intro_end
 }
 
@@ -151,7 +150,7 @@ pub(crate) struct SourceOccurrence {
 }
 
 struct QueryContext<'a, T: MidiTiming + ?Sized> {
-    launch_raw: u128,
+    origin: SessionMidiOrigin,
     timing: &'a T,
     start_frame: u64,
     end_frame: u64,
@@ -190,6 +189,7 @@ pub struct PreparedMidiSourceTemplate {
     admitted_max_micro_bpm: u64,
     first_pass: u64,
     period: Option<u64>,
+    source: MidiSourcePlayback,
     intro: Vec<SourceEdge>,
     repeats: Vec<SourceEdge>,
     intro_spans: Vec<SourceSpan>,
@@ -226,15 +226,26 @@ impl PreparedMidiSourceTemplate {
     ) -> Result<Self, MidiTemplateError> {
         let sample_rate = timing.sample_rate();
         let max_micro_bpm = timing.max_micro_bpm();
-        let source = MidiSourcePlayback::new(
-            source_data.source_length(),
-            source_data.source_start(),
-            source_data
-                .looping()
-                .then_some((source_data.loop_start(), source_data.loop_end())),
-            source_data.source_length(),
-        )
-        .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+        Self::prepare_source_admitted(track, clip, source_data, sample_rate, max_micro_bpm)
+    }
+
+    /// Constructor preparation needs only these validated admission bounds;
+    /// runtime queries still borrow the actual prepared musical clock.
+    pub(crate) fn prepare_source_admitted(
+        track: TrackId,
+        clip: ClipId,
+        source_data: &MidiSource,
+        sample_rate: u32,
+        max_micro_bpm: u64,
+    ) -> Result<Self, MidiTemplateError> {
+        if sample_rate == 0 || max_micro_bpm == 0 {
+            return Err(MidiTemplateError::InvalidSource(
+                "invalid midi admission timing",
+            ));
+        }
+        let source = source_data
+            .playback_for_duration(source_data.source_length())
+            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
         let source_start = source.source_start().raw();
         let first_pass = if let Some((_, loop_end)) = source.loop_range() {
             loop_end
@@ -243,7 +254,7 @@ impl PreparedMidiSourceTemplate {
                 .ok_or(MidiTemplateError::ArithmeticOverflow)?
         } else {
             source
-                .source_length()
+                .initial_end()
                 .raw()
                 .checked_sub(source_start)
                 .ok_or(MidiTemplateError::ArithmeticOverflow)?
@@ -279,9 +290,7 @@ impl PreparedMidiSourceTemplate {
         repeat_spans
             .try_reserve_exact(source_data.notes().len())
             .map_err(|_| MidiTemplateError::Allocation)?;
-        let intro_end = source
-            .loop_range()
-            .map_or(source.source_length().raw(), |(_, loop_end)| loop_end.raw());
+        let intro_end = source.initial_end().raw();
 
         for note in source_data.notes() {
             let note_start = note.start().raw();
@@ -354,6 +363,7 @@ impl PreparedMidiSourceTemplate {
             admitted_max_micro_bpm: max_micro_bpm,
             first_pass,
             period,
+            source,
             intro,
             repeats,
             intro_spans,
@@ -370,15 +380,30 @@ impl PreparedMidiSourceTemplate {
         self.track
     }
 
-    /// Resolve one source-relative note occurrence using the preparation-time
-    /// NoteId index. The handoff path uses this to compare a carried voice with
-    /// its candidate revision without rescanning authored notes.
-    pub(crate) fn occurrence(
+    /// Resolve one occurrence in global performance coordinates. Historical
+    /// onsets are refused before gate projection, matching no-chase queries.
+    pub(crate) fn occurrence_with_origin(
         &self,
         note: NoteId,
         iteration: u64,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
     ) -> Option<SourceOccurrence> {
+        let (span, base) = self.occurrence_span(note, iteration)?;
+        let onset = origin
+            .project(base.checked_add(u128::from(span.start))?)
+            .ok()??;
+        let gate_end = origin
+            .project(base.checked_add(u128::from(span.gate_end))?)
+            .ok()??;
+        Some(SourceOccurrence {
+            onset: BeatTime::from_raw(onset),
+            gate_end: BeatTime::from_raw(gate_end),
+            pitch: span.pitch,
+            channel: span.channel,
+            velocity: span.velocity,
+        })
+    }
+    fn occurrence_span(&self, note: NoteId, iteration: u64) -> Option<(SourceSpan, u128)> {
         let (spans, base) = if iteration == 0 {
             (&self.intro_spans, 0_u128)
         } else {
@@ -392,19 +417,23 @@ impl PreparedMidiSourceTemplate {
             .binary_search_by_key(&note, |span| span.note)
             .ok()
             .and_then(|index| spans.get(index))?;
-        let onset = u128::from(launch.raw())
-            .checked_add(base)?
-            .checked_add(u128::from(span.start))?;
-        let gate_end = u128::from(launch.raw())
-            .checked_add(base)?
-            .checked_add(u128::from(span.gate_end))?;
-        Some(SourceOccurrence {
-            onset: BeatTime::from_raw(u64::try_from(onset).ok()?),
-            gate_end: BeatTime::from_raw(u64::try_from(gate_end).ok()?),
-            pitch: span.pitch,
-            channel: span.channel,
-            velocity: span.velocity,
-        })
+        Some((*span, base))
+    }
+
+    /// Earliest elapsed occurrence of a source-local cue, even in blank source
+    /// time. Canonical projection owns intro/repeat/skipped-source semantics.
+    pub fn earliest_elapsed_for_source(
+        &self,
+        source_beat: BeatTime,
+    ) -> Result<Option<BeatTime>, MidiTemplateError> {
+        let plan = self
+            .source
+            .note_occurrences(source_beat, BeatTime::from_raw(1))
+            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+        Ok(plan
+            .iter()
+            .next()
+            .map(|occurrence| occurrence.timeline_start()))
     }
 
     /// Conservative admitted maximum of edges in one bounded query window.
@@ -430,9 +459,28 @@ impl PreparedMidiSourceTemplate {
         end_frame: u64,
         buffer: &mut MidiEdgeBuffer,
     ) -> Result<(), MidiTemplateError> {
+        self.query_with_origin(
+            SessionMidiOrigin::launch(launch),
+            timing,
+            start_frame,
+            end_frame,
+            buffer,
+        )
+    }
+
+    /// Query on the existing performance clock from an inclusive elapsed cue.
+    /// Pre-cue onsets and their paired NoteOffs are excluded before conversion.
+    pub fn query_with_origin<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        start_frame: u64,
+        end_frame: u64,
+        buffer: &mut MidiEdgeBuffer,
+    ) -> Result<(), MidiTemplateError> {
         buffer.len = 0;
         buffer.onsets = 0;
-        let result = self.query_inner(launch, timing, start_frame, end_frame, buffer);
+        let result = self.query_inner(origin, timing, start_frame, end_frame, buffer);
         if result.is_err() {
             buffer.len = 0;
             buffer.onsets = 0;
@@ -442,7 +490,7 @@ impl PreparedMidiSourceTemplate {
 
     fn query_inner<T: MidiTiming + ?Sized>(
         &self,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
         timing: &T,
         start_frame: u64,
         end_frame: u64,
@@ -470,24 +518,15 @@ impl PreparedMidiSourceTemplate {
         let upper = timing
             .beat_lower_bound_for_frame(end_frame)
             .map_err(|_| MidiTemplateError::TempoConversion)?;
-        if upper <= u128::from(launch.raw()) {
-            return Ok(());
-        }
         if lower == hex_project::TempoMap::BEAT_RANGE_SENTINEL {
             return Err(MidiTemplateError::BeatDomainExhausted);
         }
-        let launch_raw = u128::from(launch.raw());
-        let relative_start = lower.max(launch_raw) - launch_raw;
-        let relative_end = upper.saturating_sub(launch_raw);
-        if relative_start >= relative_end {
+        let Some((relative_start, relative_end)) = origin.query_bounds(lower, upper)? else {
             return Ok(());
-        }
-        if relative_start > u128::from(u64::MAX) || relative_end > u128::from(u64::MAX) + 1 {
-            return Err(MidiTemplateError::BeatDomainExhausted);
-        }
+        };
 
         let mut context = QueryContext {
-            launch_raw,
+            origin,
             timing,
             start_frame,
             end_frame,
@@ -519,11 +558,7 @@ impl PreparedMidiSourceTemplate {
             .intro
             .partition_point(|edge| u128::from(edge.phase) < relative_end);
         for edge in &self.intro[begin..end] {
-            let absolute = context
-                .launch_raw
-                .checked_add(u128::from(edge.phase))
-                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-            self.push_edge(*edge, 0, absolute, context)?;
+            self.push_edge(*edge, 0, u128::from(edge.phase), context)?;
         }
         Ok(())
     }
@@ -579,15 +614,11 @@ impl PreparedMidiSourceTemplate {
                 let relative = base
                     .checked_add(u128::from(edge.phase))
                     .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-                let absolute = context
-                    .launch_raw
-                    .checked_add(relative)
-                    .ok_or(MidiTemplateError::BeatDomainExhausted)?;
                 let repeat_number = u64::try_from(iteration)
                     .map_err(|_| MidiTemplateError::BeatDomainExhausted)?
                     .checked_add(1)
                     .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-                self.push_edge(*edge, repeat_number, absolute, context)?;
+                self.push_edge(*edge, repeat_number, relative, context)?;
             }
             iteration = iteration
                 .checked_add(1)
@@ -600,11 +631,25 @@ impl PreparedMidiSourceTemplate {
         &self,
         edge: SourceEdge,
         iteration: u64,
-        absolute_raw: u128,
+        elapsed: u128,
         context: &mut QueryContext<'_, T>,
     ) -> Result<(), MidiTemplateError> {
-        let raw =
-            u64::try_from(absolute_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
+        // NoteOff is admissible only if its paired onset belongs to this cue.
+        // Ordinary launches need no lookup; cued offs reuse the prepared NoteId index.
+        if context.origin.elapsed_at_anchor != BeatTime::ZERO && !edge.is_onset() {
+            let (span, base) = self.occurrence_span(edge.note, iteration).ok_or(
+                MidiTemplateError::InvalidSource("midi edge has no paired onset"),
+            )?;
+            let onset = base
+                .checked_add(u128::from(span.start))
+                .ok_or(MidiTemplateError::BeatDomainExhausted)?;
+            if onset < u128::from(context.origin.elapsed_at_anchor.raw()) {
+                return Ok(());
+            }
+        }
+        let Some(raw) = context.origin.project(elapsed)? else {
+            return Ok(());
+        };
         let frame = context
             .timing
             .beat_to_frame(BeatTime::from_raw(raw))
@@ -655,11 +700,14 @@ impl SourceSpan {
     }
 }
 
+pub(crate) use spans::{
+    CurrentSamplerEventCustody, MidiReleaseVoice, TransportDensitySpan,
+    admit_transport_loop_density,
+};
 pub use spans::{
     MIDI_SPAN_BUFFER_CAPACITY, MidiInstrumentRenderContext, MidiRenderSpan, MidiSpanBuffer,
     PreparedMidiInstrumentTemplate,
 };
-pub(crate) use spans::{MidiReleaseVoice, TransportDensitySpan, admit_transport_loop_density};
 
 /// Fixed-capacity output storage reusable across stateless edge queries.
 #[derive(Clone, Debug)]

@@ -137,6 +137,7 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
             .execute(Command::ReplaceTrackGainEnvelope {
                 track,
                 points: vec![hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 1.0,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -319,8 +320,25 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
 
 #[test]
 fn transformed_warp_root_gain_lane_and_playable_routing_match_native_linear_and_export() {
+    use hex_project::{BeatsPreserve, BeatsTail, WarpMode};
+    for mode in [
+        WarpMode::Texture {
+            grain_ms: 8,
+            fluctuation: 25,
+            seed: 37,
+        },
+        WarpMode::Beats {
+            preserve: BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    ] {
+        assert_transformed_warp_export(mode);
+    }
+}
+fn assert_transformed_warp_export(mode: hex_project::WarpMode) {
     use hex_project::{
-        BeatTime, GainInterpolation, GainPoint, RoutingOwner, SourceGainPoint, Tempo, WarpMode,
+        BeatTime, GainInterpolation, GainPoint, RoutingOwner, SourceGainPoint, Tempo,
         default_audio_warp,
     };
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 32).unwrap();
@@ -363,11 +381,7 @@ fn transformed_warp_root_gain_lane_and_playable_routing_match_native_linear_and_
     let settings = default_audio_warp(
         editor.project().clip(clip).unwrap(),
         editor.project().tempo_map(),
-        WarpMode::Texture {
-            grain_ms: 8,
-            fluctuation: 25,
-            seed: 37,
-        },
+        mode,
     )
     .unwrap();
     editor
@@ -424,11 +438,13 @@ fn transformed_warp_root_gain_lane_and_playable_routing_match_native_linear_and_
             track,
             points: vec![
                 GainPoint {
+                    incoming_gain: None,
                     beat: BeatTime::ZERO,
                     gain: 0.25,
                     outgoing: GainInterpolation::Linear,
                 },
                 GainPoint {
+                    incoming_gain: None,
                     beat: BeatTime::ONE,
                     gain: 0.75,
                     outgoing: GainInterpolation::Step,

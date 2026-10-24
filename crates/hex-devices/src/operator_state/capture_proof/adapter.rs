@@ -11,7 +11,14 @@ impl Root {
     pub fn new(key: Key, state: &NativeDeviceState, rate: u32) -> Self {
         assert!(key.valid());
         let context = OPERATOR_METADATA
-            .prepare_instrument(state, rate)
+            .prepare_instrument(
+                state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .prepare_shared_analytic_context()
             .unwrap()
@@ -66,7 +73,10 @@ impl Root {
             .analytic_continuation()?
             .validate_note(note)
             .ok()?;
-        Some(self.context.sample(note, age, gate))
+        Some(
+            self.context
+                .sample(note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        )
     }
     pub fn compatible(&self, target: &Self) -> bool {
         let a = self.operator();

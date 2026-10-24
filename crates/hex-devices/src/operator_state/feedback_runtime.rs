@@ -470,6 +470,7 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         if events.len() > MAX_EVENTS {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -570,7 +571,12 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         Ok(())
     }
 
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         // The lattice pair calls this only after generic and device preflight.
         // The exact immutable configuration and events were validated there;
         // admitted note construction and sampling are allocation-free.
@@ -751,6 +757,7 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        tuning: None,
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,
@@ -840,9 +847,9 @@ mod tests {
             }
             let block = &mut output[frame..frame + length];
             runtime
-                .preflight_events(&events, length)
+                .preflight_events(&events, length, &hex_lattice::EMPTY_DEVICE_RESOURCES)
                 .expect("accepted bounded event block");
-            runtime.process_block(&events, block);
+            runtime.process_block(&events, block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             for (local, sample) in expected[frame..frame + length].iter_mut().enumerate() {
                 let absolute = frame + local;
                 if absolute == 200 {
@@ -905,7 +912,7 @@ mod tests {
             });
         }
         assert_eq!(
-            runtime.preflight_events(&events, 1),
+            runtime.preflight_events(&events, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
             Err(NativeInstrumentRuntimeError::EventCapacityExceeded)
         );
         let one = [NativeInstrumentEvent::NoteOn {
@@ -915,7 +922,7 @@ mod tests {
             velocity: 100,
         }];
         runtime
-            .preflight_events(&one, 1)
+            .preflight_events(&one, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
             .expect("failed preflight leaves every slot available");
     }
 
@@ -958,27 +965,43 @@ mod tests {
         ];
         let mut initial = [[0.0; 2]; 17];
         source
-            .preflight_events(&initial_events, initial.len())
+            .preflight_events(
+                &initial_events,
+                initial.len(),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
             .expect("initial notes fit");
-        source.process_block(&initial_events, &mut initial);
+        source.process_block(
+            &initial_events,
+            &mut initial,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let note_off = [NativeInstrumentEvent::NoteOff {
             frame_offset: 0,
             occurrence_id: 1,
         }];
         let mut release = [[0.0; 2]; 9];
         source
-            .preflight_events(&note_off, release.len())
+            .preflight_events(
+                &note_off,
+                release.len(),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
             .expect("note off accepted");
-        source.process_block(&note_off, &mut release);
+        source.process_block(
+            &note_off,
+            &mut release,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
 
         let mut ramped = middle.create_runtime();
         assert!(ramped.can_retarget_history_from(source.as_ref(), proof.as_ref()));
         ramped.retarget_history_from(source.as_ref(), proof.as_ref());
         let mut first_ramp = [[0.0; 2]; 31];
         ramped
-            .preflight_events(&[], first_ramp.len())
+            .preflight_events(&[], first_ramp.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
             .expect("empty events");
-        ramped.process_block(&[], &mut first_ramp);
+        ramped.process_block(&[], &mut first_ramp, &hex_lattice::EMPTY_DEVICE_RESOURCES);
 
         let InstrumentHistoryRetargetPreparation::Prepared(second_proof) = target
             .prepare_history_retarget_target()
@@ -1006,9 +1029,17 @@ mod tests {
         ];
         let mut joined = [[0.0; 2]; 13];
         retargeted
-            .preflight_events(&same_offset, joined.len())
+            .preflight_events(
+                &same_offset,
+                joined.len(),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
             .expect("same-offset note joins shared ramp before note-off");
-        retargeted.process_block(&same_offset, &mut joined);
+        retargeted.process_block(
+            &same_offset,
+            &mut joined,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
 
         let mut exact_copy = target.create_runtime();
         assert!(exact_copy.can_copy_history_from(retargeted.as_ref()));
@@ -1016,13 +1047,13 @@ mod tests {
         let mut continued = [[0.0; 2]; 97];
         let mut copied = continued;
         retargeted
-            .preflight_events(&[], continued.len())
+            .preflight_events(&[], continued.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
             .expect("continuation");
         exact_copy
-            .preflight_events(&[], copied.len())
+            .preflight_events(&[], copied.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
             .expect("copied continuation");
-        retargeted.process_block(&[], &mut continued);
-        exact_copy.process_block(&[], &mut copied);
+        retargeted.process_block(&[], &mut continued, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        exact_copy.process_block(&[], &mut copied, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(
             continued, copied,
             "active-ramp exact copy must preserve future PCM"
@@ -1086,7 +1117,11 @@ mod tests {
             },
         ];
         assert_eq!(
-            runtime.preflight_events(&near_limit, usize::MAX),
+            runtime.preflight_events(
+                &near_limit,
+                usize::MAX,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            ),
             Err(NativeInstrumentRuntimeError::InvalidEventBatch)
         );
 
@@ -1097,7 +1132,7 @@ mod tests {
             velocity: 100,
         }];
         runtime
-            .preflight_events(&retry, 1)
+            .preflight_events(&retry, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
             .expect("overflow refusal leaves runtime slots unchanged");
     }
 

@@ -27,8 +27,11 @@ fn source_only_midi_fanout_launch_release_relaunch_and_handoff_have_no_callback_
     let mut tracks = Vec::new();
     for _ in 0..3 {
         let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "midi".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {

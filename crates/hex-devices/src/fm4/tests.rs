@@ -30,7 +30,7 @@ fn packed_analytic_note_matches_standalone_kernel_through_release() {
     .unwrap();
     let analytic = prepared.into_analytic_note();
     assert_eq!(analytic.release_frames(), prepared.release_frames());
-    assert_eq!(std::mem::size_of_val(&analytic), 344);
+    assert_eq!(std::mem::size_of_val(&analytic), 352);
     // Include zero/early gates during attack and decay, as well as sustain.
     for gate in [0, 1, 72, 500, 2_400] {
         for age in [
@@ -46,7 +46,7 @@ fn packed_analytic_note_matches_standalone_kernel_through_release() {
         ] {
             let expected = prepared.sample(&table, age, gate);
             assert_eq!(
-                analytic.sample(age, gate),
+                analytic.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
                 [expected, expected],
                 "age={age}, gate={gate}"
             );
@@ -159,8 +159,14 @@ fn assert_matches_previous_full_evaluation(
                     prepared.sample(&table, age, gate).to_bits(),
                     previous.to_bits()
                 );
-                assert_eq!(packed.sample(age, gate)[0].to_bits(), previous.to_bits());
-                assert_eq!(packed.sample(age, gate)[1].to_bits(), previous.to_bits());
+                assert_eq!(
+                    packed.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)[0].to_bits(),
+                    previous.to_bits()
+                );
+                assert_eq!(
+                    packed.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)[1].to_bits(),
+                    previous.to_bits()
+                );
             }
         }
     }

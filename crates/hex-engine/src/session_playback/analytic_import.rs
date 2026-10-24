@@ -260,7 +260,7 @@ impl SessionPlayback {
                     return Err(e);
                 }
             }
-            RouteOwner::Session { clip, launch } => {
+            RouteOwner::Session { clip, origin } => {
                 let prepared = previous
                     .revision
                     .session()
@@ -271,17 +271,19 @@ impl SessionPlayback {
                     .checked_add(1)
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                 if let Some(floor) = previous.historical_floor_for(old_index) {
-                    prepared.instrument_template().query_after_onset(
-                        launch,
-                        clock,
-                        previous.performance_frame,
-                        end,
-                        spans,
-                        floor,
-                    )
+                    prepared
+                        .instrument_template()
+                        .query_after_onset_with_origin(
+                            origin,
+                            clock,
+                            previous.performance_frame,
+                            end,
+                            spans,
+                            floor,
+                        )
                 } else {
-                    prepared.instrument_template().query(
-                        launch,
+                    prepared.instrument_template().query_with_origin(
+                        origin,
                         clock,
                         previous.performance_frame,
                         end,

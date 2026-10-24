@@ -67,8 +67,12 @@ impl NativeInstrumentDefinition for ProbeInstrumentDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if sample_rate != RATE || state.type_id() != MUTABLE_TYPE || state.state_version() != 1 {
             return Err(DeviceContractError::MalformedState);
         }
@@ -145,6 +149,7 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         if events.len() > 256 || frame_count > 256 {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -153,6 +158,10 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         let mut previous_offset = 0;
         for event in events.iter().copied() {
             let (offset, occurrence, note_on, pitch) = match event {
+                // This note-only stack fixture has no controller transfer law.
+                NativeInstrumentEvent::Expression { .. } => {
+                    return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
                 NativeInstrumentEvent::NoteOn {
                     frame_offset,
                     occurrence_id,
@@ -208,7 +217,12 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         Ok(())
     }
 
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {
@@ -288,5 +302,23 @@ impl MutableInstrumentRuntime for ProbeRuntime {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn note_only_stack_probe_refuses_expression_before_state_changes() {
+        let runtime = ProbeRuntime::default();
+        let events = [NativeInstrumentEvent::Expression {
+            frame_offset: 0,
+            expression: hex_lattice::NativeInstrumentExpression::ModWheel(127),
+        }];
+        assert_eq!(
+            runtime.preflight_events(&events, 64, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert!(runtime.is_quiescent());
     }
 }

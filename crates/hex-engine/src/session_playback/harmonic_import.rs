@@ -218,7 +218,7 @@ pub(super) fn at_cut(
                 return Err(error);
             }
         }
-        RouteOwner::Session { clip, launch } => {
+        RouteOwner::Session { clip, origin } => {
             let clip = previous
                 .revision
                 .session()
@@ -238,10 +238,10 @@ pub(super) fn at_cut(
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             if let Some(floor) = previous.historical_floor_for(index) {
                 clip.instrument_template()
-                    .query_after_onset(launch, &clock, frame, end, spans, floor)
+                    .query_after_onset_with_origin(origin, &clock, frame, end, spans, floor)
             } else {
                 clip.instrument_template()
-                    .query(launch, &clock, frame, end, spans)
+                    .query_with_origin(origin, &clock, frame, end, spans)
             }
             .map_err(SessionPlaybackError::Midi)?;
             for span in spans.spans() {

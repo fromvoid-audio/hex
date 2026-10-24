@@ -51,7 +51,7 @@ struct Event {
 #[derive(Serialize)]
 pub(crate) struct Document<'a> {
     #[serde(flatten)]
-    base: super::appearance::DocumentV27,
+    pub(super) base: super::appearance::DocumentV27,
     audio_event_state: Vec<EncodeState<'a>>,
 }
 #[derive(Serialize)]
@@ -108,6 +108,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
 pub(crate) fn decode_legacy(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 27)
 }
+pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    if !(26..=28).contains(&version) {
+        return Err(StorageError::Invalid(
+            "invalid historical audio event version",
+        ));
+    }
+    decode_version(bytes, u64::from(version))
+}
 fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
@@ -131,10 +139,11 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     }
     object.insert("version".into(), (version - 1).into());
     let bytes = serde_json::to_vec(&value)?;
-    let base = if version == 28 {
-        super::appearance::DocumentV27::decode(&bytes)?
-    } else {
-        super::clip_names::DocumentV26::decode(&bytes)?
+    let base = match version {
+        26 => super::musical_audio::DocumentV25::decode(&bytes)?,
+        27 => super::clip_names::DocumentV26::decode(&bytes)?,
+        28 => super::appearance::DocumentV27::decode(&bytes)?,
+        _ => return Err(StorageError::Invalid("invalid audio event version")),
     };
     let mut snapshot = base.snapshot();
     let mut by_clip = std::collections::BTreeMap::new();
@@ -189,7 +198,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
 // Value's normal map decoder discards duplicate fields. Validate the original
 // token stream before adapting the versioned envelope so strict historical
 // parsing cannot accidentally accept an ambiguous document.
-struct UniqueKeys;
+pub(super) struct UniqueKeys;
 impl<'de> Deserialize<'de> for UniqueKeys {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;

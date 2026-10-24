@@ -451,3 +451,68 @@ fn equal_pcm_values_in_distinct_actual_allocations_are_not_content_deduplicated(
         "hex preparation evidence: arrangement_final_distinct; supported-controls=completed; equal-content-allocations=2"
     );
 }
+
+#[test]
+fn endpoint_only_fades_construct_resident_metadata_and_recover_exact_source_bank() {
+    for (start, end) in [(1, 0), (0, 2), (1, 2)] {
+        let (p, mut bank, old) = fixture(false, false, 1);
+        bank.reservation.handle_obligations = 64;
+        let mut snapshot = p.snapshot();
+        let clip = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+        clip.fade = hex_project::ClipFade::new(clip.duration, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 500, -500)
+            .unwrap();
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let original = &project.tracks()[0].clips()[0];
+        let source = match &bank.sources[0].1.kind {
+            SourceKind::Resident(audio) => audio.frames().to_vec(),
+            _ => panic!("resident fixture"),
+        };
+        let ptr = bank.sources.as_ptr();
+        let cap = bank.sources.capacity();
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_input_on_control(
+                AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision(),
+            )
+            .ok()
+            .unwrap();
+        assert_eq!(
+            custody.phase(),
+            AudioPreparationPhase::ArrangementAndSessionSources,
+            "preparation refusal: {:?}",
+            custody.reason()
+        );
+        let revision = custody.revision.owner_for_test().unwrap().as_ref();
+        let clip = &revision.arrangement().tracks()[0].clips[0];
+        assert_eq!(clip.metadata.as_ref().unwrap().fade, Some(original.fade()));
+        let mut renderer = crate::Renderer::new(revision.arrangement());
+        renderer.play();
+        let mut actual = vec![[0.0; 2]; original.duration() as usize];
+        for chunk in actual.chunks_mut(3) {
+            renderer.render(chunk).unwrap();
+        }
+        let mut expected = source;
+        expected[..start as usize].fill([0.0; 2]);
+        expected[original.duration() as usize - end as usize..].fill([0.0; 2]);
+        assert_eq!(actual, expected);
+        renderer.seek(1);
+        let mut seek = [[0.0; 2]; 5];
+        renderer.render(&mut seek).unwrap();
+        assert_eq!(seek, expected[1..6]);
+        assert_eq!(
+            custody
+                .capacity_report()
+                .arrangement_clips
+                .metadata_pointee_bytes,
+            mem::size_of::<crate::ClipMetadata>()
+        );
+        assert!(custody.cancel(&token));
+        custody.cleanup_on_control();
+        let bank = custody.recover_on_control(&token).unwrap();
+        assert_eq!(bank.sources.as_ptr(), ptr);
+        assert_eq!(bank.sources.capacity(), cap);
+        assert!(bank.source_view(&old).is_ok());
+    }
+}

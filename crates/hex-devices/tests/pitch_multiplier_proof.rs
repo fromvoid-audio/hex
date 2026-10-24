@@ -56,7 +56,16 @@ fn neutral_preserves_bits_and_phase_matches_actual_registered_note_preparation()
             .unwrap();
     }
     for rate in [8_000, 11_025, 44_100, 48_000, 192_000] {
-        let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
+        let instrument = OPERATOR_METADATA
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let context = instrument
             .prepare_shared_analytic_context()
             .unwrap()

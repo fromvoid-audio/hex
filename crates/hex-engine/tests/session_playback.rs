@@ -34,8 +34,11 @@ fn fixture_with_session_note_duration(
 ) -> Fixture {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 32).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("instrument track")
     {
@@ -168,8 +171,11 @@ fn session_audio_and_midi_routes_use_the_prepared_track_device_matrix() {
         other => panic!("unexpected audio track: {other:?}"),
     };
     let midi_track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("midi track")
     {
@@ -293,8 +299,11 @@ fn audible(output: &[[f32; 2]]) -> bool {
 fn one_hybrid_track_switches_audio_midi_audio_and_releases_the_midi_tail() {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("hybrid track")
     {
@@ -729,8 +738,11 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
     let fixture = fixture(None, None);
     let mut editor = Editor::new(fixture.project, 32).expect("editor from prepared fixture");
     let other_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "other keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("second instrument track")
     {
@@ -1079,8 +1091,11 @@ fn a_late_chunk_failure_rolls_back_a_due_pending_route_and_zeros_earlier_audio()
     let fixture = fixture_with_session_note_duration(None, None, duration);
     let mut editor = Editor::new(fixture.project, 32).expect("editor");
     let other_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("second instrument track")
     {
@@ -1268,8 +1283,11 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
         })
         .expect("audio balance");
     let session_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "session midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("Session instrument track")
     {
@@ -1277,8 +1295,11 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
         _ => panic!("expected instrument track"),
     };
     let stopped_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "stopped midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("silenced instrument track")
     {

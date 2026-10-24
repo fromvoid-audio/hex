@@ -1,0 +1,7 @@
+lattice effects: macos-aarch64 rate=48000 block=128 tracks=100 warmup=100 measured=2000 source_frames=512 nominal_period_us=2666.667; standalone whole-run composition oracle precedes timing; other host load uncontrolled
+case=baseline processors=0 oracle_max_error=0.000000000 p50_us=20.750 p99_us=85.458 max_us=312.500 total_ms=48.719 beyond_period=0 pcm_digest=a8f405afc8762b25
+case=saturator processors=100 oracle_max_error=0.000000000 p50_us=78.041 p99_us=271.792 max_us=1621.208 total_ms=182.493 beyond_period=0 pcm_digest=d62cd02e28f41b25
+case=compressor processors=100 oracle_max_error=0.000000000 p50_us=190.166 p99_us=449.417 max_us=1292.084 total_ms=416.096 beyond_period=0 pcm_digest=fc9e30cbb96da319
+case=gate processors=100 oracle_max_error=0.000000000 p50_us=68.583 p99_us=199.916 max_us=500.334 total_ms=157.466 beyond_period=0 pcm_digest=e44c7100b3592ea5
+case=gate-compressor processors=200 oracle_max_error=0.000000000 p50_us=198.167 p99_us=465.875 max_us=905.709 total_ms=424.642 beyond_period=0 pcm_digest=1f89c632bd4418ca
+case=gate-compressor-saturator processors=300 admission=refused error=stateful device runtime exceeds its bounded budget

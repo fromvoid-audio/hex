@@ -1,0 +1,32 @@
+//! Stateless action presentation shared by device panels and the workspace.
+use crate::{ActionStyle, CONTROL_CORNER_RADIUS};
+use gpui::{Div, SharedString, div, prelude::*, px, rgb};
+
+/// Shared action surface. Owners supply normalized text, identity, dimensions,
+/// focus and event handlers; this primitive never changes canonical state.
+/// No fixed width is imposed, so compact glyphs and text actions use one control.
+pub fn action(label: SharedString, style: ActionStyle) -> Div {
+    action_surface(style).child(label)
+}
+
+/// The same action surface with caller-composed content, such as a swatch,
+/// label and current-item marker. Owners retain input and command dispatch.
+pub fn action_surface(style: ActionStyle) -> Div {
+    div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(CONTROL_CORNER_RADIUS))
+        .cursor_pointer()
+        .bg(rgb(style.background))
+        .text_color(rgb(style.text))
+        .hover(move |hover| {
+            let hover = hover.bg(rgb(style.hover_background));
+            if let Some(text) = style.hover_text {
+                hover.text_color(rgb(text))
+            } else {
+                hover
+            }
+        })
+}

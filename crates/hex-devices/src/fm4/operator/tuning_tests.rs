@@ -1,5 +1,56 @@
 use super::*;
 
+#[test]
+fn review_ratio_mixed_fixed_and_velocity_paths_refuse_zero_phase_quantization() {
+    let table = hex_lattice::TuningTable::new([1.0e-25; 128]).unwrap();
+    let fixed = OperatorTuning::fixed(125.0, 1.0).unwrap();
+    let mut admitted = Vec::new();
+    for velocity_amount in [0.0, -1.0] {
+        for mixed in [false, true] {
+            let tuning = if mixed {
+                [OperatorTuning::Ratio, fixed, OperatorTuning::Ratio, fixed]
+            } else {
+                [OperatorTuning::Ratio; 4]
+            };
+            let context = configuration(tuning, [OperatorWaveform::Sine; 4])
+                .with_note_modifiers([0.0; 4], [velocity_amount; 4], [false; 4])
+                .unwrap();
+            if context
+                .prepare_note_with_tuning(0, 127, Some(&table))
+                .is_ok()
+            {
+                admitted.push((mixed, velocity_amount));
+            }
+        }
+        let fixed_only = configuration([fixed; 4], [OperatorWaveform::Sine; 4])
+            .with_note_modifiers([0.0; 4], [velocity_amount; 4], [false; 4])
+            .unwrap();
+        assert!(
+            fixed_only
+                .prepare_note_with_tuning(0, 127, Some(&table))
+                .is_ok()
+        );
+    }
+    assert!(
+        admitted.is_empty(),
+        "zero-step ratio oscillators admitted: {admitted:?}"
+    );
+    let context = configuration([OperatorTuning::Ratio; 4], [OperatorWaveform::Sine; 4]);
+    let quantum = 48_000.0 / 2.0_f64.powi(64);
+    let first = hex_lattice::TuningTable::new([quantum * 0.5; 128]).unwrap();
+    assert!(
+        context
+            .prepare_note_with_tuning(0, 127, Some(&first))
+            .is_ok()
+    );
+    let nyquist = hex_lattice::TuningTable::new([24_000.0; 128]).unwrap();
+    assert!(
+        context
+            .prepare_note_with_tuning(0, 127, Some(&nyquist))
+            .is_err()
+    );
+}
+
 fn configuration(
     tuning: [OperatorTuning; 4],
     shapes: [OperatorWaveform; 4],

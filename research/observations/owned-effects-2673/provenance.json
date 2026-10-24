@@ -1,0 +1,11 @@
+{
+  "source": "e5f95edbb07b023d592669b8fd1ee122f9505310",
+  "kernel_source": "aa060420",
+  "command": "cargo run --release -p hex-lattice --features conformance --example owned_history_profile --locked",
+  "toolchain": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "hardware": "Apple M5 Pro arm64; macOS 26.6.2 (25G83)",
+  "native_admission": false,
+  "large_live_inheritance": false,
+  "raw_sha256": "d3f6ef485f1d8d19e54c84182904d439f1de74fc895172ef9058d71110578c59",
+  "scope": "Control-side original registered conformance fixture; independent whole-copy shift oracle. Not native deadline, convolution, production activation or live custody evidence."
+}

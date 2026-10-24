@@ -110,7 +110,14 @@ impl Query {
             state = EQ8_DEFINITION.patch_parameter(&state, id, value)?;
         }
         EQ8_DEFINITION
-            .prepare_processor(&state, self.rate)?
+            .prepare_processor(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: self.rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )?
             .ok_or_else(|| "missing prepared EQ".into())
     }
     fn export(&self, source: &str, dirty: bool) -> Result<String> {

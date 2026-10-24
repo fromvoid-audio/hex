@@ -1,0 +1,1082 @@
+//! Real worker + rendered shortcut: bounds, selection ownership, and canonical history.
+use super::{EditorMode, EditorView, time_selection::TimeSelection};
+use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+use hex_project::{BeatTime, ClipId, Command, Created};
+use hex_session::service::{Event, Request, Service};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+fn next(service: &Service) -> Event {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(event) = service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            return event;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let done = editor.update(&mut *visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        if done {
+            visual.run_until_parked();
+            return;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn fixture(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+    ClipId,
+    Arc<super::test_environment::Environment>,
+) {
+    cx.update(super::bind_editor_keys);
+    let files = super::test_environment::Environment::new().unwrap();
+    let directory = files.root().to_owned();
+    std::fs::create_dir_all(directory.join("samples")).unwrap();
+    let wav = directory.join("samples/loop.wav");
+    let count = 48_000_u32;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + count * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(count * 2).to_le_bytes());
+    for _ in 0..count {
+        bytes.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    std::fs::write(&wav, bytes).unwrap();
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(wav)).unwrap();
+    let event = next(&service);
+    let audio = event.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "midi".into(),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let midi_track = event.state.project.tracks()[1].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track: midi_track,
+            start: BeatTime::from_raw(3 << 32),
+            length: BeatTime::from_raw(2 << 32),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let Created::Clip(midi) = event.created.unwrap() else {
+        panic!("midi")
+    };
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(window, cx, service, Arc::clone(&files))
+            });
+            editor.update(cx, |view, cx| {
+                assert!(Arc::ptr_eq(&files, &view.test_environment));
+                for (path, name) in [
+                    (view.browser.test_preferences_path(), "browser.json"),
+                    (view.recent_projects.test_path(), "recent-projects.json"),
+                    (view.theme_settings.test_path(), "theme.json"),
+                    (view.project_directory.test_path(), "project-directory.json"),
+                ] {
+                    assert_eq!(path, directory.join("config").join(name));
+                }
+                assert_eq!(view.browser.directory, directory.join("samples"));
+                assert_eq!(view.browser.places, vec![directory.join("samples")]);
+                view.state = Some(event.state);
+                view.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    (handle, editor, audio, midi, files)
+}
+fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
+    let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).expect("rendered header");
+    let modifiers = Modifiers {
+        platform: additive,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, modifiers);
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, modifiers);
+    visual.run_until_parked();
+}
+#[gpui::test]
+fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, audio, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (first, second, start, end) in [
+        (audio, None, 0, 48_000),
+        (midi, None, 72_000, 120_000),
+        (audio, Some(midi), 0, 120_000),
+    ] {
+        click(&mut visual, first, false);
+        if let Some(second) = second {
+            click(&mut visual, second, true);
+        }
+        let (before, selection) = editor.read_with(&visual, |v, _| {
+            (
+                v.state.as_ref().unwrap().project.snapshot(),
+                v.selected_clip_ids(),
+            )
+        });
+        visual.simulate_keystrokes("l");
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let region = p.loop_region().expect("L creates selected loop");
+            assert_eq!(
+                (region.start(), region.end(), region.enabled()),
+                (start, end, true)
+            );
+            let mut expected = before.clone();
+            expected.loop_region = p.loop_region();
+            assert_eq!(p.snapshot(), expected, "contents and IDs unchanged");
+            assert_eq!(v.selected_clip_ids(), selection);
+            let snapshot = p.snapshot();
+            assert_eq!(
+                hex_project::Project::from_snapshot(snapshot.clone())
+                    .unwrap()
+                    .snapshot(),
+                snapshot,
+                "current-format round trip"
+            );
+            snapshot
+        });
+        visual.simulate_keystrokes("l");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                after,
+                "reassert, never toggle"
+            )
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        // A redundant canonical edit is a no-op in history.
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
+#[gpui::test]
+fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mut TestAppContext) {
+    let (handle, editor, audio, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click(&mut visual, audio, false);
+    for project_scope in [false, true] {
+        editor.update(&mut visual, |v, _| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.time_selection = Some(TimeSelection {
+                anchor_track: track,
+                end_track: track,
+                anchor_frame: 36_000,
+                end_frame: 12_000,
+            });
+            v.time_selection_project_scope = project_scope;
+            // The real body gesture owns a matching generation-scoped edit cursor.
+            v.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track,
+                frame: 36_000,
+                generation: v.project_generation,
+                pulse_color: 0,
+                pulse_started: Instant::now(),
+            });
+        });
+        visual.simulate_keystrokes("l");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
+            assert_eq!((r.start(), r.end()), (12_000, 36_000));
+            assert_eq!(v.time_selection.unwrap().anchor_frame, 36_000);
+        });
+    }
+    // A non-empty stale rectangle must not fall back to the valid selected audio.
+    editor.update(&mut visual, |v, _| {
+        v.time_selection_project_scope = false;
+        let mut history =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
+                .unwrap();
+        let Created::Track(stale) = history
+            .execute(Command::AddMidiTrack {
+                name: "absent".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        v.time_selection.as_mut().unwrap().end_track = stale;
+    });
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, before);
+        assert!(v.error.is_some());
+    });
+}
+
+#[gpui::test]
+fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
+    let (handle, editor, audio, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // No selection must not create a loop or toggle an existing one.
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.state.as_ref().unwrap().project.loop_region().is_none())
+    });
+    click(&mut visual, audio, false);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    // Browser search owns its input and enclosing browser key context.
+    visual
+        .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    // Actual numeric widget owns typing; Escape cancels its draft.
+    let value = visual.debug_bounds("project-tempo-value").unwrap();
+    visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("escape");
+    // Header rename is the canonical inline input, not a synthetic root-focus flag.
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let header_point = gpui::point(
+        header.right() - gpui::px(12.0),
+        header.top() + gpui::px(1.0),
+    );
+    visual.simulate_mouse_down(header_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(header_point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-r");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("escape");
+    click(&mut visual, midi, false);
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.focus.focus(window);
+            v.computer_keyboard.enabled = true;
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "L remains a note"
+        )
+    });
+    editor.update(&mut visual, |v, _| {
+        v.computer_keyboard.enabled = false;
+        v.worker_requests_pending = 1;
+    });
+    visual.simulate_keystrokes("l");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    editor.update(&mut visual, |v, _| {
+        v.worker_requests_pending = 0;
+        v.selected_clip = None;
+        v.time_selection = None;
+    });
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    editor.update(&mut visual, |v, _| {
+        let mut history =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
+                .unwrap();
+        let Created::Clip(stale) = history.execute(Command::DuplicateClip(audio)).unwrap() else {
+            panic!("clip")
+        };
+        v.selected_clip = Some(stale);
+    });
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        assert!(v.error.is_some());
+    });
+    // Session retains the existing global loop-toggle action.
+    editor.update(&mut visual, |v, cx| {
+        v.mode = EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            !v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        )
+    });
+}
+
+#[gpui::test]
+fn l_midi_end_uses_absolute_beat_endpoint_across_tempo_change(cx: &mut TestAppContext) {
+    let (handle, editor, _, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(4 << 32),
+            tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    click(&mut visual, midi, false);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let p = &v.state.as_ref().unwrap().project;
+        let region = p.loop_region().unwrap();
+        assert_eq!(
+            (region.start(), region.end(), region.enabled()),
+            (72_000, 144_000, true)
+        );
+        assert!(p.tracks().iter().any(|t| {
+            t.midi_clips()
+                .iter()
+                .any(|c| c.id() == midi && c.length() == BeatTime::from_raw(2 << 32))
+        }));
+    });
+}
+
+#[gpui::test]
+fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, audio, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| {
+        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+        assert!(v.enqueue(Request::Edit(Command::CopyClipTo {
+            clip: audio,
+            track,
+            start: 144_000
+        })));
+    });
+    pump(&editor, &mut visual);
+    let extra = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0]
+            .clips()
+            .iter()
+            .find(|c| c.start() == 144_000)
+            .unwrap()
+            .id()
+    });
+    for order in [
+        [midi, extra, audio],
+        [audio, midi, extra],
+        [audio, extra, midi],
+    ] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::ClearLoopRegion)));
+        });
+        pump(&editor, &mut visual);
+        for (index, id) in order.into_iter().enumerate() {
+            click(&mut visual, id, index != 0);
+        }
+        let (before, selection) = editor.read_with(&visual, |v, _| {
+            let selection = v.selected_clip_ids();
+            assert_eq!(selection.len(), 3);
+            (v.state.as_ref().unwrap().project.snapshot(), selection)
+        });
+        // Exact platform shortcut, not the plain-L alias.
+        visual.simulate_keystrokes("cmd-l");
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let r = p.loop_region().expect("Command-L sets full selection");
+            assert_eq!((r.start(), r.end(), r.enabled()), (0, 192_000, true));
+            let mut expected = before.clone();
+            expected.loop_region = p.loop_region();
+            assert_eq!(p.snapshot(), expected);
+            assert_eq!(v.selected_clip_ids(), selection);
+            p.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-l");
+        pump(&editor, &mut visual);
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before,
+                "reasserted Command-L adds no Undo"
+            )
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+    // Musical typing keeps plain L as a note; Command-L remains an explicit shortcut.
+    click(&mut visual, midi, false);
+    editor.update(&mut visual, |v, _| {
+        v.computer_keyboard.enabled = true;
+    });
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!((r.start(), r.end()), (72_000, 120_000));
+    });
+}
+
+#[gpui::test]
+fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, audio, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click(&mut visual, audio, false);
+    for project_scope in [false, true] {
+        editor.update(&mut visual, |v, _| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.time_selection = Some(TimeSelection {
+                anchor_track: track,
+                end_track: track,
+                anchor_frame: 36_000,
+                end_frame: 12_000,
+            });
+            v.time_selection_project_scope = project_scope;
+            v.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track,
+                frame: 36_000,
+                generation: v.project_generation,
+                pulse_color: 0,
+                pulse_started: Instant::now(),
+            });
+        });
+        visual.simulate_keystrokes("cmd-l");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
+            assert_eq!((r.start(), r.end(), r.enabled()), (12_000, 36_000, true));
+            assert_eq!(v.time_selection.unwrap().anchor_frame, 36_000);
+            assert_eq!(v.time_selection_project_scope, project_scope);
+        });
+    }
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    // A stale non-empty time selection must not fall back to primary audio.
+    editor.update(&mut visual, |v, _| {
+        v.time_selection_project_scope = false;
+        let mut history =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
+                .unwrap();
+        let Created::Track(stale) = history
+            .execute(Command::AddMidiTrack {
+                name: "absent".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        v.time_selection.as_mut().unwrap().end_track = stale;
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision);
+        assert!(v.error.is_some());
+    });
+    editor.update(&mut visual, |v, _| {
+        v.time_selection = None;
+        let mut history =
+            hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
+                .unwrap();
+        let Created::Clip(stale) = history.execute(Command::DuplicateClip(audio)).unwrap() else {
+            panic!("clip")
+        };
+        v.selected_clip = Some(stale);
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    editor.update(&mut visual, |v, _| {
+        v.time_selection = None;
+        v.selected_clip = None;
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "empty selection no-op"
+        )
+    });
+    click(&mut visual, audio, false);
+    editor.update(&mut visual, |v, _| {
+        v.worker_requests_pending = 1;
+    });
+    visual.simulate_keystrokes("cmd-l");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "pending edit refuses Command-L"
+        );
+        assert!(v.pending_requests.is_empty(), "no deferred selection write");
+    });
+    editor.update(&mut visual, |v, _| {
+        v.worker_requests_pending = 0;
+    });
+
+    visual
+        .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "browser input owns focus"
+        )
+    });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "MIDI child owns focus"
+        )
+    });
+    let tempo = visual.debug_bounds("project-tempo-value").unwrap();
+    visual.simulate_mouse_down(tempo.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(tempo.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "numeric input owns focus"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let p = gpui::point(
+        header.right() - gpui::px(12.0),
+        header.top() + gpui::px(1.0),
+    );
+    visual.simulate_mouse_down(p, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(p, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-r");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "rename input owns focus"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            v.mode = EditorMode::Session;
+            v.focus.focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.state.as_ref().unwrap().revision,
+            revision,
+            "Command-L is Arrangement-only, never a Session toggle"
+        )
+    });
+}
+
+#[gpui::test]
+fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddScene {
+            name: "loop review".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let scene = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.scenes()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::CopyArrangementMidiToSession {
+                source: midi,
+                scene
+            }))
+        );
+    });
+    pump(&editor, &mut visual);
+    let (session_id, track) = editor.read_with(&visual, |v, _| {
+        let cell = &v.state.as_ref().unwrap().project.session_cells()[0];
+        let hex_project::SessionCellContent::Midi(clip) = cell.content() else {
+            panic!("session midi");
+        };
+        (clip.id(), cell.track())
+    });
+    // Use the same canonical selection entry point as a Session MIDI cell
+    // callback, with its real worker-created ID, then the actual mode toolbar.
+    editor.update(&mut visual, |v, cx| {
+        v.select_session_midi(track, scene, session_id);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_clip, Some(session_id));
+        assert_eq!(v.selected_cell, Some((track, scene)));
+    });
+    let position = visual
+        .debug_bounds("show arrange view · tab")
+        .unwrap()
+        .center();
+    visual.simulate_click(position, Modifiers::default());
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    for key in ["cmd-l", "l"] {
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.error.is_none(),
+                "Session ownership is not a deleted Arrangement ID: {:?}",
+                v.error
+            );
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            assert_eq!(v.selected_clip, Some(session_id));
+        });
+    }
+}
+
+#[gpui::test]
+fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag(
+    cx: &mut TestAppContext,
+) {
+    use super::drag::{BrowserAudioDrag, NativeDeviceDrag, NativeDeviceDragSource};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    for native in [false, true] {
+        let (handle, editor, audio, _, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, audio, false);
+        editor.update(&mut visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            if native {
+                let entry = &hex_engine::native_device_catalog_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                )
+                .unwrap()[0];
+                let payload = NativeDeviceDrag {
+                    project_generation: v.project_generation,
+                    revision: state.revision,
+                    source: NativeDeviceDragSource::Browser {
+                        class: hex_engine::NativeDeviceClass::Effect,
+                        type_id: entry.type_id,
+                    },
+                    destination: Rc::new(Cell::new(None)),
+                    return_destination: Rc::new(Cell::new(None)),
+                };
+                v.begin_native_device_drag(&payload);
+                assert!(v.native_device_drag_is_current(&payload));
+            } else {
+                let viewport = v.visible_viewport(state.timeline_frames);
+                let payload = BrowserAudioDrag {
+                    project_generation: v.project_generation,
+                    revision: state.revision,
+                    browser_generation: v.browser.scan_generation(),
+                    sample_rate: state.project.sample_rate(),
+                    path: state
+                        .project
+                        .asset(state.project.clip(audio).unwrap().asset())
+                        .unwrap()
+                        .path()
+                        .to_owned(),
+                    label: "loop.wav".into(),
+                    viewport_start: viewport.start,
+                    viewport_length: viewport.length,
+                    scroll: Default::default(),
+                    snap_grid: v.snap_grid,
+                    snap_modifier: Rc::new(Cell::new(false)),
+                    copy_modifier: Rc::new(Cell::new(false)),
+                    metadata: Rc::new(RefCell::new(None)),
+                    metadata_error: Rc::new(RefCell::new(None)),
+                    preview: Rc::new(Cell::new(None)),
+                    destination: Rc::new(Cell::new(None)),
+                    insertion_line_y: Rc::new(Cell::new(None)),
+                    lane_hovered: Rc::new(Cell::new(false)),
+                    last_pointer: Rc::new(Cell::new(None)),
+                };
+                v.begin_browser_audio_drag(&payload);
+                assert!(v.browser_audio_drag_is_current(&payload));
+            }
+        });
+        // Controlled retained-focus dispatch through actual platform keys. This is
+        // not a claim that an ordinary browser row click retains editor focus.
+        for key in ["cmd-l", "l"] {
+            visual.simulate_keystrokes(key);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.worker_requests_pending, 0, "{native} / {key}");
+                assert!(v.pending_requests.is_empty());
+                assert_eq!(v.active_native_device_drag.is_some(), native);
+                assert_eq!(v.active_browser_audio_drag.is_some(), !native);
+                assert!(v.state.as_ref().unwrap().project.loop_region().is_none());
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn loop_review_held_middle_pan_refuses_l_and_command_l_until_release(cx: &mut TestAppContext) {
+    for key in ["l", "cmd-l"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, audio, midi, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, audio, false);
+        click(&mut visual, midi, true);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.update(cx, |view, cx| {
+                let horizon = view.state.as_ref().unwrap().timeline_frames;
+                let fit = super::viewport::Viewport::fit(horizon);
+                let zoom = fit.zoom(horizon, 0, true);
+                assert!(zoom.length < fit.length);
+                view.viewport = Some(zoom);
+                view.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("arrangement-content").unwrap();
+        let start = body.origin + gpui::point(body.size.width * 0.65, gpui::px(30.0));
+        let end = start - gpui::point(gpui::px(24.0), gpui::px(0.0));
+        let initial = editor.read_with(&visual, |view, _| view.viewport);
+        visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
+        visual.run_until_parked();
+        let (before, selection, viewport, owner) = editor.read_with(&visual, |view, _| {
+            let pan = view.arrangement_pan.expect("real middle-button owner");
+            assert_ne!(view.viewport, initial, "actual held pointer movement pans");
+            assert!(!view.computer_keyboard.enabled);
+            assert_eq!(view.selected_clip_ids().len(), 2);
+            (
+                view.state.as_ref().unwrap().clone(),
+                view.selected_clip_ids(),
+                view.viewport,
+                (
+                    pan.generation,
+                    pan.revision,
+                    pan.last_x,
+                    pan.last_y,
+                    pan.timeline_width,
+                ),
+            )
+        });
+        assert!(visual.update(|window, cx| editor.read(cx).focus.is_focused(window)));
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "held {key} must not enqueue"
+            );
+            assert!(view.pending_requests.is_empty());
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let pan = view
+                .arrangement_pan
+                .expect("shortcut retains actual pan until release");
+            assert_eq!(
+                (
+                    pan.generation,
+                    pan.revision,
+                    pan.last_x,
+                    pan.last_y,
+                    pan.timeline_width
+                ),
+                owner
+            );
+            assert_eq!(view.viewport, viewport);
+            assert_eq!(view.selected_clip_ids(), selection);
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.project.snapshot(), before.project.snapshot());
+            assert_eq!(state.revision, before.revision);
+            assert_eq!(
+                (state.can_undo, state.can_redo),
+                (before.can_undo, before.can_redo)
+            );
+        });
+        visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.arrangement_pan.is_none()));
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let region = project
+                .loop_region()
+                .expect("same key works after pan release");
+            assert_eq!(
+                (region.start(), region.end(), region.enabled()),
+                (0, 120_000, true)
+            );
+            let mut expected = before.project.snapshot();
+            expected.loop_region = project.loop_region();
+            assert_eq!(project.snapshot(), expected);
+            assert_eq!(view.selected_clip_ids(), selection);
+            project.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                before.project.snapshot()
+            )
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
+
+#[gpui::test]
+fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mut TestAppContext) {
+    for key in ["l", "cmd-l"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, _, midi, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, midi, false);
+        // Existing offline scrub tests hold this real seek-ack gate. No audio
+        // device or fake publication is constructed; actual ruler callbacks own
+        // the scrub and coalesce the final target behind the gate.
+        editor.update(&mut visual, |view, _| view.pending_seek_ticket = Some(1));
+        let bounds = visual.debug_bounds("timeline-ruler").unwrap();
+        let start = bounds.center();
+        let end = start + gpui::point(gpui::px(10.0), gpui::px(0.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        editor.update(&mut visual, |view, _| {
+            assert!(view.update_scrub(f32::from(end.x), false));
+            assert!(view.scrub_active(), "actual held ruler owner");
+            assert!(!view.tick_scrub(), "seek-ack gate holds the target");
+        });
+        assert!(visual.update(|window, cx| editor.read(cx).focus.is_focused(window)));
+        let (before, selection, viewport) = editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_clip, Some(midi));
+            (
+                view.state.as_ref().unwrap().clone(),
+                view.selected_clip_ids(),
+                view.viewport,
+            )
+        });
+        for released in [false, true] {
+            if released {
+                visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |view, _| {
+                    assert!(
+                        view.scrub_active(),
+                        "released final target awaits admission"
+                    );
+                });
+            }
+            visual.simulate_keystrokes(key);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.worker_requests_pending, 0,
+                    "{key} during scrub released={released} must not enqueue"
+                );
+                assert!(view.pending_requests.is_empty());
+            });
+            pump(&editor, &mut visual);
+            editor.update(&mut visual, |view, _| {
+                assert!(
+                    view.scrub_active(),
+                    "shortcut must retain actual ruler target"
+                );
+                assert!(
+                    !view.tick_scrub(),
+                    "same pending target remains behind seek ACK"
+                );
+                assert_eq!(view.pending_seek_ticket, Some(1));
+                assert_eq!(view.viewport, viewport);
+                assert_eq!(view.selected_clip_ids(), selection);
+                let state = view.state.as_ref().unwrap();
+                assert_eq!(state.project.snapshot(), before.project.snapshot());
+                assert_eq!(state.revision, before.revision);
+                assert_eq!(
+                    (state.can_undo, state.can_redo),
+                    (before.can_undo, before.can_redo)
+                );
+            });
+        }
+        editor.update(&mut visual, |view, _| {
+            view.pending_seek_ticket = None;
+            assert!(
+                view.tick_scrub(),
+                "retained released target reaches existing offline admission/refusal"
+            );
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("audio output"))
+            );
+            assert!(!view.scrub_active());
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                before.project.snapshot()
+            );
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let region = project
+                .loop_region()
+                .expect("same shortcut works after scrub retirement");
+            assert_eq!(
+                (region.start(), region.end(), region.enabled()),
+                (72_000, 120_000, true)
+            );
+            let mut expected = before.project.snapshot();
+            expected.loop_region = project.loop_region();
+            assert_eq!(project.snapshot(), expected);
+            assert_eq!(view.selected_clip_ids(), selection);
+            project.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                before.project.snapshot()
+            )
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}

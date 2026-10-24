@@ -230,7 +230,14 @@ fn report_registered_storage(
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<(), Box<dyn Error>> {
     let registry = hex_devices::native_instrument_registry()?;
-    let prepared = registry.prepare_instrument(state, fixture::SAMPLE_RATE)?;
+    let prepared = registry.prepare_instrument(
+        state,
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: fixture::SAMPLE_RATE,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )?;
     let factory = prepared
         .prepare_mutable_runtime()?
         .ok_or("nonzero feedback did not select the registered mutable runtime")?;

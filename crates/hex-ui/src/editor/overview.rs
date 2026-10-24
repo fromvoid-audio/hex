@@ -115,6 +115,7 @@ fn mark_interval(cells: &mut [u8], row: usize, horizon: u64, start: u64, end: u6
 pub(super) fn widget(
     cache: Rc<OverviewCache>,
     viewport: Viewport,
+    header_width: f32,
     entity: gpui::Entity<EditorView>,
 ) -> Div {
     let horizon = cache.horizon();
@@ -132,7 +133,7 @@ pub(super) fn widget(
                 .top_0()
                 .bottom_0()
                 .left_0()
-                .right(px(super::tracks::TRACK_HEADER_WIDTH))
+                .right(px(header_width))
                 .children([canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _| {
@@ -329,8 +330,10 @@ mod tests {
     fn view_state(project: Project, revision: u64, timeline_frames: u64) -> ViewState {
         ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(project),
             waveforms: Default::default(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(Default::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),

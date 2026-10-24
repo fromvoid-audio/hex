@@ -5,7 +5,7 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{
     NativeDeviceMetadata, NativeDeviceState, ParameterKind, ParameterValue,
-    validated_state_descriptors,
+    validated_state_parameters,
 };
 
 fn quoted(text: &str) -> String {
@@ -34,7 +34,7 @@ fn record<D: NativeDeviceMetadata + ?Sized>(
     class: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut parameters = Vec::new();
-    for descriptor in validated_state_descriptors(definition, state)? {
+    for (descriptor, semantics) in validated_state_parameters(definition, state)? {
         let kind = match descriptor.kind {
             ParameterKind::Float { min, max, unit } => format!(
                 "{{\"kind\":\"float\",\"min\":{min},\"max\":{max},\"unit\":{}}}",
@@ -50,7 +50,11 @@ fn record<D: NativeDeviceMetadata + ?Sized>(
                     .join(",")
             ),
         };
-        parameters.push(format!("{{\"id\":{},\"label\":{},\"domain\":{kind},\"default\":{},\"current\":{},\"presentation\":{},\"enabled\":{}}}",
+        let semantics=semantics.map_or("null".to_owned(),|s| {
+            let increment=match s.stepping {hex_lattice_contract::ParameterStepping::Increment(v)=>v.to_string(),_=>"null".to_owned()};
+            format!("{{\"access\":{},\"normalization\":{},\"stepping\":{},\"increment\":{increment},\"automation\":{},\"modulation\":{},\"smoothing\":{},\"change_impact\":{}}}",quoted(s.access.label()),quoted(s.normalization.label()),quoted(s.stepping.label()),quoted(s.automation.label()),quoted(s.modulation.label()),quoted(s.smoothing.label()),quoted(s.change_impact.label()))
+        });
+        parameters.push(format!("{{\"id\":{},\"label\":{},\"domain\":{kind},\"default\":{},\"current\":{},\"presentation\":{},\"enabled\":{},\"semantics\":{semantics}}}",
             descriptor.id.value(), quoted(descriptor.label), value(descriptor.default),
             value(definition.read_parameter(state, descriptor.id)?), quoted(&format!("{:?}",descriptor.presentation)),
             definition.parameter_enabled(state, descriptor.id)?));
@@ -93,8 +97,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         records.push(record(*definition, &state, &format!("{class:?}"))?);
     }
+    let mut eq = hex_devices::eq::EqState::default();
+    eq.add(hex_devices::eq::Node::new(
+        hex_devices::eq::NodeId::new(7)?,
+        1000.0,
+        3.0,
+        0,
+    )?)?;
+    let eq = eq.encode()?;
+    check_metadata(&hex_devices::eq::EQ_DEFINITION, &eq)?;
+    let populated = record(
+        &hex_devices::eq::EQ_DEFINITION,
+        &eq,
+        "populated eq semantic fixture",
+    )?;
     println!(
-        "{{\"schema\":1,\"scope\":\"default-state bootstrap conformance; not native acceptance or reference parity\",\"sample_rates\":[8000,44100,48000,96000,192000],\"devices\":[{}]}}",
+        "{{\"schema\":2,\"scope\":\"default-state bootstrap conformance; not native acceptance or reference parity\",\"sample_rates\":[8000,44100,48000,96000,192000],\"devices\":[{}],\"fixtures\":[{populated}]}}",
         records.join(",")
     );
     Ok(())

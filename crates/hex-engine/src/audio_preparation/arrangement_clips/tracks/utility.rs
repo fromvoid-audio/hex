@@ -6,7 +6,7 @@ use crate::{
     owned_shared::{OwnedShared, SharedDeclaration},
 };
 use hex_lattice::{
-    NativeDeviceDefinition, PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+    NativeDeviceDefinition, PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
 };
 use hex_lattice_contract::NativeDeviceMetadata;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ impl UtilityCustody {
         devices: &[hex_project::Device],
         track: hex_project::TrackId,
         rate: u32,
-    ) -> Result<OwnedShared<[PreparedProcessorInstance]>, AudioStorageError> {
+    ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -43,10 +43,14 @@ impl UtilityCustody {
             .map_err(|_| AudioStorageError::Allocation)?;
         self.construction_overlap = prepared
             .capacity()
-            .checked_mul(std::mem::size_of::<PreparedProcessorInstance>())
+            .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
             .ok_or(AudioStorageError::Overflow)?;
         let mut admission = StereoMatrix::identity();
         for device in devices {
+            device
+                .state()
+                .require_asset_free_processing()
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             if device.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
@@ -108,7 +112,7 @@ impl UtilityCustody {
                 payload,
                 handles,
             });
-            prepared.push(PreparedProcessorInstance {
+            prepared.push(PreparedRuntimeInstance {
                 meter,
                 owner: ProcessorChainOwner::Track(track.value()),
                 device_id: device.id().value(),
@@ -117,7 +121,7 @@ impl UtilityCustody {
                 bypassed: device.bypassed(),
                 sample_rate: rate,
                 configuration: Some(configuration),
-                definition: processor,
+                definition: processor.map(hex_lattice::PreparedProcessorFactory::Legacy),
             });
         }
         Ok(if prepared.is_empty() {
@@ -126,7 +130,7 @@ impl UtilityCustody {
             OwnedShared::from_owned_vec(prepared)
         })
     }
-    fn validate(&self, chain: &[PreparedProcessorInstance]) -> Result<(), AudioStorageError> {
+    fn validate(&self, chain: &[PreparedRuntimeInstance]) -> Result<(), AudioStorageError> {
         if chain.len() != self.entries.len() {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -141,6 +145,9 @@ impl UtilityCustody {
                 .configuration
                 .as_ref()
                 .ok_or(AudioStorageError::UnknownStorage)?;
+            state
+                .require_asset_free_processing()
+                .map_err(|_| AudioStorageError::UnknownStorage)?;
             let (len, strong, weak) = state.payload_storage_observation();
             if len != pair.payload.0 || strong != 1 || weak != 0 {
                 return Err(AudioStorageError::UnknownStorage);
@@ -150,7 +157,7 @@ impl UtilityCustody {
     }
     pub(super) fn bytes(
         &self,
-        chain: &[PreparedProcessorInstance],
+        chain: &[PreparedRuntimeInstance],
     ) -> Result<usize, AudioStorageError> {
         self.validate(chain)?;
         let mut bytes = self
@@ -176,6 +183,9 @@ impl UtilityCustody {
                     .ok_or(AudioStorageError::Overflow)?;
             }
             if let Some(processor) = &value.definition {
+                let processor = processor
+                    .legacy()
+                    .ok_or(AudioStorageError::UnknownStorage)?;
                 let (payload, overhead) = pair
                     .processor
                     .as_ref()
@@ -216,7 +226,7 @@ impl UtilityCustody {
     }
     pub(super) fn visit<'a>(
         &'a self,
-        chain: &'a Arc<[PreparedProcessorInstance]>,
+        chain: &'a Arc<[PreparedRuntimeInstance]>,
         l: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::{Location, Owner};
@@ -254,6 +264,9 @@ impl UtilityCustody {
                 None,
             )?;
             if let Some(processor) = &value.definition {
+                let processor = processor
+                    .legacy()
+                    .ok_or(AudioStorageError::UnknownStorage)?;
                 l.shared(
                     processor,
                     pair.processor.as_ref().and_then(|d| d.parts(processor)),
@@ -299,6 +312,7 @@ mod tests {
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state,
@@ -363,5 +377,77 @@ mod tests {
         let inputs = owner.recover_inputs_on_control().unwrap();
         assert_eq!(inputs.sources.as_ptr(), original);
         assert_eq!(inputs.sources.capacity(), original_capacity);
+    }
+}
+
+#[cfg(test)]
+mod asset_refusal_tests {
+    use super::*;
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    use hex_project::{Command, Created, Editor, Project};
+
+    #[test]
+    fn closed_utility_paths_refuse_asset_metadata_before_constructor_or_migration() {
+        for bypassed in [false, true] {
+            let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "audio".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: "Original.WAV".into(),
+                    sample_rate: 48000,
+                    frames: 8,
+                })
+                .unwrap()
+            else {
+                panic!("asset")
+            };
+            let state = hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap()
+                .with_asset_references(vec![DeviceAssetReference {
+                    slot: DeviceAssetSlot::new(1).unwrap(),
+                    asset: DeviceAssetKey::new(asset.value()).unwrap(),
+                }])
+                .unwrap();
+            let Created::Device(device) = editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            editor
+                .execute(Command::SetDeviceBypass { device, bypassed })
+                .unwrap();
+            assert_eq!(
+                crate::audio_preparation::validate_constructor_project(editor.project()),
+                Err(AudioStorageError::UnsupportedGraph)
+            );
+            let mut custody = UtilityCustody::default();
+            assert!(matches!(
+                custody.prepare(
+                    editor.project().track(track).unwrap().devices(),
+                    track,
+                    48000
+                ),
+                Err(AudioStorageError::UnsupportedGraph)
+            ));
+            assert!(custody.entries.is_empty());
+        }
     }
 }

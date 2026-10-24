@@ -11,8 +11,8 @@ use hex_lattice_contract::{
 use std::any::Any;
 
 pub const AUTO_PAN_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.auto-pan");
-pub const AUTO_PAN_STATE_VERSION: u32 = 1;
-const STATE_BYTES: usize = 12;
+pub const AUTO_PAN_STATE_VERSION: u32 = 2;
+const STATE_BYTES: usize = 16;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const DEFAULT_RAMP_MS: f64 = 5.0;
@@ -23,6 +23,7 @@ pub mod parameter {
     pub const AMOUNT: ParameterId = ParameterId::from_static(1);
     pub const RATE: ParameterId = ParameterId::from_static(2);
     pub const RIGHT_PHASE: ParameterId = ParameterId::from_static(3);
+    pub const WAVEFORM: ParameterId = ParameterId::from_static(4);
 }
 
 const DESCRIPTORS: &[ParameterDescriptor] = &[
@@ -59,13 +60,64 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
         default: ParameterValue::Float(180.0),
         presentation: ParameterPresentation::Linear,
     },
+    ParameterDescriptor {
+        id: parameter::WAVEFORM,
+        label: "waveform",
+        kind: ParameterKind::Choice {
+            labels: &["sine", "triangle", "saw up", "saw down", "square"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum Waveform {
+    Sine,
+    Triangle,
+    SawUp,
+    SawDown,
+    Square,
+}
+impl Waveform {
+    const ALL: [Self; 5] = [
+        Self::Sine,
+        Self::Triangle,
+        Self::SawUp,
+        Self::SawDown,
+        Self::Square,
+    ];
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        Self::ALL
+            .get(value as usize)
+            .copied()
+            .ok_or(DeviceContractError::InvalidParameterValue)
+    }
+    fn lfo(self, phase: f64) -> f64 {
+        match self {
+            Self::Sine => (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5,
+            Self::Triangle => 1.0 - (2.0 * (phase + 0.25).rem_euclid(1.0) - 1.0).abs(),
+            Self::SawUp => phase,
+            Self::SawDown => 1.0 - phase,
+            // Original symmetric square: high on [0,1/2), low on [1/2,1).
+            Self::Square => {
+                if phase < 0.5 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct AutoPanSettings {
     amount: f32,
     rate_hz: f32,
     right_phase_degrees: f32,
+    waveform: Waveform,
 }
 
 impl Default for AutoPanSettings {
@@ -74,6 +126,7 @@ impl Default for AutoPanSettings {
             amount: 0.5,
             rate_hz: 1.0,
             right_phase_degrees: 180.0,
+            waveform: Waveform::Sine,
         }
     }
 }
@@ -101,6 +154,11 @@ fn decode(state: &NativeDeviceState) -> Result<AutoPanSettings, DeviceContractEr
         amount: read(0),
         rate_hz: read(4),
         right_phase_degrees: read(8),
+        waveform: Waveform::from_choice(u32::from_le_bytes(
+            bytes[12..16]
+                .try_into()
+                .map_err(|_| DeviceContractError::MalformedState)?,
+        ))?,
     };
     validate(settings)?;
     Ok(settings)
@@ -131,6 +189,7 @@ fn encode(settings: AutoPanSettings) -> Result<NativeDeviceState, DeviceContract
     ] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
+    payload.extend_from_slice(&(settings.waveform as u32).to_le_bytes());
     NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, payload)
 }
 
@@ -151,6 +210,37 @@ impl NativeDeviceMetadata for AutoPanDefinition {
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         DESCRIPTORS
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        use hex_lattice_contract::{
+            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
+            ParameterModulation as M, ParameterNormalization as N, ParameterSemantics,
+            ParameterSmoothing as S, ParameterStepping as T,
+        };
+        decode(state)?;
+        let normalization = match id {
+            parameter::WAVEFORM => N::Discrete,
+            parameter::AMOUNT | parameter::RIGHT_PHASE => N::Linear,
+            parameter::RATE => N::PositiveLogarithmic,
+            _ => return Err(DeviceContractError::UnknownParameter),
+        };
+        Ok(Some(ParameterSemantics {
+            access: A::ReadWrite,
+            normalization,
+            stepping: if id == parameter::WAVEFORM {
+                T::Choice
+            } else {
+                T::Continuous
+            },
+            automation: E::Unsupported,
+            modulation: M::Unsupported,
+            smoothing: S::DeviceManaged,
+            change_impact: I::ValueOnly,
+        }))
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         encode(AutoPanSettings::default())
     }
@@ -166,6 +256,9 @@ impl NativeDeviceMetadata for AutoPanDefinition {
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = decode(state)?;
+        if id == parameter::WAVEFORM {
+            return Ok(ParameterValue::Choice(settings.waveform as u32));
+        }
         let value = match id {
             parameter::AMOUNT => settings.amount,
             parameter::RATE => settings.rate_hz,
@@ -186,6 +279,13 @@ impl NativeDeviceMetadata for AutoPanDefinition {
             .find(|descriptor| descriptor.id == id)
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
+        if id == parameter::WAVEFORM {
+            let ParameterValue::Choice(choice) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            settings.waveform = Waveform::from_choice(choice)?;
+            return encode(settings);
+        }
         let ParameterValue::Float(value) = value else {
             return Err(DeviceContractError::InvalidParameterValue);
         };
@@ -217,8 +317,9 @@ impl NativeDeviceDefinition for AutoPanDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -256,6 +357,9 @@ impl PreparedNativeProcessor for PreparedAutoPan {
             right_phase_degrees: ScalarRamp::steady(normalize_degrees(f64::from(
                 self.settings.right_phase_degrees,
             ))),
+            waveform_weights: std::array::from_fn(|i| {
+                ScalarRamp::steady(f64::from(i == self.settings.waveform as usize))
+            }),
             targets: AutoPanTargets::from(self.settings),
         })
     }
@@ -272,6 +376,7 @@ struct AutoPanTargets {
     amount: f64,
     rate_hz: f64,
     right_phase_degrees: f64,
+    waveform: Waveform,
 }
 
 impl From<AutoPanSettings> for AutoPanTargets {
@@ -280,6 +385,7 @@ impl From<AutoPanSettings> for AutoPanTargets {
             amount: f64::from(settings.amount),
             rate_hz: f64::from(settings.rate_hz),
             right_phase_degrees: normalize_degrees(f64::from(settings.right_phase_degrees)),
+            waveform: settings.waveform,
         }
     }
 }
@@ -336,12 +442,16 @@ struct AutoPanRuntime {
     amount: ScalarRamp,
     rate_hz: ScalarRamp,
     right_phase_degrees: ScalarRamp,
+    waveform_weights: [ScalarRamp; 5],
     targets: AutoPanTargets,
 }
 
 impl AutoPanRuntime {
     fn reset_history(&mut self) {
         self.phase_cycles = 0.0;
+        self.waveform_weights = std::array::from_fn(|i| {
+            ScalarRamp::steady(f64::from(i == self.targets.waveform as usize))
+        });
         self.amount = ScalarRamp::steady(self.targets.amount);
         self.rate_hz = ScalarRamp::steady(self.targets.rate_hz);
         self.right_phase_degrees = ScalarRamp::steady(self.targets.right_phase_degrees);
@@ -358,12 +468,15 @@ impl AutoPanRuntime {
         self.amount.advance();
         self.rate_hz.advance();
         self.right_phase_degrees.advance();
+        for weight in &mut self.waveform_weights {
+            weight.advance();
+        }
         let amount = self.amount.current;
         if amount != 0.0 {
-            let left_lfo = (1.0 + (std::f64::consts::TAU * self.phase_cycles).sin()) * 0.5;
+            let left_lfo = self.lfo(self.phase_cycles);
             let right_phase =
                 (self.phase_cycles + self.right_phase_degrees.current / 360.0).rem_euclid(1.0);
-            let right_lfo = (1.0 + (std::f64::consts::TAU * right_phase).sin()) * 0.5;
+            let right_lfo = self.lfo(right_phase);
             let base_gain = 1.0 - amount;
             frame[0] = (left * (base_gain + amount * left_lfo)) as f32;
             frame[1] = (right * (base_gain + amount * right_lfo)) as f32;
@@ -373,7 +486,34 @@ impl AutoPanRuntime {
         .rem_euclid(1.0);
     }
 
+    fn lfo(&self, phase: f64) -> f64 {
+        // Preserve the original Sine arithmetic and avoid blending when steady.
+        if let Some(index) = self
+            .waveform_weights
+            .iter()
+            .position(|weight| weight.current == 1.0)
+        {
+            return Waveform::ALL[index].lfo(phase);
+        }
+        self.waveform_weights
+            .iter()
+            .zip(Waveform::ALL)
+            .filter(|(weight, _)| weight.current != 0.0)
+            .map(|(weight, waveform)| weight.current * waveform.lfo(phase))
+            .sum::<f64>()
+            .clamp(0.0, 1.0)
+    }
+
     fn copy_history_and_retarget(&mut self, previous: &Self) {
+        self.waveform_weights = previous.waveform_weights;
+        if self.targets.waveform != previous.targets.waveform {
+            for (index, weight) in self.waveform_weights.iter_mut().enumerate() {
+                weight.retarget(
+                    f64::from(index == self.targets.waveform as usize),
+                    self.ramp_frames,
+                );
+            }
+        }
         self.phase_cycles = previous.phase_cycles;
         self.amount = previous.amount;
         self.rate_hz = previous.rate_hz;
@@ -408,12 +548,20 @@ fn shortest_degrees(from: f64, to: f64) -> f64 {
 }
 
 impl NativeProcessorRuntime for AutoPanRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             self.process_frame(frame);
         }
     }
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let original = *frame;
             self.process_frame(frame);
@@ -451,6 +599,34 @@ impl NativeProcessorRuntime for AutoPanRuntime {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// Bounded, sampled steady-target channel gains over one cycle. Not live phase.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoPanWaveformPreview {
+    pub left: [[f32; 2]; 129],
+    pub right: [[f32; 2]; 129],
+}
+
+/// Uses the provider's exact waveform/amount/phase law, never prepares a runtime.
+/// Rate changes the time represented by one cycle, not its normalized geometry.
+pub fn waveform_preview(
+    state: &NativeDeviceState,
+) -> Result<AutoPanWaveformPreview, DeviceContractError> {
+    let settings = decode(state)?;
+    let channel = |offset: f64| {
+        std::array::from_fn(|index| {
+            let x = index as f64 / 128.0;
+            let phase = (x + offset).rem_euclid(1.0);
+            let gain = 1.0 - f64::from(settings.amount)
+                + f64::from(settings.amount) * settings.waveform.lfo(phase);
+            [x as f32, gain as f32]
+        })
+    };
+    Ok(AutoPanWaveformPreview {
+        left: channel(0.0),
+        right: channel(f64::from(settings.right_phase_degrees) / 360.0),
+    })
 }
 
 #[cfg(test)]

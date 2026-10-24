@@ -37,6 +37,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         let id = next_id;
         next_id += 1;
         assets.push(AssetSnapshot {
+            original_source: None,
             id,
             path: PathBuf::from(format!("memory/session-audio-{index:03}.wav")),
             source_sample_rate: RATE,
@@ -134,6 +135,9 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

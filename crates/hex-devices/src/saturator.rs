@@ -255,8 +255,9 @@ impl NativeDeviceDefinition for SaturatorDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -273,7 +274,14 @@ fn gain_from_db(state: &NativeDeviceState, id: ParameterId) -> Result<f64, Devic
     let ParameterValue::Float(db) = SATURATOR_DEFINITION.read_parameter(state, id)? else {
         return Err(DeviceContractError::InvalidParameterValue);
     };
-    Ok(10.0_f64.powf(f64::from(db) / 20.0))
+    amplitude_from_db(db)
+}
+
+fn amplitude_from_db(db: f32) -> Result<f64, DeviceContractError> {
+    hex_dsp::Decibels::new(f64::from(db))
+        .and_then(hex_dsp::Decibels::linear_amplitude)
+        .map(hex_dsp::LinearAmplitude::value)
+        .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
 struct PreparedSaturator {
@@ -318,7 +326,11 @@ struct SaturatorRuntime {
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let settings = self.settings;
         let drive = self.drive_gain;
         let output = self.output_gain;
@@ -332,7 +344,12 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         }
     }
 
-    fn process_bypassed_block(&mut self, _frames: &mut [StereoFrame]) {}
+    fn process_bypassed_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
 
     fn reset(&mut self) {}
 
@@ -409,8 +426,8 @@ pub fn transfer_curve(
     state: &NativeDeviceState,
 ) -> Result<SaturatorTransferCurve, DeviceContractError> {
     let settings = decode(state)?;
-    let drive = 10.0_f64.powf(f64::from(settings.drive_db) / 20.0);
-    let output = 10.0_f64.powf(f64::from(settings.output_db) / 20.0);
+    let drive = amplitude_from_db(settings.drive_db)?;
+    let output = amplitude_from_db(settings.output_db)?;
     let peak = output.max(1.0);
     let wet = f64::from(settings.dry_wet);
     let points = std::array::from_fn(|index| {

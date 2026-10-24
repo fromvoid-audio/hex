@@ -1112,8 +1112,10 @@ impl NativeInstrumentDefinition for OperatorMetadata {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        let tuning = context.tuning;
         let settings = OperatorSettings::from_state(state)?;
         let configuration = settings.prepare_configuration(sample_rate)?;
         let authored_state = settings.prepared_authored_state(state)?;
@@ -1146,11 +1148,12 @@ impl NativeInstrumentDefinition for OperatorMetadata {
             sine_table,
             feedback_runtime,
             lfo_runtime,
-            harmonic_runtime: harmonic_runtime::Factory::new(
+            harmonic_runtime: harmonic_runtime::Factory::new_with_tuning(
                 settings,
                 configuration.clone(),
                 sine_table,
                 sample_rate,
+                (!tuning.is_neutral()).then_some(*tuning),
             )?,
         }))
     }
@@ -1169,12 +1172,14 @@ struct PreparedOperatorInstrument {
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prefers_mutable_continuation(&self) -> bool {
-        self.harmonic_runtime
-            .settings
-            .harmonics
-            .custom
-            .iter()
-            .any(|v| *v)
+        self.harmonic_runtime.tuning.is_some()
+            || self
+                .harmonic_runtime
+                .settings
+                .harmonics
+                .custom
+                .iter()
+                .any(|v| *v)
             || self.harmonic_runtime.settings.companion.requires_runtime()
             || self.harmonic_runtime.settings.global.active
     }
@@ -1189,7 +1194,19 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     }
 
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
-        if let Some(factory) = self.lfo_runtime.as_ref() {
+        if self.harmonic_runtime.tuning.is_some() {
+            // Custom tuning selects the harmonic runtime even for plain/LFO
+            // voices. Admit exactly its tuned oscillator/excursion domain.
+            let tuning = self.harmonic_runtime.tuning.as_ref();
+            if self.harmonic_runtime.settings.lfo.active() {
+                self.configuration
+                    .prepare_lfo_note_with_tuning(pitch, velocity, tuning)
+            } else {
+                self.configuration
+                    .prepare_note_with_tuning(pitch, velocity, tuning)
+            }
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        } else if let Some(factory) = self.lfo_runtime.as_ref() {
             factory
                 .prepare_note_for_runtime(pitch, velocity)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;
@@ -1292,6 +1309,7 @@ impl PreparedSharedAnalyticContext for PreparedOperatorContext {
         note: &PreparedSharedAnalyticNote,
         age_frames: u64,
         gate_frames: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> StereoFrame {
         if note.release_frames() != self.configuration.release_frames() {
             return [0.0; 2];

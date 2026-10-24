@@ -30,7 +30,12 @@ impl PreparedNativeProcessor for BudgetPrepared {
     }
 }
 impl NativeProcessorRuntime for BudgetRuntime {
-    fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+    fn process_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
     fn reset(&mut self) {}
     fn is_quiescent(&self) -> bool {
         true
@@ -73,8 +78,8 @@ fn exact_per_twin_and_aggregate_caps_preserve_count_and_twin_accounting() {
     let accepted =
         NativeRuntimeChain::new(instances(1, MAX_PROCESSOR_RUNTIME_BYTES, &factories)).unwrap();
     assert_eq!(
-        accepted.declared_runtime_bytes(),
-        MAX_PROCESSOR_RUNTIME_BYTES
+        accepted.declared_pair_bytes(),
+        2 * MAX_PROCESSOR_RUNTIME_BYTES
     );
     assert_eq!(factories.load(Ordering::Relaxed), 2);
     assert_eq!(
@@ -95,8 +100,8 @@ fn exact_per_twin_and_aggregate_caps_preserve_count_and_twin_accounting() {
     let full =
         NativeRuntimeChain::new(instances(count, MAX_PROCESSOR_RUNTIME_BYTES, &factories)).unwrap();
     assert_eq!(
-        full.declared_runtime_bytes(),
-        MAX_PROCESSOR_BANK_RUNTIME_BYTES
+        full.declared_pair_bytes(),
+        2 * MAX_PROCESSOR_BANK_RUNTIME_BYTES
     );
     assert!(matches!(
         NativeRuntimeChain::new(instances(

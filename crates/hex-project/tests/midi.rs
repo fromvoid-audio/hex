@@ -30,32 +30,6 @@ fn midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragmen
         Created::Clip(clip) => clip,
         other => panic!("unexpected clip: {other:?}"),
     };
-    let asset = match editor
-        .execute(Command::AddAsset {
-            path: "Audio/overwrite.wav".into(),
-            sample_rate: 48_000,
-            frames: 256,
-        })
-        .expect("audio asset")
-    {
-        Created::Asset(asset) => asset,
-        other => panic!("unexpected asset: {other:?}"),
-    };
-    let audio_victim = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 0,
-            duration: 120_000,
-            source_offset: 0,
-            source_length: 256,
-            looping: true,
-        })
-        .expect("audio victim")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected clip: {other:?}"),
-    };
     let original_note = match editor
         .execute(Command::AddMidiNote {
             clip: victim,
@@ -120,21 +94,6 @@ fn midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragmen
     assert_eq!(victim_right.notes()[0].start(), BeatTime::ZERO);
     assert_eq!(victim_right.notes()[0].duration(), beat(4));
     assert_ne!(victim_right.notes()[0].id(), original_note);
-    let target_audio = target_track.clips();
-    let audio_left = target_audio
-        .iter()
-        .find(|clip| clip.id() == audio_victim)
-        .expect("audio left fragment retains ID");
-    assert_eq!((audio_left.start(), audio_left.duration()), (0, 48_000));
-    let audio_right = target_audio
-        .iter()
-        .find(|clip| clip.id() != audio_victim)
-        .expect("audio right fragment");
-    assert_eq!(
-        (audio_right.start(), audio_right.duration()),
-        (96_000, 24_000)
-    );
-    assert_eq!(audio_right.asset(), asset);
     assert!(
         editor
             .project()
@@ -316,7 +275,7 @@ fn one_hybrid_track_accepts_both_clip_types_and_cross_type_moves_undo() {
     let midi = match editor
         .execute(Command::PlaceMidiClip {
             track: first,
-            start: BeatTime::ZERO,
+            start: BeatTime::ONE,
             length: BeatTime::ONE,
         })
         .expect("midi clip on same track")
@@ -735,7 +694,7 @@ fn batch_note_insert_preserves_input_order_expression_and_one_step_history() {
             velocity: 91,
         },
         MidiNoteInsert {
-            start: BeatTime::from_ratio(1, 3).unwrap(),
+            start: BeatTime::ZERO,
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 72,
             channel: 3,
@@ -841,7 +800,7 @@ fn mixed_note_edit_compacts_then_appends_in_one_ordered_history_step() {
             velocity: 1,
         },
         MidiNoteInsert {
-            start: BeatTime::from_ratio(1, 3).unwrap(),
+            start: BeatTime::ZERO,
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 90,
             channel: 14,
@@ -1136,7 +1095,14 @@ fn mixed_batch_checks_final_global_cap_and_id_range_before_removing() {
             .execute(Command::EditMidiNotes {
                 clip,
                 remove: vec![created],
-                insert: vec![inserts[0], inserts[1], inserts[0]],
+                insert: vec![
+                    inserts[0],
+                    inserts[1],
+                    MidiNoteInsert {
+                        pitch: 72,
+                        ..inserts[0]
+                    }
+                ],
             })
             .is_err()
     );
@@ -1317,7 +1283,13 @@ fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
     let Created::Notes { first, last, .. } = exact
         .execute(Command::AddMidiNotes {
             clip,
-            notes: vec![note; 2],
+            notes: vec![
+                note,
+                MidiNoteInsert {
+                    start: BeatTime::from_raw(1),
+                    ..note
+                },
+            ],
         })
         .unwrap()
     else {
@@ -1355,7 +1327,13 @@ fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
         exhausted
             .execute(Command::AddMidiNotes {
                 clip,
-                notes: vec![note; 2],
+                notes: vec![
+                    note,
+                    MidiNoteInsert {
+                        start: BeatTime::from_raw(1),
+                        ..note
+                    }
+                ],
             })
             .is_err()
     );
@@ -1382,6 +1360,8 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![hex_project::MidiClipSnapshot {
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: other_clip_id,
@@ -1395,7 +1375,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
             notes: (0..count)
                 .map(|index| MidiNoteSnapshot {
                     id: first_note_id + index as u64,
-                    start_raw: 0,
+                    start_raw: index as u64,
                     duration_raw: 1,
                     pitch: 60,
                     channel: 0,

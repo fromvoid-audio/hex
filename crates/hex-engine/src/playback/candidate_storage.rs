@@ -16,6 +16,7 @@ impl Playback {
     ) -> Result<(), AudioStorageError> {
         let Self {
             metronome,
+            tuning_audition,
             project,
             prepared_revision,
             session_runtime,
@@ -26,7 +27,7 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
-        if linear_runtime.is_some() || session_unavailable.is_some() {
+        if tuning_audition.is_some() || linear_runtime.is_some() || session_unavailable.is_some() {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let revision = prepared_revision

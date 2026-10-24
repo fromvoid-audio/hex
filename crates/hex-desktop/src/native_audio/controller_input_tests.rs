@@ -45,8 +45,11 @@ fn resident_controller_and_keyboard_publications_keep_source_identity_through_wo
         harness.audio.as_ref().unwrap().mode,
         DocumentAudioMode::Resident
     );
-    let added = harness.run(Request::Edit(hex_project::Command::AddMidiTrack {
+    let added = harness.run(Request::Edit(hex_project::Command::InsertTrackWithDevice {
         name: "vector".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }));
     let track = added.state.project.tracks()[0].id();
     let instrument = added
@@ -151,4 +154,55 @@ fn resident_controller_and_keyboard_publications_keep_source_identity_through_wo
     oracle.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
     assert!(!keys.is_cancelled());
+}
+
+#[test]
+fn dedicated_tuning_audition_uses_resident_worker_bridge_without_a_selected_track() {
+    let mut harness = Harness::new();
+    let initial = harness.next();
+    harness.open();
+    let generation = harness.context.unwrap().project_generation;
+    let input = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(
+        generation,
+    ));
+    let oracle_input = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(
+        generation,
+    ));
+    for input in [&input, &oracle_input] {
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+    }
+    let mut activated = harness.run(Request::PrepareTuningAudition {
+        revision: initial.state.revision,
+        input: Arc::clone(&input),
+    });
+    assert_eq!(activated.state.project, initial.state.project);
+    assert_eq!(activated.state.revision, initial.state.revision);
+    assert!(Arc::ptr_eq(
+        activated.tuning_audition_complete.as_ref().unwrap(),
+        &input
+    ));
+    let playback = activated.playback.take().unwrap();
+    let mut oracle = Playback::from_prepared(Arc::clone(playback.prepared_revision().unwrap()));
+    oracle
+        .prepare_tuning_audition(&initial.state.project, oracle_input)
+        .unwrap();
+    let revision = forward(&mut harness, playback);
+    let actual = harness.render(); // actual adapter callback also measures allocations
+    let mut expected = [[0.0; 2]; 64];
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.00001));
+    assert_eq!(
+        harness
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        revision
+    );
+    input.cancel();
+    assert_eq!(harness.render(), [[0.0; 2]; 64]);
 }

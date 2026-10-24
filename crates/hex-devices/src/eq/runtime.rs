@@ -387,13 +387,18 @@ fn bank(mode: u8, channel: usize) -> u8 {
     }
 }
 impl NativeProcessorRuntime for EqRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         self.process(frames, None, false)
     }
     fn process_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         self.process(frames, clock, false)
     }
@@ -401,10 +406,15 @@ impl NativeProcessorRuntime for EqRuntime {
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         self.process(frames, clock, true)
     }
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         self.process(frames, None, true)
     }
     fn reset(&mut self) {

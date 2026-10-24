@@ -97,7 +97,15 @@ impl EditorView {
         if show_main {
             strip = strip
                 .child(div().flex_1())
-                .child(theme::text("main"))
+                .child(
+                    div()
+                        .id("console-main-header")
+                        .debug_selector(|| "console-main-header".into())
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            super::device_panel::select_main(view, window, cx)
+                        }))
+                        .child(theme::text("main")),
+                )
                 .children([self.main_track_controls(cx)]);
         }
         strip

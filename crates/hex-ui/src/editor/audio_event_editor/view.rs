@@ -247,7 +247,7 @@ pub(in crate::editor) fn view(
                     .left(relative(frame_to_x(a)))
                     .w(relative((b - a) as f32 / local.length.max(1) as f32))
                     .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                    .opacity(0.2),
+                    .opacity(theme::TIME_SELECTION_OPACITY),
             );
         }
     }
@@ -431,8 +431,8 @@ pub(in crate::editor) fn view(
         .on_mouse_up_out(
             MouseButton::Left,
             cx.listener(|view, _, window, cx| {
-                view.audio_event_focus.focus(window);
                 if view.audio_event_editor.gesture.take().is_some() {
+                    view.audio_event_focus.focus(window);
                     cx.notify();
                 }
             }),
@@ -504,15 +504,8 @@ pub(in crate::editor) fn view(
                 cx.notify();
             })),
         )
-        .child(
-            waveform::button("↔", "fit audio events · cmd+0", ("audio-event-fit", 0)).on_click(
-                cx.listener(|view, _, window, cx| {
-                    view.audio_event_focus.focus(window);
-                    view.audio_event_editor.viewport = None;
-                    cx.notify();
-                }),
-            ),
-        )
+        .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, false, cx))
+        .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, true, cx))
         .child(
             div()
                 .flex_1()

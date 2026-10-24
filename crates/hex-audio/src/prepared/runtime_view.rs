@@ -63,6 +63,12 @@ impl ActivePublication {
     }
 }
 impl RuntimeRef<'_> {
+    pub(super) fn project_output_supported(&self, tracks: &[u64]) -> bool {
+        match self {
+            Self::Legacy(p) => p.project_output_supported(tracks),
+            Self::Eligible(p) => p.project_output_supported(tracks),
+        }
+    }
     fn status(&self) -> Option<AudioCandidateRuntimeStatus> {
         match self {
             Self::Eligible(runtime) => runtime.status(),
@@ -72,6 +78,7 @@ impl RuntimeRef<'_> {
                 playing: p.playing(),
                 metronome_enabled: p.metronome_enabled(),
                 session_capability: p.session_capability_status(),
+                sampler_console: false,
                 route_state_generation: p.session_route_state_generation(),
                 route_count: p.session_route_count(),
             }),
@@ -101,11 +108,20 @@ impl RuntimeRef<'_> {
                 s.session_capability
             })
     }
+    pub(super) fn sampler_console_available(&self) -> bool {
+        self.status().is_some_and(|s| s.sampler_console)
+    }
     pub(super) fn session_route_state_generation(&self) -> u64 {
         self.status().map_or(0, |s| s.route_state_generation)
     }
     pub(super) fn session_route_count(&self) -> usize {
         self.status().map_or(0, |s| s.route_count)
+    }
+    pub(super) fn session_clock_anchor(&self) -> Option<hex_engine::SessionClockAnchor> {
+        match self {
+            Self::Legacy(p) => p.session_clock_anchor(),
+            Self::Eligible(p) => p.session_clock_anchor(),
+        }
     }
     pub(super) fn session_route_status(
         &self,
@@ -169,6 +185,17 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.apply_action(action),
         }
     }
+    pub(super) fn apply_priority_stop(
+        &mut self,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) {
+        match self {
+            Self::Legacy(p) => p.apply_priority_stop(clock),
+            Self::Eligible(p) => {
+                let _ = p.apply_priority_stop(clock);
+            }
+        }
+    }
     pub(super) fn apply(&mut self, command: PlaybackCommand) {
         match self {
             Self::Legacy(p) => p.apply(command),
@@ -183,14 +210,15 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.render(output),
         }
     }
-    pub(super) fn render_with_post_node_observer(
+    pub(super) fn render_with_signal_observers(
         &mut self,
         output: &mut [Frame],
-        observer: Option<&mut hex_engine::PostNodeObserver<'_>>,
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
         match self {
-            Self::Legacy(p) => p.render_with_post_node_observer(output, observer),
-            Self::Eligible(p) => p.render_with_post_node_observer(output, observer),
+            Self::Legacy(p) => p.render_with_signal_observers(output, observer, project),
+            Self::Eligible(p) => p.render_with_signal_observers(output, observer, project),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {

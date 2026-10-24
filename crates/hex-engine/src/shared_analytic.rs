@@ -84,10 +84,17 @@ pub(crate) fn preflight_context_lease_plan(
     Ok(())
 }
 
+static NEXT_TUNING_ID: AtomicU64 = AtomicU64::new(1);
+/// Exact prepared-table provenance. Zero denotes the exact legacy neutral table;
+/// nonneutral IDs are reused only after all128 frequency bits compare equal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TuningIdentity(u64);
+
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SharedContextIdentity {
+    tuning: TuningIdentity,
     track: TrackId,
     device: DeviceId,
     device_type: DeviceTypeId,
@@ -243,6 +250,8 @@ impl SharedContextOwner {
 /// callback sampling is O(1) and does not clone an Arc.
 #[derive(Debug, Default)]
 pub(crate) struct SharedAnalyticContextTable {
+    tuning: hex_lattice::TuningTable,
+    tuning_identity: TuningIdentity,
     owners: Vec<Arc<SharedContextOwner>>,
     ids: Vec<(SharedContextId, u16)>,
     payload_bytes: usize,
@@ -250,16 +259,38 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// The closed native sampler constructor has no analytic owners. Its
+    /// validated tuning remains inline in the actual constructor allocation.
+    pub(crate) fn current_sampler_table(tuning: hex_lattice::TuningTable) -> Result<Self, Invalid> {
+        let tuning_identity = if tuning.is_neutral() {
+            TuningIdentity::default()
+        } else {
+            TuningIdentity(
+                NEXT_TUNING_ID
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .map_err(|_| Invalid("tuning identity exhausted"))?,
+            )
+        };
+        Ok(Self {
+            tuning,
+            tuning_identity,
+            ..Self::default()
+        })
+    }
     /// Exhaustive audited empty-table payload check for the opt-in compiler.
     /// Vec headers belong to this outer payload; nonzero spare capacities or
     /// nested handles are unsupported rather than assumed free/complete.
     pub(crate) fn require_empty_owned_storage(&self) -> Result<(), crate::AudioStorageError> {
         let Self {
+            tuning,
+            tuning_identity,
             owners,
             ids,
             payload_bytes,
             mutable_continuations,
         } = self;
+        let _: &[f64; 128] = tuning.frequencies();
+        let _: u64 = tuning_identity.0;
         if !owners.is_empty()
             || owners.capacity() != 0
             || !ids.is_empty()
@@ -282,6 +313,28 @@ impl SharedAnalyticContextTable {
         registry: &NativeInstrumentRegistry<'_>,
         previous: Option<&Self>,
     ) -> Result<Arc<Self>, Invalid> {
+        Self::prepare_scoped(project, registry, previous, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_scoped(
+        project: &Project,
+        registry: &NativeInstrumentRegistry<'_>,
+        previous: Option<&Self>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    ) -> Result<Arc<Self>, Invalid> {
+        let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
+        let tuning_identity = if tuning.is_neutral() {
+            TuningIdentity::default()
+        } else if let Some(old) = previous.filter(|old| old.tuning == tuning) {
+            old.tuning_identity
+        } else {
+            TuningIdentity(
+                NEXT_TUNING_ID
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .map_err(|_| Invalid("tuning identity exhausted"))?,
+            )
+        };
         let mut owners = Vec::new();
         owners
             .try_reserve_exact(project.tracks().len())
@@ -296,9 +349,18 @@ impl SharedAnalyticContextTable {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
                 continue;
             };
-            let prepared = registry
-                .prepare_instrument(device.state(), project.sample_rate())
-                .map_err(|_| Invalid("track instrument state is unsupported"))?;
+            let prepared = crate::native_device_resources::prepare_instrument(
+                registry,
+                device.id(),
+                device.state(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: &tuning,
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+                samplers,
+            )
+            .map_err(|_| Invalid("track instrument state is unsupported"))?;
             if prepared.prefers_mutable_continuation()
                 || previous.is_some_and(|old| {
                     old.mutable_continuations
@@ -324,6 +386,7 @@ impl SharedAnalyticContextTable {
                 continue;
             };
             let identity = SharedContextIdentity {
+                tuning: tuning_identity,
                 track: track.id(),
                 device: device.id(),
                 device_type: device.state().type_id(),
@@ -392,11 +455,20 @@ impl SharedAnalyticContextTable {
         }
         ids.sort_unstable_by_key(|(id, _)| *id);
         Ok(Arc::new(Self {
+            tuning,
+            tuning_identity,
             owners,
             ids,
             payload_bytes,
             mutable_continuations,
         }))
+    }
+
+    pub(crate) fn tuning(&self) -> &hex_lattice::TuningTable {
+        &self.tuning
+    }
+    pub(crate) fn tuning_identity(&self) -> TuningIdentity {
+        self.tuning_identity
     }
 
     pub(crate) fn requires_mutable_continuation(&self, track: TrackId, device: DeviceId) -> bool {
@@ -611,8 +683,9 @@ mod tests {
         let table_header = std::mem::size_of::<SharedAnalyticContextTable>();
         assert_eq!(owner_handles, 2_048);
         assert_eq!(id_index_entries, 4_096);
-        assert_eq!(table_header, 80);
-        assert_eq!(owner_handles + id_index_entries + table_header, 6_224);
+        // One table and scalar cache identity per revision, never per clip.
+        assert_eq!(table_header, 80 + 1024 + 8);
+        assert_eq!(owner_handles + id_index_entries + table_header, 7_256);
     }
 
     #[test]

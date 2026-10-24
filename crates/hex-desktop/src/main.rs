@@ -1,4 +1,13 @@
-//! Desktop composition only: create backend, open the GPUI shell, run lifecycle.
+//! # Purpose
+//! Compose the native editor, worker-owned audio backend and application lifecycle.
+//!
+//! # Dependencies
+//! Uses hex-ui/GPUI, hex-session, hex-audio, hex-engine, hex-stream, hex-media, hex-diagnostics,
+//! hex-midi and hex-mts at their existing boundaries.
+//!
+//! # Does not own
+//! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
+//! retain exact document and output identity; UI clients never acquire source owners.
 use gpui::{App, Application};
 use std::io::Write;
 
@@ -29,15 +38,20 @@ fn main() {
     if let Ok(handle) = &log_handle {
         let _ = handle.record(&format!(
             "hex version={}; executable={:?}",
-            env!("CARGO_PKG_VERSION"),
+            option_env!("HEX_RELEASE_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")),
             std::env::current_exe()
         ));
     }
     let midi_worker = hex_midi::Worker::start();
     let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
+    let mut mts_worker = hex_mts::Worker::start();
+    let mts_handle = mts_worker.as_ref().ok().map(hex_mts::Worker::handle);
     Application::new().run(move |cx: &mut App| {
         if let Some(handle) = &midi_handle {
             hex_ui::install_controller_input(cx, handle.clone());
+        }
+        if let Some(handle) = &mts_handle {
+            hex_ui::install_mts_publisher(cx, handle.clone());
         }
         hex_ui::install_session_log(cx, log_handle.clone());
         let demo = std::env::args_os()
@@ -55,6 +69,9 @@ fn main() {
         }
         cx.activate(true);
     });
+    if let Ok(worker) = &mut mts_worker {
+        worker.shutdown();
+    }
     // The UI/audio lifecycle has ended; joining file I/O is safe here.
     if let Ok(log) = &mut session_log {
         if let Err(error) = log.shutdown() {

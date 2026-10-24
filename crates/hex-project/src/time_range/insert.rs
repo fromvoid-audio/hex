@@ -408,13 +408,26 @@ fn materialize_shifted_midi(
             });
         }
     }
+    let volume = super::midi_volume::FrameVolume::capture(
+        original,
+        project.tempo_map(),
+        source_start_frame,
+        source_end_frame,
+    )?
+    .paste(
+        project.tempo_map(),
+        destination_start_frame,
+        destination_end_frame,
+    )?;
     Ok(MidiClip {
+        volume,
         name: original.name.clone(),
         flavor: original.flavor,
         id,
         start,
         length,
         source: Arc::new(MidiSource {
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,

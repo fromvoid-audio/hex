@@ -2,6 +2,39 @@ use super::*;
 use crate::SineTable;
 use parameter::EnvelopeField;
 
+#[test]
+fn custom_tuning_note_admission_matches_operator_runtime_nyquist_law() {
+    for lfo in [false, true] {
+        let mut settings = legacy_settings();
+        for operator in 0..4 {
+            settings.fields[operator * 3] = 4.0;
+        }
+        if lfo {
+            settings.lfo.0[0] = 1;
+            settings.lfo.0[5] = 0.2f32.to_bits();
+        }
+        let state = settings.to_state().unwrap();
+        for (pitch, hz, supported) in [(69, 30_000.0, false), (127, 220.0, true)] {
+            let tuning = hex_lattice::TuningTable::new([hz; 128]).unwrap();
+            let instrument = OPERATOR_METADATA
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &tuning,
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                instrument.validate_event_note(pitch, 100).is_ok(),
+                supported,
+                "lfo={lfo}, pitch={pitch}, custom Hz={hz}"
+            );
+        }
+    }
+}
+
 fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDeviceState {
     OPERATOR_METADATA
         .patch_parameter(state, id, ParameterValue::Float(value))
@@ -240,7 +273,14 @@ fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
             .prepare_note(69, velocity)
             .expect("compact note");
         let instrument = OPERATOR_METADATA
-            .prepare_instrument(&state, RATE as u32)
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: RATE as u32,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .expect("instrument");
         let shared = instrument
             .prepare_shared_analytic_context()
@@ -256,7 +296,9 @@ fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
                         let oracle = expected(age, gate, velocity);
                         let direct = standalone.sample(crate::shared_sine_table(), age, gate);
                         let compact_sample = configuration.sample(table, &compact, age, gate);
-                        let shared_sample = shared.sample(&note, age, gate)[0];
+                        let shared_sample =
+                            shared.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                                [0];
                         assert_eq!(direct.to_bits(), compact_sample.to_bits());
                         assert_eq!(direct.to_bits(), shared_sample.to_bits());
                         assert!(
@@ -597,7 +639,14 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
         );
     }
     let prepared = registry
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("mixed Operator configuration");
     let context = prepared
         .prepare_shared_analytic_context()
@@ -633,19 +682,28 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
             expected.to_bits(),
             "standalone/compact mismatch at {age}"
         );
-        assert_eq!(context.sample(&note, age, 4096), [expected, expected]);
+        assert_eq!(
+            context.sample(&note, age, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            [expected, expected]
+        );
         assert!(expected.is_finite());
     }
     let mut malformed = *note.payload();
     malformed[5] = (malformed[5] & !0xff) | 10;
     let malformed = PreparedSharedAnalyticNote::new(malformed, note.release_frames());
-    assert_eq!(context.sample(&malformed, 0, 4096), [0.0; 2]);
+    assert_eq!(
+        context.sample(&malformed, 0, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        [0.0; 2]
+    );
     let mut noncanonical = *note.payload();
     let selected = (noncanonical[5] & 0xff) as u8;
     assert!(selected > 0);
     noncanonical[5] = (noncanonical[5] & !0xff) | u64::from(selected - 1);
     let noncanonical = PreparedSharedAnalyticNote::new(noncanonical, note.release_frames());
-    assert_eq!(context.sample(&noncanonical, 0, 4096), [0.0; 2]);
+    assert_eq!(
+        context.sample(&noncanonical, 0, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        [0.0; 2]
+    );
 
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.25, 1.25] {
         let mut malformed = *note.payload();
@@ -662,7 +720,14 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
         );
     }
     let zero_scale_context = registry
-        .prepare_instrument(&zero_scale_state, 48_000)
+        .prepare_instrument(
+            &zero_scale_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("zero scale instrument")
         .prepare_shared_analytic_context()
         .expect("context capability")
@@ -681,7 +746,10 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
     let decoded = PreparedOperatorNote::from_shared_payload(zero_scale.payload())
         .expect("active all-zero scales are valid");
     assert_eq!(decoded.into_shared_payload(), zero_scale_payload);
-    assert_eq!(zero_scale_context.sample(&zero_scale, 0, 4096), [0.0; 2]);
+    assert_eq!(
+        zero_scale_context.sample(&zero_scale, 0, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        [0.0; 2]
+    );
 }
 
 #[test]
@@ -697,7 +765,14 @@ fn one_hundred_distinct_operator_contexts_fit_declared_lattice_budgets() {
             )
             .expect("distinct valid ratio");
         let instrument = registry
-            .prepare_instrument(&state, 48_000)
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .expect("prepared instrument");
         contexts.push(
             instrument
@@ -841,7 +916,14 @@ fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
             .expect("feedback availability")
     );
     let prepared = OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("mutable feedback route");
     assert!(
         prepared
@@ -865,7 +947,14 @@ fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
         ParameterValue::Float(0.6)
     );
     let prepared = OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("analytic route remains valid");
     assert!(
         prepared
@@ -893,7 +982,14 @@ fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
         ParameterValue::Float(0.6)
     );
     let prepared = OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("mutable route preparation");
     let factory = prepared
         .prepare_mutable_runtime()
@@ -901,7 +997,7 @@ fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
         .expect("nonzero feedback selects mutable path");
     assert_eq!(factory.max_active_occurrences(), 16);
     assert_eq!(factory.max_events_per_block(), 256);
-    assert!(factory.declared_twin_bytes() <= 4096);
+    assert!(factory.declared_twin_bytes() <= 5120);
 }
 
 #[test]
@@ -1064,7 +1160,14 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
     let state = legacy_state();
     assert_eq!(definition.descriptors().len(), PARAMETER_COUNT);
     let prepared = registry
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared Operator configuration");
     assert!(matches!(
         prepared.prepare_note(69, 100),
@@ -1106,7 +1209,10 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
                 age,
                 gate,
             );
-            assert_eq!(context.sample(&note, age, gate), [expected, expected]);
+            assert_eq!(
+                context.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                [expected, expected]
+            );
         }
     }
 }

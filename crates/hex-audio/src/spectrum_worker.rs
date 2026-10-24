@@ -7,8 +7,15 @@
 
 use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
 mod native;
+pub(crate) use native::constructor_storage_quote;
+mod project;
 pub(crate) use native::{
     NativeSpectrumIdentity, NativeSpectrumReceipt, spawn_native_spectrum_worker,
+};
+pub(crate) use project::ProjectSelectionMailbox;
+pub use project::{
+    MAX_PROJECT_CONTRIBUTION_FRAMES, MAX_PROJECT_LAYERS, MAX_PROJECT_PAYLOAD_BYTES,
+    MAX_PROJECT_TRACKS, PROJECT_DISPLAY_STALE_AFTER, ProjectSelection, PublishedProjectSpectrum,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
@@ -28,6 +35,7 @@ pub const MAX_CAPTURE_FRAMES: usize = 256;
 pub const MAX_BATCHES_PER_POLL: usize = 32;
 pub const ANALYSIS_INTERVAL: Duration = Duration::from_nanos(33_333_334);
 pub const DISPLAY_STALE_AFTER: Duration = Duration::from_millis(100);
+const DECAY_DB_PER_SECOND: f32 = 48.0;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const RESULT_QUEUE_CAPACITY: usize = 1;
@@ -60,6 +68,14 @@ pub struct PublishedSpectrum {
     pub processed_at: Instant,
 }
 
+/// Aligned spectra from the same capture sequence and sample window. Legacy
+/// output-only submissions leave input absent; no input signal is synthesized.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublishedSpectra {
+    pub output: PublishedSpectrum,
+    pub input: Option<SpectrumFrame>,
+}
+
 impl PublishedSpectrum {
     /// Whether the represented output is recent enough to display.
     pub fn is_fresh_at(&self, now: Instant) -> bool {
@@ -84,6 +100,7 @@ pub struct SpectrumCapture {
     next_sequence: u64,
     exhausted: bool,
     native: Option<NativeSpectrumReceipt>,
+    pub(crate) project: Option<project::ProjectCapture>,
 }
 
 impl SpectrumCapture {
@@ -106,6 +123,37 @@ impl SpectrumCapture {
         frames: &[[f32; 2]],
         captured_start: Instant,
     ) -> CaptureOutcome {
+        self.submit_signals_at(stamp, None, frames, captured_start)
+    }
+
+    /// Submit aligned actual node input and output in one bounded packet.
+    pub fn submit_pair(
+        &mut self,
+        stamp: SpectrumStamp,
+        input: &[[f32; 2]],
+        output: &[[f32; 2]],
+    ) -> CaptureOutcome {
+        self.submit_pair_at(stamp, input, output, Instant::now())
+    }
+
+    /// Paired counterpart with the caller's conservative callback timestamp.
+    pub fn submit_pair_at(
+        &mut self,
+        stamp: SpectrumStamp,
+        input: &[[f32; 2]],
+        output: &[[f32; 2]],
+        captured_start: Instant,
+    ) -> CaptureOutcome {
+        self.submit_signals_at(stamp, Some(input), output, captured_start)
+    }
+
+    fn submit_signals_at(
+        &mut self,
+        stamp: SpectrumStamp,
+        input: Option<&[[f32; 2]]>,
+        frames: &[[f32; 2]],
+        captured_start: Instant,
+    ) -> CaptureOutcome {
         if self.exhausted {
             return CaptureOutcome::SequenceExhausted;
         }
@@ -124,18 +172,28 @@ impl SpectrumCapture {
             || !(MIN_CAPTURE_SAMPLE_RATE_HZ..=MAX_CAPTURE_SAMPLE_RATE_HZ)
                 .contains(&stamp.sample_rate_hz)
             || frames.iter().flatten().any(|sample| !sample.is_finite())
+            || input.is_some_and(|input| {
+                input.len() != frames.len()
+                    || input.iter().flatten().any(|sample| !sample.is_finite())
+            })
         {
             return CaptureOutcome::InvalidBatch { sequence };
         }
 
         let mut samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
         samples[..frames.len()].copy_from_slice(frames);
+        let mut input_samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
+        if let Some(input) = input {
+            input_samples[..input.len()].copy_from_slice(input);
+        }
         let batch = CaptureBatch {
             stamp,
             sequence,
             captured_start,
             frame_count: frames.len() as u16,
             samples,
+            input_samples,
+            paired: input.is_some(),
         };
         match self.producer.push(batch) {
             Ok(()) => CaptureOutcome::Queued { sequence },
@@ -162,18 +220,38 @@ impl SpectrumCapture {
 /// Control-side newest-result cache. It can be polled by the UI without
 /// owning or joining the worker thread.
 pub struct SpectrumReader {
-    results: Receiver<PublishedSpectrum>,
-    latest: Option<PublishedSpectrum>,
+    results: Receiver<PublishedSpectra>,
+    latest: Option<PublishedSpectra>,
     native: Option<NativeSpectrumIdentity>,
+    project: Option<project::ProjectReader>,
 }
 
 impl SpectrumReader {
+    pub fn project_available(&self) -> bool {
+        self.project.is_some()
+    }
+    pub fn try_latest_project_at(
+        &mut self,
+        now: Instant,
+        selection: ProjectSelection,
+    ) -> Option<PublishedProjectSpectrum> {
+        self.project.as_mut()?.latest_at(now, selection)
+    }
     /// Return the newest result, clearing cached display data after 100 ms.
     pub fn try_latest(&mut self) -> Option<PublishedSpectrum> {
         self.try_latest_at(Instant::now())
     }
 
     pub fn try_latest_at(&mut self, now: Instant) -> Option<PublishedSpectrum> {
+        self.try_latest_pair_at(now).map(|pair| pair.output)
+    }
+
+    /// Return one aligned input/output result through the same freshness cache.
+    pub fn try_latest_pair(&mut self) -> Option<PublishedSpectra> {
+        self.try_latest_pair_at(Instant::now())
+    }
+
+    pub fn try_latest_pair_at(&mut self, now: Instant) -> Option<PublishedSpectra> {
         for _ in 0..RESULT_QUEUE_CAPACITY {
             match self.results.try_recv() {
                 Ok(result) => self.latest = Some(result),
@@ -183,7 +261,7 @@ impl SpectrumReader {
         if self
             .latest
             .as_ref()
-            .is_some_and(|result| !result.is_fresh_at(now))
+            .is_some_and(|result| !result.output.is_fresh_at(now))
         {
             self.latest = None;
         }
@@ -263,6 +341,8 @@ pub enum SpectrumWorkerError {
     ThreadSpawn(std::io::Error),
     ThreadPanicked,
     StorageOverflow,
+    PoolCapacity,
+    Allocation,
 }
 
 impl fmt::Display for SpectrumWorkerError {
@@ -274,7 +354,9 @@ impl fmt::Display for SpectrumWorkerError {
             Self::ThreadSpawn(error) => {
                 write!(formatter, "could not start spectrum worker: {error}")
             }
+            Self::PoolCapacity => formatter.write_str("spectrum packet pool capacity refused"),
             Self::StorageOverflow => formatter.write_str("spectrum storage size overflow"),
+            Self::Allocation => formatter.write_str("could not reserve spectrum storage"),
             Self::ThreadPanicked => formatter.write_str("spectrum worker exited unexpectedly"),
         }
     }
@@ -297,13 +379,26 @@ fn spawn_worker(
         .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
 
     let core = SpectrumCore::new(kernel, initial_stamp.sample_rate_hz);
+    let (project_capture, project_reader, project_worker) = if fixed_native {
+        let (capture, reader, worker) = project::channel(initial_stamp.sample_rate_hz)?;
+        (Some(capture), Some(reader), Some(worker))
+    } else {
+        (None, None, None)
+    };
     let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
     let (result_sender, result_receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
     let receipt = if fixed_native {
         Some(
-            NativeSpectrumReceipt::new(&producer, &stop, &core, initial_stamp.sample_rate_hz)
-                .ok_or(SpectrumWorkerError::StorageOverflow)?,
+            NativeSpectrumReceipt::new(
+                &producer,
+                &stop,
+                &core,
+                initial_stamp.sample_rate_hz,
+                project_capture.as_ref(),
+                project_worker.as_ref(),
+            )
+            .ok_or(SpectrumWorkerError::StorageOverflow)?,
         )
     } else {
         None
@@ -315,7 +410,7 @@ fn spawn_worker(
             if let Some(entry) = entry {
                 entry();
             }
-            worker_loop(consumer, result_sender, worker_stop, core)
+            worker_loop(consumer, result_sender, worker_stop, core, project_worker)
         })
         .map_err(SpectrumWorkerError::ThreadSpawn)?;
 
@@ -325,11 +420,13 @@ fn spawn_worker(
             next_sequence: 0,
             exhausted: false,
             native: receipt,
+            project: project_capture,
         },
         SpectrumReader {
             results: result_receiver,
             latest: None,
             native: receipt.map(|receipt| receipt.identity),
+            project: project_reader,
         },
         SpectrumReaper {
             stop,
@@ -348,13 +445,16 @@ struct CaptureBatch {
     captured_start: Instant,
     frame_count: u16,
     samples: [[f32; 2]; MAX_CAPTURE_FRAMES],
+    input_samples: [[f32; 2]; MAX_CAPTURE_FRAMES],
+    paired: bool,
 }
 
 fn worker_loop(
     mut consumer: Consumer<CaptureBatch>,
-    result_sender: SyncSender<PublishedSpectrum>,
+    result_sender: SyncSender<PublishedSpectra>,
     stop: Arc<AtomicBool>,
     mut core: SpectrumCore,
+    mut project: Option<project::ProjectWorker>,
 ) {
     while !stop.load(Ordering::Acquire) {
         let mut drained = 0;
@@ -366,8 +466,11 @@ fn worker_loop(
             drained += 1;
         }
         let now = Instant::now();
-        if let Some(result) = core.analyze_if_due(now) {
+        if let Some(result) = core.analyze_pair_if_due(now) {
             let _ = result_sender.try_send(result);
+        }
+        if let Some(project) = project.as_mut() {
+            drained += project.poll(now);
         }
         if drained == 0 {
             thread::sleep(IDLE_POLL_INTERVAL);
@@ -380,6 +483,7 @@ struct StreamContext {
     target: SpectrumTargetId,
     generation: u64,
     sample_rate_hz: u32,
+    paired: bool,
 }
 
 struct SpectrumCore {
@@ -388,12 +492,17 @@ struct SpectrumCore {
     kernel_rate: Option<u32>,
     rolling: Box<[[f32; 2]; FFT_SIZE]>,
     ordered: Box<[[f32; 2]; FFT_SIZE]>,
+    input_rolling: Box<[[f32; 2]; FFT_SIZE]>,
+    input_ordered: Box<[[f32; 2]; FFT_SIZE]>,
     write_index: usize,
     filled: usize,
     last_sequence: Option<u64>,
     latest_stamp: Option<SpectrumStamp>,
     captured_at: Option<Instant>,
     last_analysis_at: Option<Instant>,
+    output_envelope: Option<SpectrumFrame>,
+    input_envelope: Option<SpectrumFrame>,
+    envelope_at: Option<Instant>,
     dirty_since_analysis: bool,
 }
 
@@ -405,12 +514,17 @@ impl SpectrumCore {
             kernel_rate: Some(sample_rate_hz),
             rolling: Box::new([[0.0; 2]; FFT_SIZE]),
             ordered: Box::new([[0.0; 2]; FFT_SIZE]),
+            input_rolling: Box::new([[0.0; 2]; FFT_SIZE]),
+            input_ordered: Box::new([[0.0; 2]; FFT_SIZE]),
             write_index: 0,
             filled: 0,
             last_sequence: None,
             latest_stamp: None,
             captured_at: None,
             last_analysis_at: None,
+            output_envelope: None,
+            input_envelope: None,
+            envelope_at: None,
             dirty_since_analysis: false,
         }
     }
@@ -423,6 +537,11 @@ impl SpectrumCore {
                 .iter()
                 .flatten()
                 .any(|sample| !sample.is_finite())
+            || (batch.paired
+                && batch.input_samples[..frame_count]
+                    .iter()
+                    .flatten()
+                    .any(|sample| !sample.is_finite()))
         {
             self.clear_window();
             self.last_sequence = Some(batch.sequence);
@@ -433,6 +552,7 @@ impl SpectrumCore {
             target: batch.stamp.target,
             generation: batch.stamp.generation,
             sample_rate_hz: batch.stamp.sample_rate_hz,
+            paired: batch.paired,
         };
         let context_changed = self.context.is_some_and(|context| context != next_context);
         let sequence_gap = self
@@ -459,8 +579,11 @@ impl SpectrumCore {
         self.last_sequence = Some(batch.sequence);
         self.latest_stamp = Some(batch.stamp);
         self.captured_at = Some(batch.captured_start);
-        for frame in &batch.samples[..frame_count] {
+        for (offset, frame) in batch.samples[..frame_count].iter().enumerate() {
             self.rolling[self.write_index] = *frame;
+            if batch.paired {
+                self.input_rolling[self.write_index] = batch.input_samples[offset];
+            }
             self.write_index = (self.write_index + 1) % FFT_SIZE;
             self.filled = (self.filled + 1).min(FFT_SIZE);
         }
@@ -473,7 +596,12 @@ impl SpectrumCore {
         }
     }
 
+    #[cfg(test)]
     fn analyze_if_due(&mut self, now: Instant) -> Option<PublishedSpectrum> {
+        self.analyze_pair_if_due(now).map(|pair| pair.output)
+    }
+
+    fn analyze_pair_if_due(&mut self, now: Instant) -> Option<PublishedSpectra> {
         if self.filled < FFT_SIZE
             || !self.dirty_since_analysis
             || self
@@ -485,8 +613,29 @@ impl SpectrumCore {
         let oldest = self.write_index;
         for (offset, destination) in self.ordered.iter_mut().enumerate() {
             *destination = self.rolling[(oldest + offset) % FFT_SIZE];
+            self.input_ordered[offset] = self.input_rolling[(oldest + offset) % FFT_SIZE];
         }
-        let frame = self.kernel.as_mut()?.analyze(&self.ordered[..]).ok()?;
+        let mut frame = self.kernel.as_mut()?.analyze(&self.ordered[..]).ok()?;
+        let mut input = if self.context?.paired {
+            Some(
+                self.kernel
+                    .as_mut()?
+                    .analyze(&self.input_ordered[..])
+                    .ok()?,
+            )
+        } else {
+            None
+        };
+        let decay = self.envelope_at.map_or(0.0, |previous| {
+            now.saturating_duration_since(previous).as_secs_f32() * DECAY_DB_PER_SECOND
+        });
+        apply_decay(&mut frame, self.output_envelope.as_ref(), decay);
+        if let Some(input) = input.as_mut() {
+            apply_decay(input, self.input_envelope.as_ref(), decay);
+        }
+        self.output_envelope = Some(frame.clone());
+        self.input_envelope = input.clone();
+        self.envelope_at = Some(now);
         let processed_at = Instant::now();
         let result = PublishedSpectrum {
             stamp: self.latest_stamp?,
@@ -496,16 +645,33 @@ impl SpectrumCore {
         };
         self.last_analysis_at = Some(now);
         self.dirty_since_analysis = false;
-        Some(result)
+        Some(PublishedSpectra {
+            output: result,
+            input,
+        })
     }
 
     fn clear_window(&mut self) {
         self.rolling.fill([0.0; 2]);
+        self.input_rolling.fill([0.0; 2]);
         self.write_index = 0;
         self.filled = 0;
         self.latest_stamp = None;
         self.captured_at = None;
+        self.output_envelope = None;
+        self.input_envelope = None;
+        self.envelope_at = None;
         self.dirty_since_analysis = false;
+    }
+}
+
+// Attack follows actual measured power immediately. Decay affects display-only
+// worker results and never refreshes their capture timestamp or cadence.
+fn apply_decay(frame: &mut SpectrumFrame, previous: Option<&SpectrumFrame>, decay: f32) {
+    if let Some(previous) = previous {
+        for (current, old) in frame.bins_dbfs.iter_mut().zip(previous.bins_dbfs.iter()) {
+            *current = current.max((old - decay).max(crate::spectrum::FLOOR_DBFS));
+        }
     }
 }
 
@@ -519,6 +685,198 @@ enum IngestOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_decay_uses_shared_elapsed_time_and_gap_clears_both_envelopes() {
+        let context = stamp(3, 7, 48_000, 11);
+        let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
+        let now = Instant::now();
+        for sequence in 0..16 {
+            let mut capture = batch(sequence, context, 0.5, 256);
+            capture.paired = true;
+            capture.input_samples.fill([0.25; 2]);
+            capture.captured_start = now;
+            analysis.ingest(capture);
+        }
+        let first = analysis.analyze_pair_if_due(now).unwrap();
+        let later = now + Duration::from_millis(100);
+        for sequence in 16..32 {
+            let mut capture = batch(sequence, context, 0.0, 256);
+            capture.paired = true;
+            capture.captured_start = later;
+            analysis.ingest(capture);
+        }
+        let falling = analysis.analyze_pair_if_due(later).unwrap();
+        for (old, new) in [
+            (&first.output.frame, &falling.output.frame),
+            (
+                first.input.as_ref().unwrap(),
+                falling.input.as_ref().unwrap(),
+            ),
+        ] {
+            for (before, after) in old.bins_dbfs.iter().zip(new.bins_dbfs.iter()) {
+                assert!((after - (before - 4.8).max(crate::spectrum::FLOOR_DBFS)).abs() < 0.001);
+            }
+        }
+        assert!(
+            analysis
+                .analyze_pair_if_due(later + ANALYSIS_INTERVAL)
+                .is_none(),
+            "decay cannot refresh data without captures"
+        );
+        for sequence in 33..49 {
+            let mut capture = batch(sequence, context, 0.0, 256);
+            capture.paired = true;
+            analysis.ingest(capture);
+        }
+        let reset = analysis
+            .analyze_pair_if_due(later + ANALYSIS_INTERVAL)
+            .unwrap();
+        assert!(
+            reset
+                .output
+                .frame
+                .bins_dbfs
+                .iter()
+                .all(|db| *db == crate::spectrum::FLOOR_DBFS)
+        );
+        assert!(
+            reset
+                .input
+                .unwrap()
+                .bins_dbfs
+                .iter()
+                .all(|db| *db == crate::spectrum::FLOOR_DBFS)
+        );
+    }
+
+    #[test]
+    fn paired_windows_keep_real_levels_stereo_energy_and_reset_together() {
+        let context = stamp(3, 7, 48_000, 11);
+        let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
+        let now = Instant::now();
+        for sequence in 0..16 {
+            let mut capture = batch(sequence, context, 0.0, 256);
+            capture.paired = true;
+            capture.captured_start = now;
+            for i in 0..256 {
+                let position = sequence as usize * 256 + i;
+                let signal =
+                    (std::f32::consts::TAU * 32.0 * position as f32 / FFT_SIZE as f32).sin() * 0.5;
+                capture.input_samples[i] = [signal, -signal];
+                capture.samples[i] = [signal * 0.25, -signal * 0.25];
+            }
+            analysis.ingest(capture);
+        }
+        let pair = analysis.analyze_pair_if_due(now).unwrap();
+        let peak = |frame: &SpectrumFrame| {
+            frame
+                .bins_dbfs
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let input_peak = peak(pair.input.as_ref().unwrap());
+        let output_peak = peak(&pair.output.frame);
+        assert!(
+            (input_peak + 6.0206).abs() < 0.01,
+            "anti-phase input retains stereo energy"
+        );
+        assert!((input_peak - output_peak - 12.0412).abs() < 0.01);
+        assert_eq!(pair.output.stamp, context);
+        assert_eq!(pair.output.captured_at, now);
+
+        // A missing capture resets both phases, never joining samples across a gap.
+        let mut after_gap = batch(17, context, 0.0, 256);
+        after_gap.paired = true;
+        assert_eq!(analysis.ingest(after_gap), IngestOutcome::Reset);
+        assert_eq!(analysis.filled, 256);
+        assert!(
+            analysis
+                .analyze_pair_if_due(now + ANALYSIS_INTERVAL)
+                .is_none()
+        );
+        for sequence in 18..33 {
+            let mut silence = batch(sequence, context, 0.0, 256);
+            silence.paired = true;
+            analysis.ingest(silence);
+        }
+        let silent = analysis
+            .analyze_pair_if_due(now + ANALYSIS_INTERVAL)
+            .unwrap();
+        assert_eq!(
+            peak(silent.input.as_ref().unwrap()),
+            crate::spectrum::FLOOR_DBFS
+        );
+        assert_eq!(peak(&silent.output.frame), crate::spectrum::FLOOR_DBFS);
+
+        // Legacy output-only input cannot inherit the previous paired input.
+        assert_eq!(
+            analysis.ingest(batch(33, context, 0.2, 256)),
+            IngestOutcome::Reset
+        );
+        assert_eq!(analysis.filled, 256);
+        for sequence in 34..49 {
+            analysis.ingest(batch(sequence, context, 0.2, 256));
+        }
+        assert!(
+            analysis
+                .analyze_pair_if_due(now + ANALYSIS_INTERVAL * 2)
+                .unwrap()
+                .input
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn paired_capture_refuses_mismatched_or_nonfinite_input_and_preserves_sequence_gaps() {
+        let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let mut capture = SpectrumCapture {
+            producer,
+            next_sequence: 0,
+            exhausted: false,
+            native: None,
+            project: None,
+        };
+        let context = stamp(1, 2, 48_000, 3);
+        assert_eq!(
+            capture.submit_pair(context, &[[0.5; 2]], &[[0.1; 2]; 2]),
+            CaptureOutcome::InvalidBatch { sequence: 0 }
+        );
+        assert_eq!(
+            capture.submit_pair(context, &[[f32::NAN; 2]], &[[0.1; 2]]),
+            CaptureOutcome::InvalidBatch { sequence: 1 }
+        );
+        assert!(consumer.pop().is_err());
+        let mut submit = || {
+            assert_eq!(
+                capture.submit_pair(context, &[[0.5, -0.5]; 256], &[[0.1, -0.1]; 256]),
+                CaptureOutcome::Queued { sequence: 2 }
+            )
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut submit);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            submit();
+        }
+        let queued = consumer.pop().unwrap();
+        assert_eq!(queued.sequence, 2);
+        assert!(queued.paired);
+        assert_eq!(queued.input_samples, [[0.5, -0.5]; 256]);
+        assert_eq!(queued.samples, [[0.1, -0.1]; 256]);
+    }
 
     fn stamp(target: u64, generation: u64, rate: u32, revision: u64) -> SpectrumStamp {
         SpectrumStamp {
@@ -538,6 +896,8 @@ mod tests {
             captured_start: Instant::now(),
             frame_count: count as u16,
             samples,
+            input_samples: [[0.0; 2]; MAX_CAPTURE_FRAMES],
+            paired: false,
         }
     }
 
@@ -556,6 +916,7 @@ mod tests {
             next_sequence: 0,
             exhausted: false,
             native: None,
+            project: None,
         };
         let frames = [[0.25; 2]; MAX_CAPTURE_FRAMES];
         let context = stamp(1, 2, 8_000, 10);
@@ -662,11 +1023,17 @@ mod tests {
         assert!(!result.is_fresh_at(now));
 
         let (sender, receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
-        sender.try_send(result).expect("publish worker result");
+        sender
+            .try_send(PublishedSpectra {
+                output: result,
+                input: None,
+            })
+            .expect("publish worker result");
         let mut reader = SpectrumReader {
             results: receiver,
             latest: None,
             native: None,
+            project: None,
         };
         // Receipt happens now, but the channel carries the original capture
         // timestamp so expensive/queued processing cannot refresh stale audio.
@@ -787,6 +1154,7 @@ mod tests {
             next_sequence: u64::MAX,
             exhausted: false,
             native: None,
+            project: None,
         };
         assert_eq!(
             capture.submit(stamp(1, 2, 8_000, 1), &[[0.0, 0.0]]),
@@ -806,6 +1174,7 @@ mod tests {
             next_sequence: 0,
             exhausted: false,
             native: None,
+            project: None,
         };
         let context = stamp(1, 1, 8_000, 1);
         assert_eq!(

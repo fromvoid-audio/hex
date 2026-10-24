@@ -2,6 +2,8 @@ use super::*;
 #[cfg(feature = "allocation-probe")]
 mod actions;
 #[cfg(feature = "allocation-probe")]
+mod current_sampler;
+#[cfg(feature = "allocation-probe")]
 mod fanout;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;

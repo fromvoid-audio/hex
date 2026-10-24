@@ -1,4 +1,15 @@
-//! Bounded filesystem listings for the native media browser.
+//! # Purpose
+//! Own bounded folder listings and a persistent derived sample-discovery catalog while preserving
+//! original paths.
+//!
+//! # Dependencies
+//! Uses only the standard library; filesystem/catalog work runs on control workers.
+//!
+//! # Does not own
+//! Does not decode audio, mutate projects, navigate UI or perform callback work. Catalog records
+//! do not establish media readiness or source custody.
+
+pub mod catalog;
 
 use std::{
     cmp::Ordering,

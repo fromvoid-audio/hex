@@ -71,12 +71,15 @@ pub fn project_with_operators(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: state.clone(),
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
@@ -94,6 +97,9 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

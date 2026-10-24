@@ -25,6 +25,7 @@ const STYLE: ControlStyle = ControlStyle {
     dial_rail: 0x000000,
     hover: 0x404040,
     font_size: 10.0,
+    text_case: crate::TextCase::Preserve,
 };
 
 #[test]
@@ -294,7 +295,7 @@ fn open_numeric_control_layout(
     (handle, control)
 }
 
-fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
+fn open_micro_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
     let spec = NumericSpec::new(
         0.0,
         1.0,
@@ -303,7 +304,7 @@ fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
         2,
         None::<std::sync::Arc<str>>,
     )
-    .expect("valid MiniDial domain");
+    .expect("valid MicroDial domain");
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     cx.update_window(handle, |_, window, cx| {
@@ -316,8 +317,8 @@ fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
                 0.5,
                 STYLE,
             )
-            .expect("valid MiniDial config")
-            .with_appearance(NumericControlAppearance::MiniDial);
+            .expect("valid MicroDial config")
+            .with_appearance(NumericControlAppearance::MicroDial);
             NumericControl::from_config(cx, config)
         });
         window.replace_root(cx, |_, cx| TestRoot {
@@ -325,30 +326,30 @@ fn open_mini_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
             outside_focus: cx.focus_handle(),
         });
     })
-    .expect("MiniDial test window");
+    .expect("MicroDial test window");
     handle
 }
 
 #[gpui::test]
-fn mini_dial_keeps_compact_bounds_and_shared_numeric_gesture(cx: &mut TestAppContext) {
-    let handle = open_mini_dial(cx);
+fn micro_dial_keeps_compact_bounds_and_shared_numeric_gesture(cx: &mut TestAppContext) {
+    let handle = open_micro_dial(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(gpui::size(px(260.0), px(100.0)));
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
     let dial = visual
         .debug_bounds("test-control")
-        .expect("MiniDial bounds");
+        .expect("MicroDial bounds");
     assert_eq!(dial.size.width, px(crate::MICRO_DIAL_WIDTH));
     assert_eq!(dial.size.height, px(40.0));
     let ring = visual
         .debug_bounds("test-control-knob")
-        .expect("MiniDial ring");
+        .expect("MicroDial ring");
     assert_eq!(ring.size.width, px(18.0));
     assert_eq!(ring.size.height, px(18.0));
     let readout = visual
         .debug_bounds("test-control-value")
-        .expect("MiniDial readout");
+        .expect("MicroDial readout");
     assert_eq!(readout.size.width, px(crate::MICRO_DIAL_WIDTH - 13.0));
     assert_eq!(readout.size.height, px(12.0));
     let label = visual
@@ -631,7 +632,7 @@ fn rendered_drag_captures_outside_release_and_emits_one_complete_gesture(cx: &mu
     );
     let outside = point(
         slider.origin.x + slider.size.width + px(70.0),
-        start.y + px(30.0),
+        start.y - px(30.0),
     );
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(outside, Some(MouseButton::Left), Modifiers::default());
@@ -705,7 +706,7 @@ fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext)
         slider.origin.x + px(10.0),
         slider.origin.y + slider.size.height / 2.0,
     );
-    let normal_position = point(start.x + px(30.0), start.y);
+    let normal_position = point(start.x, start.y - px(30.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
         normal_position,
@@ -733,7 +734,7 @@ fn shift_changes_adjustment_sensitivity_without_jumping(cx: &mut TestAppContext)
         );
     });
 
-    let fine_position = point(normal_position.x + px(12.0), normal_position.y);
+    let fine_position = point(normal_position.x, normal_position.y - px(12.0));
     visual.simulate_mouse_move(
         fine_position,
         Some(MouseButton::Left),
@@ -941,7 +942,7 @@ fn disabling_an_active_drag_emits_cancel_and_releases_capture(cx: &mut TestAppCo
         slider.origin.x + px(10.0),
         slider.origin.y + slider.size.height / 2.0,
     );
-    let moved = point(start.x + px(36.0), start.y);
+    let moved = point(start.x, start.y - px(36.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
@@ -1575,7 +1576,6 @@ fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAp
     for appearance in [
         NumericControlAppearance::Standard,
         NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MiniDial,
         NumericControlAppearance::MicroDial,
         NumericControlAppearance::InlineValue,
     ] {
@@ -1706,7 +1706,6 @@ fn numeric_dial_bounds_stay_fixed_through_press_drag_text_and_release(cx: &mut T
     for appearance in [
         NumericControlAppearance::Standard,
         NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MiniDial,
         NumericControlAppearance::MicroDial,
     ] {
         let spec = NumericSpec::new(
@@ -2245,4 +2244,253 @@ fn accessibility_duplicate_snapshot_recovers_through_cached_prepaint_and_nested_
         ))
     );
     assert_eq!(nested.get(), 1);
+}
+
+#[gpui::test]
+fn lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets(
+    cx: &mut TestAppContext,
+) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
+    control.update(cx, |control, cx| {
+        control
+            .set_external_style(
+                ControlStyle {
+                    text_case: crate::TextCase::Lowercase,
+                    ..STYLE
+                },
+                cx,
+            )
+            .unwrap();
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let value = visual.debug_bounds("test-control-value").unwrap();
+    visual.simulate_click(value.center(), Modifiers::default());
+    visual.simulate_input("0.5E0");
+    visual.run_until_parked();
+    control.read_with(visual, |control, _| {
+        assert_eq!(control.display_text(), "0.5E0");
+        assert_eq!(control.last_layout.as_ref().unwrap().text.as_ref(), "0.5e0");
+    });
+    visual.simulate_keystrokes("cmd-a cmd-c");
+    visual.update(|_, cx| assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "0.5E0"));
+    visual.simulate_keystrokes("cmd-v enter");
+    visual.run_until_parked();
+    control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
+    let value = visual.debug_bounds("test-control-value").unwrap();
+    visual.simulate_click(value.center(), Modifiers::default());
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            gpui::EntityInputHandler::replace_and_mark_text_in_range(
+                control,
+                None,
+                "İA",
+                Some(1..1),
+                window,
+                cx,
+            );
+        })
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            assert_eq!(control.display_text(), "İA");
+            assert_eq!(
+                control.last_layout.as_ref().unwrap().text.as_ref(),
+                "i\u{307}a"
+            );
+            assert_eq!(
+                gpui::EntityInputHandler::marked_text_range(control, window, cx),
+                Some(0..2)
+            );
+            assert_eq!(
+                gpui::EntityInputHandler::selected_text_range(control, false, window, cx)
+                    .unwrap()
+                    .range,
+                1..1
+            );
+            let caret =
+                gpui::EntityInputHandler::bounds_for_range(control, 1..1, value, window, cx)
+                    .unwrap();
+            assert_eq!(
+                gpui::EntityInputHandler::character_index_for_point(
+                    control,
+                    caret.center(),
+                    window,
+                    cx
+                ),
+                Some(1),
+                "shaped case expansion must map back to original UTF16 caret"
+            );
+            let mut actual = None;
+            assert_eq!(
+                gpui::EntityInputHandler::text_for_range(control, 0..2, &mut actual, window, cx)
+                    .as_deref(),
+                Some("İA")
+            );
+        })
+    });
+    visual.simulate_keystrokes("escape");
+    control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
+}
+
+#[gpui::test]
+fn numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events(
+    cx: &mut TestAppContext,
+) {
+    use gpui::EntityInputHandler;
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let output = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            output.borrow_mut().push(event.phase)
+        })
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let field = visual.debug_bounds("test-control-value").unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_input("0.625");
+    visual.simulate_keystrokes("cmd-a");
+    let at = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(2..2, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    for (first_count, expected) in [(1, 2..2), (3, 0..5), (1, 2..2), (1, 0..5)] {
+        for click_count in [first_count, first_count + 1] {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+        }
+        control.read_with(visual, |control, _| {
+            assert_eq!(
+                control.text, "0.625",
+                "text selection must not reformat raw uncommitted draft"
+            );
+            assert_eq!(control.selected, expected);
+            assert!(control.is_editing());
+            assert_eq!(control.value(), 0.0);
+        });
+        assert!(
+            events.borrow().is_empty(),
+            "text doubleclick is not numeric reset/adjustment/commit"
+        );
+    }
+    let start = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(1..1, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    let end = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(3..3, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    control.read_with(visual, |control, _| {
+        assert_eq!(control.selected, 1..3);
+        assert_eq!(control.text, "0.625");
+        assert_eq!(control.value(), 0.0);
+    });
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    control.read_with(visual, |control, _| assert_eq!(control.selected, 1..3));
+    assert!(events.borrow().is_empty());
+    // Invalid composition remains raw text and selection-only, never a value edit.
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.style.text_case = crate::TextCase::Lowercase;
+            control.replace_and_mark_text_in_range(Some(0..5), "İA🎛", Some(0..1), window, cx);
+        })
+    });
+    visual.run_until_parked();
+    let at = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(1..1, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    for click_count in [1, 2] {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        visual.simulate_event(gpui::MouseUpEvent {
+            position: at,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+    }
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            assert_eq!(control.text, "İA🎛");
+            assert_eq!(
+                control
+                    .selected_text_range(false, window, cx)
+                    .unwrap()
+                    .range,
+                0..4
+            );
+            assert_eq!(control.marked_text_range(window, cx), None);
+        })
+    });
+    assert!(events.borrow().is_empty());
+    // Text/IME replacement while a pointer is held invalidates the old anchor.
+    let at = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(4..4, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.replace_and_mark_text_in_range(Some(0..4), "1", Some(1..1), window, cx)
+        })
+    });
+    visual.simulate_mouse_move(
+        field.origin + point(px(2.0), field.size.height / 2.0),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    control.read_with(visual, |control, _| {
+        assert_eq!(control.text, "1");
+        assert_eq!(
+            control.selected,
+            1..1,
+            "IME replacement must invalidate held pointer anchor"
+        );
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    assert!(events.borrow().is_empty());
 }

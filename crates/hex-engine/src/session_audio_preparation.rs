@@ -167,6 +167,28 @@ impl SessionSourceConstruction {
         bank: &OwnedAudioInputs,
         arrangement_handles: usize,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_scoped(project, generation, bank, arrangement_handles, false)
+    }
+    pub(crate) fn reserve_current_sampler(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        bank: &OwnedAudioInputs,
+        arrangement_handles: usize,
+    ) -> Result<(), AudioStorageError> {
+        if !crate::native_device_resources::current_sampler::validate_project(project)? {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        self.reserve_scoped(project, generation, bank, arrangement_handles, true)
+    }
+    fn reserve_scoped(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        bank: &OwnedAudioInputs,
+        arrangement_handles: usize,
+        current_sampler: bool,
+    ) -> Result<(), AudioStorageError> {
         if !self.cells.is_empty() || !self.cache.is_empty() {
             return Err(AudioStorageError::Capacity);
         }
@@ -175,6 +197,7 @@ impl SessionSourceConstruction {
             .session_cells()
             .iter()
             .try_fold(0_usize, |n, cell| match cell.content() {
+                SessionCellContent::Midi(_) if current_sampler => Ok(n),
                 SessionCellContent::Midi(_) => Err(AudioStorageError::UnsupportedGraph),
                 SessionCellContent::Audio(_) => n.checked_add(1).ok_or(AudioStorageError::Overflow),
                 SessionCellContent::Stop => Ok(n),

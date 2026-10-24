@@ -277,8 +277,9 @@ impl NativeDeviceDefinition for GateDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -289,9 +290,9 @@ impl NativeDeviceDefinition for GateDefinition {
         Ok(Some(Box::new(PreparedGate {
             settings,
             sample_rate,
-            threshold: db_to_gain(settings.threshold_db),
-            return_level: db_to_gain(settings.return_db),
-            floor_gain: db_to_gain(settings.floor_db),
+            threshold: db_to_gain(settings.threshold_db)?,
+            return_level: db_to_gain(settings.return_db)?,
+            floor_gain: db_to_gain(settings.floor_db)?,
             attack_frames,
             hold_frames,
             release_frames,
@@ -299,8 +300,11 @@ impl NativeDeviceDefinition for GateDefinition {
     }
 }
 
-fn db_to_gain(db: f32) -> f64 {
-    10.0_f64.powf(f64::from(db) / 20.0)
+fn db_to_gain(db: f32) -> Result<f64, DeviceContractError> {
+    hex_dsp::Decibels::new(f64::from(db))
+        .and_then(hex_dsp::Decibels::linear_amplitude)
+        .map(hex_dsp::LinearAmplitude::value)
+        .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
 fn checked_frames(
@@ -486,12 +490,20 @@ impl GateRuntime {
 }
 
 impl NativeProcessorRuntime for GateRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             self.process_frame(frame);
         }
     }
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let original = *frame;
             self.process_frame(frame);
