@@ -1372,6 +1372,7 @@ impl EditorView {
         if preview.start() == drag.clip.start()
             && preview.length() == drag.clip.length()
             && preview.source_start() == drag.clip.source_start()
+            && preview.playback_offset() == drag.clip.playback_offset()
         {
             self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
