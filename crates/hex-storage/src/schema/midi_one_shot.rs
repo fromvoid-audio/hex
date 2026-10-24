@@ -257,7 +257,7 @@ mod tests {
     fn policy39_roundtrip_preserves_retained_notes_and_all_frozen38_fields() {
         for boundary in [MidiOneShotBoundary::SourceEnd, MidiOneShotBoundary::LoopEnd] {
             let project = fixture(boundary);
-            let bytes = crate::encode(&project).unwrap();
+            let bytes = crate::encode_document(&encode(&project).unwrap()).unwrap();
             assert_eq!(crate::decode(&bytes).unwrap(), project);
             let mut value: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(value["version"], 39);

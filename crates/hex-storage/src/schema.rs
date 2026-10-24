@@ -1,8 +1,8 @@
 pub(crate) mod appearance;
-pub(crate) mod clip_activation;
 mod arrangement_sections;
 pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
+pub(crate) mod clip_activation;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod device_assets;

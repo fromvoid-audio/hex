@@ -11,6 +11,8 @@ pub(super) struct MidiTarget {
     scope: u64,
     tuning: crate::shared_analytic::TuningIdentity,
     source_identity: MidiSourceIdentity,
+    active: bool,
+    playback_offset: hex_project::BeatTime,
     limits: crate::midi_compile::MutableInstrumentLimits,
     work: SessionWorkEnvelope,
     factory_address: usize,
@@ -28,10 +30,16 @@ pub(crate) fn compiler_quote(project: &Project) -> Result<(usize, usize), AudioS
         let SessionCellContent::Midi(clip) = cell.content() else {
             continue;
         };
-        let (sr, ss) =
-            PreparedMidiSourceTemplate::current_sampler_quote(clip.source().notes().len())?;
-        let (ir, is) =
-            PreparedMidiInstrumentTemplate::current_sampler_quote(clip.source().notes().len())?;
+        let (sr, ss) = PreparedMidiSourceTemplate::current_sampler_quote(if clip.active() {
+            clip.source().notes().len()
+        } else {
+            0
+        })?;
+        let (ir, is) = PreparedMidiInstrumentTemplate::current_sampler_quote(if clip.active() {
+            clip.source().notes().len()
+        } else {
+            0
+        })?;
         retained = retained
             .checked_add(sr)
             .and_then(|n| n.checked_add(ir))
@@ -137,15 +145,17 @@ impl SessionAssembly {
                 hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
                     config.prepared.clone(),
                 );
-            for note in clip.source().notes() {
+            for note in clip.source().notes().iter().filter(|_| clip.active()) {
                 prepared
                     .validate_event_note(note.pitch(), note.velocity())
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let source = PreparedMidiSourceTemplate::prepare_source_admitted(
+            let source = PreparedMidiSourceTemplate::prepare_source_window_admitted(
                 cell.track(),
                 clip.id(),
                 clip.source(),
+                clip.playback_offset(),
+                clip.active(),
                 project.sample_rate(),
                 u64::from(max),
             )
@@ -168,6 +178,8 @@ impl SessionAssembly {
                 scope: metadata.id,
                 tuning: contexts.tuning_identity(),
                 source_identity: clip.source_identity(),
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 limits,
                 work,
                 factory_address,
@@ -187,12 +199,14 @@ impl SessionAssembly {
                 scene: cell.scene(),
                 name: clone_string(clip.name()).map_err(|_| AudioStorageError::Allocation)?,
                 source_identity: clip.source_identity(),
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 source,
                 instrument,
                 instrument_id: Some(device.id()),
                 instrument_state: None,
                 tuning_identity: contexts.tuning_identity(),
-                instrument_enabled: true,
+                instrument_enabled: clip.active(),
                 mutable_limits: Some(limits),
                 work,
             };
@@ -238,7 +252,9 @@ impl SessionAssembly {
                 || clip.instrument_id != Some(row.device)
                 || clip.instrument_state.is_some()
                 || clip.tuning_identity != row.tuning
-                || !clip.instrument_enabled
+                || clip.active != row.active
+                || clip.playback_offset != row.playback_offset
+                || clip.instrument_enabled != row.active
                 || clip.work != row.work
                 || clip.mutable_limits != Some(row.limits)
                 || Some(clip.instrument.current_sampler_context_address())

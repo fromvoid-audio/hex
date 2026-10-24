@@ -129,6 +129,8 @@ pub struct PreparedSessionTrack {
 
 /// Prepared source and instrument templates for one Session MIDI clip.
 pub struct PreparedSessionMidiClip {
+    pub active: bool,
+    playback_offset: hex_project::BeatTime,
     pub id: ClipId,
     pub track: TrackId,
     pub scene: SceneId,
@@ -151,6 +153,9 @@ pub struct PreparedSessionMidiClip {
 /// generation-validated streamed source binding.
 #[derive(Clone)]
 pub struct PreparedSessionAudioClip {
+    /// Authored silence retains existing control-side media custody. Rendering
+    /// and page demand test this flag before accessing the source.
+    pub active: bool,
     pub id: ClipId,
     pub track: TrackId,
     pub scene: SceneId,
@@ -186,6 +191,7 @@ impl PreparedSessionAudioClip {
     }
     pub(crate) fn source_matches(&self, other: &Self) -> bool {
         self.source_matches_facts(
+            other.active,
             other.track,
             other.asset,
             other.source_start,
@@ -196,13 +202,15 @@ impl PreparedSessionAudioClip {
 
     fn source_matches_facts(
         &self,
+        active: bool,
         track: TrackId,
         asset: AssetId,
         source_start: u64,
         source_end: u64,
         source: &PreparedAudioSource,
     ) -> bool {
-        self.track == track
+        self.active == active
+            && self.track == track
             && self.asset == asset
             && self.source_start == source_start
             && self.source_end == source_end
@@ -244,7 +252,10 @@ impl PreparedSessionMidiClip {
     }
 
     pub(crate) fn source_content_matches(&self, other: &Self) -> bool {
-        self.track == other.track && self.source_identity == other.source_identity
+        self.track == other.track
+            && self.active == other.active
+            && self.playback_offset == other.playback_offset
+            && self.source_identity == other.source_identity
     }
 
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
@@ -625,7 +636,7 @@ impl PreparedSessionInventory {
             let config = instrument_configs
                 .get(track_index)
                 .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
             let shared_context = config.device_id.and_then(|device| {
                 shared_contexts
                     .index_for_device(device)
@@ -636,6 +647,8 @@ impl PreparedSessionInventory {
                 .is_some_and(|old| {
                     old.track == cell.track()
                         && old.source_identity == clip.source_identity()
+                        && old.active == clip.active()
+                        && old.playback_offset == clip.playback_offset()
                         && old.instrument_id == config.device_id
                         && old.instrument_state == config.state
                         && old.tuning_identity == config.tuning_identity
@@ -704,6 +717,9 @@ impl PreparedSessionInventory {
             let SessionCellContent::Midi(clip) = cell.content() else {
                 continue;
             };
+            if !clip.active() {
+                continue;
+            }
             let track_index = instrument_track_indices
                 .get(&cell.track())
                 .copied()
@@ -725,7 +741,11 @@ impl PreparedSessionInventory {
                 .get_mut(track_index)
                 .ok_or(crate::Invalid("Session MIDI track index is invalid"))?;
             for note in clip.source().notes() {
-                if !super::midi_template::session_source_note_has_occurrence(clip.source(), note) {
+                if !super::midi_template::session_source_note_has_occurrence(
+                    clip.source(),
+                    clip.playback_offset(),
+                    note,
+                ) {
                     continue;
                 }
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
@@ -736,6 +756,9 @@ impl PreparedSessionInventory {
             }
         }
         for (destination, _, clip) in routed_plan.sources(project) {
+            if !clip.active() {
+                continue;
+            }
             let index = instrument_track_indices
                 .get(&destination)
                 .copied()
@@ -752,7 +775,11 @@ impl PreparedSessionInventory {
                 .get_mut(index)
                 .ok_or(crate::Invalid("routed Session MIDI track index is invalid"))?;
             for note in clip.source().notes() {
-                if super::midi_template::session_source_note_has_occurrence(clip.source(), note) {
+                if super::midi_template::session_source_note_has_occurrence(
+                    clip.source(),
+                    clip.playback_offset(),
+                    note,
+                ) {
                     crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                         keys,
                         note.pitch(),
@@ -766,7 +793,7 @@ impl PreparedSessionInventory {
             .zip(note_keys_by_track)
             .enumerate()
         {
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
             if unchanged_sources
                 .get(index)
                 .copied()
@@ -969,6 +996,7 @@ impl PreparedSessionInventory {
                         .flatten()
                         .filter(|old| {
                             old.source_matches_facts(
+                                clip.active(),
                                 cell.track(),
                                 clip.asset(),
                                 clip.source_start(),
@@ -979,6 +1007,7 @@ impl PreparedSessionInventory {
                     let retained_source =
                         cached.map_or_else(|| source.clone(), |old| old.source.clone());
                     let prepared = PreparedSessionAudioClip {
+                        active: clip.active(),
                         id: clip.id(),
                         track: cell.track(),
                         scene: cell.scene(),

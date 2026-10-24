@@ -16,10 +16,16 @@ pub enum TrackDeviceSlot {
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Set one authored clip's activation across Arrangement or Session.
-    SetClipActive { clip: ClipId, active: bool },
+    SetClipActive {
+        clip: ClipId,
+        active: bool,
+    },
     /// Split only intersected Arrangement clips at the selected frame edges and
     /// set the selected spans atomically, preserving both exterior fragments.
-    SetTimeRangeActive { range: crate::TimeRange, active: bool },
+    SetTimeRangeActive {
+        range: crate::TimeRange,
+        active: bool,
+    },
     /// Apply one clip-wide value to a frozen Arrangement selection atomically.
     EditClips {
         clips: Vec<ClipId>,
@@ -1655,8 +1661,12 @@ impl Project {
                 self.track_mut(track)?.color = color;
                 Ok(Created::None)
             }
-            Command::SetClipActive { clip, active } => crate::clip_activation::set(self, clip, active),
-            Command::SetTimeRangeActive { range, active } => crate::clip_activation::set_range(self, &range, active),
+            Command::SetClipActive { clip, active } => {
+                crate::clip_activation::set(self, clip, active)
+            }
+            Command::SetTimeRangeActive { range, active } => {
+                crate::clip_activation::set_range(self, &range, active)
+            }
             Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::ReplaceMidiClipVolume { clip, volume } => {
                 self.replace_midi_clip_volume(clip, volume)

@@ -765,7 +765,8 @@ impl Project {
                 }
                 crate::midi_note_overwrite::validate_occupancy(&notes)?;
                 clip.volume.validate_source_length(source_length)?;
-                clip.playback_offset_raw.checked_add(length.raw())
+                clip.playback_offset_raw
+                    .checked_add(length.raw())
                     .ok_or(Invalid("midi playback window end overflow"))?;
                 compiled_midi.push(MidiClip {
                     active: clip.active,
@@ -860,6 +861,9 @@ impl Project {
             let content = match cell.content {
                 SessionCellContentSnapshot::Stop => crate::SessionCellContent::Stop,
                 SessionCellContentSnapshot::Midi(clip) => {
+                    if clip.playback_offset_raw == u64::MAX {
+                        return Err(Invalid("session midi playback window exhausted"));
+                    }
                     if !tracks.iter().any(|track| track.id.value() == cell.track) {
                         return Err(Invalid("session cell track is missing"));
                     }

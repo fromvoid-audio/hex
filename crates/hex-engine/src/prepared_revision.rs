@@ -40,6 +40,8 @@ impl From<&Device> for PreparedDeviceIdentity {
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedArrangementMidiSource {
+    active: bool,
+    playback_offset: hex_project::BeatTime,
     id: hex_project::ClipId,
     start: hex_project::BeatTime,
     length: hex_project::BeatTime,
@@ -1008,6 +1010,8 @@ fn prepare_mutable_track_revisions(
             .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
         arrangement_midi_sources.extend(source.midi_clips().iter().map(|clip| {
             PreparedArrangementMidiSource {
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 id: clip.id(),
                 start: clip.start(),
                 length: clip.length(),

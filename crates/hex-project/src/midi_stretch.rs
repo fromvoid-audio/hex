@@ -191,6 +191,12 @@ pub(crate) fn apply(
     }
     target.start = preview.start;
     target.length = preview.length;
+    target.playback_offset = preview.scale(original.playback_offset())?;
+    target
+        .playback_offset
+        .raw()
+        .checked_add(target.length.raw())
+        .ok_or(Invalid("midi stretched playback window overflow"))?;
     target.volume = volume;
     crate::clip_group::replace_midi(project, target)
 }

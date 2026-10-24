@@ -249,6 +249,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
+/// Pre40 schemas default clip activation to true and elapsed MIDI windows to
+/// zero. Schema40 inventories every Arrangement/Session clip exactly once.
 /// Pre38 schemas default horizontal fade positions to center, preserving their
 /// original sample-exact rational laws.
 /// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).

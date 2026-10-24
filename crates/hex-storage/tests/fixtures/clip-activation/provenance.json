@@ -1,0 +1,32 @@
+{
+  "writer_source": "ae200f3c57987fac2f42946caab39349fc1ef04f",
+  "writer_lib": "target/debug/deps/libhex_storage-64ffe3f6a0032195.rlib",
+  "writer_lib_sha256": "45e5ddbf4f92db30b20c9e1c58f0a2efa66b496e6690ffca501e83f5c03bb749",
+  "description": "Unmodified schema39 decoder+encoder on actual ae200f3c source; external temporary harness decodes retained historical original fixtures and emits genuine current schema39 bytes before clipactivation source integration. No writer/source modifications.",
+  "records": [
+    {
+      "input": "crates/hex-storage/tests/fixtures/migrations/schema36-97e885eb.json",
+      "input_sha256": "6fc336ea1d0dfcf5c5e287706a0990cc3586dffa57dae60555604689d43c0d6b",
+      "output": "schema39-midi-ae200f3c.json",
+      "exit": 0,
+      "output_sha256": "e2a1eba361f7e0f6f68bb81d8e571512b73821467b3ed735991bdb839dfeb07e",
+      "version": 39
+    },
+    {
+      "input": "crates/hex-storage/tests/fixtures/migrations/schema36-audio-97e885eb.json",
+      "input_sha256": "f5a79d6c4bf345888f91832eaa6a5ccf1f4605b3dfc6de2ac6e93e51e43e314e",
+      "output": "schema39-audio-ae200f3c.json",
+      "exit": 0,
+      "output_sha256": "414814c34ffa61ec60ee2afcc73dcf6482d0295283ae9a2d695f729262d15562",
+      "version": 39
+    },
+    {
+      "input": "crates/hex-storage/tests/fixtures/early/schema20-session-audio-b9274930.json",
+      "input_sha256": "852fecc47df29cacb1bb4f09c9c81fc59edc23adbece6799354cdfdfb003d015",
+      "output": "schema39-session-audio-ae200f3c.json",
+      "exit": 0,
+      "output_sha256": "cc9ce6fb64af836e2dfe3938ac2cb5f2cba44afeed37a1193ede4c79b8e3b2a6",
+      "version": 39
+    }
+  ]
+}

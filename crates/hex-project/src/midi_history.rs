@@ -854,7 +854,9 @@ fn matching_clip_shell(
                             source: _,
                             volume,
                         } = a;
-                        active == &b.active && playback_offset == &b.playback_offset && name == &b.name
+                        active == &b.active
+                            && playback_offset == &b.playback_offset
+                            && name == &b.name
                             && flavor == &b.flavor
                             && (volume_edit || volume == &b.volume)
                             && id == &b.id
@@ -875,7 +877,9 @@ fn matching_clip_shell(
                         source: _,
                         volume,
                     } = a;
-                    *active == b.active && *playback_offset == b.playback_offset && *id == clip
+                    *active == b.active
+                        && *playback_offset == b.playback_offset
+                        && *id == clip
                         && b.id == clip
                         && *name == b.name
                         && *flavor == b.flavor

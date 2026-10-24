@@ -31,10 +31,10 @@ mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 pub use track_order::TrackSelectionIds;
 mod audio_edit;
+mod clip_activation;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
-mod clip_activation;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioImportWarp, AudioProcessingProjection, AudioViewMode, AudioViewOccurrence,
@@ -345,7 +345,9 @@ pub struct Clip {
 }
 impl Clip {
     /// Authored clip activation, independent of track mute or selection.
-    pub fn active(&self) -> bool { self.active }
+    pub fn active(&self) -> bool {
+        self.active
+    }
     pub fn name(&self) -> &str {
         &self.name
     }

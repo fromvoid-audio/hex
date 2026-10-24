@@ -14,7 +14,9 @@ use std::collections::BTreeSet;
 /// values explicitly leave selected MIDI clips unchanged; zero eligible clips refuse.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClipEdit {
-    Active { active: bool },
+    Active {
+        active: bool,
+    },
     Gain {
         millidb: i32,
     },
@@ -155,7 +157,10 @@ impl ClipEdit {
     }
     fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
         Ok(match self {
-            Self::Active { active } => Command::SetClipActive { clip, active: *active },
+            Self::Active { active } => Command::SetClipActive {
+                clip,
+                active: *active,
+            },
             Self::GainBy { millidb } => Command::SetAudioClipGain {
                 clip,
                 millidb: project
@@ -386,7 +391,10 @@ pub(crate) fn apply(
 impl Command {
     pub fn clip_scope(&self) -> ClipCommandScope {
         match self {
-            Self::SetClipActive { clip, active } => ClipCommandScope::Property { clip: *clip, edit: ClipEdit::Active { active: *active } },
+            Self::SetClipActive { clip, active } => ClipCommandScope::Property {
+                clip: *clip,
+                edit: ClipEdit::Active { active: *active },
+            },
             Self::SetAudioClipGain { clip, millidb } => ClipCommandScope::Property {
                 clip: *clip,
                 edit: ClipEdit::Gain { millidb: *millidb },
@@ -482,7 +490,8 @@ impl Command {
             Self::UpdateMidiNote { note, .. } | Self::RemoveMidiNote(note) => {
                 ClipCommandScope::FocusedNote { note: *note }
             }
-            Self::SetTimeRangeActive { .. } | Self::EditClips { .. }
+            Self::SetTimeRangeActive { .. }
+            | Self::EditClips { .. }
             | Self::DeleteTimeRange { .. }
             | Self::PasteTimeRange { .. }
             | Self::PasteClips { .. }

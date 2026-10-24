@@ -84,12 +84,16 @@ impl MidiSourcePlayback {
     /// Select a finite elapsed window without rewriting the authored source law.
     /// Crossing gates are chased at local zero with only their remaining duration.
     pub fn with_playback_offset(mut self, offset: BeatTime) -> Result<Self, Invalid> {
-        offset.raw().checked_add(self.arrangement_duration.raw())
+        offset
+            .raw()
+            .checked_add(self.arrangement_duration.raw())
             .ok_or(Invalid("midi playback window end overflow"))?;
         self.playback_offset = offset;
         Ok(self)
     }
-    pub fn playback_offset(self) -> BeatTime { self.playback_offset }
+    pub fn playback_offset(self) -> BeatTime {
+        self.playback_offset
+    }
 
     /// Construct the current canonical one-shot mapping for a clip.
     pub fn one_shot(length: BeatTime) -> Result<Self, Invalid> {
@@ -159,7 +163,8 @@ impl MidiSourcePlayback {
         }
 
         let window_start = self.playback_offset.raw();
-        let timeline_limit = window_start.checked_add(self.arrangement_duration.raw())
+        let timeline_limit = window_start
+            .checked_add(self.arrangement_duration.raw())
             .ok_or(Invalid("midi playback window end overflow"))?;
         let mut initial = None;
         let mut repeats = 0_u64;
@@ -230,13 +235,20 @@ impl MidiSourcePlayback {
             })
         });
         let mut repeat_iteration_offset = 0;
-        if repeats != 0 && first_repeat <= window_start
-            && repeat_source_gate <= window_start - first_repeat {
+        if repeats != 0
+            && first_repeat <= window_start
+            && repeat_source_gate <= window_start - first_repeat
+        {
             let skipped = (window_start - first_repeat - repeat_source_gate) / period + 1;
-            if skipped >= repeats { repeats = 0; }
-            else {
-                first_repeat = first_repeat.checked_add(skipped.checked_mul(period)
-                    .ok_or(Invalid("midi playback repeat overflow"))?)
+            if skipped >= repeats {
+                repeats = 0;
+            } else {
+                first_repeat = first_repeat
+                    .checked_add(
+                        skipped
+                            .checked_mul(period)
+                            .ok_or(Invalid("midi playback repeat overflow"))?,
+                    )
                     .ok_or(Invalid("midi playback repeat overflow"))?;
                 repeats -= skipped;
                 repeat_iteration_offset = skipped;
@@ -316,6 +328,11 @@ pub struct MidiNoteOccurrenceIter {
 impl Iterator for MidiNoteOccurrenceIter {
     type Item = MidiNoteOccurrence;
 
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.ordinal = self.ordinal.checked_add(u64::try_from(n).ok()?)?;
+        self.next()
+    }
+
     fn next(&mut self) -> Option<Self::Item> {
         let initial_offset = u64::from(self.plan.initial.is_some());
         if let Some(initial) = self.plan.initial {
@@ -332,13 +349,22 @@ impl Iterator for MidiNoteOccurrenceIter {
             .plan
             .first_repeat
             .checked_add(repeat_index.checked_mul(self.plan.period)?)?;
-        let end = timeline_start.checked_add(self.plan.repeat_source_gate
-            .min(self.plan.timeline_limit - timeline_start))?;
+        let end = timeline_start.checked_add(
+            self.plan
+                .repeat_source_gate
+                .min(self.plan.timeline_limit - timeline_start),
+        )?;
         let gate_duration = end.checked_sub(timeline_start.max(self.plan.window_start))?;
         self.ordinal = self.ordinal.checked_add(1)?;
         Some(MidiNoteOccurrence {
-            iteration: self.plan.repeat_iteration_offset.checked_add(repeat_index)?.checked_add(1)?,
-            timeline_start: BeatTime::from_raw(timeline_start.saturating_sub(self.plan.window_start)),
+            iteration: self
+                .plan
+                .repeat_iteration_offset
+                .checked_add(repeat_index)?
+                .checked_add(1)?,
+            timeline_start: BeatTime::from_raw(
+                timeline_start.saturating_sub(self.plan.window_start),
+            ),
             gate_duration: BeatTime::from_raw(gate_duration),
         })
     }

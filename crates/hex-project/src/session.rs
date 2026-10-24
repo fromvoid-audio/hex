@@ -45,7 +45,9 @@ pub struct SessionAudioClip {
 }
 impl SessionAudioClip {
     /// Authored clip activation, independent of track mute or selection.
-    pub fn active(&self) -> bool { self.active }
+    pub fn active(&self) -> bool {
+        self.active
+    }
     pub fn flavor(&self) -> crate::ClipFlavor {
         self.flavor
     }
@@ -70,9 +72,13 @@ impl SessionAudioClip {
 }
 impl SessionMidiClip {
     /// Authored clip activation, independent of track mute or selection.
-    pub fn active(&self) -> bool { self.active }
+    pub fn active(&self) -> bool {
+        self.active
+    }
     /// Elapsed source-playback window origin in quarter-note beats.
-    pub fn playback_offset(&self) -> BeatTime { self.playback_offset }
+    pub fn playback_offset(&self) -> BeatTime {
+        self.playback_offset
+    }
     pub fn volume(&self) -> &crate::MidiClipVolume {
         &self.volume
     }
