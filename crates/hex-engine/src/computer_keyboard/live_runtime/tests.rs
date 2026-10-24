@@ -240,3 +240,97 @@ fn mutable_instrument_short_note_matches_its_exact_velocity_audition_oracle() {
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
 }
+
+#[test]
+#[ignore = "release component timing; run explicitly with --release --ignored --nocapture"]
+fn profile_live_input_monitor_cost() {
+    use std::{hint::black_box, time::Instant};
+    fn report(label: &str, mut nanos: Vec<u128>) {
+        let mean = nanos.iter().sum::<u128>() as f64 / nanos.len() as f64 / 1000.0;
+        nanos.sort_unstable();
+        println!(
+            "{label}: n={} mean_us={mean:.3} p50_us={:.3} p95_us={:.3} max_us={:.3}",
+            nanos.len(),
+            nanos[nanos.len() / 2] as f64 / 1000.0,
+            nanos[nanos.len() * 95 / 100] as f64 / 1000.0,
+            nanos[nanos.len() - 1] as f64 / 1000.0
+        );
+    }
+    let (project, track) = fixture();
+    println!(
+        "stopped sine component; rate=48000 block=256; no native output or musical clock; 128 warmup blocks; control allocation/destruction outside render timers"
+    );
+    for hardware in [false, true] {
+        let input = Arc::new(if hardware {
+            ComputerKeyboardInput::default().with_live_notes().unwrap()
+        } else {
+            ComputerKeyboardInput::default()
+        });
+        let prepare = Instant::now();
+        let mut runtime =
+            ComputerKeyboardRuntime::prepare(&project, track, Arc::clone(&input)).unwrap();
+        println!(
+            "hardware={hardware} prepare_ms={:.3} retained_bytes={}",
+            prepare.elapsed().as_secs_f64() * 1000.0,
+            runtime.storage_bytes().unwrap()
+        );
+        for key in 0..17 {
+            if let Some(live) = input.live_notes() {
+                live.publish(
+                    live.current_activation_on_control().unwrap(),
+                    on(48 + key as u8, 100),
+                )
+                .unwrap();
+            } else {
+                input
+                    .set_key(key, Some((48 + key as u8, 100, key as u64 + 1)))
+                    .unwrap();
+            }
+        }
+        let mut output = [[0.0; 2]; 256];
+        let mut durations = Vec::with_capacity(2000);
+        for block in 0..2128 {
+            output.fill([0.0; 2]);
+            let start = Instant::now();
+            runtime.begin_block();
+            runtime.render(black_box(&mut output), None).unwrap();
+            runtime.commit();
+            let elapsed = start.elapsed().as_nanos();
+            black_box(&output);
+            if block >= 128 {
+                durations.push(elapsed);
+            }
+        }
+        assert!(!input.is_cancelled());
+        assert!(input.live_notes().is_none_or(|live| !live.is_cancelled()));
+        report(
+            if hardware {
+                "17 held hardware notes"
+            } else {
+                "17 held physical notes"
+            },
+            durations,
+        );
+    }
+    let mut durations = Vec::with_capacity(50);
+    for _ in 0..50 {
+        let input = input();
+        let mut runtime =
+            ComputerKeyboardRuntime::prepare(&project, track, Arc::clone(&input)).unwrap();
+        let live = input.live_notes().unwrap();
+        let activation = live.current_activation_on_control().unwrap();
+        for _ in 0..64 {
+            live.publish(activation, on(60, 37)).unwrap();
+            live.publish(activation, off(60)).unwrap();
+        }
+        let mut output = [[0.0; 2]; 256];
+        let start = Instant::now();
+        runtime.begin_block();
+        runtime.render(black_box(&mut output), None).unwrap();
+        runtime.commit();
+        durations.push(start.elapsed().as_nanos());
+        black_box(&output);
+        assert!(!live.is_cancelled());
+    }
+    report("128 ordered events / 64 short notes", durations);
+}

@@ -2,6 +2,83 @@
 //! root. No preparation, scheduling, project mutation or audio work lives here.
 use super::*;
 
+pub(super) fn sink(
+    input: Arc<LiveExpressionInput>,
+    notes: Arc<hex_midi::HeldNoteInput>,
+    note_input: Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
+    activation: hex_engine::computer_keyboard::LiveNoteActivation,
+) -> hex_midi::Sink {
+    let notes_cancel = Arc::clone(&notes);
+    let notes_cancelled = Arc::clone(&notes);
+    let writer = Arc::clone(&input);
+    let cancel = Arc::clone(&input);
+    let cancelled = Arc::clone(&input);
+    let note_writer = Arc::clone(&note_input);
+    let note_cancel = Arc::clone(&note_input);
+    let note_cancelled = Arc::clone(&note_input);
+    let held_cancel = Arc::clone(&notes);
+    hex_midi::Sink {
+        note: Box::new(move |event| {
+            use hex_engine::computer_keyboard::LiveNoteEvent;
+            let Some(input) = note_writer.live_notes() else {
+                return;
+            };
+            let event = match event {
+                hex_midi::NoteEvent::On {
+                    channel,
+                    pitch,
+                    velocity,
+                } => LiveNoteEvent::NoteOn {
+                    channel,
+                    pitch,
+                    velocity,
+                },
+                hex_midi::NoteEvent::Off {
+                    channel,
+                    pitch,
+                    velocity,
+                } => LiveNoteEvent::NoteOff {
+                    channel,
+                    pitch,
+                    velocity,
+                },
+                hex_midi::NoteEvent::AllNotesOff => LiveNoteEvent::AllNotesOff,
+                hex_midi::NoteEvent::InputLost(_) => {
+                    let _ = input.cancel_activation(activation);
+                    held_cancel.cancel();
+                    return;
+                }
+            };
+            if input.publish(activation, event).is_err() {
+                held_cancel.cancel();
+            }
+        }),
+        notes: Arc::clone(&notes),
+        publish: Box::new(move |value| {
+            writer.publish(hex_engine::live_expression::Snapshot {
+                pressure: value.pressure,
+                bend: value.bend,
+                wheel: value.wheel,
+            })
+        }),
+        cancel: Box::new(move || {
+            if let Some(input) = note_cancel.live_notes() {
+                let _ = input.cancel_activation(activation);
+            }
+            cancel.cancel();
+            notes_cancel.cancel();
+        }),
+        is_cancelled: Box::new(move || {
+            cancelled.is_cancelled()
+                || notes_cancelled.is_cancelled()
+                || note_cancelled.is_cancelled()
+                || note_cancelled
+                    .live_notes()
+                    .is_none_or(|input| !input.same_current_activation(activation))
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,81 +176,5 @@ mod tests {
                 },
             )
             .unwrap();
-    }
-}
-pub(super) fn sink(
-    input: Arc<LiveExpressionInput>,
-    notes: Arc<hex_midi::HeldNoteInput>,
-    note_input: Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
-    activation: hex_engine::computer_keyboard::LiveNoteActivation,
-) -> hex_midi::Sink {
-    let notes_cancel = Arc::clone(&notes);
-    let notes_cancelled = Arc::clone(&notes);
-    let writer = Arc::clone(&input);
-    let cancel = Arc::clone(&input);
-    let cancelled = Arc::clone(&input);
-    let note_writer = Arc::clone(&note_input);
-    let note_cancel = Arc::clone(&note_input);
-    let note_cancelled = Arc::clone(&note_input);
-    let held_cancel = Arc::clone(&notes);
-    hex_midi::Sink {
-        note: Box::new(move |event| {
-            use hex_engine::computer_keyboard::LiveNoteEvent;
-            let Some(input) = note_writer.live_notes() else {
-                return;
-            };
-            let event = match event {
-                hex_midi::NoteEvent::On {
-                    channel,
-                    pitch,
-                    velocity,
-                } => LiveNoteEvent::NoteOn {
-                    channel,
-                    pitch,
-                    velocity,
-                },
-                hex_midi::NoteEvent::Off {
-                    channel,
-                    pitch,
-                    velocity,
-                } => LiveNoteEvent::NoteOff {
-                    channel,
-                    pitch,
-                    velocity,
-                },
-                hex_midi::NoteEvent::AllNotesOff => LiveNoteEvent::AllNotesOff,
-                hex_midi::NoteEvent::InputLost(_) => {
-                    let _ = input.cancel_activation(activation);
-                    held_cancel.cancel();
-                    return;
-                }
-            };
-            if input.publish(activation, event).is_err() {
-                held_cancel.cancel();
-            }
-        }),
-        notes: Arc::clone(&notes),
-        publish: Box::new(move |value| {
-            writer.publish(hex_engine::live_expression::Snapshot {
-                pressure: value.pressure,
-                bend: value.bend,
-                wheel: value.wheel,
-            })
-        }),
-        cancel: Box::new(move || {
-            if let Some(input) = note_cancel.live_notes() {
-                let _ = input.cancel_activation(activation);
-            }
-            cancel.cancel();
-            notes_cancel.cancel();
-        }),
-        is_cancelled: Box::new(move || {
-            cancelled.is_cancelled()
-                || notes_cancelled.is_cancelled()
-                || note_cancelled.is_cancelled()
-                || note_cancelled
-                    .live_notes()
-                    .is_none_or(|input| !input.same_current_activation(activation))
-        }),
     }
 }
