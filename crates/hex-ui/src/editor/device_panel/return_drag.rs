@@ -24,6 +24,21 @@ pub(super) fn render_chain(
         .collect();
     super::navigation::sync_rail_scroll(view);
     view.device_panel.chain_window.prepare(&geometry);
+    let spectrum_identities: Vec<_> = devices
+        .iter()
+        .filter(|device| {
+            eq_panel::is_spectrum_eq(device.state().type_id())
+                && chain_window::must_mount(view, device.id(), window, cx)
+        })
+        .map(|device| {
+            hex_engine::PostNodeIdentity::new(
+                owner.processor(),
+                device.id().value(),
+                device.state().type_id(),
+            )
+        })
+        .collect();
+    eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
         .track_scroll(&view.device_panel.chain_window.scroll)

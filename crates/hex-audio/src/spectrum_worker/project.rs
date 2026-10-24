@@ -8,7 +8,10 @@ pub const MAX_PROJECT_LAYERS: usize = MAX_PROJECT_TRACKS + 1;
 /// Includes additive retained-release/tail contributions. Exhaustion rejects
 /// the whole project batch; it never publishes a capped subset of tracks.
 pub const MAX_PROJECT_CONTRIBUTION_FRAMES: usize = MAX_PROJECT_LAYERS * MAX_CAPTURE_FRAMES * 4;
-pub const PROJECT_PACKET_OWNERS: usize = CAPTURE_QUEUE_CAPACITY + 1;
+// Project packets have a separate, larger payload than per-EQ packets.
+// Keep their established pool bound independent of visible-EQ fanout.
+const PROJECT_CAPTURE_QUEUE_CAPACITY: usize = 32;
+pub const PROJECT_PACKET_OWNERS: usize = PROJECT_CAPTURE_QUEUE_CAPACITY + 1;
 pub const MAX_PROJECT_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 pub const PROJECT_DISPLAY_STALE_AFTER: Duration = Duration::from_millis(400);
 
@@ -737,7 +740,7 @@ fn channel_with_return_capacity(
     rate: u32,
     return_capacity: usize,
 ) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
-    let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+    let (producer, consumer) = RingBuffer::new(PROJECT_CAPTURE_QUEUE_CAPACITY);
     let (mut returned, free) = RingBuffer::new(return_capacity);
     let mut packet = None;
     let mut pool_bytes = 0usize;
@@ -844,7 +847,7 @@ pub(super) fn constructor_storage_quote() -> Option<usize> {
         .checked_add(SpectrumKernel::heap_storage_quote()?)?
         .checked_add(MAX_PROJECT_LAYERS.checked_mul(std::mem::size_of::<Option<SpectrumFrame>>())?)?
         .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?;
-    let bytes = ChannelStorage::ring_bytes::<Box<ProjectPacket>>(CAPTURE_QUEUE_CAPACITY)?
+    let bytes = ChannelStorage::ring_bytes::<Box<ProjectPacket>>(PROJECT_CAPTURE_QUEUE_CAPACITY)?
         .checked_add(ChannelStorage::ring_bytes::<Box<ProjectPacket>>(
             PROJECT_PACKET_OWNERS,
         )?)?
@@ -1166,7 +1169,7 @@ mod tests {
         let selection = selected(&[]);
         let now = Instant::now();
         let block = [[0.25, -0.25]; MAX_CAPTURE_FRAMES];
-        for sequence in 0..CAPTURE_QUEUE_CAPACITY {
+        for sequence in 0..PROJECT_CAPTURE_QUEUE_CAPACITY {
             capture.begin(Some(selection), MAX_CAPTURE_FRAMES, true);
             capture.observe(ProjectSignal::Master, 0, &block);
             assert_eq!(
@@ -1182,7 +1185,7 @@ mod tests {
             capture.finish(now, 11, true),
             Some(CaptureOutcome::QueueFull { sequence: 32 })
         );
-        for _ in 0..CAPTURE_QUEUE_CAPACITY {
+        for _ in 0..PROJECT_CAPTURE_QUEUE_CAPACITY {
             worker.poll(now);
         }
         capture.begin(Some(selection), MAX_CAPTURE_FRAMES, true);
