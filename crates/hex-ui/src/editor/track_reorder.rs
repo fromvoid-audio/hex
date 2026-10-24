@@ -13,7 +13,7 @@ use gpui::{
     Context, Div, MouseButton, MouseMoveEvent, MouseUpEvent, Window, canvas, div, prelude::*, px,
     rgb,
 };
-use hex_project::TrackId;
+use hex_project::{TrackId, TrackReorderSelection};
 use hex_session::service::{Event, Request};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ struct Gesture {
     generation: u64,
     revision: u64,
     track: TrackId,
+    tracks: TrackReorderSelection,
     origin: (f32, f32),
     pointer: (f32, f32),
     moved: bool,
@@ -48,7 +49,7 @@ struct PaintedGap {
 struct Pending {
     generation: u64,
     revision: u64,
-    track: TrackId,
+    tracks: TrackReorderSelection,
     destination: Destination,
     receipt: Receipt,
 }
@@ -96,12 +97,29 @@ impl EditorView {
         if !pointer.0.is_finite() || !pointer.1.is_finite() {
             return;
         }
+        // A drag freezes current membership only when its anchor is selected.
+        // Stationary clicks and modifier selection keep the existing header
+        // Click owner; an unselected anchor still moves alone.
+        let members = if self.track_selection.contains(track) {
+            self.selected_track_ids()
+        } else {
+            vec![track]
+        };
+        let tracks = match TrackReorderSelection::new(&members) {
+            Ok(tracks) => tracks,
+            Err(error) => {
+                self.error = Some(error.0.into());
+                cx.notify();
+                return;
+            }
+        };
         self.track_header_focus(track, cx).focus(window);
         self.track_reorder.painted_gap = None;
         self.track_reorder.gesture = Some(Gesture {
             generation: self.project_generation,
             revision,
             track,
+            tracks,
             origin: pointer,
             pointer,
             moved: false,
@@ -113,6 +131,8 @@ impl EditorView {
         self.mode == EditorMode::Arrangement
             && g.generation == self.project_generation
             && !self.edit_pending()
+            // The immutable revision fences every frozen member; pointer
+            // motion need not rescan the selected group.
             && self
                 .state
                 .as_ref()
@@ -138,7 +158,7 @@ impl EditorView {
     fn track_reorder_destination(
         &self,
         pointer: (f32, f32),
-        source: TrackId,
+        source: &TrackReorderSelection,
     ) -> Option<Destination> {
         let bounds = self.arrangement_bounds?;
         let (x, y) = pointer;
@@ -163,9 +183,23 @@ impl EditorView {
             row_y += height;
             index += 1;
         }
-        let source_index = tracks.iter().position(|t| t.id() == source)?;
-        // Both sides of the source row describe the same no-op gap.
-        if index == source_index || index == source_index + 1 {
+        let members = source.ids();
+        if tracks
+            .get(index)
+            .is_some_and(|track| members.contains(&track.id()))
+        {
+            return None;
+        }
+        let first = tracks
+            .iter()
+            .position(|track| members.contains(&track.id()))?;
+        // The boundary immediately after an already contiguous block is also
+        // a no-op. Noncontiguous members otherwise form one canonical block.
+        if index == first.checked_add(members.len())?
+            && tracks[first..index]
+                .iter()
+                .all(|track| members.contains(&track.id()))
+        {
             return None;
         }
         if row_y < bounds.top || row_y > bounds.top + bounds.height {
@@ -190,7 +224,7 @@ impl EditorView {
             >= 4.0;
         g.destination = g
             .moved
-            .then(|| self.track_reorder_destination(g.pointer, g.track))
+            .then(|| self.track_reorder_destination(g.pointer, &g.tracks))
             .flatten();
         self.track_reorder.gesture = Some(g);
         true
@@ -227,14 +261,14 @@ impl EditorView {
             self.track_reorder.pending = Some(Pending {
                 generation: g.generation,
                 revision: g.revision,
-                track: g.track,
+                tracks: g.tracks.clone(),
                 destination,
                 receipt: Receipt::new(g.generation),
             });
-            if !self.enqueue(Request::ReorderTrack {
+            if !self.enqueue(Request::ReorderTracks {
                 project_generation: g.generation,
                 revision: g.revision,
-                track: g.track,
+                tracks: g.tracks,
                 before: destination.before,
             }) {
                 self.retire_pending_track_reorder();
@@ -369,7 +403,7 @@ impl EditorView {
         let Some(p) = &self.track_reorder.pending else {
             return false;
         };
-        matches!(request, Request::ReorderTrack { project_generation, revision, track, before } if p.receipt.is_queued() && *project_generation==p.generation && *revision==p.revision && *track==p.track && *before==p.destination.before)
+        matches!(request, Request::ReorderTracks { project_generation, revision, tracks, before } if p.receipt.is_queued() && *project_generation==p.generation && *revision==p.revision && tracks==&p.tracks && *before==p.destination.before)
     }
     pub(super) fn track_reorder_submitted(&mut self) {
         if let Some(p) = self.track_reorder.pending.as_mut() {

@@ -543,6 +543,7 @@ impl Command {
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
             | Self::MoveTrackBefore { .. }
+            | Self::MoveTracksBefore { .. }
             | Self::ImportAudioTrack { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }
