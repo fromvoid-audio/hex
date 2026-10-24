@@ -141,6 +141,19 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
             "movement buttons removed, title drag remains"
         );
     }
+    let scale = visual.update(|window, _| window.scale_factor());
+    for prefix in ["device-preset-save", "device-preset-load", remove_prefix] {
+        let selector = Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str());
+        assert_eq!(
+            visual
+                .rendered_surface_geometry(selector)
+                .unwrap()
+                .0
+                .top_left,
+            px(hex_widgets::DEVICE_HEADER_ACTION_SIZE / 2.0).scale(scale),
+            "production one-shot header action is circular at its established density"
+        );
+    }
 }
 
 #[gpui::test]

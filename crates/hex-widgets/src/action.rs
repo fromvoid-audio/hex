@@ -2,11 +2,16 @@
 use crate::{ActionStyle, CONTROL_CORNER_RADIUS};
 use gpui::{Div, SharedString, div, prelude::*, px, rgb};
 
-/// Shared action surface. Owners supply normalized text, identity, dimensions,
+/// Compact default diameter for round momentary actions. Header compositions
+/// retain their explicit density; labeled pills extend this circle horizontally.
+pub const ROUND_ACTION_SIZE: f32 = 14.0;
+
+/// Fully rounded regular action. Owners supply normalized text, identity, dimensions,
 /// focus and event handlers; this primitive never changes canonical state.
 /// No fixed width is imposed, so compact glyphs and text actions use one control.
+/// Device settings use `device_segment` to retain their readout corner style.
 pub fn action(label: SharedString, style: ActionStyle) -> Div {
-    action_surface(style).child(label)
+    action_surface(style).rounded_full().child(label)
 }
 
 /// The same action surface with caller-composed content, such as a swatch,
@@ -43,6 +48,7 @@ pub fn round_action_surface(
 ) -> gpui::Stateful<Div> {
     action_surface(style)
         .id(id)
+        .size(px(ROUND_ACTION_SIZE))
         .rounded_full()
         .border_1()
         .border_color(rgb(border))
