@@ -4,8 +4,10 @@ use std::hint::black_box;
 
 #[test]
 #[ignore = "manual optimized spectrum capture profile; not a device deadline test"]
-fn spectrum_capture_stage_profile() {
-    assert!(!cfg!(debug_assertions), "use an optimized profile");
+fn spectrum_capture_stage_profile() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        return Err("use an optimized profile");
+    }
     for count in [1, 4, spectrum_target::MAX_SPECTRUM_TARGETS] {
         let (mut control, _callback) = spectrum_target::channel();
         let requests: Vec<_> = (1..=count as u64)
@@ -67,4 +69,5 @@ fn spectrum_capture_stage_profile() {
             times[0], times[10], times[18]
         );
     }
+    Ok(())
 }
