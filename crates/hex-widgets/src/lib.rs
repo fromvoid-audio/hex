@@ -61,6 +61,7 @@ pub use frame::{
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
+    COMPACT_DIAL_HEIGHT, COMPACT_DIAL_WIDTH, INLINE_VALUE_HEIGHT, INLINE_VALUE_WIDTH,
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
     NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
     bind_numeric_control_keys,

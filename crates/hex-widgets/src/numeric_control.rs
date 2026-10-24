@@ -83,6 +83,14 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
     ]);
 }
 
+/// Intrinsic compact-knob tile dimensions in logical pixels. Owners allocating
+/// a fixed tile must use these values rather than duplicating render geometry.
+pub const COMPACT_DIAL_WIDTH: f32 = 64.0;
+pub const COMPACT_DIAL_HEIGHT: f32 = 52.0;
+/// Default inline-readout dimensions; explicit caller width overrides remain supported.
+pub const INLINE_VALUE_WIDTH: f32 = 46.0;
+pub const INLINE_VALUE_HEIGHT: f32 = 14.0;
+
 /// Pointer scrubbing increases values upward for every control kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericControlKind {
@@ -1537,8 +1545,15 @@ impl gpui::Render for NumericControl {
                         )),
                 ),
             (NumericControlKind::Knob, NumericControlAppearance::CompactDial) => {
-                let (width, height, label_height, label_size, knob_size, value_height, gap) =
-                    (64.0, 52.0, 10.0, 9.0, 26.0, 14.0, 1.0);
+                let (width, height, label_height, label_size, knob_size, value_height, gap) = (
+                    COMPACT_DIAL_WIDTH,
+                    COMPACT_DIAL_HEIGHT,
+                    10.0,
+                    9.0,
+                    26.0,
+                    14.0,
+                    1.0,
+                );
                 div()
                     .id(self.id.clone())
                     .flex()
@@ -1579,8 +1594,8 @@ impl gpui::Render for NumericControl {
             (NumericControlKind::HorizontalSlider, NumericControlAppearance::InlineValue) => div()
                 .id(self.id.clone())
                 .flex()
-                .w(px(self.inline_value_width.unwrap_or(46.0)))
-                .h(px(14.0))
+                .w(px(self.inline_value_width.unwrap_or(INLINE_VALUE_WIDTH)))
+                .h(px(INLINE_VALUE_HEIGHT))
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
@@ -1593,8 +1608,10 @@ impl gpui::Render for NumericControl {
                             editing: self.editing,
                             enabled,
                             style,
-                            width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
-                            height: px(14.0),
+                            width: px(self
+                                .inline_value_width
+                                .map_or(INLINE_VALUE_WIDTH, |width| width - 2.0)),
+                            height: px(INLINE_VALUE_HEIGHT),
                         },
                         self.value_mouse_down_listener(cx),
                     )
