@@ -212,8 +212,9 @@ pub struct Event {
     pub midi_take_complete: Option<MidiTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
-    /// Correlates one final batch result; contains metadata only, never PCM.
+    /// Correlates the final bounce result with its shared cancellation control.
     pub bounce_complete: Option<hex_export::ExportControl>,
+    /// Correlates one final batch result; contains metadata only, never PCM.
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
@@ -637,7 +638,7 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
-    /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
+    /// Bounce selected Arrangement clips or an explicit range.
     /// At most MAX_CLIPS captured IDs or MAX_TRACKS range rows in the existing
     /// 32-slot FIFO. One synchronous control-worker job; Escape cancels via the
     /// shared control without waiting for that FIFO. No audio/UI thread rendering.
@@ -648,6 +649,7 @@ pub enum Request {
         in_place: bool,
         control: hex_export::ExportControl,
     },
+    /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
     ConvertClip {
         project_generation: u64,
         revision: u64,
@@ -4766,14 +4768,52 @@ fn run_worker(
                     } else if control.is_cancelled() {
                         Err("bounce cancelled".into())
                     } else {
-                        recovery.clone().map(Ok).unwrap_or_else(untitled_recovery_path).and_then(|path| {
-                        let root=path.parent().and_then(Path::parent).ok_or("bounce media folder unavailable")?.join("media/bounces");
-                        if let Some(sink)=events.resident_audio() {
-                            resident_audio::bounce_arrangement(&mut session,target,in_place,&root,&control,hex_engine::AudioSourceContext {project_generation, editor_revision:revision.saturating_add(1)},sink,export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_,p)|hex_engine::native_device_resources::ControlSamplerSelection{sources:current_sources.as_ref(),prepared:Some(p)}),resident_seek.as_ref(),resident_preview.as_ref()),&mut resident_snapshot)
-                        } else {
-                            session.bounce_arrangement(target,in_place,&root,&control,compiled.as_ref().map(|(_,p)|p.as_ref()))
-                        }
-                    })
+                        recovery
+                            .clone()
+                            .map(Ok)
+                            .unwrap_or_else(untitled_recovery_path)
+                            .and_then(|path| {
+                                let root = path
+                                    .parent()
+                                    .and_then(Path::parent)
+                                    .ok_or("bounce media folder unavailable")?
+                                    .join("media/bounces");
+                                if let Some(sink) = events.resident_audio() {
+                                    let context = hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    };
+                                    let admission = export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| {
+                                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                                sources: current_sources.as_ref(),
+                                                prepared: Some(prepared),
+                                            }
+                                        }),
+                                        resident_seek.as_ref(),
+                                        resident_preview.as_ref(),
+                                    );
+                                    resident_audio::bounce_arrangement(
+                                        &mut session,
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        context,
+                                        sink,
+                                        admission,
+                                        &mut resident_snapshot,
+                                    )
+                                } else {
+                                    session.bounce_arrangement(
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    )
+                                }
+                            })
                     };
                     match result {
                         Ok((result, prepared)) => {
