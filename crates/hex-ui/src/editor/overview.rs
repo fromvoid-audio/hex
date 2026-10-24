@@ -79,6 +79,9 @@ fn filtered_cells(project: &Project, horizon: u64, focus_ranges: &[(u64, u64)]) 
         return cells;
     }
     for (track_index, track) in project.tracks().iter().enumerate() {
+        if !super::arrangement_focus::track_intersects_sections(project, track, focus_ranges) {
+            continue;
+        }
         let row = track_index
             .saturating_mul(OVERVIEW_ROWS)
             .checked_div(track_count)
@@ -86,9 +89,7 @@ fn filtered_cells(project: &Project, horizon: u64, focus_ranges: &[(u64, u64)]) 
             .min(OVERVIEW_ROWS - 1);
         for clip in track.clips() {
             if let Some(end) = clip.start().checked_add(clip.duration()) {
-                if super::arrangement_focus::interval_visible(clip.start(), end, focus_ranges) {
-                    mark_interval(&mut cells, row, horizon, clip.start(), end, AUDIO_CELL);
-                }
+                mark_interval(&mut cells, row, horizon, clip.start(), end, AUDIO_CELL);
             }
         }
         for clip in track.midi_clips() {
@@ -103,9 +104,7 @@ fn filtered_cells(project: &Project, horizon: u64, focus_ranges: &[(u64, u64)]) 
             ) else {
                 continue;
             };
-            if super::arrangement_focus::interval_visible(start, end, focus_ranges) {
-                mark_interval(&mut cells, row, horizon, start, end, MIDI_CELL);
-            }
+            mark_interval(&mut cells, row, horizon, start, end, MIDI_CELL);
         }
     }
     cells
@@ -349,15 +348,17 @@ mod tests {
     }
 
     #[test]
-    fn focused_overview_hides_nonintersecting_clips_and_rebuilds_for_the_interval() {
+    fn focused_overview_keeps_all_clips_on_intersecting_tracks_and_rebuilds() {
         let project = overview_project();
         assert!(
             super::filtered_cells(&project, 300_000, &[(1, 100)])
                 .iter()
                 .all(|c| *c == 0)
         );
-        assert!(
-            super::filtered_cells(&project, 300_000, &[(130_000, 140_000)]).contains(&AUDIO_CELL)
+        assert_eq!(
+            super::filtered_cells(&project, 300_000, &[(130_000, 140_000)]),
+            overview_cells(&project, 300_000),
+            "the retained track includes MIDI beyond the selected interval"
         );
         let state = view_state(project, 1, 300_000);
         let cache = std::cell::RefCell::new(None);
