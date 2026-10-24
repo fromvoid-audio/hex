@@ -13,7 +13,6 @@ pub(super) enum Demo {
     Graph,
     Color,
     Curve,
-    Transfer,
     Spectrum,
     Chrome(&'static str),
     Layout(DeviceLayout),
@@ -139,7 +138,6 @@ pub(super) fn inventory() -> Vec<Item> {
         ("response graph", Demo::Graph),
         ("color picker", Demo::Color),
         ("curve plot", Demo::Curve),
-        ("transfer plot", Demo::Transfer),
         ("layered spectrum plot", Demo::Spectrum),
     ] {
         add("graphics", name, demo);

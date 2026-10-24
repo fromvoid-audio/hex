@@ -135,9 +135,10 @@ pub(super) fn render_body(
         .min_h_0();
     let range = match curve {
         Ok(curve) => {
-            if let Some(plot) = hex_widgets::transfer_plot(
+            if let Some(plot) = hex_widgets::curve_plot(
                 curve.points,
                 theme::device_style(theme::DeviceStyleRole::Display),
+                hex_widgets::CurvePlotGrid::Centered,
             ) {
                 graph = graph.child(plot);
             }
