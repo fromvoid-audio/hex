@@ -1,4 +1,5 @@
 //! Clip-local waveform editing. Only selection, viewport and previews live here.
+mod paint;
 mod pending;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;

@@ -240,6 +240,58 @@ fn render_state(v: &EditorView) -> Vec<hex_engine::Frame> {
 }
 
 #[gpui::test]
+fn event_overlap_accent_covers_only_replaced_audio_and_survives_release(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, clip) = open(cx);
+    edit(
+        &mut visual,
+        &editor,
+        clip,
+        AudioEventEdit::Split { at: 48_000 },
+    );
+    editor.update(&mut visual, |v, _| {
+        v.audio_event_editor.grid = SnapGrid::Off
+    });
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let down = point(body.left() + body.size.width * 0.125, body.top() + px(26.0));
+    let up = point(body.left() + body.size.width * 0.375, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let overlap = visual
+        .debug_bounds("audio-event-overlap-0")
+        .expect("occupied replacement accent");
+    assert!((overlap.left() - (body.left() + body.size.width * 0.5)).abs() <= px(1.0));
+    assert!((overlap.size.width - body.size.width * 0.25).abs() <= px(1.0));
+    let fill = visual.rendered_background("audio-event-overlap-0").unwrap();
+    let before = editor.read_with(&visual, |v, _| {
+        Arc::clone(&v.state.as_ref().unwrap().project)
+    });
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    repaint(&mut visual, &editor);
+    assert!(visual.debug_bounds("audio-event-overlap-0").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-overlap-0"), Some(overlap));
+    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+    for _ in 0..2 {
+        repaint(&mut visual, &editor);
+        assert_eq!(visual.debug_bounds("audio-event-overlap-0"), Some(overlap));
+        assert_eq!(
+            visual.rendered_background("audio-event-overlap-0"),
+            Some(fill)
+        );
+    }
+    pump(&editor, &mut visual);
+    assert!(visual.debug_bounds("audio-event-overlap-0").is_none());
+    assert!(visual.debug_bounds("audio-event-1").is_some());
+}
+
+#[gpui::test]
 fn resampled_source_range_paste_matches_normalized_pcm_offsets(cx: &mut TestAppContext) {
     let (files, mut visual, editor, _) = open(cx);
     let (old_track, path) = editor.read_with(&visual, |v, _| {
