@@ -45,6 +45,16 @@ pub(crate) fn action_style() -> hex_widgets::ActionStyle {
     }
 }
 
+/// Brighter momentary press fill with foreground resolved against that fill.
+#[allow(dead_code)] // Consumed by the standalone native sandbox example.
+pub(crate) fn action_press_style(style: hex_widgets::ActionStyle) -> hex_widgets::ActionPressStyle {
+    let background = mix(style.background, 0xffffff, 0.22);
+    hex_widgets::ActionPressStyle {
+        background,
+        text: readable_text(background, style.text),
+    }
+}
+
 /// Shared translucency for arranger and clip-editor time ranges.
 pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.22;
 

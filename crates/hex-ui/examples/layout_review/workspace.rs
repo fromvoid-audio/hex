@@ -471,7 +471,8 @@ impl Workspace {
         };
         let entity = cx.entity();
         let owner = entity.downgrade();
-        let button = round_action_surface("workspace-round-action", style, colors.border)
+        let pressed = theme::action_press_style(style);
+        let button = round_action_surface("workspace-round-action", style, colors.border, pressed)
             .debug_selector({
                 let id = self.id("workspace-round-action");
                 move || id.clone()
@@ -758,7 +759,7 @@ impl Workspace {
                         cx.stop_propagation();
                     }))
                     .children((0..24).map(|i| {
-                        action(
+                        toggle_action(
                             theme::text(format!("local row {}", i + 1)),
                             if self.count == i as u64 {
                                 theme::action_style().with_state_colors(
@@ -1045,7 +1046,17 @@ mod tests {
         assert!(visual.debug_bounds("workspace-row-0").unwrap().top() < before.top());
         let row = visual.debug_bounds("workspace-row-10").unwrap();
         assert!(list.contains(&row.center()));
+        let scale = visual.update(|window, _| window.scale_factor());
+        let geometry = visual
+            .rendered_surface_geometry("workspace-row-10")
+            .unwrap();
+        assert_eq!(geometry.0.top_left, px(TOGGLE_CORNER_RADIUS).scale(scale));
         visual.simulate_click(row.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_surface_geometry("workspace-row-10"),
+            Some(geometry)
+        );
         view.read_with(&visual, |s, _| assert!(s.status.contains("row · 11")));
         visual.simulate_keystrokes("down");
         visual.run_until_parked();

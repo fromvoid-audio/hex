@@ -482,10 +482,12 @@ impl Command {
             Self::DuplicateClip(clip) => ClipCommandScope::Geometry { clip: *clip },
             Self::DuplicateMidiClip(clip) => ClipCommandScope::Geometry { clip: *clip },
             Self::ConvertAudioClipToMidi(clip) => ClipCommandScope::Geometry { clip: *clip },
-            Self::CopyArrangementAudioClipToSession { source, .. } => {
+            Self::CopyArrangementAudioClipToSession { source, .. }
+            | Self::CopyArrangementAudioClipToNewSessionTrack { source, .. } => {
                 ClipCommandScope::Geometry { clip: *source }
             }
-            Self::CopyArrangementMidiToSession { source, .. } => {
+            Self::CopyArrangementMidiToSession { source, .. }
+            | Self::CopyArrangementMidiToNewSessionTrack { source, .. } => {
                 ClipCommandScope::Geometry { clip: *source }
             }
             Self::UpdateMidiNote { note, .. } | Self::RemoveMidiNote(note) => {

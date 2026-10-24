@@ -122,6 +122,7 @@ mod snapshot;
 mod split_tracks;
 pub use session::{
     Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
+    SessionSceneTarget,
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
