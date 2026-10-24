@@ -208,21 +208,27 @@ impl EditorView {
         } else {
             CLIP_DETAIL_BODY_HEIGHT
         };
-        let preferred = self.clip_detail_resize.preferred(
-            natural,
+        let minimum = if has_session_audio {
+            super::session_audio_panel::DETAIL_HEIGHT
+        } else {
             super::clip_detail_resize::MIN_HEIGHT
                 + if selected_midi {
                     self.midi_velocity.visible_height()
                 } else {
                     0.0
-                },
-        );
+                }
+        };
+        let preferred = self.clip_detail_resize.preferred(natural, minimum);
         self.project_spectrum.detail_height = open.then_some(if self.device_panel_active {
             super::device_panel::DEVICE_PANEL_HEIGHT
         } else {
             preferred
         });
-        self.clip_detail_body_height = self.project_spectrum_detail_height(window, preferred);
+        // Below a useful content size, keep real controls/canvas intact in the
+        // existing scroll viewport rather than letting intrinsic children crush tracks.
+        self.clip_detail_body_height = self
+            .project_spectrum_detail_height(window, preferred)
+            .max(minimum);
         let detail = if open {
             if self.device_panel_active {
                 Some(

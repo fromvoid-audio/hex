@@ -58,22 +58,42 @@ impl EditorView {
         let Some(resize) = self.clip_detail_resize.resize.as_ref() else {
             return false;
         };
-        let requested = resize.height + resize.y - f32::from(position.y);
+        let delta = resize.y - f32::from(position.y);
+        if delta == 0.0 {
+            self.clip_detail_resize.preferred = resize.preferred;
+            self.clip_view_open = true;
+            cx.notify();
+            return true;
+        }
+        let requested = resize.height + delta;
         if !requested.is_finite() {
             return self.cancel_clip_detail_resize(cx);
         }
-        self.clip_view_open = requested >= COLLAPSE_HEIGHT;
+        let session_audio = self.mode == super::EditorMode::Session
+            && self.selected_cell.is_some_and(|(track, scene)| {
+                self.state.as_ref().is_some_and(|state| {
+                    matches!(
+                        state.project.session_cell(track, scene),
+                        Some(hex_project::SessionCellContent::Audio(_))
+                    )
+                })
+            });
+        let minimum = if session_audio {
+            super::session_audio_panel::DETAIL_HEIGHT
+        } else {
+            MIN_HEIGHT
+                + if self.midi_clip().is_some() {
+                    self.midi_velocity.visible_height()
+                } else {
+                    0.0
+                }
+        };
+        self.clip_view_open = requested >= COLLAPSE_HEIGHT.min(minimum / 2.0);
         if !self.clip_view_open {
             self.clip_detail_resize.preferred = Some(resize.height);
         } else {
             // Keep the piano useful even with an expanded velocity lane. The
             // shared workspace budget caps the viewport in smaller windows.
-            let velocity = if self.midi_clip().is_some() {
-                self.midi_velocity.visible_height()
-            } else {
-                0.0
-            };
-            let minimum = MIN_HEIGHT + velocity;
             self.clip_detail_resize.preferred = Some(
                 self.project_spectrum_detail_height(window, requested.max(minimum))
                     .max(minimum),

@@ -74,6 +74,12 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
             .debug_bounds("clip-detail-resize")
             .expect("clip resize divider");
         let down = divider.center();
+        visual.simulate_click(down, Modifiers::default());
+        assert_eq!(
+            visual.debug_bounds(body_selector).unwrap().size.height,
+            before.size.height,
+            "a stationary divider click preserves the size"
+        );
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         let up = point(down.x, down.y - px(60.0));
         visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
@@ -234,4 +240,43 @@ fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut Test
     );
     let pane = visual.debug_bounds("clip-view").unwrap();
     assert!(pane.bottom() <= px(540.0));
+}
+
+#[gpui::test]
+fn clip_detail_small_window_returns_scroll_useful_piano_instead_of_crushing_tracks(
+    cx: &mut TestAppContext,
+) {
+    let (project, track, _, clip) = midi_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    for index in 0..4 {
+        model
+            .execute(hex_project::Command::AddReturnTrack {
+                name: format!("return {index}"),
+            })
+            .unwrap();
+    }
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(880.0), px(540.0)));
+    editor.update(visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let viewport = visual
+        .debug_bounds("clip-detail-viewport")
+        .expect("scroll viewport below useful piano minimum");
+    assert!(viewport.size.height >= px(48.0));
+    assert!(visual.debug_bounds("midi-note-roll").unwrap().size.height > px(48.0));
+    assert!(
+        visual
+            .debug_bounds("arrangement-content")
+            .unwrap()
+            .size
+            .height
+            >= px(44.0)
+    );
 }
