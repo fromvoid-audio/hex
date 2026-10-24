@@ -90,6 +90,7 @@ impl super::EditorView {
                 .select(&state.project, track, false, false)
         {
             self.selected_track = Some(track);
+            self.arrangement_focus.observe_active_track(Some(track));
             self.update_track_selection_status();
         }
     }
