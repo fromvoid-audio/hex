@@ -801,6 +801,11 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_eq_creation() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.cancel_bounce() {
                     cx.stop_propagation();
                     cx.notify();

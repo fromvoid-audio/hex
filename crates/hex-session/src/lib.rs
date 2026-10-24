@@ -1039,7 +1039,7 @@ impl Session {
         self.preview_mix_command(Command::Gain { track, gain }, previous)
     }
 
-    // Finite mixer callers only. This does not admit arbitrary UI commands.
+    // Validated finite mixer/native gesture callers only; never arbitrary UI commands.
     fn preview_mix_command(
         &self,
         command: Command,

@@ -3,7 +3,7 @@ use super::{DeviceId, EditorView, GestureTarget, HashSet};
 
 pub(super) fn retire_invalid_owner(view: &mut EditorView, alive: &HashSet<DeviceId>) {
     if view.device_gesture.snapshot().is_some_and(|snapshot| {
-        matches!(snapshot.target, GestureTarget::DeviceParameterSnapshot { device }
+        matches!(snapshot.target, GestureTarget::DeviceParameterSnapshot { device } | GestureTarget::EqNodeCreation { device }
             if !alive.contains(&device) || snapshot.key.generation != view.project_generation)
     }) && !view.device_gesture.has_pending_terminal()
     {

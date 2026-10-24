@@ -2771,7 +2771,9 @@ fn run_worker(
                     let outcome = if tuning_gesture.snapshot().is_some()
                         && matches!(
                             gesture,
-                            GestureRequest::Begin { .. } | GestureRequest::BeginSnapshot { .. }
+                            GestureRequest::Begin { .. }
+                                | GestureRequest::BeginSnapshot { .. }
+                                | GestureRequest::BeginEqCreation { .. }
                         ) {
                         crate::device_gesture::GestureOutcome {
                             ack: GestureAck {
@@ -2851,6 +2853,7 @@ fn run_worker(
                             GestureRequest::Change { .. }
                                 | GestureRequest::ChangePair { .. }
                                 | GestureRequest::ChangeSnapshot { .. }
+                                | GestureRequest::ChangeEqCreation { .. }
                         ) {
                             preview_prepared = Some(prepared);
                             preview_project = outcome.preview_project;

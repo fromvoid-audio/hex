@@ -1,0 +1,201 @@
+//! Held EQ creation through the real control worker, resource admission and
+//! callback. The fixture substitutes output creation only; every render probes
+//! zero total and signed-net callback allocations/frees.
+use super::resident_preview::ResidentHarness;
+use super::*;
+use hex_engine::eq::{EqState, Node, NodeId, NodeKind};
+use hex_project::{Command, Created};
+use hex_session::device_gesture::{EqNodeCreationSnapshot, GestureKey, GestureRequest};
+use std::sync::atomic::Ordering;
+
+fn periodic_source(files: &Files) -> PathBuf {
+    let path = files.wav(48_000, 4096);
+    let mut bytes = fs::read(&path).unwrap();
+    for frame in 0..4096 {
+        let value = ((frame as f32 * std::f32::consts::TAU / 64.0).sin() * 4096.0) as i16;
+        bytes[44 + frame * 2..46 + frame * 2].copy_from_slice(&value.to_le_bytes());
+    }
+    fs::write(&path, bytes).unwrap();
+    path
+}
+fn level(h: &ResidentHarness) -> f32 {
+    for _ in 0..16 {
+        h.render();
+    }
+    let pcm = h.render();
+    (pcm.iter().flatten().map(|v| v * v).sum::<f32>() / 128.0).sqrt()
+}
+
+#[test]
+fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_history() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for owner in 0..3 {
+        for kind in [NodeKind::Bell, NodeKind::LowCut, NodeKind::Notch] {
+            let files = Files::new();
+            let mut h = ResidentHarness::new();
+            assert!(h.next().error.is_none());
+            let (mut applied, _) = h.applied(0);
+            let imported = h.run(Request::Import(periodic_source(&files)));
+            (applied, _) = h.applied(applied);
+            let track = imported.state.project.tracks()[0].id();
+            h.run(Request::Edit(Command::SetLoopRegion {
+                start: 0,
+                end: 4096,
+                enabled: true,
+            }));
+            (applied, _) = h.applied(applied);
+            let state = EqState::default().encode().unwrap();
+            let command = match owner {
+                0 => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                1 => {
+                    let added = h.run(Request::Edit(Command::AddReturnTrack {
+                        name: "eq return".into(),
+                    }));
+                    (applied, _) = h.applied(applied);
+                    let Some(Created::ReturnTrack(return_track)) = added.created else {
+                        panic!("return")
+                    };
+                    h.run(Request::Edit(Command::SetReturnSend {
+                        track,
+                        return_track,
+                        gain: 1.0,
+                    }));
+                    (applied, _) = h.applied(applied);
+                    Command::InsertReturnDevice {
+                        return_track,
+                        before: None,
+                        state,
+                    }
+                }
+                _ => Command::InsertMainDevice {
+                    before: None,
+                    state,
+                },
+            };
+            let added = h.run(Request::Edit(command));
+            (applied, _) = h.applied(applied);
+            let Some(Created::Device(device)) = added.created else {
+                panic!("eq")
+            };
+            let before = added.state.project.snapshot();
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap();
+            let dry = level(&h);
+            assert!(dry > 0.01);
+            let mut node = Node::new(NodeId::new(before.next_id).unwrap(), 750.0, 12.0, 0).unwrap();
+            node.kind = kind;
+            if kind == NodeKind::LowCut {
+                node.frequency_hz = 2000.0;
+            }
+            let draft = EqNodeCreationSnapshot::new(
+                node,
+                added.state.project.device(device).unwrap().active_variant(),
+                before.next_id,
+            )
+            .unwrap();
+            let key = GestureKey {
+                generation: 0,
+                token: 1,
+            };
+            let begin = h.run(Request::DeviceGesture(GestureRequest::BeginEqCreation {
+                key,
+                device,
+                snapshot: draft,
+            }));
+            assert!(begin.gesture_ack.unwrap().accepted);
+            let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+                key,
+                sequence: 1,
+                snapshot: draft,
+            }));
+            let (preview_audio, metadata) = h.applied(applied);
+            assert_eq!(metadata.device_preview.unwrap().sequence, 1);
+            assert_eq!(preview.state.project.snapshot(), before);
+            assert_eq!(
+                EqState::decode(
+                    preview
+                        .device_preview
+                        .as_ref()
+                        .unwrap()
+                        .state
+                        .project
+                        .device(device)
+                        .unwrap()
+                        .state()
+                )
+                .unwrap()
+                .nodes,
+                vec![node]
+            );
+            let held = level(&h);
+            if kind == NodeKind::Bell {
+                assert!(held > dry * 1.5, "owner={owner} held={held} dry={dry}");
+            } else {
+                assert!(
+                    held < dry * 0.8,
+                    "owner={owner} kind={kind:?} held={held} dry={dry}"
+                );
+            }
+            if owner == 0 && kind == NodeKind::Bell {
+                h.refuse.store(true, Ordering::Release);
+                let mut changed = draft;
+                changed.node.gain_db = -12.0;
+                h.service
+                    .submit(Request::DeviceGesture(GestureRequest::CommitEqCreation {
+                        key,
+                        sequence: 2,
+                        snapshot: changed,
+                    }))
+                    .unwrap();
+                let refused = h.next();
+                let ack = refused.gesture_ack.unwrap();
+                assert!(!ack.accepted && ack.preview_retained);
+                assert_eq!(refused.state.project.snapshot(), before);
+                assert!(
+                    (level(&h) - held).abs() < held * 0.1,
+                    "refused final state cannot replace accepted preview"
+                );
+                h.refuse.store(false, Ordering::Release);
+                let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
+                (applied, _) = h.applied(preview_audio);
+                assert_eq!(cancelled.state.project.snapshot(), before);
+                assert!((level(&h) - dry).abs() < dry * 0.05);
+                // The cancelled creation consumed no history: undo removes the EQ.
+                h.run(Request::Undo);
+                h.applied(applied);
+                continue;
+            }
+            let committed = h.run(Request::DeviceGesture(GestureRequest::CommitEqCreation {
+                key,
+                sequence: 2,
+                snapshot: draft,
+            }));
+            (applied, _) = h.applied(preview_audio);
+            assert_eq!(committed.state.project.next_identity(), before.next_id + 1);
+            assert_eq!(
+                EqState::decode(committed.state.project.device(device).unwrap().state())
+                    .unwrap()
+                    .nodes,
+                vec![node]
+            );
+            let undone = h.run(Request::Undo);
+            (applied, _) = h.applied(applied);
+            let mut restored = undone.state.project.snapshot();
+            restored.next_id = before.next_id;
+            assert_eq!(restored, before);
+            assert!((level(&h) - dry).abs() < dry * 0.05);
+            let redone = h.run(Request::Redo);
+            h.applied(applied);
+            assert_eq!(redone.state.project, committed.state.project);
+            assert!(h.publication_refusals.is_empty());
+        }
+    }
+}
