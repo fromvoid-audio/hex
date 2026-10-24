@@ -65,6 +65,15 @@ impl PreparedPlaybackObservation {
     pub fn preparation_storage_quote_on_control(
         revision: &PreparedRevision,
     ) -> Result<usize, Invalid> {
+        Self::storage_quote(
+            revision,
+            crate::session_inventory::EffectiveSessionMidi::new(revision.session(), None),
+        )
+    }
+    pub(crate) fn storage_quote(
+        revision: &PreparedRevision,
+        midi: crate::session_inventory::EffectiveSessionMidi<'_>,
+    ) -> Result<usize, Invalid> {
         let count = meter_sources(revision).count();
         if count > hex_project::MAX_DEVICES {
             return Err(Invalid("observation device count exceeds its limit"));
@@ -107,7 +116,7 @@ impl PreparedPlaybackObservation {
                 )?;
             }
         }
-        for clip in revision.session().activity_midi_clips() {
+        for clip in midi.activity_midi_clips() {
             add(&mut bytes, Some(std::mem::size_of::<SessionGates>()))?;
             add(
                 &mut bytes,
@@ -119,7 +128,20 @@ impl PreparedPlaybackObservation {
         Ok(bytes)
     }
     pub fn prepare_on_control(revision: &PreparedRevision) -> Result<Self, Invalid> {
-        let quote = Self::preparation_storage_quote_on_control(revision)?;
+        Self::prepare_effective(
+            revision,
+            crate::session_inventory::EffectiveSessionMidi::new(revision.session(), None),
+            revision.session().periodic_tempo(),
+            revision.session().periodic_tempo_error().is_some(),
+        )
+    }
+    pub(crate) fn prepare_effective(
+        revision: &PreparedRevision,
+        midi: crate::session_inventory::EffectiveSessionMidi<'_>,
+        periodic: Option<PreparedPeriodicSessionTempo>,
+        tempo_unavailable: bool,
+    ) -> Result<Self, Invalid> {
+        let quote = Self::storage_quote(revision, midi)?;
         let mut meters = reserved(meter_sources(revision).count())?;
         for (id, kind, meter) in meter_sources(revision) {
             meters.push(Meter {
@@ -150,8 +172,8 @@ impl PreparedPlaybackObservation {
                 has_instrument: track.instrument.is_some(),
             });
         }
-        let mut session = reserved(revision.session().activity_midi_clips().count())?;
-        for clip in revision.session().activity_midi_clips() {
+        let mut session = reserved(midi.activity_midi_clips().count())?;
+        for clip in midi.activity_midi_clips() {
             session.push(SessionGates {
                 track: clip.track,
                 clip: clip.id,
@@ -168,8 +190,8 @@ impl PreparedPlaybackObservation {
                 tracks,
                 session,
                 timing: revision.session().timing().observation_copy()?,
-                periodic: revision.session().periodic_tempo(),
-                tempo_unavailable: revision.session().periodic_tempo_error().is_some(),
+                periodic,
+                tempo_unavailable,
             },
         };
         if result

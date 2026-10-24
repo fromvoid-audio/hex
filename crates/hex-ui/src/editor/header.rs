@@ -5,6 +5,17 @@ use std::path::Path;
 
 pub(super) const TITLE_HEIGHT: f32 = 22.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 26.0;
+// Keep every transport action, full view name and useful output status at the
+// minimum window width. Wide windows retain one compact toolbar line.
+pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_000.0;
+pub(super) fn toolbar_height(width: f32) -> f32 {
+    if width < WIDE_TOOLBAR_MIN_WIDTH {
+        // Two full rows plus the existing bottom divider.
+        TOOLBAR_HEIGHT * 2.0 + 1.0
+    } else {
+        TOOLBAR_HEIGHT
+    }
+}
 pub(super) const CONTROL_SIZE: f32 = 20.0;
 
 pub(super) fn project_title(document_path: Option<&Path>) -> String {
@@ -142,7 +153,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        .gap(px(1.0))
+        // Contiguous compact controls preserve room for transport status.
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
@@ -294,7 +305,12 @@ mod ui_tests {
             let title_center = f32::from(title_label.origin.x + title_label.size.width / 2.0);
             let window_center = f32::from(window.origin.x + window.size.width / 2.0);
             assert!((f32::from(title.size.height) - super::TITLE_HEIGHT).abs() < 1.0);
-            assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
+            assert!(
+                (f32::from(toolbar.size.height)
+                    - super::toolbar_height(f32::from(window.size.width)))
+                .abs()
+                    < 1.0
+            );
             assert!((toolbar_top - title_bottom).abs() < 1.0);
             assert!((title_center - window_center).abs() < 1.0);
             assert!(title_label.origin.x + title_label.size.width + px(8.0) <= version.origin.x);
@@ -424,10 +440,11 @@ mod ui_tests {
                         cx.notify();
                     })
                 });
-                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                for width in [880.0, 881.0, 960.0, 999.0, 1_000.0, 1440.0, 880.0] {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+                    assert_eq!(toolbar.size.height, px(super::toolbar_height(width)));
                     let name = visual
                         .debug_bounds(match mode {
                             EditorMode::Arrangement => "arrange view",
@@ -449,10 +466,22 @@ mod ui_tests {
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
-                    for selector in ["arrange-zoom-fit", "arrange-zoom-back"] {
+                    for selector in [
+                        "arrange-zoom-fit",
+                        "arrange-zoom-back",
+                        "section-autoplay-toggle",
+                        "global-launch-quantization",
+                    ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));
-                        assert!(control.left() >= toolbar.left() && control.right() <= name.left());
+                        assert!(
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
+                                && (control.bottom() <= name.top()
+                                    || control.right() <= name.left())
+                        );
                     }
                     for selector in [
                         "project tuning · cmd+alt+t",
@@ -467,7 +496,10 @@ mod ui_tests {
                             size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
                         );
                         assert!(
-                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
                         );
                     }
                     editor.read_with(&visual, |view, _| {
@@ -532,7 +564,7 @@ mod ui_tests {
                     v.set_mode(mode);
                     cx.notify();
                 });
-                for width in [880.0, 881.0, 960.0, 1440.0, 880.0] {
+                for width in [880.0, 881.0, 960.0, 999.0, 1_000.0, 1440.0, 880.0] {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
@@ -590,7 +622,10 @@ mod ui_tests {
                             size(px(super::CONTROL_SIZE), px(super::CONTROL_SIZE))
                         );
                         assert!(
-                            control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                            control.left() >= toolbar.left()
+                                && control.right() <= toolbar.right()
+                                && control.top() >= toolbar.top()
+                                && control.bottom() <= toolbar.bottom()
                         );
                     }
                     editor.read_with(&visual, |v, _| {

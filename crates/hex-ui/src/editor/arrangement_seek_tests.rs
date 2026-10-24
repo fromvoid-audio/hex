@@ -301,6 +301,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("admission-time route fence");
 
     let intent = SeekIntent {
+        section: None,
         recovery_generation: None,
         destination_frame: 256,
         start_playing: true,
@@ -311,6 +312,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     };
     let mut pending = PendingSeek::from_intent(1, &intent, fence);
     let worker_intent = SeekIntent {
+        section: None,
         prepared_revision: None,
         ..intent.clone()
     };
@@ -355,6 +357,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     latch_latest_intent(
         &mut latched,
         SeekIntent {
+            section: None,
             destination_frame: 512,
             ..intent.clone()
         },
@@ -362,6 +365,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
     latch_latest_intent(
         &mut latched,
         SeekIntent {
+            section: None,
             destination_frame: 768,
             ..intent
         },
@@ -438,6 +442,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         )
         .expect("publish conditional seek candidate");
     let intent = SeekIntent {
+        section: None,
         recovery_generation: None,
         destination_frame: 256,
         start_playing: true,

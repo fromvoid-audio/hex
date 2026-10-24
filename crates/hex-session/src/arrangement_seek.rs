@@ -31,6 +31,15 @@ pub enum ArrangementSeekMode {
     #[default]
     LinearArrangement,
     Interactive,
+    SectionLoop(hex_project::LoopRegion),
+}
+
+/// Transient click intent. The loop is installed before preroll; quantization
+/// waits on the predecessor clock only after the prepared candidate is ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionLaunch {
+    pub region: hex_project::LoopRegion,
+    pub quantization: hex_engine::LaunchQuantization,
 }
 
 /// Control-side identity and destination for one prepared seek candidate.
@@ -400,6 +409,15 @@ fn prepare(
             )?;
             Playback::from_interactive_arrangement_preroll(runtime)
         }
+        ArrangementSeekMode::SectionLoop(region) => Playback::from_interactive_arrangement_preroll(
+            SessionPlayback::prepare_section_arrangement_preroll(
+                Arc::clone(&spec.prepared_revision),
+                None,
+                region,
+                spec.work_budget_frames,
+                cancelled,
+            )?,
+        ),
     }
 }
 
@@ -472,15 +490,27 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
         let (mut work, cancelled) = work;
         let job = work.resident.as_ref().map(|r| r.job);
         let result = if let Some(resident) = work.resident.take() {
-            let runtime =
-                SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
-                    Arc::clone(&work.spec.prepared_revision),
-                    &resident.resources,
-                    work.spec.destination_frame,
-                    work.spec.work_budget_frames,
-                    work.spec.start_playing,
-                    &cancelled,
-                );
+            let runtime = match work.spec.mode {
+                ArrangementSeekMode::SectionLoop(region) => {
+                    SessionPlayback::prepare_section_arrangement_preroll(
+                        Arc::clone(&work.spec.prepared_revision),
+                        Some(&resident.resources),
+                        region,
+                        work.spec.work_budget_frames,
+                        &cancelled,
+                    )
+                }
+                _ => {
+                    SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                        Arc::clone(&work.spec.prepared_revision),
+                        &resident.resources,
+                        work.spec.destination_frame,
+                        work.spec.work_budget_frames,
+                        work.spec.start_playing,
+                        &cancelled,
+                    )
+                }
+            };
             // Keep one large constructor Result live, matching the existing preroll stack contract.
             let result = runtime.and_then(Playback::from_interactive_arrangement_preroll);
             drop(resident);

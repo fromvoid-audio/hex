@@ -73,6 +73,7 @@ enum Mode {
     ContentEnd(SectionId),
 }
 struct Gesture {
+    launch_eligible: bool,
     generation: u64,
     revision: u64,
     viewport: Viewport,
@@ -482,6 +483,12 @@ impl EditorView {
         let extend = modifiers.shift;
         let free = modifiers.platform;
         let marker_only = modifiers.alt;
+        let launch_eligible = self.section_autoplay
+            && !double
+            && !extend
+            && !marker_only
+            && !free
+            && !modifiers.control;
         // This capture also sees clicks on track headers and the focus toggle.
         // Let their focus owners finish before reconciliation decides whether
         // to clear section selection; an armed filter retains its driving IDs.
@@ -568,11 +575,14 @@ impl EditorView {
             } else if marker_only {
                 Mode::Move(id)
             } else {
-                if self
-                    .audio
-                    .as_ref()
-                    .and_then(|audio| audio.control.status())
-                    .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
+                if !launch_eligible
+                    && self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.status())
+                        .is_some_and(|status| {
+                            status.playing.load(std::sync::atomic::Ordering::Acquire)
+                        })
                 {
                     self.select_section_metadata(Some(id));
                     self.error = Some("stop playback before reordering sections".into());
@@ -621,6 +631,7 @@ impl EditorView {
             tempo: state.project.tempo_map().clone(),
         };
         self.sections.gesture = Some(Gesture {
+            launch_eligible,
             generation: self.project_generation,
             revision: state.revision,
             viewport,
@@ -679,6 +690,15 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
+                if (x - g.anchor_x).abs() >= 4.0
+                    && self.audio_status().is_some_and(|status| {
+                        status.playing.load(std::sync::atomic::Ordering::Acquire)
+                    })
+                {
+                    self.error = Some("stop playback before reordering sections".into());
+                    self.sections.gesture = Some(g);
+                    return true;
+                }
                 // Structural destinations are fixed edges, independent of grid snap.
                 // A click must never move music, even when it snaps outside its marker.
                 let raw_beat = self.section_pointer(x, y, true).unwrap_or(beat);
@@ -869,11 +889,15 @@ impl EditorView {
             return true;
         };
         self.suppress_cursor_click = true;
-        if self.section_current(&g)
-            && self.section_pointer(x, y, free).is_some()
-            && let Some(command) = g.command
-        {
-            self.submit_section(command, g.display, g.generation, g.revision);
+        if self.section_current(&g) && self.section_pointer(x, y, free).is_some() {
+            if let Some(command) = g.command {
+                self.submit_section(command, g.display, g.generation, g.revision);
+            } else if g.launch_eligible
+                && (x - g.anchor_x).abs() < 4.0
+                && let Mode::Reorder(id) = g.mode
+            {
+                self.launch_arrangement_section(id);
+            }
         }
         true
     }
@@ -2339,6 +2363,107 @@ mod tests {
             assert_eq!(actual, before);
         });
     }
+    #[gpui::test]
+    fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::Arc;
+        let (handle, editor, ids) = fixture(cx);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut output, mut backend) = loop {
+            match hex_audio::worker_fixture::open(48_000) {
+                Ok(output) => break output,
+                Err(error)
+                    if error == "audio output is open or still shutting down"
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let source = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &source,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!prepared.arrangement_seek_requires_preroll());
+        let audio_revision = output
+            .publication
+            .control()
+            .unwrap()
+            .publish(
+                hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(
+                    &prepared,
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        backend.render(&mut [[0.0; 2]; 1]).unwrap();
+        let client = output.take_client().unwrap();
+        editor.update(cx, |view, cx| {
+            view.audio = Some(crate::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "test audio".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            let state = Arc::clone(view.state.as_ref().unwrap());
+            view.applied_project_revision = Some(state.revision);
+            view.audible_playback = Some(super::super::PlaybackCandidate {
+                worker_requires_preroll: Some(false),
+                observation: None,
+                audio_revision,
+                project_generation: view.project_generation,
+                state,
+                prepared_revision: Some(prepared),
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            view.session_quantization = hex_engine::LaunchQuantization::QuarterTriplet;
+            view.toggle_section_autoplay();
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let clicked = editor.read_with(cx, |view, _| position(view, 1));
+        visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
+        editor.update(cx, |view, _| {
+            let pending = view
+                .prepared_seek
+                .as_ref()
+                .expect("stationary section click prepares a seek even without stateful devices");
+            let section = pending.section.unwrap();
+            assert_eq!(
+                section.region,
+                hex_project::LoopRegion::new(0, 96_000, true).unwrap()
+            );
+            assert_eq!(
+                section.quantization,
+                hex_engine::LaunchQuantization::QuarterTriplet
+            );
+            assert_eq!(view.sections.selected, Some(ids[0]));
+            assert_eq!(
+                view.state.as_ref().unwrap().project,
+                source,
+                "launch has no canonical edit or history"
+            );
+            let cancellation = Arc::clone(&pending.worker_cancel);
+            view.toggle_section_autoplay();
+            assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
+            assert!(view.latched_seek_intent.is_none());
+            assert!(!view.section_autoplay);
+        });
+    }
+
     #[gpui::test]
     fn stationary_non_grid_content_edge_click_does_not_change_music(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);
