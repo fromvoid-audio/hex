@@ -284,6 +284,86 @@ impl Drop for Case {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn revalidation_paths_allocate_one_buffer_and_depth_refusal_only_its_diagnostic() {
+    let case = Case::new();
+    fs::create_dir_all(case.root.join("Contents/MacOS")).unwrap();
+    fs::write(case.root.join("Contents/MacOS/fixture"), b"original").unwrap();
+    let relative = "Contents/MacOS/fixture";
+    let mut returned = None;
+    let measured = allocation_counter::measure(|| {
+        returned =
+            Some(hex_plugin_scan::macos::identity::relative_file(&case.root, relative).unwrap());
+    });
+    let returned = returned.unwrap();
+    assert_eq!((measured.count_total, measured.count_current), (1, 1));
+    assert_eq!(
+        (measured.bytes_total, measured.bytes_current),
+        (returned.capacity() as u64, returned.capacity() as i64)
+    );
+    assert_eq!(
+        returned.capacity(),
+        case.root.as_os_str().len() + 1 + relative.len()
+    );
+    let too_deep = "d/".repeat(33);
+    let mut refusal = None;
+    let measured = allocation_counter::measure(|| {
+        refusal = Some(
+            hex_plugin_scan::macos::identity::relative_file(&case.root, &too_deep).unwrap_err(),
+        );
+    });
+    let refusal = refusal.unwrap();
+    assert!(refusal.contains("depth refused"));
+    assert_eq!((measured.count_total, measured.count_current), (1, 1));
+    assert_eq!(
+        (measured.bytes_total, measured.bytes_current),
+        (refusal.capacity() as u64, refusal.capacity() as i64)
+    );
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn revalidation_universal_macho_parser_uses_no_heap_scratch() {
+    use hex_plugin_scan::macos::macho::{self, Image, Role};
+    // Two independent thin headers in a big-endian universal container. This
+    // tests the parser/data budget only; it is never loaded as executable code.
+    let thin = |cpu, subtype| {
+        [0xfeed_facf_u32, cpu, subtype, 8, 1, 8, 0, 0, 0, 8]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    let mut image = [
+        0xcafe_babe_u32,
+        2,
+        0x0100_000c,
+        0,
+        64,
+        40,
+        3,
+        0x0100_0007,
+        3,
+        104,
+        40,
+        3,
+    ]
+    .into_iter()
+    .flat_map(u32::to_be_bytes)
+    .collect::<Vec<_>>();
+    image.resize(64, 0);
+    image.extend(thin(0x0100_000c, 0));
+    image.extend(thin(0x0100_0007, 3));
+    let measured = allocation_counter::measure(|| {
+        assert_eq!(
+            macho::inspect(&image, Role::Module),
+            Ok(Image::UniversalArm64)
+        );
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+}
 struct Joining {
     task: Option<JoinHandle<()>>,
     release: PathBuf,

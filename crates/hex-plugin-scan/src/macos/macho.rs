@@ -106,8 +106,8 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, String> {
     if header_end > bytes.len() {
         return Err("truncated fat mach-o table".into());
     }
-    let mut regions = Vec::with_capacity(count);
-    let mut architectures = Vec::with_capacity(count);
+    let mut regions = [(0_usize, 0_usize); MAX_SLICES];
+    let mut architectures = [(0_u32, 0_u32); MAX_SLICES];
     let mut arm64 = false;
     for index in 0..count {
         let base = 8 + index * width;
@@ -143,13 +143,15 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, String> {
         let start = usize::try_from(offset).map_err(|_| "fat offset range")?;
         let end = usize::try_from(end).map_err(|_| "fat end range")?;
         let slice = bytes.get(start..end).ok_or("fat slice bounds")?;
-        if thin(slice, role)? != (cpu, subtype) || architectures.contains(&(cpu, subtype)) {
+        if thin(slice, role)? != (cpu, subtype) || architectures[..index].contains(&(cpu, subtype))
+        {
             return Err("fat slice architecture mismatch or duplicate".into());
         }
-        architectures.push((cpu, subtype));
-        regions.push((start, end));
+        architectures[index] = (cpu, subtype);
+        regions[index] = (start, end);
         arm64 |= cpu == ARM64;
     }
+    let regions = &mut regions[..count];
     regions.sort_unstable();
     if regions.windows(2).any(|pair| pair[0].1 > pair[1].0) || !arm64 {
         return Err("overlapping slices or absent native arm64 slice".into());

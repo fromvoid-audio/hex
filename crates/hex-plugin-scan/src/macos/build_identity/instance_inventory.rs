@@ -137,16 +137,6 @@ pub(super) fn verify(root: &Path, expected: &BTreeMap<String, String>) -> Result
     Ok(())
 }
 
-pub(super) fn hash_matches(bytes: &[u8], expected: &str) -> bool {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut actual = [0_u8; 64];
-    for (index, byte) in Sha256::digest(bytes).iter().enumerate() {
-        actual[index * 2] = HEX[usize::from(byte >> 4)];
-        actual[index * 2 + 1] = HEX[usize::from(byte & 15)];
-    }
-    expected.as_bytes() == actual
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

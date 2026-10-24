@@ -1,7 +1,7 @@
 //! Caller-selected local helper-build provenance, checked before every spawn.
 //! This receipt is a trust root supplied by the caller, not an attestation.
 use super::{
-    identity::{MAX_PATH_BYTES, read_file, relative_file},
+    identity::{MAX_PATH_BYTES, hash_matches, read_file, relative_file},
     macho::{self, Image, Role},
 };
 use crate::{MAX_BINARY, PUBLIC_SDK, SDK, hash};
@@ -294,7 +294,7 @@ impl Build {
             // instance package. The receipt snapshot drops before member I/O.
             let same = {
                 let bytes = read_file(&self.path, MAX_BINARY)?;
-                instance_inventory::hash_matches(&bytes, &self.receipt_sha256)
+                hash_matches(&bytes, &self.receipt_sha256)
             };
             if !same {
                 return Err("helper or build receipt changed during operation".into());

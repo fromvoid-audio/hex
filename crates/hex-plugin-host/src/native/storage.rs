@@ -43,6 +43,7 @@ pub struct PreparationStorageBound {
     pub max_pending_data_bytes: usize,
     pub max_prepared_data_bytes: usize,
     pub helper_working_data_bytes: usize,
+    pub source_working_data_bytes: usize,
 }
 impl PreparationStorageBound {
     pub fn max_retained_data_bytes(self) -> usize {
@@ -51,12 +52,16 @@ impl PreparationStorageBound {
             .max(self.max_prepared_data_bytes)
     }
     /// Retained phases, one bounded file snapshot, the fixed instance helper's
-    /// path/name scratch and explicit protocol buffers. Selected-module path
-    /// work, diagnostics and opaque resources remain before complete sealing.
+    /// and selected-module path scratch plus explicit protocol buffers. Helper
+    /// and selected-module revalidation are serialized, so their workspaces do
+    /// not overlap. Diagnostics and opaque resources remain before sealing.
     pub fn base_peak_data_bytes(self) -> Option<usize> {
         self.max_retained_data_bytes()
             .checked_add(usize::try_from(hex_plugin_scan::MAX_BINARY).ok()?)?
-            .checked_add(self.helper_working_data_bytes)?
+            .checked_add(
+                self.helper_working_data_bytes
+                    .max(self.source_working_data_bytes),
+            )?
             .checked_add(protocol::MAX_WORKING_DATA_BYTES)
     }
 }
@@ -144,6 +149,10 @@ impl Source {
                 .checked_add(restore_bytes)?
                 .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)?,
             helper_working_data_bytes: build.revalidation_storage_bound()?.data_bytes,
+            source_working_data_bytes: self
+                .bundle
+                .revalidation_storage_bound(&self.executable)?
+                .data_bytes,
         })
     }
     pub(super) fn metadata_backing(&self) -> Option<usize> {

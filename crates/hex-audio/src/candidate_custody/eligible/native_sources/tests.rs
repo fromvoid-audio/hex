@@ -312,14 +312,15 @@ fn actual_protocol_peak_is_reserved_before_cancellation_or_child() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
-fn actual_helper_workspace_is_charged_before_cancellation_or_child() {
+fn actual_revalidation_workspace_is_charged_before_cancellation_or_child() {
     let (build, source, preparation) = input();
     let bound = source
         .preparation_storage_bound_on_control(&build, None)
         .unwrap();
     assert!(bound.helper_working_data_bytes > 0);
+    assert!(bound.source_working_data_bytes > 0);
     // This covers the previously admitted retained/file/protocol components,
-    // but deliberately leaves no allowance for the actual helper workspace.
+    // but deliberately leaves no allowance for either revalidation workspace.
     let peak = bound.max_retained_data_bytes()
         + hex_plugin_scan::MAX_BINARY as usize
         + hex_plugin_host::protocol::MAX_WORKING_DATA_BYTES;
@@ -341,8 +342,8 @@ fn actual_helper_workspace_is_charged_before_cancellation_or_child() {
         preparation,
         None,
         native::TrustUserCode::Acknowledged,
-        || panic!("helper workspace over budget must not construct cancellation or child"),
-        || panic!("helper workspace over budget must not reserve a slot"),
+        || panic!("revalidation workspace over budget must not construct cancellation or child"),
+        || panic!("revalidation workspace over budget must not reserve a slot"),
     );
     assert_eq!(
         result.unwrap_err(),
