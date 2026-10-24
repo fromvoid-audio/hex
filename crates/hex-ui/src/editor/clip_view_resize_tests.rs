@@ -229,6 +229,11 @@ fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut Test
             .height
             >= px(44.0)
     );
+    let full_height = visual
+        .debug_bounds("arrangement-audio-clip-view")
+        .unwrap()
+        .size
+        .height;
     visual.simulate_resize(gpui::size(px(880.0), px(540.0)));
     assert!(
         visual
@@ -240,6 +245,26 @@ fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut Test
     );
     let pane = visual.debug_bounds("clip-view").unwrap();
     assert!(pane.bottom() <= px(540.0));
+    let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+    let height = editor.read_with(visual, |view, _| view.clip_detail_body_height);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(
+        point(down.x, down.y + px(height + 40.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_resize(gpui::size(px(1100.0), px(780.0)));
+    let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
+    visual.simulate_click(toggle, Modifiers::default());
+    assert_eq!(
+        visual
+            .debug_bounds("arrangement-audio-clip-view")
+            .unwrap()
+            .size
+            .height,
+        full_height,
+        "temporary window clamping must not overwrite remembered size"
+    );
 }
 
 #[gpui::test]

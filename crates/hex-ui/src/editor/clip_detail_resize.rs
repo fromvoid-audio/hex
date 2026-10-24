@@ -1,5 +1,7 @@
 //! View-owned detail sizing. Capture survives preview collapse; cancellation
-//! restores the prior open state and preferred size. No musical edit is emitted.
+//! restores the prior open state and preferred size. Clip bodies keep 128px plus
+//! the velocity lane; compact Session audio keeps its 38px row. Collapse occurs
+//! below 48px (half the minimum for smaller content). No musical edit is emitted.
 use super::EditorView;
 use crate::theme;
 use gpui::{
@@ -90,7 +92,7 @@ impl EditorView {
         };
         self.clip_view_open = requested >= COLLAPSE_HEIGHT.min(minimum / 2.0);
         if !self.clip_view_open {
-            self.clip_detail_resize.preferred = Some(resize.height);
+            self.clip_detail_resize.preferred = resize.preferred;
         } else {
             // Keep the piano useful even with an expanded velocity lane. The
             // shared workspace budget caps the viewport in smaller windows.
