@@ -175,6 +175,7 @@ impl EditorView {
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
             || self.project_spectrum.resize_is_active()
+            || self.clip_detail_resize.is_active()
             || self.device_panel.navigation.is_active()
             || self.clip_paint_gesture.is_some()
             || self.active_clip_drag.is_some()
@@ -217,6 +218,11 @@ impl EditorView {
                 TRACK_ROW_HEIGHT
             })
     }
+    /// Visibility can change with active-track selection without a project edit.
+    pub(super) fn invalidate_arrangement_track_layout(&mut self) {
+        self.track_layout.revision = None;
+    }
+
     pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
         if self.track_layout.generation != self.project_generation {
             self.track_layout.heights.clear();

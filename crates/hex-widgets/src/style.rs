@@ -16,6 +16,13 @@ pub struct ControlStyle {
     pub text: u32,
     pub muted: u32,
     pub accent: u32,
+    /// Caller-resolved foreground for labels/icons painted directly on accent.
+    pub accent_text: u32,
+    /// Opaque numeric rail fill resolved by the owner to keep `text` readable
+    /// over both filled and empty portions of a numeric field.
+    pub numeric_fill: u32,
+    /// Caller-resolved foreground on the hover surface.
+    pub hover_text: u32,
     /// Neutral selected-control corner color, supplied by the application.
     pub focus_marker: u32,
     /// Full unfilled knob rail color, independent of the parameter value fill.
