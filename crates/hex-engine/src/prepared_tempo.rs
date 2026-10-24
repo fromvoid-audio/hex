@@ -152,7 +152,7 @@ impl PreparedTempoMap {
     }
 
     pub(crate) fn same_map(&self, other: &Self) -> bool {
-        self.canonical.proves_same_clock(&other.canonical)
+        self.canonical == other.canonical
     }
 
     /// Convert a Q32.32 quarter-note beat to its canonical nearest frame.

@@ -628,117 +628,129 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
 #[test]
 fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
-    let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(8_000_000);
-    assert!(h.next().error.is_none());
-    let (mut applied, _) = h.applied(0);
-    let added = h.run(Request::Edit(Command::AddMidiTrack {
-        name: "sampler".into(),
-    }));
-    let Some(Created::Track(track)) = added.created else {
-        panic!("track")
-    };
-    (applied, _) = h.applied(applied);
-    let loaded = h.run(Request::LoadFirstSampler {
-        request_id: 1,
-        project_generation: 0,
-        revision: added.state.revision,
-        track,
-        empty_sampler: None,
-        path: files.wav(48_000, 192_000),
-        cancel: Arc::new(AtomicBool::new(false)),
-    });
-    assert!(loaded.error.is_none());
-    (applied, _) = h.applied(applied);
-    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
-        track,
-        start: BeatTime::ZERO,
-        length: BeatTime::from_quarters(8).unwrap(),
-    }));
-    let Some(Created::Clip(clip)) = placed.created else {
-        panic!("clip")
-    };
-    (applied, _) = h.applied(applied);
-    let notes = h.run(Request::Edit(Command::AddMidiNote {
-        clip,
-        start: BeatTime::ZERO,
-        duration: BeatTime::from_quarters(6).unwrap(),
-        pitch: 60,
-        channel: 0,
-        velocity: 127,
-    }));
-    (applied, _) = h.applied(applied);
-    let (first, intro) = add(&mut h, notes.state.revision, "intro", 0, 2);
-    (applied, _) = h.applied(applied);
-    let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
-    (applied, _) = h.applied(applied);
-    let mut intent = h.seek_intent(2, event.state.revision, None, None);
-    intent.destination_frame = 0;
-    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
-        region: hex_project::LoopRegion::new(0, 48_000, true).unwrap(),
-        quantization: hex_engine::LaunchQuantization::Immediate,
-    });
-    h.service.submit_resident_arrangement_seek(intent).unwrap();
-    assert!(h.next().error.is_none());
-    assert!(h.seek_result().result.is_ok());
-    (applied, _) = h.applied(applied);
-    assert!(h.render().iter().flatten().any(|s| *s != 0.0));
-    for command in [
-        Command::DuplicateArrangementSection(intro),
-        Command::ReorderSectionAfter {
-            section: intro,
-            after: chorus,
-        },
-    ] {
-        let before = event.state.project.snapshot();
-        let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_));
-        let before_pcm = h.render();
-        event = run_callback(&mut h, section_request(event.state.revision, command));
-        assert!(event.error.is_none(), "{:?}", event.error);
+    for micro_bpm in [143_000_000, 180_000_000] {
+        let files = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(8_000_000);
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let added = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "sampler".into(),
+        }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("track")
+        };
         (applied, _) = h.applied(applied);
+        let loaded = h.run(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: added.state.revision,
+            track,
+            empty_sampler: None,
+            path: files.wav(48_000, 192_000),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        assert!(loaded.error.is_none());
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::SetProjectTempo {
+            tempo: Tempo::new(micro_bpm).unwrap(),
+        }));
+        (applied, _) = h.applied(applied);
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(8).unwrap(),
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("clip")
+        };
+        (applied, _) = h.applied(applied);
+        let notes = h.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(6).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        }));
+        (applied, _) = h.applied(applied);
+        let (first, intro) = add(&mut h, notes.state.revision, "intro", 0, 2);
+        (applied, _) = h.applied(applied);
+        let (mut event, chorus) = add(&mut h, first.state.revision, "chorus", 4, 7);
+        (applied, _) = h.applied(applied);
+        let loop_frames = event
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(BeatTime::from_quarters(2).unwrap())
+            .unwrap();
+        let mut intent = h.seek_intent(2, event.state.revision, None, None);
+        intent.destination_frame = 0;
+        intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+            region: hex_project::LoopRegion::new(0, loop_frames, true).unwrap(),
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        });
+        h.service.submit_resident_arrangement_seek(intent).unwrap();
+        assert!(h.next().error.is_none());
+        assert!(h.seek_result().result.is_ok());
+        (applied, _) = h.applied(applied);
+        assert!(h.render().iter().flatten().any(|s| *s != 0.0));
+        for command in [
+            Command::DuplicateArrangementSection(intro),
+            Command::ReorderSectionAfter {
+                section: intro,
+                after: chorus,
+            },
+        ] {
+            let before = event.state.project.snapshot();
+            let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_));
+            let before_pcm = h.render();
+            event = run_callback(&mut h, section_request(event.state.revision, command));
+            assert!(event.error.is_none(), "{:?}", event.error);
+            (applied, _) = h.applied(applied);
+            assert!(
+                h.audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(Acquire)
+            );
+            let heard = h.render();
+            assert!(heard.iter().flatten().any(|s| *s != 0.0));
+            if unchanged_prefix {
+                assert_eq!(
+                    heard, before_pcm,
+                    "duplicating later music must not double the held prefix note"
+                );
+            }
+            event = run_callback(&mut h, Request::Undo);
+            assert!(event.error.is_none(), "{:?}", event.error);
+            (applied, _) = h.applied(applied);
+            let mut restored = event.state.project.snapshot();
+            restored.next_id = before.next_id;
+            assert_eq!(restored, before);
+        }
+        for _ in 0..800 {
+            h.render();
+        }
         assert!(
             h.audio
                 .as_ref()
                 .unwrap()
                 .status()
                 .unwrap()
-                .playing
+                .position
                 .load(Acquire)
+                < loop_frames
         );
-        let heard = h.render();
-        assert!(heard.iter().flatten().any(|s| *s != 0.0));
-        if unchanged_prefix {
-            assert_eq!(
-                heard, before_pcm,
-                "duplicating later music must not double the held prefix note"
-            );
-        }
-        event = run_callback(&mut h, Request::Undo);
-        assert!(event.error.is_none(), "{:?}", event.error);
-        (applied, _) = h.applied(applied);
-        let mut restored = event.state.project.snapshot();
-        restored.next_id = before.next_id;
-        assert_eq!(restored, before);
-    }
-    for _ in 0..800 {
-        h.render();
-    }
-    assert!(
+        assert!(h.render().iter().flatten().any(|s| *s != 0.0));
         h.audio
-            .as_ref()
+            .as_mut()
             .unwrap()
-            .status()
-            .unwrap()
-            .position
-            .load(Acquire)
-            < 48_000
-    );
-    assert!(h.render().iter().flatten().any(|s| *s != 0.0));
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Stop)
-        .unwrap();
-    assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+    }
 }
