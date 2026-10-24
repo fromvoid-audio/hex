@@ -16,10 +16,19 @@ pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceI
     let indicator =
         Box::leak(format!("device-bypass-{}-indicator", device.value()).into_boxed_str());
     let target = visual.debug_bounds(selector).expect("power hit target");
-    let circle = visual.debug_bounds(indicator).expect("power circle");
+    let indicator_bounds = visual.debug_bounds(indicator).expect("power indicator");
     assert_eq!(target.size, size(px(12.0), px(12.0)));
-    assert_eq!(circle.size, size(px(8.0), px(8.0)));
-    assert_eq!(circle.center(), target.center());
+    assert_eq!(indicator_bounds.size, size(px(8.0), px(8.0)));
+    assert_eq!(indicator_bounds.center(), target.center());
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry(indicator)
+            .unwrap()
+            .0
+            .top_left,
+        px(hex_widgets::TOGGLE_CORNER_RADIUS).scale(scale)
+    );
     assert_eq!(
         visual.rendered_background(selector),
         None,
@@ -45,7 +54,7 @@ pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceI
 }
 
 #[gpui::test]
-fn header_power_circle_hover_and_cancelled_press_keep_canonical_color(cx: &mut TestAppContext) {
+fn header_power_toggle_hover_and_cancelled_press_keep_canonical_color(cx: &mut TestAppContext) {
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let before = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
