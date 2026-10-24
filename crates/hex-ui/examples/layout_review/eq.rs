@@ -35,13 +35,12 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         let config = NumericControlConfig::new(
             format!("fixture-eq-numeric-{index}"),
             theme::text(label),
-            NumericControlKind::HorizontalSlider,
+            NumericControlPresentation::InlineValue,
             NumericSpec::new(min, max, value, scale, 2, Some(unit)).map_err(|e| e.to_string())?,
             value,
             theme::device_style(theme::DeviceStyleRole::Readout),
         )
-        .map_err(|e| e.to_string())?
-        .with_presentation(NumericControlPresentation::InlineValue);
+        .map_err(|e| e.to_string())?;
         let entity = cx.new(|cx| {
             let mut control = NumericControl::from_config(cx, config);
             let _ = control.set_inline_value_width(width, cx);
