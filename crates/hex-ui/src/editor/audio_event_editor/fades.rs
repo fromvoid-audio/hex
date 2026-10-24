@@ -91,7 +91,8 @@ fn clock_coordinate(root: &AudioClipEdit, frame: f64, tempo: &TempoMap) -> Optio
     if frame >= total as f64 {
         let step = root.domain.clock.length().checked_sub(at(total - 1)?)?;
         return (step > 0)
-            .then_some(root.domain.clock.length() as f64 + (frame - total as f64) * step as f64);
+            .then_some(root.domain.clock.length() as f64 + (frame - total as f64) * step as f64)
+            .filter(|value| value.is_finite());
     }
     let low = (frame.floor() as u64).min(total - 1);
     let first = at(low)?;

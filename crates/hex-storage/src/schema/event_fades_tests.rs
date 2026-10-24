@@ -198,3 +198,35 @@ fn schema42_requires_complete_unique_known_inventories_and_valid_all_knots() {
         project.snapshot()
     );
 }
+
+#[test]
+fn frozen_published_schema41_projects_migrate_without_losing_predecessor_state() {
+    for bytes in [
+        include_bytes!("../../tests/fixtures/event-fades/schema41-audio-600ea714.json").as_slice(),
+        include_bytes!("../../tests/fixtures/event-fades/schema41-midi-600ea714.json").as_slice(),
+        include_bytes!("../../tests/fixtures/event-fades/schema41-session-audio-600ea714.json")
+            .as_slice(),
+    ] {
+        let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(value["version"], 41);
+        let predecessor = super::super::content_views::decode(bytes).unwrap();
+        let migrated = crate::decode(bytes).unwrap();
+        assert_eq!(migrated.snapshot(), predecessor.snapshot());
+        assert!(
+            migrated
+                .tracks()
+                .iter()
+                .flat_map(|track| track.clips())
+                .all(|clip| clip
+                    .audio_events()
+                    .events
+                    .iter()
+                    .all(|event| event.fade.is_none()))
+        );
+        let current = crate::encode(&migrated).unwrap();
+        assert_eq!(
+            crate::decode(&current).unwrap().snapshot(),
+            predecessor.snapshot()
+        );
+    }
+}
