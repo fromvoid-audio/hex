@@ -8,7 +8,7 @@ use hex_project::{ClipEdit, Command, SessionCellContent};
 use hex_session::service::Request;
 
 pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
-    matches!(event.keystroke.key.as_str(), "a" | "0")
+    matches!(event.keystroke.key.as_str(), "c" | "0")
         && event.keystroke.modifiers == Modifiers::default()
         && !event.is_held
 }

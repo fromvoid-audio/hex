@@ -214,10 +214,9 @@ fn envelope_escape_blur_lost_pointer_and_stale_source_cancel_without_history(
         visual.run_until_parked();
         assert!(editor.read_with(&visual, |v, _| v.midi_volume.gesture.is_some()));
         assert!(visual.debug_bounds("midi-volume-point-values").is_some());
-        // A/0 belongs to contextual clip activation only outside nested plot
+        // C/0 belongs to contextual clip activation only outside nested plot
         // focus. It must not submit an edit underneath a held envelope node.
-        visual.simulate_keystrokes("a");
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("a c 0");
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert!(v.midi_volume.gesture.is_some());

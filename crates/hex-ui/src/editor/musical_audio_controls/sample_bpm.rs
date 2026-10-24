@@ -35,7 +35,10 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
         return div();
     };
     let domain = clip.audio_edit().map(|edit| edit.domain.as_ref());
-    let enabled = domain.is_some_and(|domain| domain.warp_enabled) && !view.edit_pending();
+    let availability = hex_widgets::ControlAvailability::for_edit(
+        domain.is_some_and(|domain| domain.warp_enabled),
+        view.edit_pending(),
+    );
     let value = domain
         .and_then(|domain| domain.sample_bpm)
         .unwrap_or_else(|| {
@@ -126,7 +129,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
     let binding = view.sample_bpm_control.as_ref().unwrap();
     binding
         .entity
-        .update(cx, |numeric, cx| numeric.set_enabled(enabled, cx));
+        .update(cx, |numeric, cx| numeric.set_availability(availability, cx));
     div()
         .flex()
         .h(px(20.0))
