@@ -111,6 +111,7 @@ impl endpoints::ClientEndpoints {
 impl Client {
     /// Resident-only compatibility handoff. A synchronous refusal returns the
     /// exact Playback; a queued request has one later real publication result.
+    #[allow(clippy::result_large_err)] // Return the actual graph inline without allocating on refusal.
     pub fn forward_resident_publication(
         &mut self,
         playback: Playback,

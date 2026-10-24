@@ -24,7 +24,7 @@ pub(super) struct Pending {
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
     pub(super) current_submission: Option<(AudioSourceContext, u64)>,
-    pub(super) retired: Option<(DeviceResourcePublication, u64)>,
+    pub(super) retired: Option<DeviceResourcePublication>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
@@ -79,7 +79,7 @@ impl NativeAudioSink {
                 .resident
                 .retired
                 .as_ref()
-                .map_or(0, |(book, _)| book.unreturned_graphs_on_control());
+                .map_or(0, |book| book.unreturned_graphs_on_control());
             let owners = active.unwrap_or(0).checked_add(retired)?;
             let per_graph = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
                 .checked_add(policy.ordinary_graph_metadata_bytes)?;
@@ -120,13 +120,11 @@ impl NativeAudioSink {
         if control.unreturned_resident_graphs_on_control().is_none() {
             return false;
         }
-        let frames = control
-            .suspend_resident_forwarding_pcm()
-            .unwrap_or(u64::MAX);
+        control.suspend_resident_forwarding_pcm();
         if let Some(book) = control.take_device_resource_publication_on_shutdown() {
             // opened_output clears the prior hold only after its constructor acquires the
             // exclusive lease, before any new publication can create this retirement book.
-            self.resident.retired = Some((book, frames));
+            self.resident.retired = Some(book);
         }
         self.output_hold = Default::default();
         self.ordinary_pcm_frames = 0;
@@ -142,8 +140,8 @@ impl NativeAudioSink {
             self.resident
                 .retired
                 .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |(book, frames)| {
-                    book.admission_on_control(*frames)
+                .map_or(DeviceResourceAdmission::default(), |book| {
+                    book.admission_on_control()
                 }),
             self.resident
                 .pending
@@ -300,8 +298,8 @@ impl NativeAudioSink {
                 .resident
                 .retired
                 .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |(book, frames)| {
-                    book.admission_on_control(*frames)
+                .map_or(DeviceResourceAdmission::default(), |book| {
+                    book.admission_on_control()
                 });
             let pending = self.resident.pending.as_ref().map_or(
                 DeviceResourceAdmission::default(),

@@ -112,7 +112,9 @@ pub use meter_indicator::{
     meter_indicator,
 };
 
+mod range_selection;
 mod rectangle;
+pub use range_selection::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 pub use rectangle::{
     RectangleCapture, RectangleEdges, RectangleIntent, RectanglePart, RectanglePhase,
     RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
