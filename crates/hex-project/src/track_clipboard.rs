@@ -58,7 +58,12 @@ impl Project {
             .collect();
         let mut asset_ids = std::collections::BTreeSet::new();
         for track in &tracks {
-            asset_ids.extend(track.clips().iter().map(|clip| clip.asset()));
+            asset_ids.extend(
+                track
+                    .clips()
+                    .iter()
+                    .flat_map(|clip| clip.referenced_assets()),
+            );
             for device in track.devices().iter().chain(track.instrument()) {
                 asset_ids.extend(
                     device

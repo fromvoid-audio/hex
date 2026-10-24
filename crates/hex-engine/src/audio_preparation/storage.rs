@@ -54,11 +54,16 @@ impl AudioPreparationCustody {
             looping: _,
             fade: _,
             owner,
+            prepared_origin,
+            transformed: _,
             disposal: _,
             #[cfg(test)]
                 probe: _,
         } in slots
         {
+            if let Some(origin) = prepared_origin {
+                l.source(origin)?;
+            }
             if let Some(owner) = owner {
                 l.source(owner)?;
             }
@@ -66,7 +71,7 @@ impl AudioPreparationCustody {
         let view = revision.visit_audio_storage(l)?;
         if view.arrangement.is_some() {
             if let Some(bank) = bank {
-                arrangement_clips.validate_root_sources_at(bank, view.arrangement)?;
+                arrangement_clips.validate_root_sources_at(slots, bank, view.arrangement)?;
                 assembly.validate_pairs_at(bank, view.session)?;
             } else {
                 return Err(AudioStorageError::SourceMismatch);
