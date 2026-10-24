@@ -33,7 +33,28 @@ fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
 
-fn assert_centered_fade_defaults(current: &mut Value, old: &Value) {
+fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    let mut activation: Vec<Value> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| {
+            track["audio_clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .chain(track["midi_clips"].as_array().unwrap())
+        })
+        .map(|clip| json!({"clip":clip["id"],"active":true,"playback_offset_raw":0}))
+        .collect();
+    activation.extend(old["session"]["cells"].as_array().unwrap().iter()
+        .filter(|cell| cell["content"]["kind"] != "stop")
+        .map(|cell| json!({"clip":cell["content"]["clip"]["id"],"active":true,"playback_offset_raw":0})));
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("clip_activation"),
+        Some(json!(activation))
+    );
+
     let mut policies: Vec<Value> = old["tracks"]
         .as_array()
         .unwrap()
@@ -82,7 +103,7 @@ fn historical_encoders_upgrade_without_losing_any_saved_field() {
         let mut current = value(&current_bytes);
         assert_eq!(current["version"], CURRENT_SCHEMA_VERSION);
         current["version"] = old["version"].clone();
-        assert_centered_fade_defaults(&mut current, &old);
+        assert_migrated_defaults(&mut current, &old);
         if old.get("arrangement_sections").is_none() {
             assert_eq!(
                 current
@@ -133,7 +154,7 @@ fn supplied_volume_and_section_state_survives_upgrade() {
         row["points"] = json!([{"beat_raw":0,"incoming":0.375,"value":0.375}]);
     }
     let mut encoded = value(&encode(&decode(&bytes(&old)).unwrap()).unwrap());
-    assert_centered_fade_defaults(&mut encoded, &old);
+    assert_migrated_defaults(&mut encoded, &old);
     old["version"] = CURRENT_SCHEMA_VERSION.into();
     assert_eq!(encoded, old);
 }
@@ -272,7 +293,7 @@ fn historical_edited_audio_and_automation_keep_every_value() {
         expected["version"] = CURRENT_SCHEMA_VERSION.into();
         let project = decode(fixture).unwrap();
         let mut current = value(&encode(&project).unwrap());
-        assert_centered_fade_defaults(&mut current, &expected);
+        assert_migrated_defaults(&mut current, &expected);
         assert_eq!(current, expected);
         assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
         let mut editor = Editor::new(project.clone(), 8).unwrap();
