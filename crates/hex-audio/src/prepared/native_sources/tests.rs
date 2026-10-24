@@ -226,10 +226,18 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
     });
     assert!(control.retire_native_source_preparation(binding));
     control.reclaim();
-    assert_eq!(
-        control.native_source_preparation_progress(binding),
-        Some(crate::NativeSourcePreparationProgress::Retiring)
-    );
+    // This query is nonblocking: the lifecycle worker can briefly hold Bank.
+    // Observe a status before asserting retirement, without returning the
+    // original callback endpoint or accepting a completed/failed source.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let progress = loop {
+        if let Some(progress) = control.native_source_preparation_progress(binding) {
+            break progress;
+        }
+        assert!(Instant::now() < deadline, "native source retirement status");
+        std::thread::yield_now();
+    };
+    assert_eq!(progress, crate::NativeSourcePreparationProgress::Retiring);
     assert!(control.recover_native_source_preparation(binding).is_none());
     // Fill the actual return ring with real, control-constructed empty graph
     // owners. Pressure must leave this original endpoint in its callback cell.

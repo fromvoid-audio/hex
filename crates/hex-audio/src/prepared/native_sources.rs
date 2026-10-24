@@ -17,6 +17,12 @@ impl PublicationControl {
         expected: AppliedAudioSource,
     ) -> Result<StoppedEditFence, &'static str> {
         self.status.retire_stopped_edit_on_control();
+        // Compensated stream windows currently reject the native bridge's
+        // positive latency. Do not admit a fence that this mode cannot ACK or
+        // install; its compensated-window contract must be extended first.
+        if self.status.verified_streaming_mode.load(Acquire) {
+            return Err("native epoch renewal requires resident playback");
+        }
         if !self.native_custody
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)

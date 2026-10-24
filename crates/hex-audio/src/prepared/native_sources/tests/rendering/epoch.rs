@@ -241,6 +241,26 @@ fn actual_root_stop_returns_graph_and_endpoint_before_same_instance_successor_pc
             });
             control.reclaim();
             for (binding, state) in bindings.iter_mut().zip(&states) {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while crate::candidate_custody::native_source_test_fixture::original_worker_awaits_endpoint(&root, *binding) {
+                    control.reclaim();
+                    assert!(Instant::now() < deadline, "actual old endpoint return");
+                    std::thread::yield_now();
+                }
+                let old_loan = loop {
+                    match control.publish_native_source_endpoint(*binding) {
+                        Err("native preparation is busy") => {
+                            assert!(Instant::now() < deadline, "old pair control lane");
+                            std::thread::yield_now();
+                        }
+                        result => break result,
+                    }
+                };
+                assert_eq!(
+                    old_loan,
+                    Err("native effect pair is unavailable"),
+                    "a revoked returned endpoint requires a new native epoch ACK before publication"
+                );
                 let next = renew_after_returns(&mut control, *binding);
                 assert!(next.epoch > binding.epoch);
                 assert_eq!(

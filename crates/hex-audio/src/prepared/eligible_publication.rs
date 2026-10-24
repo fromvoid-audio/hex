@@ -438,7 +438,7 @@ impl PublicationControl {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 impl Callback {
     pub(super) fn return_requested_domain_pages(&mut self) {

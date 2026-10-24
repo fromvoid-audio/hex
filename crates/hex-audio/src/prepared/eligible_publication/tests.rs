@@ -12,7 +12,7 @@ mod pages;
 #[cfg(feature = "allocation-probe")]
 mod readiness;
 #[cfg(feature = "allocation-probe")]
-mod stream_fixture;
+pub(in crate::prepared) mod stream_fixture;
 #[cfg(feature = "allocation-probe")]
 mod utility_fixture;
 use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
