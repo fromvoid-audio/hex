@@ -448,6 +448,12 @@ pub enum Request {
         revision: u64,
         clips: Vec<hex_project::ClipId>,
     },
+    /// Captured Arrangement time span; split and grouping share one transaction.
+    GroupTimeRange {
+        project_generation: u64,
+        revision: u64,
+        range: hex_project::TimeRange,
+    },
     /// Captured range in the focused lower audio-event editor.
     GroupAudioEvents {
         project_generation: u64,
@@ -2104,12 +2110,18 @@ fn run_worker(
                         TrackClipboardAction::Paste { before } => Some(
                             track_clipboard
                                 .as_ref()
-                                .map(|clipboard| Command::PasteTracks {
-                                    clipboard: Arc::clone(clipboard),
-                                    before: *before,
-                                })
                                 .ok_or_else(|| {
-                                    "track clipboard is empty · copy tracks first".into()
+                                    "track clipboard is empty · copy tracks first".to_owned()
+                                })
+                                .and_then(|clipboard| {
+                                    session
+                                        .project()
+                                        .track_destination_before(*before)
+                                        .map(|destination| Command::PasteTracks {
+                                            clipboard: Arc::clone(clipboard),
+                                            destination,
+                                        })
+                                        .map_err(|error| error.to_string())
                                 }),
                         ),
                         TrackClipboardAction::Duplicate {
@@ -2119,21 +2131,16 @@ fn run_worker(
                             session
                                 .project()
                                 .capture_tracks(tracks, *without_clips)
-                                .map(|clipboard| {
-                                    let after = session
+                                .and_then(|clipboard| {
+                                    session
                                         .project()
-                                        .tracks()
-                                        .iter()
-                                        .rposition(|t| tracks.ids().contains(&t.id()));
-                                    let before = after
-                                        .and_then(|i| session.project().tracks().get(i + 1))
-                                        .map(|t| t.id());
-                                    Command::PasteTracks {
-                                        clipboard: Arc::new(clipboard),
-                                        before,
-                                    }
+                                        .track_destination_after_selection(tracks)
+                                        .map(|destination| Command::PasteTracks {
+                                            clipboard: Arc::new(clipboard),
+                                            destination,
+                                        })
                                 })
-                                .map_err(|e| e.to_string()),
+                                .map_err(|error| error.to_string()),
                         ),
                     }
                 }
@@ -2310,6 +2317,22 @@ fn run_worker(
                     Err("finish or cancel the active gesture before grouping clips".into())
                 } else {
                     Ok(Command::GroupClips(clips.clone()))
+                },
+            ),
+            Request::GroupTimeRange {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                range,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip grouping canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before grouping clips".into())
+                } else {
+                    Ok(Command::GroupTimeRange(range.clone()))
                 },
             ),
             Request::GroupAudioEvents {
@@ -3095,7 +3118,7 @@ fn run_worker(
                 Request::DuplicateClips { .. } => {
                     error = Some("clip duplication target was not resolved".into());
                 }
-                Request::GroupClips { .. } => {
+                Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {
                     error = Some("clip grouping target was not resolved".into());
                 }
                 Request::GroupAudioEvents { .. } => {
@@ -9953,68 +9976,75 @@ mod service_tests {
     }
 
     #[test]
-    fn selected_clip_group_refuses_stale_generation_or_revision_without_history_changes() {
-        let service = Service::new(48_000, 32, 8_000_000).expect("service");
-        next_event(&service);
-        service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "midi".into(),
-            }))
-            .unwrap();
-        let track = next_event(&service).state.project.tracks()[0].id();
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::ZERO,
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        next_event(&service);
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::from_quarters(2).unwrap(),
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        let before = next_event(&service);
-        let clips = before.state.project.tracks()[0]
-            .midi_clips()
-            .iter()
-            .map(|clip| clip.id())
-            .collect::<Vec<_>>();
-        service
-            .submit(Request::GroupClips {
-                project_generation: 0,
-                revision: before.state.revision,
-                clips: clips.clone(),
-            })
-            .unwrap();
-        let grouped = next_event(&service);
-        assert!(grouped.request_complete);
-        assert!(grouped.error.is_none(), "{:?}", grouped.error);
-        assert!(matches!(grouped.created, Some(Created::Clip(_))));
-        assert_eq!(grouped.state.revision, before.state.revision + 1);
-
-        for (project_generation, revision) in
-            [(1, grouped.state.revision), (0, before.state.revision)]
-        {
+    fn grouping_requests_refuse_stale_generation_or_revision_without_history_changes() {
+        for time_range in [false, true] {
+            let service = Service::new(48_000, 32, 8_000_000).expect("service");
+            next_event(&service);
             service
-                .submit(Request::GroupClips {
-                    project_generation,
-                    revision,
-                    clips: clips.clone(),
-                })
+                .submit(Request::Edit(Command::AddTrack {
+                    name: "midi".into(),
+                }))
                 .unwrap();
-            let refused = next_event(&service);
-            assert!(refused.request_complete);
-            assert!(refused.error.is_some());
-            assert!(refused.created.is_none());
-            assert!(refused.playback.is_none());
-            assert_eq!(refused.state.revision, grouped.state.revision);
-            assert_eq!(refused.state.project, grouped.state.project);
-            assert_eq!(refused.state.can_undo, grouped.state.can_undo);
-            assert_eq!(refused.state.can_redo, grouped.state.can_redo);
+            let track = next_event(&service).state.project.tracks()[0].id();
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: hex_project::BeatTime::ZERO,
+                    length: hex_project::BeatTime::ONE,
+                }))
+                .unwrap();
+            next_event(&service);
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                    length: hex_project::BeatTime::ONE,
+                }))
+                .unwrap();
+            let before = next_event(&service);
+            let clips = before.state.project.tracks()[0]
+                .midi_clips()
+                .iter()
+                .map(|clip| clip.id())
+                .collect::<Vec<_>>();
+            let request = |project_generation, revision| {
+                if time_range {
+                    Request::GroupTimeRange {
+                        project_generation,
+                        revision,
+                        range: hex_project::TimeRange::new(vec![track], 12_000, 60_000).unwrap(),
+                    }
+                } else {
+                    Request::GroupClips {
+                        project_generation,
+                        revision,
+                        clips: clips.clone(),
+                    }
+                }
+            };
+            service.submit(request(0, before.state.revision)).unwrap();
+            let grouped = next_event(&service);
+            assert!(grouped.request_complete);
+            assert!(grouped.error.is_none(), "{:?}", grouped.error);
+            assert!(matches!(grouped.created, Some(Created::Clip(_))));
+            assert_eq!(grouped.state.revision, before.state.revision + 1);
+
+            for (project_generation, revision) in
+                [(1, grouped.state.revision), (0, before.state.revision)]
+            {
+                service
+                    .submit(request(project_generation, revision))
+                    .unwrap();
+                let refused = next_event(&service);
+                assert!(refused.request_complete);
+                assert!(refused.error.is_some());
+                assert!(refused.created.is_none());
+                assert!(refused.playback.is_none());
+                assert_eq!(refused.state.revision, grouped.state.revision);
+                assert_eq!(refused.state.project, grouped.state.project);
+                assert_eq!(refused.state.can_undo, grouped.state.can_undo);
+                assert_eq!(refused.state.can_redo, grouped.state.can_redo);
+            }
         }
     }
 

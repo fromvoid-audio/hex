@@ -2830,3 +2830,83 @@ fn fixed_numeric_presentations_match_their_public_tile_dimensions(cx: &mut TestA
         assert_eq!(bounds.size, size(px(width), px(height)), "{appearance:?}");
     }
 }
+
+#[gpui::test]
+fn busy_controls_keep_available_paint_but_refuse_input(cx: &mut TestAppContext) {
+    use crate::ControlAvailability;
+    for kind in [
+        NumericControlKind::HorizontalSlider,
+        NumericControlKind::VerticalSlider,
+        NumericControlKind::Knob,
+    ] {
+        let (handle, control) = open_numeric_control(cx, kind);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, cx| control.read(cx).focus_handle(cx).focus(window));
+        visual.run_until_parked();
+        let before = visual.rendered_filled_quads("test-control");
+        assert!(!before.is_empty());
+        control.update(cx, |control, cx| {
+            control.set_availability(ControlAvailability::Busy, cx)
+        });
+        let id = gpui::AccessibilityId(control.entity_id().as_u64());
+        assert!(
+            !visual.update(|window, app| window.perform_accessibility_action(
+                id,
+                &gpui::AccessibilityAction::SetNumber(0.5),
+                app
+            )),
+            "previous available paint cannot authorize a busy control"
+        );
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_filled_quads("test-control"), before);
+        let at = visual.debug_bounds("test-control").unwrap().center();
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(at.x, at.y - px(32.0)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("up enter");
+        control.read_with(cx, |control, _| {
+            assert_eq!(control.value(), 0.0);
+            assert!(!control.is_interacting());
+        });
+        control.update(cx, |control, cx| control.set_enabled(false, cx));
+        visual.run_until_parked();
+        assert_ne!(
+            visual.rendered_filled_quads("test-control"),
+            before,
+            "semantic unavailable remains visibly disabled"
+        );
+        control.update(cx, |control, cx| control.set_enabled(true, cx));
+        visual.run_until_parked();
+        assert_eq!(visual.rendered_filled_quads("test-control"), before);
+    }
+    let (handle, toggle, _, _) = open_discrete_controls(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| toggle.read(cx).focus_handle(cx).focus(window));
+    visual.run_until_parked();
+    let before = visual.rendered_filled_quads("test-toggle");
+    toggle.update(cx, |toggle, cx| {
+        toggle.set_availability(ControlAvailability::Busy, cx)
+    });
+    let id = gpui::AccessibilityId(toggle.entity_id().as_u64());
+    assert!(
+        !visual.update(|window, app| window.perform_accessibility_action(
+            id,
+            &gpui::AccessibilityAction::Press,
+            app
+        ))
+    );
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_filled_quads("test-toggle"), before);
+    let at = visual.debug_bounds("test-toggle").unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("space");
+    assert!(!toggle.read_with(cx, |toggle, _| toggle.checked()));
+    toggle.update(cx, |toggle, cx| toggle.set_enabled(true, cx));
+    visual.simulate_keystrokes("space");
+    assert!(toggle.read_with(cx, |toggle, _| toggle.checked()));
+}

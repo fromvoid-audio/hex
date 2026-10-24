@@ -3814,6 +3814,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -3964,6 +3966,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -4091,6 +4095,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -4230,6 +4236,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -7263,6 +7271,8 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -7747,6 +7757,8 @@ mod tests {
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),

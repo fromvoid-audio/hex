@@ -62,6 +62,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
@@ -79,6 +81,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                kind: hex_project::TrackKind::Ordinary,
+                parent_group: None,
                 color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),

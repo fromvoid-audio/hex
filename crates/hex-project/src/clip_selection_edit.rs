@@ -506,6 +506,7 @@ impl Command {
             | Self::SplitTracksAtFrame { .. }
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
+            | Self::GroupTimeRange(_)
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
@@ -560,6 +561,10 @@ impl Command {
             | Self::SetReturnSend { .. }
             | Self::InsertReturnDevice { .. }
             | Self::MoveReturnDevice { .. }
+            | Self::GroupTracks { .. }
+            | Self::UngroupTrack(..)
+            | Self::ReparentTracks { .. }
+            | Self::DuplicateTracks { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
             | Self::MoveTrackBefore { .. }

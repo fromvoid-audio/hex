@@ -936,6 +936,8 @@ fn same_shell(a: &Project, b: &Project) -> bool {
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            kind,
+            parent_group,
             color,
             gain_lane,
             id,
@@ -959,7 +961,9 @@ fn same_shell(a: &Project, b: &Project) -> bool {
             audio_clips,
             midi_clips: _,
         } = content;
-        color == &b.color
+        kind == &b.kind
+            && parent_group == &b.parent_group
+            && color == &b.color
             && id == &b.id
             && name == &b.name
             && gain == &b.gain

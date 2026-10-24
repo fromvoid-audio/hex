@@ -232,3 +232,38 @@ fn track_clipboard_full_midi_copy_renders_both_independent_instruments_across_no
     }
     assert!(signal, "actual prepared instrument output was exercised");
 }
+
+#[test]
+fn group_preparation_refusal_preserves_canonical_ids_revision_and_history() {
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "child".into(),
+        }),
+    );
+    let track = added.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&[track]).unwrap(),
+            name: "group".into(),
+        }))
+        .unwrap();
+    let refused = next_event(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.revision, added.state.revision);
+    assert_eq!(
+        refused.state.project.snapshot(),
+        added.state.project.snapshot()
+    );
+    assert_eq!(refused.state.can_undo, added.state.can_undo);
+    assert_eq!(refused.state.can_redo, added.state.can_redo);
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.tracks().is_empty());
+    let redone = run(&service, Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        added.state.project.snapshot()
+    );
+}

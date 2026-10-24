@@ -308,7 +308,7 @@ pub struct NumericControl {
     pub(crate) spec: NumericSpec,
     pub(crate) value: f64,
     pub(crate) draft: f64,
-    enabled: bool,
+    availability: crate::ControlAvailability,
     commit_unchanged_text: bool,
     pub(crate) editing: bool,
     pub(crate) invalid_text: bool,
@@ -408,7 +408,7 @@ impl NumericControl {
             spec,
             value,
             draft: value,
-            enabled: true,
+            availability: crate::ControlAvailability::Available,
             commit_unchanged_text: false,
             editing: false,
             text_modified: false,
@@ -517,7 +517,7 @@ impl NumericControl {
     /// Owners choose participation without changing pointer or edit semantics.
     pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.tab_navigation = enabled;
-        let tab_stop = self.tab_navigation && self.enabled;
+        let tab_stop = self.tab_navigation && self.availability.interactive();
         if self.focus.tab_stop != tab_stop {
             self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
             cx.notify();
@@ -532,11 +532,22 @@ impl NumericControl {
     }
 
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.enabled == enabled {
+        self.set_availability(crate::ControlAvailability::for_edit(enabled, false), cx);
+    }
+
+    /// Update input admission without making transient worker activity dim the
+    /// control. Busy cancels unsubmitted drafts; it does not commit owner state.
+    pub fn set_availability(
+        &mut self,
+        availability: crate::ControlAvailability,
+        cx: &mut Context<Self>,
+    ) {
+        if self.availability == availability {
             return;
         }
-        self.enabled = enabled;
-        let tab_stop = self.tab_navigation && self.enabled;
+        let enabled = availability.interactive();
+        self.availability = availability;
+        let tab_stop = self.tab_navigation && enabled;
         if self.focus.tab_stop != tab_stop {
             self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
         }
@@ -573,7 +584,7 @@ impl NumericControl {
     }
 
     fn begin_press(&mut self, target: PressTarget, event: &MouseDownEvent, cx: &mut Context<Self>) {
-        if !self.enabled || event.button != MouseButton::Left {
+        if !self.availability.interactive() || event.button != MouseButton::Left {
             return;
         }
         if (matches!(self.kind, NumericControlKind::Knob)
@@ -637,7 +648,7 @@ impl NumericControl {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let style = self.style;
-        let enabled = self.enabled;
+        let enabled = self.availability.painted_enabled();
         let id = self.id.clone();
         let marker_id = self.id.clone();
         div()
@@ -676,7 +687,7 @@ impl NumericControl {
                             MouseButton::Left,
                             cx.listener(|control, _, window, cx| {
                                 cx.stop_propagation();
-                                if control.enabled {
+                                if control.availability.interactive() {
                                     control.focus.focus(window);
                                     control.reset(cx);
                                 }
@@ -706,7 +717,7 @@ impl NumericControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.enabled {
+        if !self.availability.interactive() {
             return;
         }
         let focused = self.focus.is_focused(window);
@@ -942,7 +953,7 @@ impl NumericControl {
     }
 
     fn emit_step(&mut self, direction: f64, fine: bool, cx: &mut Context<Self>) {
-        if !self.enabled {
+        if !self.availability.interactive() {
             return;
         }
         if self.editing {
@@ -970,7 +981,7 @@ impl NumericControl {
     }
 
     fn emit_accessible_value(&mut self, value: f64, cx: &mut Context<Self>) -> bool {
-        if !self.enabled || self.editing || self.spec.validate(value).is_err() {
+        if !self.availability.interactive() || self.editing || self.spec.validate(value).is_err() {
             return false;
         }
         if value != self.draft {
@@ -1001,7 +1012,7 @@ impl NumericControl {
         cx: &mut Context<Self>,
     ) -> bool {
         use gpui::AccessibilityAction;
-        if !self.enabled {
+        if !self.availability.interactive() {
             return false;
         }
         if matches!(action, AccessibilityAction::Focus) {
@@ -1359,7 +1370,7 @@ impl NumericControl {
                 field: ValueFieldPresentation {
                     invalid: self.invalid_text,
                     editing: self.editing,
-                    enabled: self.enabled,
+                    enabled: self.availability.painted_enabled(),
                     style: self.style,
                     width: px(60.0),
                     height: px(18.0),
@@ -1484,7 +1495,7 @@ impl gpui::Render for NumericControl {
             (false, false) => "hex_numeric_control",
         };
         let entity = cx.entity();
-        let enabled = self.enabled;
+        let enabled = self.availability.painted_enabled();
         let style = self.style;
         let value = self.spec.to_normalized(self.draft).unwrap_or(0.0) as f32;
         let dial_value = DialValue::new(value, self.spec.scale(), self.dial_layout);
@@ -1889,7 +1900,7 @@ impl gpui::Render for NumericControl {
                     max: self.spec.bounds().1,
                     text: self.spec.format(self.value).unwrap_or_default().into(),
                 }),
-            enabled: self.enabled
+            enabled: self.availability.interactive()
                 && !self.is_interacting()
                 && !self.accessibility_pending
                 && self
@@ -1899,7 +1910,8 @@ impl gpui::Render for NumericControl {
             focused: self.focus.is_focused(window),
             status: if self.is_interacting() {
                 Some("local draft or gesture active".into())
-            } else if self.accessibility_pending
+            } else if self.availability == crate::ControlAvailability::Busy
+                || self.accessibility_pending
                 || self
                     .accessibility_binding
                     .as_ref()

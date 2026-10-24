@@ -226,6 +226,13 @@ impl Project {
             .chain(self.returns.iter().map(|b| RoutingOwner::Return(b.id())))
             .collect();
         let mut audio = BTreeSet::new();
+        // Default group outputs participate in the same graph as authored
+        // additive feeds/sends. A new hierarchy cannot hide a feedback cycle.
+        for track in &self.tracks {
+            if let Some(parent) = track.parent_group() {
+                audio.insert((RoutingOwner::Track(track.id()), RoutingOwner::Track(parent)));
+            }
+        }
         for track in &self.tracks {
             for send in track.sends() {
                 audio.insert((
@@ -240,6 +247,7 @@ impl Project {
                 RoutingOwner::Return(feed.destination()),
             ));
         }
+        let mut authored_audio = BTreeSet::new();
         for feed in &self.audio_feeds {
             self.validate_audio_owner(feed.source)?;
             self.track(feed.destination)
@@ -249,16 +257,24 @@ impl Project {
                     "stored audio feed gain must be positive and within 0..2",
                 ));
             }
-            if !audio.insert((feed.source, RoutingOwner::Track(feed.destination))) {
+            let edge = (feed.source, RoutingOwner::Track(feed.destination));
+            if !authored_audio.insert(edge) {
                 return Err(Invalid("duplicate audio feed"));
             }
+            // An authored additive feed may parallel the exclusive default
+            // output. Preserve both signals; topology needs their union once.
+            audio.insert(edge);
         }
         dag(&nodes, &audio)?;
         let mut destinations = BTreeSet::new();
         let mut midi = BTreeSet::new();
         for route in &self.midi_routes {
-            self.track(route.source)
+            let source = self
+                .track(route.source)
                 .ok_or(Invalid("track no longer exists"))?;
+            if source.is_group() {
+                return Err(Invalid("group tracks do not carry midi"));
+            }
             if self
                 .track(route.destination)
                 .ok_or(Invalid("track no longer exists"))?
