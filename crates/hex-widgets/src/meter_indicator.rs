@@ -1,7 +1,7 @@
 //! Read-only calibrated mono/stereo meter presentation. The caller supplies dBFS
 //! levels, held peaks, overload state, text, palette, typography and update cadence.
 //! No detector, peak history, audio state, scheduling or canonical editing lives here.
-use crate::{ControlStyle, LevelMeterStyle, level_meter};
+use crate::{ControlStyle, LevelMeterStyle, MeterColors, MeterLevel, level_meter};
 use gpui::{Div, SharedString, div, prelude::*, px, relative, rgb};
 
 /// Fixed top-to-bottom positions, in dBFS. Scale text is supplied separately so
@@ -31,6 +31,7 @@ pub struct MeterIndicatorStyle {
     /// Font family is inherited from the owner, without a fallback override.
     pub controls: ControlStyle,
     pub signal: u32,
+    pub near_peak: u32,
     pub peak: u32,
     pub overload: u32,
 }
@@ -43,6 +44,8 @@ fn fraction(dbfs: f32) -> Option<f32> {
 /// fills, held-peak lines and explicit overload caps. Finite values outside the
 /// range clamp to its endpoints. Non-finite current values render empty; a
 /// non-finite held peak omits that marker. Overload is never inferred or latched.
+/// Current fills use the common -6 dBFS caution threshold and explicit overload
+/// evidence; held markers use caution coloring without inferring overload.
 ///
 /// `tick_labels` correspond exactly to `METER_INDICATOR_TICKS_DBFS`; the owner
 /// normalizes app-owned text. Width is intrinsic to the channel count and font
@@ -55,6 +58,11 @@ pub fn meter_indicator(
     style: MeterIndicatorStyle,
 ) -> Result<Div, &'static str> {
     let controls = style.controls.validate()?;
+    let colors = MeterColors {
+        signal: style.signal,
+        near_peak: style.near_peak,
+        clipping: style.overload,
+    };
     let channels = match &readout {
         MeterIndicatorReadout::Mono(channel) => std::slice::from_ref(channel),
         MeterIndicatorReadout::Stereo(channels) => channels.as_slice(),
@@ -75,7 +83,7 @@ pub fn meter_indicator(
                 channel.clipping,
                 LevelMeterStyle {
                     background: controls.rail,
-                    fill: style.signal,
+                    fill: colors.color(MeterLevel::from_dbfs(channel.level_dbfs, channel.clipping)),
                     above: style.overload,
                 },
             )
@@ -96,7 +104,15 @@ pub fn meter_indicator(
                         .left_0()
                         .w_full()
                         .h(px(1.0))
-                        .bg(rgb(style.peak)),
+                        .bg(rgb(
+                            match MeterLevel::from_dbfs(
+                                channel.held_peak_dbfs.unwrap_or(f32::NEG_INFINITY),
+                                false,
+                            ) {
+                                MeterLevel::Normal => style.peak,
+                                level => colors.color(level),
+                            },
+                        )),
                 )
             }),
         );

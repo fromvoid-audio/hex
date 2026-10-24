@@ -72,11 +72,25 @@ fn stretch_admission_matches_independent_pitch_law_and_real_render_all_modes() {
                     "{mode:?} {pitch} {output}"
                 );
                 assert_eq!(
+                    hex_warp::validate_stretch_ratio(output as f64 / 32.0, mode, pitch),
+                    map.validate_stretch(mode, pitch),
+                    "continuous and integer admission must share one capability law"
+                );
+                assert_eq!(
                     actual(&map, output, mode, pitch).is_ok(),
                     expected,
                     "actual {mode:?} {pitch} {output}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn continuous_stretch_rejects_nonpositive_and_nonfinite_intervals() {
+    for mode in [Mode::Resample, Mode::RePitch, Mode::Tones { grain_ms: 8 }] {
+        for ratio in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(hex_warp::validate_stretch_ratio(ratio, mode, 0).is_err());
         }
     }
 }

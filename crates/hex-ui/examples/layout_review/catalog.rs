@@ -16,6 +16,7 @@ pub(super) enum Demo {
     Toggle(ToggleAppearance),
     Selector(SelectorAppearance),
     Bars,
+    Rectangle(bool),
     Graph,
     Color,
     Curve,
@@ -56,6 +57,7 @@ impl Item {
             ),
             Demo::Toggle(_) => ("toggle", "discrete", "toggle"),
             Demo::Selector(_) => ("selector", "discrete", "selector"),
+            Demo::Rectangle(_) => ("rectangle", "graphics", "rectangle"),
             Demo::Bars => ("bar editor", "graphics", "bareditor"),
             Demo::Graph => ("response graph", "graphics", "responsegraph"),
             Demo::Color => ("color picker", "graphics", "colorpicker"),
@@ -256,6 +258,8 @@ pub(super) fn inventory() -> Vec<Item> {
     }
     for (name, demo) in [
         ("bar editor", Demo::Bars),
+        ("clip rectangle", Demo::Rectangle(false)),
+        ("section rectangle", Demo::Rectangle(true)),
         ("response graph", Demo::Graph),
         ("color picker", Demo::Color),
         ("curve plot", Demo::Curve),

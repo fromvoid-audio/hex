@@ -223,7 +223,9 @@ impl EditorView {
                             != hex_session::DocumentAudioMode::Resident
                         {
                             Some("live track volume is unavailable in this project mode")
-                        } else if view.gain_recorder.blocks_edits() {
+                        } else if view.gain_recorder.blocks_edits()
+                            || view.midi_recorder.blocks_edits()
+                        {
                             Some("finish gain recording before changing track volume")
                         } else if view
                             .state
@@ -276,6 +278,7 @@ impl EditorView {
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !automated(track)
             && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.bindings[&id];
@@ -367,7 +370,8 @@ impl EditorView {
                     }
                     if event.phase == NumericEventPhase::Begin
                         && (view.document_audio_mode != hex_session::DocumentAudioMode::Resident
-                            || view.gain_recorder.blocks_edits()
+                            || (view.gain_recorder.blocks_edits()
+                                || view.midi_recorder.blocks_edits())
                             || view.edit_pending())
                     {
                         view.error = Some(
@@ -409,6 +413,7 @@ impl EditorView {
             });
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.mixer[&key];

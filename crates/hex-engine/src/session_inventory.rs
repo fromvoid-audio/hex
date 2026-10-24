@@ -315,6 +315,8 @@ pub struct PreparedSessionInventory {
     shared_contexts:
         crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
 }
+mod readmission;
+pub(crate) use readmission::{EffectiveSessionMidi, PreparedSessionMidiAdmission};
 
 impl std::fmt::Debug for PreparedSessionInventory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

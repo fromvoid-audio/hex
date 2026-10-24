@@ -8,7 +8,7 @@ errors = []
 # Text children must be normalized centrally; other children are view elements.
 widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
-    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.clip_detail_view(',
+    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.controller_input_settings(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
@@ -93,7 +93,7 @@ widgets = (
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
-    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'text_segment_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
@@ -102,7 +102,7 @@ widgets = (
     'lights)', 'crate::build_info::label()', 'crate::build_info::editor_label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     # Device preset header actions reuse themed compact action buttons.
-    'super::device_preset::actions(', 'super::device_panel::action_button(',
+    'super::device_preset::actions(', 'super::device_panel::action_button(', 'super::device_panel::segment_button(',
     'super::super::device_preset::actions(',
     # Shared A/B actions compose themed compact buttons, never raw text.
     'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
