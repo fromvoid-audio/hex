@@ -665,7 +665,8 @@ fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
 /// Frame endpoints retain quantized musical intervals, not authored beat IDs.
 /// Accept exactly one binary Q32.32 duration whose canonical forward rounding can
 /// place its two beat endpoints at these stored frames (no pixel/epsilon test).
-fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
+/// Arrangement time-selection markers share this same read-only predicate.
+pub(super) fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
     let map = project.tempo_map();
     let interval = |frame: u64| -> Option<(u128, u128)> {
         let first = map.beat_lower_bound_for_frame(frame).ok()?;
