@@ -2,6 +2,79 @@
 //! Source projection and tempo conversion never run here.
 pub(super) const ROW_NOTE_SHAPE_LIMIT: usize = 128;
 
+// Bounds pair checks stay bounded. This is a submission batch size, never a
+// note budget: full or intersecting batches flush without discarding a note.
+const PAINT_BATCH_SIZE: usize = 32;
+
+fn paint_batches(
+    rectangles: impl IntoIterator<Item = gpui::Bounds<gpui::Pixels>>,
+    mut submit: impl FnMut(&[gpui::Bounds<gpui::Pixels>], gpui::Bounds<gpui::Pixels>),
+) {
+    let mut batch = [gpui::Bounds::default(); PAINT_BATCH_SIZE];
+    let mut length = 0;
+    let mut union = gpui::Bounds::default();
+    for rectangle in rectangles {
+        if length > 0
+            && (length == PAINT_BATCH_SIZE
+                || batch[..length]
+                    .iter()
+                    .any(|previous| previous.intersects(&rectangle)))
+        {
+            submit(&batch[..length], union);
+            length = 0;
+        }
+        union = if length == 0 {
+            rectangle
+        } else {
+            union.union(&rectangle)
+        };
+        batch[length] = rectangle;
+        length += 1;
+    }
+    if length > 0 {
+        submit(&batch[..length], union);
+    }
+}
+
+/// Submit the same snapped quads in contiguous disjoint groups. A layer's union
+/// contains every actual rectangle, including edge overhang before clipping.
+/// Only these same-kind quads share an order; clip chrome, labels, fades and
+/// overlays retain their separate ordering and interactive elements.
+pub(super) fn paint_note_shapes(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    shapes: &[(f32, f32, u8)],
+    window: &mut gpui::Window,
+) {
+    let scale = window.scale_factor();
+    paint_batches(
+        shapes
+            .iter()
+            .filter_map(|&(x, width, pitch)| paint_bounds(bounds, x, width, pitch, scale)),
+        |rectangles, union| {
+            let paint = |window: &mut gpui::Window| {
+                for rectangle in rectangles {
+                    window.paint_quad(gpui::fill(*rectangle, gpui::rgb(0x000000)));
+                }
+            };
+            let finite_layer = [
+                union.left(),
+                union.top(),
+                union.right(),
+                union.bottom(),
+                union.size.width,
+                union.size.height,
+            ]
+            .into_iter()
+            .all(|value| (f32::from(value) * scale).is_finite());
+            if rectangles.len() == 1 || !finite_layer {
+                paint(window);
+            } else {
+                window.paint_layer(union, paint);
+            }
+        },
+    );
+}
+
 /// Snap display samples to physical pixels just as the former layout leaves
 /// did. The enclosing body still clips notes below the clip name and at edges.
 pub(super) fn paint_bounds(
@@ -109,6 +182,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn batches_preserve_all_rectangles_and_admit_only_bounded_disjoint_unions() {
+        use gpui::{Bounds, point, px, size};
+        // More than one batch, then exact overlaps and edge-touching rectangles.
+        // Capacity limits comparisons, never the number submitted.
+        let mut rectangles: Vec<_> = (0..97)
+            .map(|index| {
+                Bounds::new(
+                    point(px(index as f32 * 3.0), px(0.0)),
+                    size(px(2.0), px(2.0)),
+                )
+            })
+            .collect();
+        rectangles.extend([
+            rectangles[96],
+            rectangles[96],
+            Bounds::new(point(px(290.0), px(0.0)), size(px(2.0), px(2.0))),
+        ]);
+        let mut submitted = Vec::new();
+        let mut sizes = Vec::new();
+        paint_batches(rectangles.iter().copied(), |batch, union| {
+            assert!(!batch.is_empty() && batch.len() <= PAINT_BATCH_SIZE);
+            for (index, rectangle) in batch.iter().enumerate() {
+                assert_eq!(union.intersect(rectangle), *rectangle);
+                assert!(
+                    batch[..index]
+                        .iter()
+                        .all(|other| !other.intersects(rectangle))
+                );
+            }
+            sizes.push(batch.len());
+            submitted.extend_from_slice(batch);
+        });
+        assert_eq!(submitted, rectangles);
+        assert_eq!(&sizes[..3], &[32, 32, 32]);
+        assert!(
+            sizes[3..].contains(&1),
+            "overlap must flush before sharing a layer"
+        );
+        paint_batches([], |_, _| panic!("empty input must not create a layer"));
+    }
+
+    #[test]
+    fn batches_preserve_snapping_overhang_and_rejected_geometry_at_both_scales() {
+        for scale in [1.0, 2.0] {
+            for width in [4.0, 127.5] {
+                let bounds = gpui::Bounds::new(
+                    gpui::point(gpui::px(-3.25), gpui::px(1.75)),
+                    gpui::size(gpui::px(width), gpui::px(7.0)),
+                );
+                let shapes = [
+                    (0.0, 0.2, 0),
+                    (0.0, 0.2, 127),
+                    (0.95, 0.05, 60),
+                    (0.95, 0.05, 60),
+                    (f32::NAN, 0.2, 60),
+                ];
+                let legacy: Vec<_> = shapes
+                    .iter()
+                    .filter_map(|&(x, width, pitch)| paint_bounds(bounds, x, width, pitch, scale))
+                    .collect();
+                let mut actual = Vec::new();
+                paint_batches(legacy.iter().copied(), |batch, _| {
+                    actual.extend_from_slice(batch)
+                });
+                assert_eq!(actual, legacy);
+            }
+        }
+    }
+
+    #[test]
     fn malformed_display_geometry_never_reaches_the_scene() {
         let bounds = gpui::Bounds::new(
             gpui::point(gpui::px(1.0), gpui::px(2.0)),
@@ -147,3 +290,7 @@ mod tests {
         assert_eq!(note_shape(0, 10, 60, 10, 10), None);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_thumbnail_ui_tests.rs"]
+mod ui_tests;

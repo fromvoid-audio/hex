@@ -129,17 +129,7 @@ fn midi_note_body(
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _| {
-                        for &(x, width, pitch) in &shapes {
-                            if let Some(note) = super::midi_thumbnail::paint_bounds(
-                                bounds,
-                                x,
-                                width,
-                                pitch,
-                                window.scale_factor(),
-                            ) {
-                                window.paint_quad(gpui::fill(note, rgb(0x000000)));
-                            }
-                        }
+                        super::midi_thumbnail::paint_note_shapes(bounds, &shapes, window);
                     },
                 )
                 .absolute()
