@@ -1,6 +1,6 @@
 //! Stateless device chrome. Owners supply meaning, state, input and colors.
 use crate::{ActionStyle, ControlStyle};
-use gpui::{Div, SharedString, div, prelude::*, px, rgb};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px, rgb};
 
 pub const DEVICE_HEADER_ACTION_SIZE: f32 = 12.0;
 
@@ -10,6 +10,37 @@ pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
     crate::action(label, style)
         .size(px(DEVICE_HEADER_ACTION_SIZE))
         .text_size(px(8.0))
+}
+
+/// Boolean state presentation, distinct from a momentary action surface.
+/// The owner supplies acknowledged state, semantic colors and all input/focus/
+/// accessibility handlers. Only an eight-pixel circle paints; the transparent
+/// twelve-pixel target retains compact header geometry. Hover/press never imply
+/// a state change, and this view owns no command, history or local toggle state.
+pub fn device_state_indicator(
+    id: SharedString,
+    checked: bool,
+    on_color: u32,
+    off_color: u32,
+) -> Stateful<Div> {
+    let selector = id.to_string();
+    let indicator = format!("{id}-indicator");
+    div()
+        .id(id)
+        .debug_selector(move || selector.clone())
+        .size(px(DEVICE_HEADER_ACTION_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .child(
+            div()
+                .debug_selector(move || indicator.clone())
+                .size(px(8.0))
+                .rounded_full()
+                .bg(rgb(if checked { on_color } else { off_color })),
+        )
 }
 
 /// Compact identity cue with injected semantic color and selected/focus border.
