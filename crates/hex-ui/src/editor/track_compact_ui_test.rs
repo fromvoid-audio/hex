@@ -171,11 +171,9 @@ fn assert_no_bodies(f: &mut Fixture) {
             .debug_bounds(selector("midi-preview-count", f.clips[1].value()))
             .is_none()
     );
-    for prefix in ["clip-note", "clip-drag-note"] {
-        let note = Box::leak(format!("{prefix}-{}-0", f.clips[1].value()).into_boxed_str());
+    for dragging in [false, true] {
         assert!(
-            f.visual.debug_bounds(note).is_none(),
-            "compact MIDI has no {prefix}"
+            super::midi_thumbnail::rendered_notes(&mut f.visual, f.clips[1], dragging).is_empty()
         );
     }
     assert!(f.visual.debug_bounds("midi-trim-preview-note-60").is_none());
@@ -242,13 +240,7 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
 ) {
     let mut f = fixture(cx);
     assert!(f.visual.debug_bounds("clip-waveform-body").is_some());
-    assert!(
-        f.visual
-            .debug_bounds(Box::leak(
-                format!("clip-note-{}-0", f.clips[1].value()).into_boxed_str()
-            ))
-            .is_some()
-    );
+    assert!(!super::midi_thumbnail::rendered_notes(&mut f.visual, f.clips[1], false).is_empty());
     assert!(
         f.visual
             .debug_bounds(selector("midi-preview-count", f.clips[1].value()))
@@ -311,13 +303,7 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     });
     resize_all(&mut f, 50.0);
     assert!(f.visual.debug_bounds("clip-waveform-body").is_some());
-    assert!(
-        f.visual
-            .debug_bounds(Box::leak(
-                format!("clip-note-{}-0", f.clips[1].value()).into_boxed_str()
-            ))
-            .is_some()
-    );
+    assert!(!super::midi_thumbnail::rendered_notes(&mut f.visual, f.clips[1], false).is_empty());
     f.editor.read_with(&f.visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
     });

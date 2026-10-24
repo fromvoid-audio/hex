@@ -285,6 +285,10 @@ pub(super) fn waveform_canvas(
     let mapping = mapping.clone();
     waveform_plot(
         move |paint| {
+            #[cfg(all(test, feature = "ui-test-support"))]
+            let _navigation_timer = super::navigation_metrics::Timer::start(
+                super::navigation_metrics::Stage::WaveformProvider,
+            );
             let bounds = paint.bounds;
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
