@@ -1,5 +1,6 @@
 //! Private final Arrangement clip owners; not a Track/Project or publication.
 //! Every Box and paired destination exists before any source alias moves.
+pub(super) mod chains;
 #[cfg(test)]
 mod preview_tests;
 pub(super) mod returns;
@@ -174,16 +175,7 @@ impl ArrangementClips {
             },
         })
     }
-    pub(super) fn reserve(
-        &mut self,
-        slots: &[SourceSlot],
-        inputs: &OwnedAudioInputs,
-        project: &hex_project::Project,
-        stages: Stages,
-    ) -> Result<(), AudioStorageError> {
-        self.reserve_with_sampler(slots, inputs, project, stages, None)
-    }
-    pub(super) fn reserve_with_sampler(
+    pub(super) fn reserve_with_effects(
         &mut self,
         slots: &[SourceSlot],
         inputs: &OwnedAudioInputs,
@@ -193,6 +185,7 @@ impl ArrangementClips {
             &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
             &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
         )>,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         let Stages {
             assemble_tracks: tracks,
@@ -290,28 +283,25 @@ impl ArrangementClips {
             }
         }
         if tracks {
-            if samplers.is_some() {
-                self.tracks
-                    .reserve_with_sampler(project, &self.rows, samplers)?;
-            } else {
-                self.tracks.reserve(project, &self.rows)?;
-            }
+            self.tracks
+                .reserve_with_effects(project, &self.rows, samplers, effects)?;
         }
         if returns {
-            self.returns.reserve(project)?;
+            self.returns.reserve_with_effects(project, effects)?;
         }
         if preview {
             if samplers.is_some() {
-                self.preview.reserve_with_current_sampler(project, true)?;
+                self.preview
+                    .reserve_with_current_sampler(project, true, effects.is_some())?;
             } else {
                 self.preview.reserve(project)?;
             }
         }
         if root {
             if samplers.is_some() {
-                self.root.reserve_with_sampler(project, true)?;
+                self.root.reserve_with_effects(project, true, effects)?;
             } else {
-                self.root.reserve(project)?;
+                self.root.reserve_with_effects(project, false, effects)?;
             }
         }
         #[cfg(test)]
@@ -337,11 +327,18 @@ impl ArrangementClips {
         self.tracks
             .compile_current_sampler_tracks(project, metadata, contexts)
     }
-    pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
-        root::ArrangementRootAssembly::main_carrier_bytes()
+    pub(super) fn main_quote(
+        &self,
+        project: &hex_project::Project,
+    ) -> Result<(usize, usize), AudioStorageError> {
+        self.root.main_quote(project)
     }
-    pub(super) fn reserve_main_carrier(&mut self) -> Result<(), AudioStorageError> {
-        self.root.reserve_main_carrier()
+    pub(super) fn reserve_main_carrier(
+        &mut self,
+        project: &hex_project::Project,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+    ) -> Result<(), AudioStorageError> {
+        self.root.reserve_main_carrier(project, effects)
     }
     pub(super) fn construct(
         &mut self,
@@ -500,6 +497,12 @@ impl ArrangementClips {
             self.preview.restore_revision(preview);
         }
     }
+    pub(super) fn prepare_signal_graph(
+        &mut self,
+        canonical: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        self.root.prepare_signal_graph(canonical)
+    }
     pub(super) fn construct_root(
         &mut self,
         shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
@@ -532,6 +535,8 @@ impl ArrangementClips {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
+        self.root.dispose_signal_on_control()?;
+        self.root.dispose_main_on_control()?;
         if self.preview.has_next() {
             self.preview.dispose_next()?;
             return Ok(());

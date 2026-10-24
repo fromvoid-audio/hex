@@ -90,6 +90,24 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_signal_observers(output, observer, project)
     }
+    /// Stage native effects through the original closed runtime and sampler
+    /// sources. Success is not output acceptance; the audio owner alone accepts
+    /// the complete converted physical callback. No finite renderer fallback.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let Some(runtime) = self.current_runtime_mut() else {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(crate::Invalid("candidate runtime is not current"));
+        };
+        runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
+    }
     pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
         self.current_playback()
             .is_some_and(|p| p.project_output_supported(tracks))

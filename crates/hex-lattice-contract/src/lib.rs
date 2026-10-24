@@ -1,5 +1,6 @@
 //! # Purpose
 //! Own neutral bounded native-device metadata, identifiers and authored state envelopes.
+//! Also owns the shared immutable foreign-processing binding; it grants no native custody.
 //!
 //! # Dependencies
 //! Uses only the standard library; no DSP or other workspace dependency.
@@ -8,6 +9,8 @@
 //! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
 //! Opaque payloads and asset references require provider and host validation before processing.
 mod device_assets;
+mod foreign_binding;
+pub use foreign_binding::ForeignProcessorBinding;
 #[cfg(test)]
 mod device_assets_tests;
 pub use device_assets::{
@@ -498,6 +501,8 @@ pub enum DeviceContractError {
     RuntimeAllocation,
     UnsupportedProcessingClass,
     AssetResourcesUnavailable,
+    ForeignProcessingUnavailable,
+    ForeignProcessingFailed,
 }
 impl fmt::Display for DeviceContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -520,6 +525,9 @@ impl fmt::Display for DeviceContractError {
                 Self::RuntimeAllocation => "native processor runtime allocation failed",
                 Self::UnsupportedProcessingClass =>
                     "native device processing class is not admitted",
+                Self::ForeignProcessingUnavailable =>
+                    "foreign processing resources are unavailable for this graph",
+                Self::ForeignProcessingFailed => "foreign processor exchange failed",
                 Self::AssetResourcesUnavailable => "native device asset resources are not prepared",
             }
         )

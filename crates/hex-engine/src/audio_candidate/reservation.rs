@@ -9,7 +9,7 @@ pub struct AudioCandidateReservationQuote {
     /// Complete fresh transformed Arrangement PCM, separate from input assets.
     /// An upper bound until the constructor ledger observes actual Vec capacity.
     pub prepared_pcm_frames: u64,
-    /// Ephemeral finite audio/MIDI compiler overlap; excluded from retained DATA.
+    /// Ephemeral closed audio/MIDI/effect compiler overlap; excluded from retained DATA.
     pub compiler_workspace_bytes: usize,
     pub data_rows: usize,
     pub handle_rows: usize,
@@ -24,6 +24,26 @@ impl AudioCandidateReservationQuote {
         sources: usize,
     ) -> Result<Self, AudioStorageError> {
         crate::audio_preparation::validate_constructor_project(project)?;
+        Self::for_project_counts(project, sources, false)
+    }
+    /// Caller sizing for the explicitly selected closed foreign-effect class.
+    /// A registry or this quote never admits a native source or callback.
+    pub fn for_project_with_effect_registry(
+        project: &hex_project::Project,
+        sources: usize,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, AudioStorageError> {
+        crate::audio_preparation::validate_constructor_project_with_effects(
+            project,
+            Some(effects),
+        )?;
+        Self::for_project_counts(project, sources, true)
+    }
+    fn for_project_counts(
+        project: &hex_project::Project,
+        sources: usize,
+        effect_payloads: bool,
+    ) -> Result<Self, AudioStorageError> {
         if sources > hex_project::MAX_ASSETS {
             return Err(AudioStorageError::Capacity);
         }
@@ -51,6 +71,10 @@ impl AudioCandidateReservationQuote {
             }
             counts.add(Kind::Device, track.devices().len())?;
             counts.add(Kind::Point, track.gain_envelope().len())?;
+        }
+        counts.add(Kind::Device, project.main_devices().len())?;
+        for bus in project.return_tracks() {
+            counts.add(Kind::Device, bus.devices().len())?;
         }
         for cell in project.session_cells() {
             if let hex_project::SessionCellContent::Midi(clip) = cell.content() {
@@ -89,6 +113,38 @@ impl AudioCandidateReservationQuote {
             .compiler_workspace_bytes
             .checked_add(workspace)
             .ok_or(AudioStorageError::Overflow)?;
+        if effect_payloads {
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+                .ok_or(AudioStorageError::Overflow)?;
+            let mut payloads = 0usize;
+            let mut largest = 0;
+            for device in project
+                .tracks()
+                .iter()
+                .flat_map(|t| t.devices())
+                .chain(project.return_tracks().iter().flat_map(|r| r.devices()))
+                .chain(project.main_devices())
+            {
+                payloads = payloads
+                    .checked_add(device.state().payload().len())
+                    .ok_or(AudioStorageError::Overflow)?;
+                largest = largest.max(device.state().payload().len());
+            }
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(payloads)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(largest)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
         // Cardinalities cannot describe spare capacity retained by canonical
         // sources. Quote the actual two owning identity tokens per Console clip.
         let canonical_bytes =

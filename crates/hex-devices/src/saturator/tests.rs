@@ -298,7 +298,7 @@ fn linear_utility_and_saturator_observe_the_declared_device_order() {
         let mut chain = NativeRuntimeChain::new(instances).expect("runtime chain");
         let mut signal = [[1.0, -1.0]];
         chain.begin_block();
-        chain.process_block(&mut signal);
+        chain.process_block(&mut signal).unwrap();
         chain.commit_block();
         signal[0]
     };

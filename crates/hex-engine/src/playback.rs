@@ -701,6 +701,26 @@ impl Playback {
         self.mix_tuning_audition(output);
         Ok(())
     }
+    pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("current sampler runtime missing"))?
+            .render_current_sampler_with_foreign(output, pages, observer, project, sources, foreign)
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
+    }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
         metadata: usize,
@@ -1426,6 +1446,22 @@ impl Playback {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_swap_compensation_origins(
+        &mut self,
+        previous: &mut Self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(usize, Option<usize>), crate::SessionPlaybackError> {
+        let next = self
+            .session_runtime
+            .as_mut()
+            .ok_or(crate::SessionPlaybackError::DeviceRuntime)?;
+        let old = previous
+            .session_runtime
+            .as_mut()
+            .ok_or(crate::SessionPlaybackError::DeviceRuntime)?;
+        next.test_swap_compensation_origins(old, groups)
+    }
     pub(crate) fn inherit_candidate_groups(
         &mut self,
         previous: &mut Self,
@@ -1716,6 +1752,41 @@ impl Playback {
 
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
+    }
+
+    /// The normal canonical renderer with the audio owner's already retained
+    /// foreign endpoints. No finite fallback may omit a required native effect.
+    /// Staged input is still uncommitted: only the audio owner can accept it
+    /// after final host conversion. Monitor audio remains after the project tap.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        let result = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid(
+                "foreign effects require a prepared session runtime",
+            ))
+            .and_then(|runtime| {
+                runtime
+                    .render_with_foreign_processors(output, pages, observer, project, foreign)
+                    .map_err(|error| Invalid(error.diagnostic_message()))
+            });
+        if let Err(error) = result {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(error);
+        }
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
     }
 
     /// Render while exposing bounded borrowed output from each processed

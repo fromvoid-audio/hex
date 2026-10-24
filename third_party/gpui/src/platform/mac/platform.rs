@@ -159,6 +159,59 @@ fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
     }
 }
 
+/// Original high-contrast circular-arrow loop cursor artwork; cached by `MacPlatformState`.
+fn make_loop_cursor() -> Option<StrongPtr> {
+    unsafe {
+        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
+        if image == nil {
+            return None;
+        }
+        let image = StrongPtr::new(image);
+        let _: () = msg_send![*image, lockFocus];
+        let path: id = msg_send![class!(NSBezierPath), bezierPath];
+        if path == nil {
+            let _: () = msg_send![*image, unlockFocus];
+            return None;
+        }
+
+        // An open circular arc with a tangent arrowhead. Original vector
+        // artwork, centered hotspot; black stroke with white outline remains
+        // legible over both light and dark clips.
+        for index in 0..=24 {
+            let angle = (45.0 + f64::from(index) * 270.0 / 24.0).to_radians();
+            let point = NSPoint::new(12.0 + angle.cos() * 7.0, 12.0 + angle.sin() * 7.0);
+            if index == 0 {
+                let _: () = msg_send![path, moveToPoint: point];
+            } else {
+                let _: () = msg_send![path, lineToPoint: point];
+            }
+        }
+        let tip = NSPoint::new(16.95, 7.05);
+        let _: () = msg_send![path, moveToPoint: NSPoint::new(12.0, 6.5)];
+        let _: () = msg_send![path, lineToPoint: tip];
+        let _: () = msg_send![path, lineToPoint: NSPoint::new(17.5, 2.1)];
+
+        let white: id = msg_send![class!(NSColor), whiteColor];
+        let _: () = msg_send![white, setStroke];
+        let _: () = msg_send![path, setLineWidth: 4.0_f64];
+        let _: () = msg_send![path, setLineCapStyle: 1_isize];
+        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
+        let _: () = msg_send![path, stroke];
+        let black: id = msg_send![class!(NSColor), blackColor];
+        let _: () = msg_send![black, setStroke];
+        let _: () = msg_send![path, setLineWidth: 1.75_f64];
+        let _: () = msg_send![path, stroke];
+        let _: () = msg_send![*image, unlockFocus];
+
+        let allocated: id = msg_send![class!(NSCursor), alloc];
+        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
+        if cursor == nil {
+            return None;
+        }
+        Some(StrongPtr::new(cursor))
+    }
+}
+
 #[ctor]
 unsafe fn build_classes() {
     unsafe {
@@ -270,6 +323,7 @@ pub(crate) struct MacPlatformState {
     hidden_cursor: Option<StrongPtr>,
     resize_left_bracket_cursor: Option<StrongPtr>,
     resize_right_bracket_cursor: Option<StrongPtr>,
+    loop_cursor: Option<StrongPtr>,
 }
 
 impl Default for MacPlatform {
@@ -330,6 +384,7 @@ impl MacPlatform {
             hidden_cursor: if headless { None } else { make_hidden_cursor() },
             resize_left_bracket_cursor,
             resize_right_bracket_cursor,
+            loop_cursor: if headless { None } else { make_loop_cursor() },
         }))
     }
 
@@ -1106,6 +1161,7 @@ impl Platform for MacPlatform {
             let bracket_cursor = {
                 let state = self.0.lock();
                 match style {
+                    CursorStyle::Loop => state.loop_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
                     CursorStyle::ResizeLeftBracket => state
                         .resize_left_bracket_cursor
@@ -1125,7 +1181,7 @@ impl Platform for MacPlatform {
                 CursorStyle::ClosedHand => msg_send![class!(NSCursor), closedHandCursor],
                 CursorStyle::OpenHand => msg_send![class!(NSCursor), openHandCursor],
                 CursorStyle::PointingHand => msg_send![class!(NSCursor), pointingHandCursor],
-                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
+                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
                 CursorStyle::ResizeUpDown => msg_send![class!(NSCursor), resizeUpDownCursor],
                 CursorStyle::ResizeLeft => msg_send![class!(NSCursor), resizeLeftCursor],
                 CursorStyle::ResizeRight => msg_send![class!(NSCursor), resizeRightCursor],

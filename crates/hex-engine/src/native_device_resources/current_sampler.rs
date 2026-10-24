@@ -22,6 +22,7 @@ impl CurrentSamplerConstruction {
         work: u64,
         metadata_bytes: usize,
         cancel: &AtomicBool,
+        effects: bool,
     ) -> Result<(), AudioStorageError> {
         if self.metadata.is_some()
             || self.owner.is_some()
@@ -42,6 +43,7 @@ impl CurrentSamplerConstruction {
                     hash_frames: work,
                 },
                 cancel,
+                effects,
             )
             .map_err(|e| match e {
                 ResourcePreparationError::Storage(e) => e,
@@ -226,18 +228,25 @@ impl CurrentSamplerSources {
 /// Recognize only the intended finite, frame-zero native class. Existing
 /// audio/Utility admission remains responsible for its own original class.
 pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageError> {
+    validate_project_with_effects(project, false)
+}
+pub(crate) fn validate_project_with_effects(
+    project: &Project,
+    effects: bool,
+) -> Result<bool, AudioStorageError> {
     let present = requires_private_sampler_sources(project);
     if !present {
         return Ok(false);
     }
     if project.loop_region().is_some_and(|r| r.enabled())
-        || !project.main_devices().is_empty()
+        || (!effects && !project.main_devices().is_empty())
         || !project.audio_feeds().is_empty()
         || !project.midi_routes().is_empty()
-        || project
-            .return_tracks()
-            .iter()
-            .any(|r| !r.devices().is_empty())
+        || project.return_tracks().iter().any(|r| {
+            r.devices()
+                .iter()
+                .any(|d| !d.state().asset_references().is_empty() || !effects)
+        })
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
@@ -248,7 +257,7 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
     for track in project.tracks() {
         if !track.gain_lane().spans().is_empty()
             || track.devices().iter().any(|d| {
-                d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                (!effects && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
                     || !d.state().asset_references().is_empty()
             })
         {
@@ -296,8 +305,9 @@ impl CurrentSamplerMetadata {
         project: &Project,
         reservation: ResourceCatalogReservation,
         cancel: &AtomicBool,
+        effects: bool,
     ) -> Result<Self, ResourcePreparationError> {
-        if !validate_project(project)? {
+        if !validate_project_with_effects(project, effects)? {
             return Err(ResourcePreparationError::InvalidScope);
         }
         cancellation(cancel)?;

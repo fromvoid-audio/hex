@@ -2,9 +2,9 @@
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
 use super::*;
 use crate::theme;
-use gpui::{CursorStyle, relative, rgb, rgba};
+use gpui::{CursorStyle, relative, rgb};
 
-pub(in crate::editor) const BOTTOM_RADIUS: f32 = 3.0;
+pub(in crate::editor) const BOTTOM_RADIUS: f32 = 8.0;
 const WIDTH: f32 = 8.0;
 
 #[derive(Clone, Copy)]
@@ -72,9 +72,9 @@ fn geometry(
         if b == end {
             handles[0] = Some(LoopControl {
                 kind: LoopHandleKind::Outer,
-                left: width - 17.0,
-                top: lane.height - 9.0,
-                height: 8.0,
+                left: width - WIDTH,
+                top: lane.height - (lane.height * 0.35).clamp(6.0, 12.0),
+                height: (lane.height * 0.35).clamp(6.0, 12.0),
             });
         }
         if lane.height - body_top >= 4.0
@@ -163,7 +163,7 @@ pub(in crate::editor) fn midi_controls(
     )
 }
 
-pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>, looping: bool) -> Div {
+pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> Div {
     let Some(control) = control else {
         return hex_widgets::rectangle_edge(
             super::super::drag::rectangle_part(Some(edge)),
@@ -179,47 +179,29 @@ pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>, loo
         .top(px(control.top - 1.0))
         .w(px(WIDTH))
         .h(px(control.height))
-        .cursor(CursorStyle::ResizeLeftRight)
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(
-            control.kind == LoopHandleKind::Outer && !looping,
-            |surface| {
-                surface
-                    .text_size(px(8.0))
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(
-                        div()
-                            .debug_selector(|| "clip-loop-corner-affordance".into())
-                            .child(theme::text("↻")),
-                    )
-            },
-        )
+        .cursor(CursorStyle::Loop)
 }
 
 pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> Stateful<Div> {
     let Some(control) = control else {
         return surface;
     };
-    surface
-        .hover(|s| s.bg(rgba(0xffffff22)))
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::super::transport::MiniTooltip {
-                kind: crate::tooltips::Kind::control(if control.kind == LoopHandleKind::Outer {
-                    "repeat clip"
-                } else {
-                    "first repeat boundary"
-                }),
-                description: if control.kind == LoopHandleKind::Outer {
-                    "drag to repeat clip · cmd: invert snapping"
-                } else {
-                    "drag first repeat boundary · keep clip duration · cmd: invert snapping"
-                }
-                .into(),
-            })
-            .into()
+    surface.tooltip(move |_, cx| {
+        cx.new(|_| super::super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::control(if control.kind == LoopHandleKind::Outer {
+                "repeat clip"
+            } else {
+                "first repeat boundary"
+            }),
+            description: if control.kind == LoopHandleKind::Outer {
+                "drag to repeat clip · cmd: invert snapping"
+            } else {
+                "drag first repeat boundary · keep clip duration · cmd: invert snapping"
+            }
+            .into(),
         })
+        .into()
+    })
 }
 
 /// Round the fill and selection stroke together. Body layers stop above the
@@ -243,7 +225,6 @@ fn markers(
     count: u64,
     first: Option<u64>,
     frame: impl Fn(u64) -> Option<u64>,
-    outer_end_visible: bool,
 ) -> Div {
     let mut layer = div()
         .debug_selector(|| "clip-loop-markers".into())
@@ -298,22 +279,6 @@ fn markers(
                 .opacity(if primary { 0.85 } else { 0.3 }),
         );
     }
-    if outer_end_visible {
-        layer = layer.child(
-            div()
-                .absolute()
-                .right(px(9.0))
-                .bottom(px(1.0))
-                .w(px(WIDTH))
-                .h(px(8.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(8.0))
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text("↻")),
-        );
-    }
     layer
 }
 
@@ -339,7 +304,6 @@ pub(in crate::editor) fn audio_markers(
         plan.map_or(0, |plan| plan.count()),
         frame(0),
         frame,
-        clip.start().checked_add(clip.duration()) == Some(end),
     )
 }
 
@@ -364,7 +328,6 @@ pub(in crate::editor) fn midi_markers(
         return div();
     };
     let origin = preview.map_or(clip.start(), |p| p.start());
-    let length = preview.map_or(clip.length(), |p| p.length());
     let frame = |index: u64| {
         let beat = origin.raw().checked_add(plan?.boundary(index)?)?;
         project
@@ -372,19 +335,12 @@ pub(in crate::editor) fn midi_markers(
             .beat_to_frame(BeatTime::from_raw(beat))
             .ok()
     };
-    let outer = origin.raw().checked_add(length.raw()).and_then(|b| {
-        project
-            .tempo_map()
-            .beat_to_frame(BeatTime::from_raw(b))
-            .ok()
-    });
     markers(
         start,
         end,
         plan.map_or(0, |plan| plan.count()),
         frame(0),
         frame,
-        outer == Some(end),
     )
 }
 

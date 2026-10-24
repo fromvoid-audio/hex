@@ -94,7 +94,7 @@ fn actual_same_child_quiescence_preserves_dsp_controller_capture_and_cumulative_
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_same_instance_fresh_channels_discard_old_replies_and_keep_native_prefix() {
-    use hex_audio::plugin_transport;
+    use crate::transport as plugin_transport;
     let case = Case::new();
     let selected = source();
     let saved = startup_state(&selected, true, 3);

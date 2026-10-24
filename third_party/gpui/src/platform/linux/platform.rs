@@ -712,7 +712,7 @@ impl CursorStyle {
             CursorStyle::ResizeRight => &["e-resize", "right_side"],
             CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
             CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
-            CursorStyle::ResizeLeftRight => &["ew-resize", "sb_h_double_arrow"],
+            CursorStyle::ResizeLeftRight | CursorStyle::Loop => &["ew-resize", "sb_h_double_arrow"],
             CursorStyle::ResizeUp => &["n-resize", "top_side"],
             CursorStyle::ResizeDown => &["s-resize", "bottom_side"],
             CursorStyle::ResizeUpDown => &["sb_v_double_arrow", "ns-resize"],

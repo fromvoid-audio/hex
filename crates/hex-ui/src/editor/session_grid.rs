@@ -992,7 +992,7 @@ impl EditorView {
                                     selected_cell,
                                     false,
                                 ),
-                                theme::color(theme::PaletteRole::Text),
+                                0x000000,
                             )
                         } else {
                             match clip.flavor() {
@@ -1101,7 +1101,7 @@ impl EditorView {
                                     selected_cell,
                                     false,
                                 ),
-                                theme::color(theme::PaletteRole::Text),
+                                0x000000,
                             )
                         } else {
                             match clip.flavor() {

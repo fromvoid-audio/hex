@@ -7,3 +7,4 @@ pub mod macho;
 pub mod package;
 pub mod protocol;
 pub mod report;
+pub mod validation;
