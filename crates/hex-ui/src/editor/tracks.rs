@@ -35,7 +35,9 @@ pub(super) fn clip_waveform_body(content: Div) -> Div {
     waveform_body_below(content, super::clip_name::CLIP_NAME_HEIGHT)
 }
 fn waveform_body_below(content: Div, header_height: f32) -> Div {
-    div()
+    // The supplied body already owns an absolute fill surface. Fit that same
+    // surface below the title instead of nesting another identical layout node.
+    content
         .debug_selector(|| "clip-waveform-body".into())
         .absolute()
         .top(px(header_height))
@@ -44,7 +46,6 @@ fn waveform_body_below(content: Div, header_height: f32) -> Div {
         .bottom_0()
         .min_h_0()
         .overflow_hidden()
-        .child(content)
 }
 
 fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipGhostDecor) -> Div {
@@ -1916,7 +1917,6 @@ impl EditorView {
         grid: Option<super::waveform::WaveformGrid>,
     ) -> Div {
         let waveform = state.waveforms.get(&clip.asset());
-        let mut body = div().absolute().inset_0();
         if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
             // The immutable prepared peaks cover the retained root. Cropping
             // changes its visible offset, never its processing/source origin.
@@ -1931,7 +1931,7 @@ impl EditorView {
                 Some(preview)
             });
             let prepared = preview.as_ref().unwrap_or(prepared);
-            body = body.child(super::waveform::timeline_waveform_view_cached(
+            super::waveform::timeline_waveform_view_cached(
                 std::sync::Arc::clone(&prepared.waveform),
                 super::waveform_geometry::WaveformMapping::Prepared {
                     timeline_origin: clip.start(),
@@ -1942,44 +1942,37 @@ impl EditorView {
                 visible_end,
                 std::rc::Rc::clone(&self.waveform_geometry_cache),
                 grid,
-            ));
+            )
         } else if clip.audio_edit().is_some() {
-            body = body.child(
-                div()
-                    .text_xs()
-                    .child(theme::text("prepared waveform unavailable")),
-            );
+            div()
+                .absolute()
+                .inset_0()
+                .text_xs()
+                .child(theme::text("prepared waveform unavailable"))
         } else {
             match waveform {
-                Some(waveform) => {
-                    body = body.child(super::waveform::timeline_waveform_view_cached(
-                        std::sync::Arc::clone(waveform),
-                        super::waveform_geometry::WaveformMapping::Clip {
-                            clip: clip.clone(),
-                            timeline_origin: clip.start(),
-                        },
-                        visible_start,
-                        visible_end,
-                        std::rc::Rc::clone(&self.waveform_geometry_cache),
-                        grid,
-                    ));
-                }
-                None => {
-                    body = body.child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .flex()
-                            .items_center()
-                            .px_1()
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                            .child(theme::text("missing media")),
-                    );
-                }
+                Some(waveform) => super::waveform::timeline_waveform_view_cached(
+                    std::sync::Arc::clone(waveform),
+                    super::waveform_geometry::WaveformMapping::Clip {
+                        clip: clip.clone(),
+                        timeline_origin: clip.start(),
+                    },
+                    visible_start,
+                    visible_end,
+                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    grid,
+                ),
+                None => div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .px_1()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text("missing media")),
             }
         }
-        body
     }
 
     fn waveform_grid(

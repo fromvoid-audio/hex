@@ -7,6 +7,71 @@ fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut Te
         .expect("private GPUI replay oracle");
 }
 
+#[gpui::test]
+fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut TestAppContext) {
+    let (project, source, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let before = project.clone();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 0,
+            length: 192_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&source]);
+    let start = point(gpui::px(lane.left + 40.0), gpui::px(lane.top + 25.0));
+    visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+    let end = point(start.x - gpui::px(20.0), start.y);
+    visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    let content = editor.read_with(&visual, |view, _| {
+        assert!(view.arrangement_pan.is_some());
+        assert!(
+            view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
+                .start
+                > 0
+        );
+        view.clip_content_cache.entries[&source].clone()
+    });
+    let builds = content.read_with(&visual, |content, _| content.builds);
+    for _ in 0..2 {
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+    }
+    assert_eq!(
+        content.read_with(&visual, |content, _| content.builds),
+        builds
+    );
+    visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    let surface = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
+    let down = visual
+        .debug_bounds(surface)
+        .expect("current clip move hit")
+        .center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + gpui::px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(
+        cx.update(|app| app.has_active_drag()),
+        "first motion after pan release"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before)
+    });
+}
+
 fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, revision: u64) {
     let old = view.state.as_ref().expect("current state");
     view.state = Some(Arc::new(ViewState {
