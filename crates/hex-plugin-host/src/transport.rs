@@ -307,6 +307,11 @@ impl Callback {
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
     }
+    /// Current epoch revocation, including a worker/control request that the
+    /// callback has not yet visited. This read grants no future liveness.
+    pub fn is_revoked(&self) -> bool {
+        self.revoked.load(Acquire)
+    }
     pub fn fault(&self) -> Option<Fault> {
         self.fault
     }

@@ -41,7 +41,16 @@ fn constructor_storage_requires_the_original_pair_and_survives_exchange_and_reti
             Some(storage)
         );
     }
+    assert!(!callback.is_revoked());
     control.revoke();
+    assert!(
+        callback.is_revoked(),
+        "control revocation is visible before another stage"
+    );
+    assert!(
+        callback.fault().is_none(),
+        "revocation is separate from a visited fault"
+    );
     drop(worker);
     assert_eq!(
         callback.constructor_storage_on_control(&control),

@@ -18,6 +18,7 @@ use hex_plugin_host::{
 };
 
 mod definition;
+mod tail;
 pub use definition::NativeEffectDefinition;
 mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
@@ -125,6 +126,10 @@ impl NativeEffect {
             ));
         }
         dry.resize(dry_frames, [0.0; 2]);
+        let tail = tail::TailDrain::new(
+            instance.ready().tail_frames,
+            configuration.prepared.total_latency_frames(),
+        );
         let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
         Ok(Self {
             worker,
@@ -135,6 +140,7 @@ impl NativeEffect {
                 dry_output: [[0.0; 2]; MAX_FRAMES],
                 dry,
                 dry_cursor: 0,
+                tail,
             },
         })
     }
@@ -251,6 +257,7 @@ pub struct NativeEffectCallback {
     dry_output: [[f32; 2]; MAX_FRAMES],
     dry: Vec<[f32; 2]>,
     dry_cursor: usize,
+    tail: tail::TailDrain,
 }
 impl NativeEffectCallback {
     pub fn binding(&self) -> Binding {
@@ -265,12 +272,24 @@ impl NativeEffectCallback {
     /// Bound one actual complete host callback before the engine stages any
     /// segments. A chunk/subsegment length is not the physical callback extent.
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {
-        self.transport.begin_physical_callback(frames)
+        self.transport.begin_physical_callback(frames)?;
+        self.tail.begin();
+        Ok(())
     }
     /// Only after complete final host-format acceptance. Engine success alone
     /// must not dispatch copied input; refusal revokes instead of retry/replay.
     pub fn finish_host_callback(&mut self, accepted: bool) -> Result<(), Fault> {
-        self.transport.finish(accepted)
+        self.transport.finish(accepted)?;
+        self.tail.commit();
+        Ok(())
+    }
+    /// This original live epoch has accepted enough consecutive zero input to
+    /// drain its source-reported tail and fixed processor/bridge latency. New
+    /// staged input invalidates the view; speculative zeros cannot establish it.
+    /// Infinite reports and revoked epochs return false. This is neither graph
+    /// admission nor authority to drop/return an endpoint on the callback lane.
+    pub fn reported_tail_is_drained(&self) -> bool {
+        !self.transport.is_revoked() && self.tail.drained()
     }
     fn matches(&self, node: ForeignProcessorNode<'_>) -> bool {
         let config = &self.configuration;
@@ -302,6 +321,7 @@ impl ForeignProcessors for NativeEffectCallback {
         // Keep the untrimmed source in dry history; wet input trim must not
         // contaminate samples heard after a later aligned bypass transition.
         for (index, frame) in frames.iter().enumerate() {
+            self.tail.input(std::slice::from_ref(frame));
             let dry = self.dry[self.dry_cursor];
             self.dry[self.dry_cursor] = *frame;
             self.dry_cursor += 1;

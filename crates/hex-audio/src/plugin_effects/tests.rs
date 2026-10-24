@@ -1068,3 +1068,115 @@ fn actual_sdk_closed_claimed_renderer_track_return_main_has_exact_pcm_and_dispos
         }
     }
 }
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_samples() {
+    for refuse_at_horizon in [false, true] {
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let instance = original_instance_for_binding(binding);
+        assert_eq!(instance.ready().tail_frames, 0);
+        let effect = NativeEffect::prepare_on_control(
+            ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap(),
+            instance,
+        )
+        .unwrap();
+        let config = effect.callback.configuration.clone();
+        let node = ForeignProcessorNode {
+            owner: config.identity.owner(),
+            device_id: config.identity.device_id(),
+            device_type: config.state.type_id(),
+            sample_rate: config.sample_rate,
+            configuration: &config.state,
+            prepared: config.prepared,
+            bypassed: false,
+            input_gain: 1.0,
+        };
+        let (mut worker, mut callback) = effect.into_parts();
+        assert!(!callback.reported_tail_is_drained());
+        for block in 0..3 {
+            let mut frames = if block == 0 {
+                [[0.5, -0.25]; 8]
+            } else {
+                [[0.0; 2]; 8]
+            };
+            let accepted = !(refuse_at_horizon && block == 2);
+            let measured = allocation_counter::measure(|| {
+                callback.begin_host_callback(8).unwrap();
+                callback
+                    .process_segment(node, 0, &mut frames[..3], None)
+                    .unwrap();
+                callback
+                    .process_segment(node, 3, &mut frames[3..], None)
+                    .unwrap();
+                assert!(
+                    !callback.reported_tail_is_drained(),
+                    "staged zeros are not accepted output"
+                );
+                assert_eq!(callback.finish_host_callback(accepted).is_ok(), accepted);
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            if block == 2 {
+                assert_eq!(
+                    frames,
+                    [[0.25, -0.125]; 8],
+                    "last original nonzero samples cross the bridge at the drain horizon"
+                );
+            }
+            assert_eq!(callback.reported_tail_is_drained(), block == 2 && accepted);
+            if accepted {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while worker.published_blocks_on_control() < block + 1 {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+            }
+        }
+        if !refuse_at_horizon {
+            let mut renewed = [[0.5; 2]; 8];
+            let measured = allocation_counter::measure(|| {
+                callback.begin_host_callback(8).unwrap();
+                callback
+                    .process_segment(node, 0, &mut renewed, None)
+                    .unwrap();
+                assert!(
+                    !callback.reported_tail_is_drained(),
+                    "new staged input invalidates an old drained view"
+                );
+                assert!(callback.finish_host_callback(false).is_err());
+                assert!(!callback.reported_tail_is_drained());
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        let stopped = worker.quiesce_on_control().unwrap();
+        assert_eq!(
+            stopped.completed_blocks(),
+            if refuse_at_horizon { 2 } else { 3 }
+        );
+        drop(callback);
+        drop(worker);
+        assert!(stopped.retire_on_control().unwrap().status.success());
+    }
+}
