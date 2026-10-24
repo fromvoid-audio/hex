@@ -162,6 +162,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
     }
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::clip_aliases::require_legacy_compatible(project)?;
     Project::from_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();
     let mut inventory = Vec::new();

@@ -59,6 +59,7 @@ impl Project {
         target: &'a Self,
     ) -> Option<InstrumentHistoryDelta<'a>> {
         let Self {
+            aliases,
             arrangement_sections,
             tuning,
             routing,
@@ -77,7 +78,7 @@ impl Project {
             tempo_map,
             meter_map,
         } = self;
-        if arrangement_sections != &target.arrangement_sections
+        if aliases != &target.aliases || arrangement_sections != &target.arrangement_sections
             || tuning != &target.tuning
             || routing != &target.routing
             || audio_feeds != &target.audio_feeds

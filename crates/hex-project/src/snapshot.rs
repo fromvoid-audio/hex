@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub aliases: crate::ClipAliasesSnapshot,
     pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
@@ -228,6 +229,7 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            aliases: self.aliases.snapshot(),
             arrangement_sections: self
                 .arrangement_sections
                 .iter()
@@ -356,6 +358,7 @@ impl Project {
                                     .source
                                     .notes
                                     .iter()
+                                    .filter(|_| self.clip_alias(clip.id).is_none())
                                     .map(|note| MidiNoteSnapshot {
                                         id: note.id.0,
                                         start_raw: note.start.raw(),
@@ -436,6 +439,7 @@ impl Project {
                                             .source
                                             .notes
                                             .iter()
+                                            .filter(|_| self.clip_alias(clip.id).is_none())
                                             .map(|note| MidiNoteSnapshot {
                                                 id: note.id.value(),
                                                 start_raw: note.start.raw(),
@@ -521,6 +525,8 @@ impl Project {
 
         let mut ids = BTreeSet::new();
         let mut max_id = 0_u64;
+        let (aliases, alias_note_count) = crate::clip_alias::ClipAliases::from_snapshot(snapshot.aliases, &mut ids, &mut max_id)?;
+        project.aliases = aliases;
         if snapshot.arrangement_sections.len() > crate::MAX_ARRANGEMENT_SECTIONS {
             return Err(Invalid("arrangement section limit reached"));
         }
@@ -574,7 +580,7 @@ impl Project {
             });
         }
         let mut total_devices = main_devices.len();
-        let mut total_notes = 0_usize;
+        let mut total_notes = alias_note_count;
         let mut return_ids = BTreeSet::new();
         let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
         for return_track in snapshot.return_tracks {
@@ -737,6 +743,10 @@ impl Project {
                     clip.looping,
                     clip.one_shot_boundary,
                 )?;
+                let alias_content = project.aliases.midi_content(ClipId(clip.id))?;
+                if let Some(content) = &alias_content {
+                    if !clip.notes.is_empty() || content.source_length != source_length { return Err(Invalid("alias midi member contains inline notes or wrong extent")); }
+                }
                 total_notes = total_notes
                     .checked_add(clip.notes.len())
                     .ok_or(Invalid("note count overflow"))?;
@@ -786,13 +796,12 @@ impl Project {
                     start,
                     length,
                     source: std::sync::Arc::new(crate::MidiSource {
+                        content: alias_content.unwrap_or_else(|| std::sync::Arc::new(crate::MidiContent { source_length, notes })),
                         one_shot_boundary: clip.one_shot_boundary,
-                        source_length,
                         source_start,
                         loop_start,
                         loop_end,
                         looping: clip.looping,
-                        notes,
                     }),
                 });
             }
@@ -895,6 +904,10 @@ impl Project {
                         clip.source.looping,
                         clip.source.one_shot_boundary,
                     )?;
+                    let alias_content = project.aliases.midi_content(ClipId(clip.id))?;
+                    if let Some(content) = &alias_content {
+                        if !clip.source.notes.is_empty() || content.source_length != source_length { return Err(Invalid("alias midi member contains inline notes or wrong extent")); }
+                    }
                     total_notes = total_notes
                         .checked_add(clip.source.notes.len())
                         .ok_or(Invalid("note count overflow"))?;
@@ -933,13 +946,12 @@ impl Project {
                         id: ClipId(clip.id),
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
+                            content: alias_content.unwrap_or_else(|| std::sync::Arc::new(crate::MidiContent { source_length, notes })),
                             one_shot_boundary: clip.source.one_shot_boundary,
-                            source_length,
                             source_start,
                             loop_start,
                             loop_end,
                             looping: clip.source.looping,
-                            notes,
                         }),
                     })
                 }
@@ -1012,6 +1024,9 @@ impl Project {
                 comparison.validate(device.state())?;
             }
         }
+        let aliases = std::mem::take(&mut project.aliases);
+        aliases.validate_and_bind(&mut project)?;
+        project.aliases = aliases;
         project.validate_retained_audio_roots()?;
         project.validate_device_asset_references()?;
         for track in &project.tracks {
@@ -1039,7 +1054,7 @@ impl Project {
     }
 }
 
-fn insert_id(id: u64, seen: &mut BTreeSet<u64>, max_id: &mut u64) -> Result<(), Invalid> {
+pub(crate) fn insert_id(id: u64, seen: &mut BTreeSet<u64>, max_id: &mut u64) -> Result<(), Invalid> {
     if id == 0 {
         return Err(Invalid("project ids must be nonzero"));
     }

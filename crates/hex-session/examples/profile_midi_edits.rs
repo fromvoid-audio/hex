@@ -64,6 +64,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         });
     }
     Project::from_snapshot(Snapshot {
+        aliases: Default::default(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

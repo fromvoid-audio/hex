@@ -504,7 +504,9 @@ pub(crate) fn apply(
                 })
                 .ok_or(Invalid("session midi clip no longer exists"))?;
             let source = Arc::make_mut(&mut target.source);
-            source.source_length = source_length;
+            if source.source_length != source_length {
+                source.source_length = source_length;
+            }
             source.source_start = source_start;
             source.loop_start = loop_start;
             source.loop_end = loop_end;
@@ -640,13 +642,15 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     name,
                     volume: clip.volume.clone(),
                     source: Arc::new(MidiSource {
+                        content: std::sync::Arc::new(crate::MidiContent {
+                            source_length: source.source_length,
+                            notes,
+                        }),
                         one_shot_boundary: source.one_shot_boundary,
-                        source_length: source.source_length,
                         source_start: source.source_start,
                         loop_start: source.loop_start,
                         loop_end: source.loop_end,
                         looping: source.looping,
-                        notes,
                     }),
                 })
             }

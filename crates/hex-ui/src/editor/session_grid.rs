@@ -1017,6 +1017,16 @@ impl EditorView {
                                 );
                             }),
                         )
+                        .when(self.clip_has_alias(clip_id), |cell| cell.pr(px(15.0)))
+                        .children(self.clip_alias_indicator(
+                            clip_id,
+                            theme::clip_activity_fill(
+                                track.color(),
+                                clip.flavor(),
+                                selected_cell,
+                                clip.active(),
+                            ),
+                        ))
                         .child(self.clip_name_label(clip_id, &title))
                         .child(
                             self.session_icon(
@@ -1126,6 +1136,16 @@ impl EditorView {
                                 );
                             }),
                         )
+                        .when(self.clip_has_alias(clip_id), |cell| cell.pr(px(15.0)))
+                        .children(self.clip_alias_indicator(
+                            clip_id,
+                            theme::clip_activity_fill(
+                                track.color(),
+                                clip.flavor(),
+                                selected_cell,
+                                clip.active(),
+                            ),
+                        ))
                         .child(self.clip_name_label(clip_id, clip.name()))
                         .child(
                             self.session_icon(
@@ -1591,6 +1611,7 @@ impl EditorView {
     }
 
     pub(super) fn select_session_midi(&mut self, track: TrackId, scene: SceneId, clip: ClipId) {
+        self.cancel_duplicate_chain();
         if self.detail_clip_id() != Some(clip) {
             self.zoom_fit.clear_clip();
         }
@@ -1622,6 +1643,7 @@ impl EditorView {
     }
 
     pub(super) fn select_session_scene(&mut self, scene: SceneId) {
+        self.cancel_duplicate_chain();
         self.zoom_fit.clear_clip();
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
@@ -1650,6 +1672,7 @@ impl EditorView {
     }
 
     pub(super) fn select_session_cell(&mut self, track: TrackId, scene: SceneId) {
+        self.cancel_duplicate_chain();
         if self.selected_cell != Some((track, scene)) {
             self.zoom_fit.clear_clip();
         }

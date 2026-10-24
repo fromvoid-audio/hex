@@ -14,11 +14,16 @@ struct Row {
     midi: Vec<MidiClip>,
 }
 struct Counts {
+    alias_sources: BTreeSet<crate::AliasSourceId>,
     clips: usize,
     notes: usize,
     occurrences: usize,
 }
 impl Counts {
+    fn existing(&mut self, project: &Project, clip: ClipId, notes: usize) -> Result<(), Invalid> {
+        let notes = match project.clip_alias(clip) { Some(source) if !self.alias_sources.insert(source) => 0, _ => notes };
+        self.clip(notes)
+    }
     fn clip(&mut self, notes: usize) -> Result<(), Invalid> {
         self.clips = self
             .clips
@@ -100,13 +105,15 @@ fn private_copy_source(clip: &mut MidiClip) -> Result<(), Invalid> {
         .map_err(|_| Invalid("could not reserve copied midi notes"))?;
     notes.extend_from_slice(&old.notes);
     clip.source = Arc::new(crate::midi::MidiSource {
+        content: std::sync::Arc::new(crate::MidiContent {
+            source_length: old.source_length,
+            notes,
+        }),
         one_shot_boundary: old.one_shot_boundary,
-        source_length: old.source_length,
         source_start: old.source_start,
         loop_start: old.loop_start,
         loop_end: old.loop_end,
         looping: old.looping,
-        notes,
     });
     Ok(())
 }
@@ -146,6 +153,7 @@ pub(super) fn apply_with_cuts(
     rows.resize_with(project.tracks.len(), Row::default);
     let tempo = project.tempo_map();
     let mut count = Counts {
+        alias_sources: BTreeSet::new(),
         clips: 0,
         notes: 0,
         occurrences: 0,
@@ -153,7 +161,7 @@ pub(super) fn apply_with_cuts(
     for cell in &project.session.cells {
         match &cell.content {
             crate::SessionCellContent::Audio(_) => count.clip(0)?,
-            crate::SessionCellContent::Midi(clip) => count.clip(clip.source.notes.len())?,
+            crate::SessionCellContent::Midi(clip) => count.existing(project, clip.id, clip.source.notes.len())?,
             crate::SessionCellContent::Stop => (),
         }
     }
@@ -194,7 +202,7 @@ pub(super) fn apply_with_cuts(
                 )
             }
             ClipGroupContent::Midi(clip) => {
-                count.clip(clip.notes().len())?;
+                if copy { count.clip(clip.notes().len())?; } else { count.existing(project, clip.id(), clip.notes().len())?; }
                 let end = BeatTime::from_raw(
                     clip.start()
                         .raw()
@@ -252,7 +260,7 @@ pub(super) fn apply_with_cuts(
                 .checked_add(original.length().raw())
                 .ok_or(Invalid("midi timeline end overflow"))?;
             let Some(mut pieces) = remainder(original.start().raw(), end, &row.beats)? else {
-                count.clip(original.notes().len())?;
+                count.existing(project, original.id(), original.notes().len())?;
                 push(&mut row.midi, original.clone())?;
                 continue;
             };
@@ -274,7 +282,7 @@ pub(super) fn apply_with_cuts(
             if prefix {
                 let mut clip = original.clone();
                 clip.length = BeatTime::from_raw(pieces[0].1 - pieces[0].0);
-                count.clip(clip.notes().len())?;
+                count.existing(project, clip.id(), clip.notes().len())?;
                 push(&mut row.midi, clip)?;
             }
             let materialized = &pieces[usize::from(prefix)..];

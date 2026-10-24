@@ -253,7 +253,7 @@ pub(crate) fn apply(
             if enabled {
                 edit.anchor(clip.start, project.tempo_map())?;
             } else {
-                edit.unanchor(project.tempo_map())?;
+                if project.clip_alias(id).is_some() { super::aliases::freeze(edit, project.tempo_map())?; } else { edit.unanchor(project.tempo_map())?; }
             }
         }
         Command::SetAudioClipWarp { settings, .. } => {

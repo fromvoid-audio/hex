@@ -3763,6 +3763,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            aliases: Default::default(),
             arrangement_sections: Vec::new(),
             main_devices: if effect_buses {
                 vec![DeviceSnapshot {
@@ -3922,6 +3923,7 @@ mod tests {
             .expect("saturator curve")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            aliases: Default::default(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4049,6 +4051,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            aliases: Default::default(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -4188,6 +4191,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            aliases: Default::default(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -7221,6 +7225,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            aliases: Default::default(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -7713,6 +7718,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            aliases: Default::default(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),

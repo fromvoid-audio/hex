@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 43;
+pub const CURRENT_SCHEMA_VERSION: u32 = 45;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -144,10 +144,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema43 with retained audio roots and event fades/directed content views, preserving
-/// complete activation, MIDI source/window/volume, fade, tuning and device state.
+/// Encode schema45 with explicit shared clip sources and strict member references,
+/// retaining schema44 hierarchy, audio roots/fades, MIDI windows/volume and devices.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::grouped_audio::encode(project)?)
+    encode_document(&schema::clip_aliases::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -163,6 +163,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::clip_aliases::require_legacy_compatible(project)?;
     schema::grouped_audio::require_legacy_compatible(project)?;
     schema::audio_events::require_legacy_compatible(project)?;
     schema::content_views::require_legacy_compatible(project)?;
@@ -249,6 +250,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.bytes)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
+/// Schema45 requires explicit shared source/member inventories; schema44 and older
+/// acquire empty aliases while preserving their own strict format contracts.
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
@@ -283,7 +286,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     match header.version {
-        CURRENT_SCHEMA_VERSION => schema::grouped_audio::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::clip_aliases::decode(bytes),
+        44 => schema::track_groups::decode(bytes),
+        43 => schema::grouped_audio::decode(bytes),
         42 => schema::event_fades::decode(bytes),
         41 => schema::grouped_audio::decode41(bytes),
         40 => schema::clip_activation::decode(bytes),
