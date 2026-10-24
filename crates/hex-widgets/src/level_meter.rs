@@ -1,14 +1,15 @@
-//! Read-only normalized vertical gauge. Owners supply signal meaning, colors,
-//! dimensions and update cadence; this widget has no audio/timing state.
-use gpui::{Div, SharedString, div, prelude::*, px, relative, rgb};
+//! Normalized vertical gauge with a click-clear clipping cap. Owners supply
+//! signal meaning, colors, dimensions and update cadence. The cap remembers observed clipping;
+//! there is no audio detector or signal timing state.
+use gpui::{Div, SharedString, div, prelude::*, relative, rgb};
 
-/// Display caution begins at -6 dBFS, independently of overload evidence.
-pub const METER_NEAR_PEAK_DBFS: f32 = -6.0;
-/// Smallest f32 linear sample amplitude at or above -6 dBFS (20 log10(amplitude)).
-pub const METER_NEAR_PEAK_AMPLITUDE: f32 = 0.501_187_26;
+/// Display caution begins at the dBFS equivalent of 0.95 f32 amplitude.
+pub const METER_NEAR_PEAK_DBFS: f32 = -0.445_528;
+/// Near-unity linear sample amplitude warning threshold.
+pub const METER_NEAR_PEAK_AMPLITUDE: f32 = 0.95;
 
-/// Pure display classification. Clipping is explicit caller-owned evidence,
-/// never inferred from normalized height or a high dBFS value. No state is held.
+/// Pure display classification from actual amplitude/dBFS or explicit overload
+/// evidence. Normalized display height never implies clipping. No state is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeterLevel {
     Normal,
@@ -17,7 +18,7 @@ pub enum MeterLevel {
 }
 impl MeterLevel {
     pub fn from_dbfs(dbfs: f32, clipping: bool) -> Self {
-        if clipping {
+        if clipping || (dbfs.is_finite() && dbfs > 0.0) {
             Self::Clipping
         } else if dbfs.is_finite() && dbfs >= METER_NEAR_PEAK_DBFS {
             Self::NearPeak
@@ -26,7 +27,7 @@ impl MeterLevel {
         }
     }
     pub fn from_amplitude(amplitude: f32, clipping: bool) -> Self {
-        if clipping {
+        if clipping || (amplitude.is_finite() && amplitude > 1.0) {
             Self::Clipping
         } else if amplitude.is_finite() && amplitude >= METER_NEAR_PEAK_AMPLITUDE {
             Self::NearPeak
@@ -67,10 +68,21 @@ fn bounded_fraction(value: f32) -> f32 {
     }
 }
 /// Empty for non-finite fractions, bounded for finite out-of-range inputs.
-/// The separate above marker describes the owner's threshold, not a detector.
+/// `above` is caller evidence, independent of normalized height. Its top cap
+/// latches until clicked, then rearms on a subsequently observed false→true edge.
 pub fn level_meter(id: SharedString, fraction: f32, above: bool, style: LevelMeterStyle) -> Div {
+    let cap = crate::meter_clip::ClipIndicator {
+        id: format!("{id}-above").into(),
+        clipping: above,
+        held_clipping: false,
+        color: style.above,
+    };
+    meter_body(id, fraction, style).child(cap)
+}
+
+/// Shared signal well; device gain meters install their cap after the gain handle.
+pub(crate) fn meter_body(id: SharedString, fraction: f32, style: LevelMeterStyle) -> Div {
     let fill_id = format!("{id}-fill");
-    let above_id = format!("{id}-above");
     div()
         .debug_selector(move || id.to_string())
         .relative()
@@ -87,18 +99,6 @@ pub fn level_meter(id: SharedString, fraction: f32, above: bool, style: LevelMet
                 .h(relative(bounded_fraction(fraction)))
                 .bg(rgb(style.fill)),
         )
-        .when(above, |bar| {
-            bar.child(
-                div()
-                    .debug_selector(move || above_id.clone())
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w_full()
-                    .h(px(2.0))
-                    .bg(rgb(style.above)),
-            )
-        })
 }
 #[cfg(test)]
 mod tests {
@@ -107,10 +107,11 @@ mod tests {
     fn near_peak_units_and_explicit_overload_are_independent_of_display_height() {
         for (dbfs, expected) in [
             (-30.0, MeterLevel::Normal),
-            (-6.000_001, MeterLevel::Normal),
-            (-6.0, MeterLevel::NearPeak),
+            (-6.0, MeterLevel::Normal),
+            (-0.45, MeterLevel::Normal),
+            (METER_NEAR_PEAK_DBFS, MeterLevel::NearPeak),
             (0.0, MeterLevel::NearPeak),
-            (12.0, MeterLevel::NearPeak),
+            (12.0, MeterLevel::Clipping),
             (f32::NAN, MeterLevel::Normal),
             (f32::INFINITY, MeterLevel::Normal),
             (f32::NEG_INFINITY, MeterLevel::Normal),
@@ -127,7 +128,8 @@ mod tests {
             ),
             (METER_NEAR_PEAK_AMPLITUDE, MeterLevel::NearPeak),
             (1.0, MeterLevel::NearPeak),
-            (2.0, MeterLevel::NearPeak),
+            (f32::from_bits(1.0_f32.to_bits() + 1), MeterLevel::Clipping),
+            (2.0, MeterLevel::Clipping),
             (f32::NAN, MeterLevel::Normal),
             (f32::INFINITY, MeterLevel::Normal),
         ] {

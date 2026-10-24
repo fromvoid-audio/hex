@@ -2,6 +2,8 @@
 //!
 //! Inputs are the last reported independent channel values. This component has
 //! no timestamp, coherent-pair guarantee, peak hold, decay or clipping detector.
+//! Shared meter widgets retain only click-clear acknowledgement of observed
+//! above-unity readouts; they cannot recover clipping between UI observations.
 use crate::theme;
 use gpui::{Div, Stateful, div, prelude::*, px, rgb};
 
