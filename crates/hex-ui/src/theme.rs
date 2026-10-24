@@ -25,6 +25,15 @@ pub(crate) fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
 }
 
+/// Shared product colors for all sample-level meters; widgets own no palette.
+pub(crate) fn meter_colors() -> hex_widgets::MeterColors {
+    hex_widgets::MeterColors {
+        signal: color(PaletteRole::Secondary),
+        near_peak: color(PaletteRole::Primary),
+        clipping: 0xe34b4b,
+    }
+}
+
 /// Common workspace action colors, resolved from the native widget palette.
 pub(crate) fn action_style() -> hex_widgets::ActionStyle {
     let style = control_style();
