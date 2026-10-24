@@ -6,7 +6,7 @@ use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Focusable, Subscription, Window, div, prelude::*, px};
 use hex_project::{ClipId, Project, SectionId, Track, TrackId};
-use hex_widgets::{DiscreteControlAppearance, Toggle, ToggleChanged, ToggleConfig};
+use hex_widgets::{Toggle, ToggleAppearance, ToggleChanged, ToggleConfig};
 use std::{collections::BTreeSet, rc::Rc};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -243,10 +243,7 @@ impl EditorView {
                 return div().id("section-focus-control");
             };
             let toggle = cx.new(|cx| {
-                Toggle::from_config(
-                    cx,
-                    config.with_appearance(DiscreteControlAppearance::CompactButton),
-                )
+                Toggle::from_config(cx, config.with_appearance(ToggleAppearance::CompactButton))
             });
             toggle.update(cx, |toggle, cx| toggle.set_tab_navigation(true, cx));
             let sub = cx.subscribe(&toggle, |view, _, event: &ToggleChanged, cx| {

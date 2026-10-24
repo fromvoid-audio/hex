@@ -41,7 +41,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             theme::device_style(theme::DeviceStyleRole::Readout),
         )
         .map_err(|e| e.to_string())?
-        .with_appearance(NumericControlAppearance::InlineValue);
+        .with_presentation(NumericControlPresentation::InlineValue);
         let entity = cx.new(|cx| {
             let mut control = NumericControl::from_config(cx, config);
             let _ = control.set_inline_value_width(width, cx);
@@ -70,7 +70,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             theme::device_style(theme::DeviceStyleRole::Control),
         )
         .map_err(str::to_owned)?
-        .with_appearance(DiscreteControlAppearance::CompactButton);
+        .with_appearance(ToggleAppearance::CompactButton);
         let entity = cx.new(|cx| Toggle::from_config(cx, config));
         subscriptions.push(
             cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
@@ -112,7 +112,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             theme::device_style(theme::DeviceStyleRole::Control),
         )
         .map_err(str::to_owned)?
-        .with_appearance(DiscreteControlAppearance::CompactSelector);
+        .with_appearance(SelectorAppearance::CompactSelector);
         let entity = cx.new(|cx| Selector::from_config(cx, config));
         subscriptions.push(cx.subscribe(&entity, |_, _, _: &SelectorChanged, cx| cx.notify()));
         selectors.push(entity);

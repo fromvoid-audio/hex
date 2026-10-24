@@ -4,8 +4,8 @@ use super::*;
 use gpui::{Entity, Focusable, div, prelude::*};
 use hex_engine::SamplerParameter;
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{
     collections::BTreeMap,
@@ -577,7 +577,7 @@ impl EditorView {
                     crate::theme::control_style(),
                 )
                 .and_then(|config| {
-                    let config = config.with_appearance(NumericControlAppearance::InlineValue);
+                    let config = config.with_presentation(NumericControlPresentation::InlineValue);
                     if parameter.is_envelope() {
                         config.with_value_drag_steps(1.0, 0.1)
                     } else {

@@ -13,10 +13,10 @@ use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
 use hex_widgets::{
-    ControlStyle, DialLayout, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
-    NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
-    NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
-    device_frame,
+    ControlStyle, DialLayout, NumericControl, NumericControlConfig, NumericControlEvent,
+    NumericControlKind, NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
+    Selector, SelectorAppearance, SelectorChanged, SelectorConfig, Toggle, ToggleAppearance,
+    ToggleChanged, ToggleConfig, device_frame,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -2510,12 +2510,12 @@ fn binding_policy(
     };
     let toggle_appearance = if presentation == ControlPresentation::CompactButton {
         match display.label {
-            Some("") => DiscreteControlAppearance::MicroSquare,
-            Some("bass mono audition") => DiscreteControlAppearance::CompactIconButton,
-            _ => DiscreteControlAppearance::CompactButton,
+            Some("") => ToggleAppearance::MicroSquare,
+            Some("bass mono audition") => ToggleAppearance::CompactIconButton,
+            _ => ToggleAppearance::CompactButton,
         }
     } else {
-        DiscreteControlAppearance::Standard
+        ToggleAppearance::Standard
     };
     let choice_order = match descriptor.kind {
         ParameterKind::Choice { labels } => Some(operator_panel::choice_order(

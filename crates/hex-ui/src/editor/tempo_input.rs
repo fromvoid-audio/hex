@@ -5,8 +5,8 @@ use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
 use hex_project::{BeatTime, Command, Tempo};
 use hex_session::service::Request;
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 
 pub(super) struct Binding {
@@ -84,7 +84,7 @@ impl EditorView {
                     cx,
                     config
                         .with_command_fine_steps()
-                        .with_appearance(NumericControlAppearance::InlineValue),
+                        .with_presentation(NumericControlPresentation::InlineValue),
                 )
             });
             let subscription =
