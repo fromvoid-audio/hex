@@ -1002,6 +1002,10 @@ impl Element for TextInputElement {
                     .text_case
                     .display_offset(&input.content, range.end)
         });
+        let caret_run = TextRun {
+            len: 1,
+            ..run.clone()
+        };
         let runs = if let Some(marked) = marked {
             vec![
                 TextRun {
@@ -1032,6 +1036,16 @@ impl Element for TextInputElement {
         let line = window
             .text_system()
             .shape_line(text.into(), font_size, &runs, None);
+        let cell_width = window
+            .text_system()
+            .shape_line(
+                "m".into(),
+                style.font_size.to_pixels(window.rem_size()),
+                &[caret_run],
+                None,
+            )
+            .width
+            .max(px(1.0));
         let cursor_x = line.x_for_index(
             input
                 .config
@@ -1039,7 +1053,7 @@ impl Element for TextInputElement {
                 .text_case
                 .display_offset(&input.content, input.cursor()),
         );
-        let max_cursor_x = bounds.size.width - px(2.0);
+        let max_cursor_x = (bounds.size.width - cell_width).max(px(0.0));
         let text_shift = if cursor_x > max_cursor_x {
             cursor_x - max_cursor_x
         } else if cursor_x < px(0.0) {
@@ -1052,7 +1066,10 @@ impl Element for TextInputElement {
             Some(fill(
                 Bounds::new(
                     point(origin_x + cursor_x, bounds.top()),
-                    size(px(1.0), bounds.bottom() - bounds.top()),
+                    size(
+                        cell_width.min(bounds.size.width),
+                        bounds.bottom() - bounds.top(),
+                    ),
                 ),
                 gpui::rgb(input.config.style.accent),
             ))
@@ -1137,6 +1154,12 @@ impl Element for TextInputElement {
         {
             window.paint_quad(selection);
         }
+        if focus.is_focused(window)
+            && self.input.read(cx).enabled
+            && let Some(cursor) = state.cursor.take()
+        {
+            crate::text_caret::paint(cursor, self.input.entity_id(), window, cx);
+        }
         if let Some(line) = state.line.take() {
             let _ = line.paint(
                 point(state.origin_x, bounds.top()),
@@ -1144,11 +1167,6 @@ impl Element for TextInputElement {
                 window,
                 cx,
             );
-            if focus.is_focused(window)
-                && let Some(cursor) = state.cursor.take()
-            {
-                window.paint_quad(cursor);
-            }
             self.input.update(cx, |input, _| {
                 input.last_layout = Some(line);
                 input.last_bounds = Some(bounds);
