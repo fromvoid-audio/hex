@@ -144,6 +144,27 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
+with the arrange timeline focused, **b** bounces selected material in place;
+**command+b** keeps the originals and inserts bounced audio on a new track below
+each source track. a nonempty time selection takes precedence over selected clips.
+each selected track produces one audio clip spanning its selected clips and gaps.
+clip bounces include instrument and effect release tails. a time selection renders
+exactly its start-to-end interval, retaining earlier state needed for sound inside
+that interval. press **escape** to cancel; one undo restores the entire operation.
+
+stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
+a fresh playback state so live release voices cannot duplicate the baked tails.
+undo and redo of an in-place bounce use the same stopped-edit rule.
+
+bounce writes float audio before the track mixer. mixer automation, sends, returns
+and main processing remain live. in-place bounce removes the baked devices, so it
+refuses if that would change unselected material or a tail would overlap it; use
+**command+b** instead. routed inputs, verified streaming and nonzero-latency device
+paths currently refuse. a release that does not finish within ten seconds refuses
+without applying an edit. source files remain unchanged. while editing text,
+numeric values or midi notes, or using the computer midi keyboard, these arrange
+bounce shortcuts do not run.
+
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
@@ -387,6 +408,7 @@ the complete edit.
 | toggle browser / search | command+option+b / command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
+| bounce in place / to a new track | b / command+b |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

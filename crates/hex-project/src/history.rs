@@ -6,6 +6,9 @@ use std::collections::VecDeque;
 struct HistoryEntry {
     project: Project,
     midi_effect: Option<crate::MidiHistoryEffect>,
+    // Ephemeral history-edge custody, never saved project state. Both directions
+    // replace baked/live source ownership under the stopped Arrangement gate.
+    stopped_bounce: bool,
 }
 
 pub struct Editor {
@@ -49,6 +52,17 @@ impl Editor {
             self.undo.back()
         }?;
         Some(inspect(&self.project, &target.project))
+    }
+
+    /// In-place bake edges replace live/baked voice custody in both directions.
+    /// This control-only history annotation is not serialized with the project.
+    pub fn next_history_requires_stopped_bounce(&self, redo: bool) -> bool {
+        (if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        })
+        .is_some_and(|edge| edge.stopped_bounce)
     }
 
     /// Origin of the actual adjacent edge, minted only by canonical single-command execution.
@@ -110,6 +124,10 @@ impl Editor {
         require_midi: bool,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        let stopped_bounce = matches!(
+            &command,
+            Command::CommitArrangementBounce { in_place: true, .. }
+        );
         let plan = crate::midi_history::Plan::capture(&command, &self.project);
         let plan = if require_midi {
             plan?
@@ -150,6 +168,7 @@ impl Editor {
         self.undo.push_back(HistoryEntry {
             project: previous,
             midi_effect: effect,
+            stopped_bounce,
         });
         self.redo.clear();
         Ok((result, prepared))
@@ -247,6 +266,7 @@ impl Editor {
             self.undo.push_back(HistoryEntry {
                 project: previous,
                 midi_effect: None,
+                stopped_bounce: false,
             });
             self.redo.clear();
         }
@@ -264,6 +284,7 @@ impl Editor {
         self.redo.push(HistoryEntry {
             project: std::mem::replace(&mut self.project, previous.project),
             midi_effect: previous.midi_effect,
+            stopped_bounce: previous.stopped_bounce,
         });
         true
     }
@@ -287,6 +308,7 @@ impl Editor {
         };
         let mut candidate = previous.project.clone();
         let effect = previous.midi_effect;
+        let stopped_bounce = previous.stopped_bounce;
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
         self.redo
@@ -299,6 +321,7 @@ impl Editor {
         self.redo.push(HistoryEntry {
             project: std::mem::replace(&mut self.project, candidate),
             midi_effect: effect,
+            stopped_bounce,
         });
         Ok(Some(prepared))
     }
@@ -312,6 +335,7 @@ impl Editor {
         self.undo.push_back(HistoryEntry {
             project: std::mem::replace(&mut self.project, next.project),
             midi_effect: next.midi_effect,
+            stopped_bounce: next.stopped_bounce,
         });
         true
     }
@@ -335,6 +359,7 @@ impl Editor {
         };
         let mut candidate = next.project.clone();
         let effect = next.midi_effect;
+        let stopped_bounce = next.stopped_bounce;
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
         self.undo
@@ -350,6 +375,7 @@ impl Editor {
         self.undo.push_back(HistoryEntry {
             project: std::mem::replace(&mut self.project, candidate),
             midi_effect: effect,
+            stopped_bounce,
         });
         Ok(Some(prepared))
     }
