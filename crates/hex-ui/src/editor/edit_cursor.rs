@@ -1,7 +1,7 @@
 //! View-only Arrangement insertion position, distinct from the audio playhead.
 use super::{EditorMode, EditorView, time_selection::TimeSelection};
 use crate::theme;
-use gpui::{Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, px};
 use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::Request;
 use std::time::{Duration, Instant};
@@ -201,12 +201,68 @@ impl EditorView {
         self.mode == EditorMode::Arrangement && cursor.pulse(now)
     }
 
-    pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {
+    /// Paint the same live range bounds above the loop rail and at the bottom
+    /// of Arrangement. No canonical state or pointer-capture ownership changes.
+    pub(super) fn edit_cursor_markers(
+        &self,
+        viewport: super::viewport::Viewport,
+        edge: hex_widgets::TimeMarkerEdge,
+    ) -> Option<Div> {
+        use hex_widgets::{TimeMarkerEndpoint as Endpoint, time_position_marker};
         let cursor = self.edit_cursor?;
         if cursor.generation != self.project_generation {
             return None;
         }
-        let fraction = viewport.fraction(cursor.frame)?;
+        let (start, end) = self
+            .time_selection
+            .map_or((cursor.frame, cursor.frame), |selection| {
+                (
+                    selection.anchor_frame.min(selection.end_frame),
+                    selection.anchor_frame.max(selection.end_frame),
+                )
+            });
+        let edge_name = match edge {
+            hex_widgets::TimeMarkerEdge::Top => "top",
+            hex_widgets::TimeMarkerEdge::Bottom => "bottom",
+        };
+        let markers = [
+            (
+                start,
+                if start == end {
+                    Endpoint::Point
+                } else {
+                    Endpoint::Start
+                },
+                "start",
+            ),
+            (end, Endpoint::End, "end"),
+        ]
+        .into_iter()
+        .filter_map(|(frame, endpoint, name)| {
+            if start == end && endpoint == Endpoint::End {
+                return None;
+            }
+            time_position_marker(
+                format!("time-marker-{edge_name}-{name}").into(),
+                viewport.fraction(frame)?,
+                endpoint,
+                edge,
+                theme::time_position_marker_color(),
+            )
+        });
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
+                .children(markers),
+        )
+    }
+
+    pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {
+        let markers = self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom)?;
         Some(
             div()
                 .absolute()
@@ -215,38 +271,7 @@ impl EditorView {
                 .left_0()
                 .right(px(self.track_header_width()))
                 .debug_selector(|| "edit-cursor-layer".into())
-                .children([canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, _| {
-                        let x = bounds.origin.x + bounds.size.width * fraction;
-                        let top = bounds.origin.y;
-                        let bottom = bounds.origin.y + bounds.size.height;
-                        for points in [
-                            [
-                                point(x - px(4.0), top),
-                                point(x + px(4.0), top),
-                                point(x, top + px(5.0)),
-                            ],
-                            [
-                                point(x - px(4.0), bottom),
-                                point(x + px(4.0), bottom),
-                                point(x, bottom - px(5.0)),
-                            ],
-                        ] {
-                            let mut path = PathBuilder::fill();
-                            path.move_to(points[0]);
-                            path.line_to(points[1]);
-                            path.line_to(points[2]);
-                            path.close();
-                            if let Ok(path) = path.build() {
-                                window
-                                    .paint_path(path, rgb(theme::color(theme::PaletteRole::Text)));
-                            }
-                        }
-                    },
-                )
-                .absolute()
-                .inset_0()]),
+                .children([markers]),
         )
     }
 
