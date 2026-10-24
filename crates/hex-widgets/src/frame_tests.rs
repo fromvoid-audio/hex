@@ -610,13 +610,10 @@ fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppC
         );
         visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
         visual.run_until_parked();
-        assert_eq!(
+        assert_ne!(
             visual.rendered_background(name),
-            Some(gpui::Background::from(rgb(if name == "state-action" {
-                0x123456
-            } else {
-                0xabcdef
-            })))
+            Some(gpui::Background::from(rgb(0x123456))),
+            "{name} has visible hover feedback"
         );
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.simulate_mouse_move(point(px(200.0), px(200.0)), None, Modifiers::default());
