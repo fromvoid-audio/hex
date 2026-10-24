@@ -8,12 +8,12 @@ use hex_project::{Command, Created};
 use hex_session::device_gesture::{EqNodeCreationSnapshot, GestureKey, GestureRequest};
 use std::sync::atomic::Ordering;
 
-fn periodic_source(files: &Files) -> PathBuf {
-    let path = files.wav(48_000, 4096);
+fn periodic_source(files: &Files, frames: u32) -> PathBuf {
+    let path = files.wav(48_000, frames);
     let mut bytes = fs::read(&path).unwrap();
-    for frame in 0..4096 {
+    for (frame, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
         let value = ((frame as f32 * std::f32::consts::TAU / 64.0).sin() * 4096.0) as i16;
-        bytes[44 + frame * 2..46 + frame * 2].copy_from_slice(&value.to_le_bytes());
+        sample.copy_from_slice(&value.to_le_bytes());
     }
     fs::write(&path, bytes).unwrap();
     path
@@ -35,7 +35,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             let mut h = ResidentHarness::new();
             assert!(h.next().error.is_none());
             let (mut applied, _) = h.applied(0);
-            let imported = h.run(Request::Import(periodic_source(&files)));
+            let imported = h.run(Request::Import(periodic_source(&files, 4096)));
             (applied, _) = h.applied(applied);
             let track = imported.state.project.tracks()[0].id();
             let transient = owner == 0 && kind != NodeKind::LowCut;
@@ -250,4 +250,125 @@ fn assert_runtime_loop(h: &ResidentHarness) {
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(status.playing.load(Ordering::Acquire));
     assert!(status.position.load(Ordering::Acquire) < 4096);
+}
+
+#[test]
+fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_loop() {
+    use hex_project::BeatTime;
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "held sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: periodic_source(&files, 48_000),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: EqState::default().encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = added.created else {
+        panic!("eq")
+    };
+    (applied, _) = h.applied(applied);
+    let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    h.run(Request::PrepareComputerKeyboard {
+        project_generation: 0,
+        revision: added.state.revision,
+        request_id: 2,
+        track,
+        input: Arc::clone(&input),
+    });
+    (applied, _) = h.applied(applied);
+    let mut intent = h.seek_intent(1, added.state.revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: hex_project::LoopRegion::new(0, 4096, true).unwrap(),
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok());
+    (applied, _) = h.applied(applied);
+    input.set_key(0, Some((60, 127, 1))).unwrap();
+    let dry = level(&h);
+    assert!(dry > 0.01);
+    let before = added.state.project.snapshot();
+    let draft = EqNodeCreationSnapshot::new(
+        Node::new(NodeId::new(before.next_id).unwrap(), 750.0, 12.0, 0).unwrap(),
+        added.state.project.device(device).unwrap().active_variant(),
+        before.next_id,
+    )
+    .unwrap();
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    assert!(
+        h.run(Request::DeviceGesture(GestureRequest::BeginEqCreation {
+            key,
+            device,
+            snapshot: draft,
+        }))
+        .gesture_ack
+        .unwrap()
+        .accepted
+    );
+    let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+        key,
+        sequence: 1,
+        snapshot: draft,
+    }));
+    (applied, _) = h.applied(applied);
+    assert_eq!(preview.state.project.snapshot(), before);
+    let held = level(&h);
+    assert!(held > dry * 1.5);
+    assert_runtime_loop(&h);
+    let committed = h.run(Request::DeviceGesture(GestureRequest::CommitEqCreation {
+        key,
+        sequence: 2,
+        snapshot: draft,
+    }));
+    (applied, _) = h.applied(applied);
+    assert!((level(&h) - held).abs() < held * 0.05);
+    assert_runtime_loop(&h);
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    let mut restored = undone.state.project.snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!((level(&h) - dry).abs() < dry * 0.05);
+    assert_runtime_loop(&h);
+    let redone = h.run(Request::Redo);
+    h.applied(applied);
+    assert_eq!(redone.state.project, committed.state.project);
+    assert!((level(&h) - held).abs() < held * 0.05);
+    assert_runtime_loop(&h);
+    input.set_key(0, None).unwrap();
+    for _ in 0..128 {
+        h.render();
+    }
+    assert!(h.render().iter().flatten().all(|sample| sample.abs() < 1e-7));
+    assert!(h.publication_refusals.is_empty());
 }
