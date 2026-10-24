@@ -58,6 +58,8 @@ mod runtime_view;
 mod sampler_edit;
 mod sampler_keyboard;
 mod section_launch;
+#[cfg(test)]
+mod spectrum_profile;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod streaming;
