@@ -210,13 +210,6 @@ impl EditorView {
     }
     fn gain_point(&self) -> Option<GainPoint> {
         let lane = &self.gain_lane;
-        if let Some(point) = lane
-            .track
-            .and_then(|track| lane.display_draft(track))
-            .map(|draft| draft.point)
-        {
-            return Some(point);
-        }
         self.state
             .as_ref()?
             .project
