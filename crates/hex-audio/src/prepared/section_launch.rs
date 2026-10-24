@@ -163,7 +163,7 @@ mod tests {
         if playing {
             playback.apply(PlaybackCommand::Play);
         }
-        let (mut control, mut callback) = channel(8_000).unwrap();
+        let (mut control, mut callback) = channel(source.arrangement().sample_rate()).unwrap();
         control.publish(playback).unwrap();
         callback.begin_block();
         callback.render(&mut []).unwrap();
@@ -254,6 +254,157 @@ mod tests {
                 assert_eq!(
                     output, [[0.625; 2]; 33],
                     "stopped clock starts immediately when ready"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn rounded_section_midi_overlay_install_and_cancel_have_no_callback_allocations() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                use hex_project::{BeatTime, Tempo};
+                let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::ZERO,
+                        tempo: Tempo::new(123_000_000).unwrap(),
+                    })
+                    .unwrap();
+                let Created::Track(track) = editor
+                    .execute(Command::InsertTrackWithDevice {
+                        name: "keys".into(),
+                        before_track: None,
+                        slot: hex_project::TrackDeviceSlot::Instrument,
+                        state: hex_project::default_instrument_state().unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                let Created::Scene(scene) = editor
+                    .execute(Command::AddScene {
+                        name: "scene".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("scene")
+                };
+                let Created::SessionClip(session_clip) = editor
+                    .execute(Command::CreateSessionMidiClip {
+                        track,
+                        scene,
+                        name: "source".into(),
+                        source_length: BeatTime::from_quarters(4).unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                let Created::Clip(arrangement_clip) = editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::from_quarters(4).unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                for clip in [session_clip, arrangement_clip] {
+                    editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::ZERO,
+                            duration: BeatTime::ONE,
+                            pitch: 60,
+                            channel: 0,
+                            velocity: 100,
+                        })
+                        .unwrap();
+                }
+                let source = Arc::new(
+                    PreparedRevision::prepare(
+                        editor.project(),
+                        &BTreeMap::new(),
+                        Arc::new(SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                );
+                let region = LoopRegion::new(0, 23_415, true).unwrap();
+                let make_candidate = || {
+                    Playback::from_interactive_arrangement_preroll(
+                        SessionPlayback::prepare_section_arrangement_preroll(
+                            Arc::clone(&source),
+                            None,
+                            region,
+                            0,
+                            &AtomicBool::new(false),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                };
+                // At123bpm this frame loop requires123000001 micro-bpm admission,
+                // so the candidate owns newly allocated source/span/index metadata.
+                let mut expected = [[0.0; 2]; 17];
+                let mut old =
+                    Playback::try_from_prepared_with_session(Arc::clone(&source)).unwrap();
+                old.apply(PlaybackCommand::PlayFrom(23_413));
+                old.render(&mut expected[..2]).unwrap();
+                make_candidate().render(&mut expected[2..]).unwrap();
+                assert!(expected[2..].iter().flatten().any(|sample| *sample != 0.0));
+                let (mut control, mut callback) = active(&source, 23_413, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        make_candidate(),
+                        PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
+                    )
+                    .unwrap();
+                let mut output = [[0.0; 2]; 17];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(output, expected);
+                assert_eq!(control.status.applied_revision.load(Acquire), revision);
+                assert_eq!(control.status.performance_frame.load(Relaxed), 15);
+                assert_eq!(control.reclaim(), 1);
+                control.request_shutdown();
+                render_checked(&mut callback, &mut output);
+                assert_eq!(
+                    control.reclaim(),
+                    1,
+                    "installed overlay is destroyed on control after callback return"
+                );
+
+                let (mut control, mut callback) = active(&source, 1, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        make_candidate(),
+                        PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::Quarter,
+                        },
+                    )
+                    .unwrap();
+                render_checked(&mut callback, &mut output);
+                assert_eq!(
+                    control.cancel_fresh_runtime_publication(revision),
+                    FreshRuntimeCancellationResult::Cancelled
+                );
+                render_checked(&mut callback, &mut output);
+                assert_eq!(control.status.applied_revision.load(Acquire), 1);
+                assert_eq!(
+                    control.reclaim(),
+                    1,
+                    "cancelled overlay is destroyed on control"
                 );
             })
             .unwrap()

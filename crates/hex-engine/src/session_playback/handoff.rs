@@ -94,6 +94,7 @@ fn mutable_prefix_shortening(
 }
 
 impl SessionPlayback {
+    #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
         revision: &PreparedRevision,
         midi: crate::session_inventory::EffectiveSessionMidi<'_>,
