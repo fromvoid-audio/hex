@@ -93,7 +93,7 @@ pub(super) struct TuningState {
     last_variations: Instant,
     pub(super) error: Option<String>,
     pub(super) slot: usize,
-    pub(super) name: Option<Entity<super::browser_input::BrowserSearch>>,
+    pub(super) name: Option<Entity<hex_widgets::TextInput>>,
     pub library_pending: Option<u64>,
     library_terminal: Option<library::DeviceTerminalContext>,
     pub library_next: u64,

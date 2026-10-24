@@ -412,7 +412,6 @@ fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     device_panel::bind_keyboard_keys(cx);
     clip_name::bind_keys(cx);
-    tuning::library::bind_keys(cx);
     track_name::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -438,62 +437,6 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", BrowserNext, Some("hex_browser_search")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser_search")),
         KeyBinding::new("escape", BrowserEscape, Some("hex_browser_search")),
-        gpui::KeyBinding::new(
-            "backspace",
-            browser_input::BrowserBackspace,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "delete",
-            browser_input::BrowserDelete,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "left",
-            browser_input::BrowserLeft,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "right",
-            browser_input::BrowserRight,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "shift-left",
-            browser_input::BrowserSelectLeft,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "shift-right",
-            browser_input::BrowserSelectRight,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "cmd-a",
-            browser_input::BrowserSelectAll,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "home",
-            browser_input::BrowserHome,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new("end", browser_input::BrowserEnd, Some("hex_browser_search")),
-        gpui::KeyBinding::new(
-            "cmd-v",
-            browser_input::BrowserPaste,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "cmd-c",
-            browser_input::BrowserCopy,
-            Some("hex_browser_search"),
-        ),
-        gpui::KeyBinding::new(
-            "cmd-x",
-            browser_input::BrowserCut,
-            Some("hex_browser_search"),
-        ),
         KeyBinding::new("cmd-shift-t", AddMidiTrack, Some("hex_editor")),
         KeyBinding::new("cmd-shift-m", AddMidiClip, Some("hex_editor")),
         KeyBinding::new("cmd-o", OpenProject, Some("hex_editor")),
@@ -557,6 +500,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
+    hex_widgets::bind_text_input_keys(cx);
 }
 
 fn escape_binding() -> KeyBinding {

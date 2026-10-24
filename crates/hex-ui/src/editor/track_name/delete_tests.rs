@@ -193,13 +193,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     editor.read_with(&visual, |view, cx| {
         assert!(view.track_name.edit.is_some());
         assert_eq!(
-            view.track_name
-                .edit
-                .as_ref()
-                .unwrap()
-                .input
-                .read(cx)
-                .content,
+            view.track_name.edit.as_ref().unwrap().input.read(cx).text(),
             "draf"
         );
         assert!(view.last_enqueued_edit.is_none());
@@ -211,7 +205,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     visual.simulate_input("abc");
     visual.simulate_keystrokes("backspace");
     editor.read_with(&visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "ab");
+        assert_eq!(view.browser.search.read(cx).text(), "ab");
         assert!(view.last_enqueued_edit.is_none());
     });
     let b = visual

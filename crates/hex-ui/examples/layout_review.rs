@@ -1,11 +1,15 @@
 //! Native, disposable layout catalog. No audio, project or preferences I/O.
 // The gallery samples shared compositions; the live windowed controller also
 // uses helpers which this disposable fixture does not mount.
+#[path = "../src/context_menu.rs"]
+mod context_menu;
 #[path = "../src/device_composition.rs"]
 #[allow(dead_code)]
 mod device_composition;
 #[path = "layout_review/gallery.rs"]
 mod gallery;
+#[path = "../src/output_meter.rs"]
+mod output_meter;
 #[path = "../src/theme.rs"]
 #[allow(dead_code)]
 mod theme;
@@ -18,6 +22,7 @@ use gpui::{App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px
 fn main() {
     Application::new().run(|cx: &mut App| {
         hex_widgets::bind_numeric_control_keys(cx);
+        hex_widgets::bind_text_input_keys(cx);
         hex_widgets::bind_response_graph_keys(cx);
         if let Err(error) = theme::load_fonts(cx) {
             eprintln!("{error}");

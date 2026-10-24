@@ -154,7 +154,7 @@ impl EditorView {
         }
         self.browser
             .plugins
-            .rows(&self.browser.search.read(cx).content)
+            .rows(self.browser.search.read(cx).text())
     }
     pub(super) fn plugin_controls(&self, cx: &mut Context<Self>) -> Div {
         let state = &self.browser.plugins;

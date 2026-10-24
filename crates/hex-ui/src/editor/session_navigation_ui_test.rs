@@ -619,7 +619,7 @@ fn computer_keyboard_preserves_text_focus_and_cancels_on_focus_loss(cx: &mut Tes
             view.computer_keyboard.enabled,
             "typing m must not toggle the keyboard"
         );
-        assert_eq!(view.browser.search.read(cx).content, "asmzcv");
+        assert_eq!(view.browser.search.read(cx).text(), "asmzcv");
         assert_eq!(
             (
                 view.computer_keyboard.base_pitch,

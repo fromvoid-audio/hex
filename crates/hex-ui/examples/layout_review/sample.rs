@@ -1,5 +1,6 @@
 //! Disposable owners for widget events. All edits stop at this view's local values.
 use super::catalog::{Demo, Item};
+use super::workspace::{self, Workspace};
 use crate::theme;
 use gpui::{
     Context, Div, Entity, Focusable, Render, Subscription, Window, div, prelude::*, px, rgb,
@@ -12,6 +13,7 @@ pub(super) struct Prepared {
     toggle: ToggleConfig,
     selector: SelectorConfig,
     picker: ColorPickerConfig,
+    workspace: Option<workspace::Prepared>,
 }
 pub(super) struct Sample {
     pub item: Item,
@@ -32,6 +34,7 @@ pub(super) struct Sample {
     pub status: String,
     pub narrow: bool,
     actions: u32,
+    workspace: Option<Entity<Workspace>>,
 }
 impl Sample {
     pub fn prepare(item: Item) -> Result<Prepared, String> {
@@ -100,6 +103,11 @@ impl Sample {
             toggle: toggle_config,
             selector: selector_config,
             picker,
+            workspace: if let Demo::Workspace(kind) = item.demo {
+                Some(Workspace::prepare(kind)?)
+            } else {
+                None
+            },
         })
     }
     pub fn new(prepared: Prepared, cx: &mut Context<Self>) -> Self {
@@ -109,6 +117,7 @@ impl Sample {
             toggle: toggle_config,
             selector: selector_config,
             picker: picker_config,
+            workspace,
         } = prepared;
         let style = theme::control_style();
         let mut status = "local fixture · ready".to_string();
@@ -203,6 +212,7 @@ impl Sample {
             status,
             narrow: false,
             actions: 0,
+            workspace: workspace.map(|p| cx.new(|cx| Workspace::new(p, cx))),
         };
         s.refresh_meters(cx);
         s
@@ -345,6 +355,9 @@ impl Sample {
         cx.notify();
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if let Some(w) = &self.workspace {
+            w.update(cx, |w, cx| w.cancel(cx));
+        }
         for n in &self.numbers {
             n.update(cx, |n, cx| n.cancel(cx));
         }
@@ -373,6 +386,9 @@ impl Sample {
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.cancel(cx);
         self.enabled = enabled;
+        if let Some(w) = &self.workspace {
+            w.update(cx, |w, cx| w.set_enabled(enabled, cx));
+        }
         for n in &self.numbers {
             n.update(cx, |n, cx| n.set_enabled(enabled, cx));
         }
@@ -384,6 +400,9 @@ impl Sample {
     pub fn restyle(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         self.cancel(cx);
         let style = theme::control_style();
+        if let Some(w) = &self.workspace {
+            w.update(cx, |w, cx| w.restyle(cx))?;
+        }
         if self.style == style {
             return Ok(());
         }
@@ -424,6 +443,11 @@ impl Sample {
     }
     pub fn focus_first(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.item.demo {
+            Demo::Workspace(_) => {
+                if let Some(w) = &self.workspace {
+                    w.update(cx, |w, cx| w.focus_first(window, cx));
+                }
+            }
             Demo::Toggle(_) | Demo::Chrome(_) | Demo::Frame("device header" | "device frame") => {
                 self.toggle.focus_handle(cx).focus(window)
             }
@@ -617,6 +641,7 @@ impl Sample {
                 ),
             },
             Demo::Compositions => div(),
+            Demo::Workspace(_) => div().w_full().children(self.workspace.clone()),
         }
     }
 }
@@ -624,10 +649,10 @@ impl Render for Sample {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().flex().flex_col().gap(px(12.0)).w_full()
             .child(theme::text(self.item.name))
-            .child(div().id("widget-preview").debug_selector(||"widget-preview".into()).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
+            .child(div().id("widget-preview").debug_selector(||"widget-preview".into()).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus"))
-            .child(theme::text(match self.item.demo {Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color|Demo::Bars){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
@@ -636,6 +661,22 @@ impl Render for Sample {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn inline_value_catalog_entry_has_no_dial(cx: &mut TestAppContext) {
+        let item = super::super::catalog::inventory()
+            .into_iter()
+            .find(|i| i.name == "inline value")
+            .unwrap();
+        let prepared = Sample::prepare(item).unwrap();
+        let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("sandbox-number-0-value").is_some());
+        assert!(
+            visual.debug_bounds("sandbox-number-0-knob").is_none(),
+            "inline value must not silently render the standard knob fallback"
+        );
+    }
     #[gpui::test]
     fn graph_fixture_line_follows_pointer_edits_and_cancel(cx: &mut TestAppContext) {
         cx.update(hex_widgets::bind_response_graph_keys);
