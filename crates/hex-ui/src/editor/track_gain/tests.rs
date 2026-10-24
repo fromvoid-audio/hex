@@ -1103,20 +1103,20 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
         hex_session::DocumentAudioMode::Resident,
         hex_session::DocumentAudioMode::VerifiedStreaming,
     ] {
-        let (_browser, mut visual, editor, [first, second]) = actor_fixture(cx);
-        editor.update(&mut visual, |view, cx| {
-            view.document_audio_mode = mode;
-            cx.notify();
-        });
+        let (_browser, mut visual, editor, [first, second]) = actor_fixture_in_mode(
+            cx,
+            super::super::test_environment::Environment::new().unwrap(),
+            mode,
+        );
         visual.run_until_parked();
         let lower_gap = |visual: &mut VisualTestContext, track: TrackId| {
             let a = Box::leak(format!("gain-lane-show-{}", track.value()).into_boxed_str());
             let next = if mode == hex_session::DocumentAudioMode::Resident {
-                "track-return-sends"
+                format!("track-return-sends-{}", track.value())
             } else {
-                "track-gain-up"
+                format!("track-volume-{}", track.value())
             };
-            let b = Box::leak(format!("{next}-{}", track.value()).into_boxed_str());
+            let b = Box::leak(next.into_boxed_str());
             let left = visual.debug_bounds(a).unwrap();
             let right = visual.debug_bounds(b).unwrap();
             assert!(
@@ -1193,11 +1193,11 @@ fn lower_header_controls_keep_their_actions_without_selecting_background_track(
         hex_session::DocumentAudioMode::Resident,
         hex_session::DocumentAudioMode::VerifiedStreaming,
     ] {
-        let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
-        editor.update(&mut visual, |view, cx| {
-            view.document_audio_mode = mode;
-            cx.notify();
-        });
+        let (_browser, mut visual, editor, [track, other]) = actor_fixture_in_mode(
+            cx,
+            super::super::test_environment::Environment::new().unwrap(),
+            mode,
+        );
         visual.run_until_parked();
         let name = bounds(&mut visual, "track-name", other).center();
         visual.simulate_click(name, Modifiers::default());
@@ -1222,24 +1222,29 @@ fn lower_header_controls_keep_their_actions_without_selecting_background_track(
             assert_eq!(view.selected_track_ids(), [other]);
         });
         visual.simulate_click(sends, Modifiers::default());
-        if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
-            let gain = bounds(&mut visual, "track-gain-up", track).center();
-            visual.simulate_click(gain, Modifiers::default());
-            pump(&editor, cx, |view| view.worker_requests_pending == 0);
-            editor.read_with(&visual, |view, _| {
-                assert!(
-                    view.state
-                        .as_ref()
-                        .unwrap()
-                        .project
-                        .track(track)
-                        .unwrap()
-                        .gain()
-                        > 0.5
-                );
-                assert_eq!(view.selected_track_ids(), [other]);
-            });
-        }
+        let rail = visual
+            .debug_bounds(Box::leak(
+                format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let start = point(rail.left() + px(10.0), rail.center().y);
+        drag(&mut visual, start, point(start.x, start.y - px(24.0)));
+        pump(&editor, cx, |view| {
+            view.device_gesture.snapshot().is_none()
+                && view.worker_requests_pending == 0
+                && view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .gain()
+                    > 0.5
+        });
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), [other]);
+        });
         // Automation deliberately selects its owner; retain that existing action.
         let automation = bounds(&mut visual, "gain-lane-show", track).center();
         visual.simulate_click(automation, Modifiers::default());
