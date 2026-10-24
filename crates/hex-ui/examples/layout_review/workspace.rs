@@ -23,12 +23,14 @@ pub(super) enum Kind {
 }
 pub(super) struct Prepared {
     kind: Kind,
+    prefix: String,
     numbers: [NumericControlConfig; 2],
     selector: SelectorConfig,
     text: TextInputConfig,
 }
 pub(super) struct Workspace {
     kind: Kind,
+    prefix: String,
     numbers: [Entity<NumericControl>; 2],
     selector: Entity<Selector>,
     text: Entity<TextInput>,
@@ -43,13 +45,18 @@ pub(super) struct Workspace {
     _subscriptions: Vec<Subscription>,
 }
 impl Workspace {
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub fn prepare(kind: Kind) -> Result<Prepared, String> {
+        Self::prepare_scoped(kind, "")
+    }
+    pub fn prepare_scoped(kind: Kind, prefix: &str) -> Result<Prepared, String> {
+        let id = |name: &str| format!("{prefix}{name}");
         let style = theme::control_style();
         let spec = NumericSpec::new(0.0, 2.0, 0.5, NumericScale::Linear, 2, None::<&str>)
             .map_err(|e| e.to_string())?;
         let number = |index, label, value| {
             NumericControlConfig::new(
-                format!("workspace-level-{index}"),
+                id(&format!("workspace-level-{index}")),
                 theme::text(label),
                 NumericControlKind::HorizontalSlider,
                 spec.clone(),
@@ -66,15 +73,16 @@ impl Workspace {
         };
         Ok(Prepared {
             kind,
+            prefix: prefix.to_owned(),
             numbers: [number(0, "left", 0.25)?, number(1, "right", 0.5)?],
             selector: SelectorConfig::new(
-                "workspace-meter-state",
+                id("workspace-meter-state"),
                 ["signal", "offline", "stopped", "fault", "invalid signal"].map(theme::text),
                 0,
                 style,
             )?,
             text: TextInputConfig {
-                id: "workspace-text".into(),
+                id: id("workspace-text").into(),
                 kind: text_kind,
                 style,
                 action_style: theme::action_style(),
@@ -121,6 +129,7 @@ impl Workspace {
         }));
         Self {
             kind: p.kind,
+            prefix: p.prefix,
             numbers,
             selector,
             text,
@@ -134,6 +143,9 @@ impl Workspace {
             status: "local fixture · ready".into(),
             _subscriptions: subscriptions,
         }
+    }
+    fn id(&self, name: &str) -> String {
+        format!("{}{name}", self.prefix)
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         for n in &self.numbers {
@@ -286,7 +298,10 @@ impl Workspace {
                 .child(
                     action(theme::text("open local menu"), theme::action_style())
                         .id("workspace-open-menu")
-                        .debug_selector(|| "workspace-open-menu".into())
+                        .debug_selector({
+                            let id = self.id("workspace-open-menu");
+                            move || id.clone()
+                        })
                         .w(px(140.0))
                         .h(px(22.0))
                         .track_focus(&self.focus)
@@ -329,7 +344,7 @@ impl Workspace {
                         };
                         levels.into_iter().enumerate().map(|(i, value)| {
                             level_meter(
-                                format!("workspace-gauge-{i}").into(),
+                                self.id(&format!("workspace-gauge-{i}")).into(),
                                 value,
                                 value > 1.0,
                                 LevelMeterStyle {
@@ -393,7 +408,10 @@ impl Workspace {
                 div().child(
                     action(theme::text(glyph), style)
                         .id("workspace-button")
-                        .debug_selector(|| "workspace-button".into())
+                        .debug_selector({
+                            let id = self.id("workspace-button");
+                            move || id.clone()
+                        })
                         .w(px(20.0))
                         .h(px(20.0))
                         .track_focus(&self.focus)
@@ -424,7 +442,10 @@ impl Workspace {
             Kind::ScrollingList => div().child(
                 div()
                     .id("workspace-scroll-list")
-                    .debug_selector(|| "workspace-scroll-list".into())
+                    .debug_selector({
+                        let id = self.id("workspace-scroll-list");
+                        move || id.clone()
+                    })
                     .w(px(200.0))
                     .h(px(110.0))
                     .overflow_y_scroll()
@@ -463,7 +484,10 @@ impl Workspace {
                             },
                         )
                         .id(i)
-                        .debug_selector(move || format!("workspace-row-{i}"))
+                        .debug_selector({
+                            let id = self.id(&format!("workspace-row-{i}"));
+                            move || id.clone()
+                        })
                         .justify_start()
                         .px(px(4.0))
                         .h(px(20.0))

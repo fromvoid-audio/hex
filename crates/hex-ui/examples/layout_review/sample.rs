@@ -9,6 +9,7 @@ use hex_widgets::*;
 
 pub(super) struct Prepared {
     item: Item,
+    prefix: String,
     numbers: Vec<NumericControlConfig>,
     toggle: ToggleConfig,
     selector: SelectorConfig,
@@ -17,6 +18,7 @@ pub(super) struct Prepared {
 }
 pub(super) struct Sample {
     pub item: Item,
+    prefix: String,
     numbers: Vec<Entity<NumericControl>>,
     toggle: Entity<Toggle>,
     selector: Entity<Selector>,
@@ -37,7 +39,12 @@ pub(super) struct Sample {
     workspace: Option<Entity<Workspace>>,
 }
 impl Sample {
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub fn prepare(item: Item) -> Result<Prepared, String> {
+        Self::prepare_scoped(item, "")
+    }
+    pub fn prepare_scoped(item: Item, prefix: &str) -> Result<Prepared, String> {
+        let id = |name: &str| format!("{prefix}{name}");
         let style = theme::control_style();
         let (kind, appearance, layout, scale) = match item.demo {
             Demo::Numeric(k, a, l, s) => (k, a, l, s),
@@ -59,7 +66,7 @@ impl Sample {
         let mut numbers = Vec::new();
         for (i, initial) in [0.0, 0.5, 1.0].into_iter().enumerate() {
             let config = NumericControlConfig::new(
-                format!("sandbox-number-{i}"),
+                id(&format!("sandbox-number-{i}")),
                 theme::text(["minimum", "middle", "maximum"][i]),
                 kind,
                 spec.clone(),
@@ -72,7 +79,7 @@ impl Sample {
             numbers.push(config);
         }
         let toggle_config =
-            ToggleConfig::new("sandbox-toggle", theme::text("enabled"), true, style)?
+            ToggleConfig::new(id("sandbox-toggle"), theme::text("enabled"), true, style)?
                 .with_appearance(match item.demo {
                     Demo::Toggle(a) => a,
                     Demo::Frame("device header" | "device frame") => {
@@ -85,7 +92,7 @@ impl Sample {
         } else {
             ["sine", "triangle", "square"].map(theme::text).to_vec()
         };
-        let selector_config = SelectorConfig::new("sandbox-selector", choices, 0, style)?
+        let selector_config = SelectorConfig::new(id("sandbox-selector"), choices, 0, style)?
             .with_appearance(match item.demo {
                 Demo::Selector(a) => a,
                 _ => DiscreteControlAppearance::Standard,
@@ -95,16 +102,21 @@ impl Sample {
             } else {
                 "wave shape"
             }));
-        let picker =
-            ColorPickerConfig::new("sandbox-color", RgbColor::new(75, 150, 210), 210.0, style)?;
+        let picker = ColorPickerConfig::new(
+            id("sandbox-color"),
+            RgbColor::new(75, 150, 210),
+            210.0,
+            style,
+        )?;
         Ok(Prepared {
             item,
+            prefix: prefix.to_owned(),
             numbers,
             toggle: toggle_config,
             selector: selector_config,
             picker,
             workspace: if let Demo::Workspace(kind) = item.demo {
-                Some(Workspace::prepare(kind)?)
+                Some(Workspace::prepare_scoped(kind, prefix)?)
             } else {
                 None
             },
@@ -113,6 +125,7 @@ impl Sample {
     pub fn new(prepared: Prepared, cx: &mut Context<Self>) -> Self {
         let Prepared {
             item,
+            prefix,
             numbers: configs,
             toggle: toggle_config,
             selector: selector_config,
@@ -159,7 +172,7 @@ impl Sample {
                 selected: true,
             }],
         };
-        let graph = cx.new(|cx| ResponseGraph::new(cx, "sandbox-graph", style));
+        let graph = cx.new(|cx| ResponseGraph::new(cx, format!("{prefix}sandbox-graph"), style));
         if let Err(e) = graph.update(cx, |g, cx| {
             g.set_editable(true, cx);
             g.set_creation_enabled(true);
@@ -181,7 +194,7 @@ impl Sample {
             s.graph_event(e, cx)
         }));
         let values = std::array::from_fn(|i| 0.25 + (i % 8) as f32 * 0.08);
-        let bars = cx.new(|cx| BarEditor::new(cx, "sandbox-bars", style));
+        let bars = cx.new(|cx| BarEditor::new(cx, format!("{prefix}sandbox-bars"), style));
         if let Err(e) = bars.update(cx, |b, cx| b.set_values(values, 32, cx)) {
             status = e.into();
         }
@@ -195,6 +208,7 @@ impl Sample {
         }));
         let mut s = Self {
             item,
+            prefix,
             numbers,
             toggle,
             selector,
@@ -216,6 +230,9 @@ impl Sample {
         };
         s.refresh_meters(cx);
         s
+    }
+    fn id(&self, name: &str) -> String {
+        format!("{}{name}", self.prefix)
     }
     fn refresh_meters(&mut self, cx: &mut Context<Self>) {
         if !matches!(
@@ -420,9 +437,9 @@ impl Sample {
         // entities, preserving authored local values and reconnecting subscriptions.
         let color = self.picker.read(cx).color();
         let hue = self.picker.read(cx).hsv().hue;
-        let config = ColorPickerConfig::new("sandbox-color", color, hue, style)?;
+        let config = ColorPickerConfig::new(self.id("sandbox-color"), color, hue, style)?;
         self.picker = cx.new(|cx| ColorPicker::from_config(cx, config));
-        self.bars = cx.new(|cx| BarEditor::new(cx, "sandbox-bars", style));
+        self.bars = cx.new(|cx| BarEditor::new(cx, self.id("sandbox-bars"), style));
         self.bars
             .update(cx, |b, cx| b.set_values(self.values, 32, cx))?;
         self.paint_subscriptions.clear();
@@ -492,7 +509,10 @@ impl Sample {
         div().child(
             div()
                 .id("chrome-hit")
-                .debug_selector(|| "chrome-hit".into())
+                .debug_selector({
+                    let id = self.id("chrome-hit");
+                    move || id.clone()
+                })
                 .track_focus(&self.toggle.focus_handle(cx))
                 .flex()
                 .items_center()
@@ -521,7 +541,10 @@ impl Sample {
         div().child(
             device_action(theme::text("+"), theme::action_style())
                 .id("header-action")
-                .debug_selector(|| "header-action".into())
+                .debug_selector({
+                    let id = self.id("header-action");
+                    move || id.clone()
+                })
                 .on_click(cx.listener(|s, _, _, cx| {
                     if s.enabled {
                         s.actions = s.actions.saturating_add(1);
@@ -649,7 +672,7 @@ impl Render for Sample {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div().flex().flex_col().gap(px(12.0)).w_full()
             .child(theme::text(self.item.name))
-            .child(div().id("widget-preview").debug_selector(||"widget-preview".into()).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
+            .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus"))
             .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"normalized 0–1 · accent line follows nodes between fixed endpoints · gray lines/fills are static reference/analyzer fixtures · click adds · backspace removes · escape restores drag",Demo::Bars=>"paint bars with pointer or arrows · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
