@@ -242,7 +242,7 @@ fn active_tail_chain(
     let mut chain =
         NativeRuntimeChain::new(tail_instances(return_id, count, frames, bytes)).unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.process_block(&mut [[0.1, -0.1]]).unwrap();
     chain.commit_block();
     chain
 }
@@ -380,7 +380,7 @@ fn playback(project: &Project) -> SessionPlayback {
 fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> NativeRuntimeChain {
     let mut chain = NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
     chain.begin_block();
-    chain.process_block(&mut [[0.1, -0.1]]);
+    chain.process_block(&mut [[0.1, -0.1]]).unwrap();
     chain.commit_block();
     chain
 }
@@ -389,6 +389,53 @@ fn warm(playback: &mut SessionPlayback) {
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut output = [[0.0; 2]; 256];
     playback.render(&mut output).unwrap();
+}
+
+#[test]
+fn unchanged_main_configuration_with_incompatible_history_refuses_without_losing_old_audio() {
+    let project = super::tests::project(1.0, 0, 8 << 32);
+    let state = Arc::new(NativeDeviceState::new(HOLD_TYPE, 1, vec![0]).unwrap());
+    let chain = |definition: Arc<dyn PreparedNativeProcessor>| {
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Main,
+            device_id: 17,
+            device_type: HOLD_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::clone(&state)),
+            definition: Some(definition),
+        }])
+        .unwrap()
+    };
+    let mut previous = playback(&project);
+    let mut oracle = playback(&project);
+    previous.main_chain = chain(Arc::new(HoldDefinition));
+    oracle.main_chain = chain(Arc::new(HoldDefinition));
+    warm(&mut previous);
+    warm(&mut oracle);
+    let mut candidate = playback(&project);
+    // Model an incompatible provider behind unchanged immutable metadata.
+    // No changed suffix was selected, so no history exclusion is justified.
+    candidate.main_chain = chain(Arc::new(ScaleDefinition(0.5)));
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(previous.performance_frame, oracle.performance_frame);
 }
 
 #[test]
@@ -1083,15 +1130,21 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
 
     bank.begin_block();
     let mut failed_attempt = [[0.0; 2]; 1];
-    bank.render_chunk(&mut failed_attempt, 0, &mut None)
-        .unwrap();
+    bank.render_chunk(
+        &mut failed_attempt,
+        0,
+        &mut None,
+        &mut hex_lattice::RefuseForeign,
+    )
+    .unwrap();
     assert_eq!(failed_attempt[0], [0.375, -0.75]);
     bank.rollback_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);
 
     bank.begin_block();
     let mut retry = [[0.0; 2]; 1];
-    bank.render_chunk(&mut retry, 0, &mut None).unwrap();
+    bank.render_chunk(&mut retry, 0, &mut None, &mut hex_lattice::RefuseForeign)
+        .unwrap();
     assert_eq!(retry, failed_attempt);
     bank.commit_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);

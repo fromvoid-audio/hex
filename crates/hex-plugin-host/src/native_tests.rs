@@ -1,6 +1,6 @@
 //! Original owned SDK modules only; never installed plug-ins or the Hex UI.
 use super::*;
-use hex_audio::plugin_transport::Events;
+use crate::transport::Events;
 use hex_plugin_state::decode;
 use std::path::PathBuf;
 
@@ -88,6 +88,27 @@ fn actual_guarded_client_prepares_persistent_pcm_and_normal_direct_reap() {
         TrustUserCode::Acknowledged,
     )
     .unwrap();
+    let initial_storage = instance.retained_storage_on_control().unwrap();
+    assert_eq!(initial_storage.shared_groups, 3);
+    assert_eq!(initial_storage.shared_handle_bound, 3);
+    assert_eq!(initial_storage.ipc_handle_bound, 2);
+    assert_eq!(initial_storage.native_child_lifetime_bound, 1);
+    let original_capacity = instance.config.bundle.capacity();
+    instance.config.bundle.reserve_exact(1024);
+    let storage = instance.retained_storage_on_control().unwrap();
+    assert_eq!(
+        storage.data_bytes - initial_storage.data_bytes,
+        instance.config.bundle.capacity() - original_capacity,
+        "wire path length must not hide retained String capacity"
+    );
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(instance.retained_storage_on_control(), Some(storage));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
     let state = decode(&instance.ready().initial_state).unwrap();
     assert_eq!(state.identity, identity);
     assert_eq!(state.component.unwrap().len(), 32);
@@ -139,6 +160,7 @@ fn actual_guarded_client_prepares_persistent_pcm_and_normal_direct_reap() {
         }
     );
     assert!(instance.child_id_on_control().is_none());
+    assert_eq!(instance.retained_storage_on_control(), Some(storage));
     assert!(
         instance
             .exchange_on_worker(request(instance.configuration(), 4))
@@ -261,6 +283,86 @@ impl Drop for Case {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn revalidation_paths_allocate_one_buffer_and_depth_refusal_has_no_heap_diagnostic() {
+    let case = Case::new();
+    fs::create_dir_all(case.root.join("Contents/MacOS")).unwrap();
+    fs::write(case.root.join("Contents/MacOS/fixture"), b"original").unwrap();
+    let relative = "Contents/MacOS/fixture";
+    let mut returned = None;
+    let measured = allocation_counter::measure(|| {
+        returned =
+            Some(hex_plugin_scan::macos::identity::relative_file(&case.root, relative).unwrap());
+    });
+    let returned = returned.unwrap();
+    assert_eq!((measured.count_total, measured.count_current), (1, 1));
+    assert_eq!(
+        (measured.bytes_total, measured.bytes_current),
+        (returned.capacity() as u64, returned.capacity() as i64)
+    );
+    assert_eq!(
+        returned.capacity(),
+        case.root.as_os_str().len() + 1 + relative.len()
+    );
+    let too_deep = "d/".repeat(33);
+    let mut refusal = None;
+    let measured = allocation_counter::measure(|| {
+        refusal = Some(
+            hex_plugin_scan::macos::identity::relative_file(&case.root, &too_deep).unwrap_err(),
+        );
+    });
+    let refusal = refusal.unwrap();
+    assert!(matches!(
+        refusal,
+        hex_plugin_scan::macos::validation::Error::Invalid("discovery path depth refused")
+    ));
+    assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn revalidation_universal_macho_parser_uses_no_heap_scratch() {
+    use hex_plugin_scan::macos::macho::{self, Image, Role};
+    // Two independent thin headers in a big-endian universal container. This
+    // tests the parser/data budget only; it is never loaded as executable code.
+    let thin = |cpu, subtype| {
+        [0xfeed_facf_u32, cpu, subtype, 8, 1, 8, 0, 0, 0, 8]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    let mut image = [
+        0xcafe_babe_u32,
+        2,
+        0x0100_000c,
+        0,
+        64,
+        40,
+        3,
+        0x0100_0007,
+        3,
+        104,
+        40,
+        3,
+    ]
+    .into_iter()
+    .flat_map(u32::to_be_bytes)
+    .collect::<Vec<_>>();
+    image.resize(64, 0);
+    image.extend(thin(0x0100_000c, 0));
+    image.extend(thin(0x0100_0007, 3));
+    let measured = allocation_counter::measure(|| {
+        assert_eq!(
+            macho::inspect(&image, Role::Module),
+            Ok(Image::UniversalArm64)
+        );
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
 }
 struct Joining {
     task: Option<JoinHandle<()>>,
@@ -459,11 +561,20 @@ fn actual_inherited_autoreap_refuses_before_foreign_entry_without_changing_calle
         )
         .err()
         .unwrap();
-        assert!(matches!(retained.cause(), Error::Custody(_)));
+        let Error::Custody(crate::CustodyError::Lost(original)) = retained.cause() else {
+            panic!("actual waitability probe must retain its original OS error");
+        };
+        assert!(original.raw_os_error().is_some());
+        let original = Arc::clone(original);
         for _ in 0..2 {
+            let Err(Error::Custody(crate::CustodyError::Lost(error))) =
+                retained.poll_disposal_on_control()
+            else {
+                panic!("lost waitability cannot become a no-instance or reaped result");
+            };
             assert!(
-                matches!(retained.poll_disposal_on_control(), Err(Error::Custody(_))),
-                "lost waitability cannot become a no-instance or reaped result"
+                Arc::ptr_eq(&original, &error),
+                "polling must retain the actual same OS cause"
             );
         }
         assert!(!case.trace().exists());
@@ -576,7 +687,7 @@ fn cancelling_one_real_instance_preserves_another_same_class_instance() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn real_immutable_quantum_adapter_has_exact_two_quantum_positions_and_rejects_host_refusal() {
-    use hex_audio::plugin_transport::{self, Fault};
+    use crate::transport::{self as plugin_transport, Fault};
     let mut instance = Prepared::prepare_on_control(
         &build(),
         source(),
@@ -659,18 +770,69 @@ fn real_immutable_quantum_adapter_has_exact_two_quantum_positions_and_rejects_ho
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presentation() {
     let case = Case::new();
-    let pending = Pending::prepare(
-        &build(),
-        source(),
+    let build = build();
+    let selected = source();
+    let bound = selected
+        .preparation_storage_bound_on_control(&build, None)
+        .unwrap();
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(
+                selected.preparation_storage_bound_on_control(&build, None),
+                Some(bound)
+            );
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
+    let mut pending = Pending::prepare(
+        &build,
+        selected,
         options().preparation,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(0),
     )
     .unwrap();
+    let storage = pending.retained_storage_on_control().unwrap();
+    assert!(storage.data_bytes <= bound.max_pending_data_bytes);
+    assert_eq!(
+        pending.config.bundle.capacity(),
+        pending.config.bundle.len()
+    );
+    assert_eq!(
+        pending.config.executable.capacity(),
+        pending.config.executable.len()
+    );
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (2, 2));
+    assert_eq!(
+        storage.inventory_node_lifetime_bound,
+        pending
+            .build
+            .retained_storage()
+            .unwrap()
+            .inventory_node_lifetime_bound
+    );
+    let capacity = pending.source.bundle.supplied_path.capacity();
+    pending.source.bundle.supplied_path.reserve(333);
+    let expanded = pending.retained_storage_on_control().unwrap();
+    assert_eq!(
+        expanded.data_bytes - storage.data_bytes,
+        pending.source.bundle.supplied_path.capacity() - capacity
+    );
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(pending.retained_storage_on_control(), Some(expanded));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
     assert_eq!(
         pending.facts(),
         Facts {
             algorithmic_latency_frames: 0,
+            tail_frames: 0,
             presentation_available: true,
             restored: false
         }
@@ -684,6 +846,9 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
     let mut instance = pending
         .complete_on_control(Some(options().presentation))
         .unwrap();
+    assert!(
+        instance.retained_storage_on_control().unwrap().data_bytes <= bound.max_prepared_data_bytes
+    );
     let captured = decode(&instance.ready().initial_state)
         .unwrap()
         .component
@@ -746,6 +911,18 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
             ..
         })
     ));
+    let original = failed.take_cause_on_control();
+    assert!(matches!(original, Error::Protocol(_)));
+    assert!(
+        matches!(
+            &failed.custody,
+            preparation_failure::Custody::Native(Lease {
+                child: ChildCustody::Owned(_),
+                ..
+            })
+        ),
+        "moving the diagnostic does not dispose its actual child"
+    );
     let deadline = Instant::now() + Duration::from_secs(3);
     let disposed = loop {
         if let Some(disposed) = failed.poll_disposal_on_control().unwrap() {
@@ -1046,7 +1223,7 @@ fn actual_source_change_while_pending_refuses_before_presentation_or_processing(
             exit,
             custody_error,
         }) => {
-            assert!(matches!(*cause, Error::Source(_)));
+            assert!(matches!(*cause, Error::Validation(_)));
             assert!(exit.is_some());
             assert!(custody_error.is_none());
         }
@@ -1118,8 +1295,12 @@ fn startup_state(selected: &Source, controller: bool, latency: u32) -> NativeDev
 fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() {
     let selected = source();
     let saved = startup_state(&selected, false, 0);
+    let build = build();
+    let bound = selected
+        .preparation_storage_bound_on_control(&build, Some(&saved))
+        .unwrap();
     let pending = Pending::prepare_restored_on_control(
-        &build(),
+        &build,
         selected,
         options().preparation,
         saved.clone(),
@@ -1129,11 +1310,33 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     .unwrap();
     assert!(pending.facts().restored);
     assert_eq!(pending.facts().algorithmic_latency_frames, 0);
+    let pending_storage = pending.retained_storage_on_control().unwrap();
+    assert!(pending_storage.data_bytes <= bound.max_pending_data_bytes);
+    assert_eq!(pending_storage.shared_groups, 3);
+    let provenance_bytes = pending.source.metadata_backing().unwrap()
+        + pending.build.retained_storage().unwrap().data_bytes;
     let mut instance = pending
         .complete_on_control(Some(options().presentation))
         .unwrap();
     assert!(instance.ready().restored);
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
+    let storage = instance.retained_storage_on_control().unwrap();
+    assert!(storage.data_bytes <= bound.max_prepared_data_bytes);
+    assert_eq!(
+        storage.data_bytes,
+        pending_storage.data_bytes - provenance_bytes
+            + instance.ready.initial_state.payload().len()
+    );
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (4, 4));
+    assert_eq!(
+        storage.data_bytes,
+        instance.config.bundle.capacity()
+            + instance.config.executable.capacity()
+            + instance.ready.initial_state.payload().len()
+            + saved.payload().len()
+            + std::mem::size_of::<UnixStream>()
+            + std::mem::size_of::<AtomicBool>()
+    );
     assert_ne!(
         instance.ready().initial_state,
         saved,
@@ -1307,3 +1510,192 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
 
 #[path = "native_tests/epoch.rs"]
 mod epoch;
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn original_failure_diagnostic_transfers_without_copying_or_destroying_backing() {
+    let original = String::from("original selected-source diagnostic");
+    let address = original.as_ptr();
+    let mut failure = PreparationFailure::before_native(Error::Source(original));
+    let mut returned = None;
+    let measured = allocation_counter::measure(|| {
+        returned = Some(failure.take_cause_on_control());
+    });
+    assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+    let Error::Source(original) = returned.unwrap() else {
+        panic!("original typed source error");
+    };
+    assert_eq!(original.as_ptr(), address);
+    assert!(matches!(
+        failure.cause(),
+        Error::Protocol("native preparation cause transferred")
+    ));
+    assert!(matches!(
+        failure.poll_disposal_on_control().unwrap(),
+        Some(PreparationDisposal::NoInstance)
+    ));
+    drop(failure);
+    assert_eq!(original, "original selected-source diagnostic");
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn sticky_lost_custody_preserves_original_io_error_without_heap_diagnostic_copies() {
+    let original = Arc::new(std::io::Error::from_raw_os_error(10));
+    let mut custody = ChildCustody::Lost(Arc::clone(&original));
+    let mut observed = None;
+    let mut reaped = None;
+    let measured = allocation_counter::measure(|| {
+        observed = Some(custody.observe().unwrap_err());
+        reaped = Some(custody.reap().unwrap_err());
+    });
+    assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+    for error in [observed.unwrap(), reaped.unwrap()] {
+        let Error::Custody(crate::CustodyError::Lost(source)) = error else {
+            panic!("original sticky OS failure");
+        };
+        assert!(Arc::ptr_eq(&source, &original));
+        assert_eq!(source.raw_os_error(), Some(10));
+    }
+    assert!(matches!(custody, ChildCustody::Lost(_)));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_reported_tail_survives_completion_and_refreshes_on_original_instance_epoch() {
+    let build = build();
+    for tail in [0_u32, 96_000, u32::MAX] {
+        let case = Case::new();
+        let setup = case.setup(0);
+        let pending = Pending::prepare(
+            &build,
+            source(),
+            options().preparation,
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command
+                    .env("HEX_ORIGINAL_TAIL_FRAMES", tail.to_string())
+                    .env("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT", (tail ^ 1).to_string());
+            },
+        )
+        .unwrap();
+        assert_eq!(pending.facts().tail_frames, tail);
+        let mut instance = pending
+            .complete_on_control(Some(options().presentation))
+            .unwrap();
+        assert_eq!(instance.ready().tail_frames, tail);
+        let child = instance.child_id_on_control();
+        let block = request(instance.configuration(), 0);
+        instance.exchange_on_worker(block).unwrap();
+        let stopped = instance.quiesce_on_control().unwrap();
+        assert_eq!(stopped.facts().tail_frames, tail ^ 1);
+        let previous = stopped.configuration().binding;
+        let mut instance = stopped
+            .resume_on_control(
+                Binding {
+                    epoch: previous.epoch + 1,
+                    ..previous
+                },
+                Some(options().presentation),
+            )
+            .unwrap();
+        assert_eq!(instance.ready().tail_frames, tail ^ 1);
+        assert_eq!(instance.child_id_on_control(), child);
+        let block = request(instance.configuration(), 1);
+        instance.exchange_on_worker(block).unwrap();
+        let retired = instance.stop_and_reap_on_control().unwrap();
+        assert!(retired.status.success());
+        assert_eq!(retired.terminal.unwrap().blocks, 2);
+        assert_eq!(
+            case.observation().unwrap()[1],
+            0,
+            "SDK queries stay on the main lane"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_tail_change_before_final_ack_refuses_without_starting_processing() {
+    let case = Case::new();
+    let setup = case.setup(0);
+    let pending = Pending::prepare(
+        &build(),
+        source(),
+        options().preparation,
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command
+                .env("HEX_ORIGINAL_TAIL_FRAMES", "3")
+                .env("HEX_ORIGINAL_TAIL_AFTER_PRESENTATION", "4");
+        },
+    )
+    .unwrap();
+    assert_eq!(pending.facts().tail_frames, 3);
+    match pending.complete_on_control(Some(options().presentation)) {
+        Err(Error::Preparation {
+            cause,
+            exit,
+            custody_error,
+        }) => {
+            assert!(matches!(*cause, Error::Worker(5)));
+            assert!(exit.is_some());
+            assert!(custody_error.is_none());
+        }
+        _ => panic!("changed tail cannot acknowledge the old plan"),
+    }
+    let observed = case.observation().unwrap();
+    assert_eq!((observed[1], observed[8], observed[10]), (0, 0, 0));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_tail_change_during_resume_refuses_before_original_instance_restarts() {
+    let case = Case::new();
+    let setup = case.setup(0);
+    let pending = Pending::prepare(
+        &build(),
+        source(),
+        options().preparation,
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command
+                .env("HEX_ORIGINAL_TAIL_FRAMES", "3")
+                .env("HEX_ORIGINAL_TAIL_AFTER_RESUME", "4");
+        },
+    )
+    .unwrap();
+    let mut instance = pending
+        .complete_on_control(Some(options().presentation))
+        .unwrap();
+    let block = request(instance.configuration(), 0);
+    instance.exchange_on_worker(block).unwrap();
+    let stopped = instance.quiesce_on_control().unwrap();
+    assert_eq!(stopped.facts().tail_frames, 3);
+    let previous = stopped.configuration().binding;
+    match stopped.resume_on_control(
+        Binding {
+            epoch: previous.epoch + 1,
+            ..previous
+        },
+        Some(options().presentation),
+    ) {
+        Err(Error::Preparation {
+            cause,
+            exit,
+            custody_error,
+        }) => {
+            assert!(matches!(*cause, Error::Worker(5)));
+            assert!(exit.is_some());
+            assert!(custody_error.is_none());
+        }
+        _ => panic!("changed tail cannot resume the old plan"),
+    }
+    let observed = case.observation().unwrap();
+    assert_eq!((observed[1], observed[8], observed[10]), (0, 1, 1));
+}
