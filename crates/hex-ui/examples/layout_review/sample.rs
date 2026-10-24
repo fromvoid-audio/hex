@@ -87,7 +87,11 @@ impl Sample {
                 Demo::Selector(a) => a,
                 _ => DiscreteControlAppearance::Standard,
             })
-            .with_accessibility_name(theme::text("wave shape"));
+            .with_accessibility_name(theme::text(if matches!(item.demo, Demo::Curve) {
+                "plot grid"
+            } else {
+                "wave shape"
+            }));
         let picker =
             ColorPickerConfig::new("sandbox-color", RgbColor::new(75, 150, 210), 210.0, style)?;
         Ok(Prepared {
@@ -136,7 +140,7 @@ impl Sample {
         }));
         let graph_model = ResponseGraphModel {
             primary: vec![[0.0, 0.3], [0.5, 0.7], [1.0, 0.4]],
-            secondary: vec![[0.0, 0.6], [0.5, 0.4], [1.0, 0.6]],
+            secondary: vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.5]],
             analyzer: Some(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 0.1]]),
             input_analyzer: Some(vec![[0.0, 0.1], [0.5, 0.4], [1.0, 0.0]]),
             nodes: vec![ResponseGraphNode {
@@ -321,12 +325,12 @@ impl Sample {
             .primary
             .sort_by(|a, b| a[0].total_cmp(&b[0]));
         // ResponseGraph requires aligned primary/reference sample counts.
-        // Resample the same static V-shaped reference at the edited x positions.
+        // Keep a static midpoint reference at the edited x positions.
         self.graph_model.secondary = self
             .graph_model
             .primary
             .iter()
-            .map(|[x, _]| [*x, 0.4 + 0.4 * (*x - 0.5).abs()])
+            .map(|[x, _]| [*x, 0.5])
             .collect();
         if let Err(e) = self.graph.update(cx, |g, cx| {
             g.set_model(self.graph_model.clone(), theme::control_style(), cx)
