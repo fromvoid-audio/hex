@@ -13,6 +13,7 @@ use crate::{BeatTime, Invalid};
 pub struct MidiSourcePlayback {
     source_length: BeatTime,
     source_start: BeatTime,
+    initial_end: BeatTime,
     loop_range: Option<(BeatTime, BeatTime)>,
     arrangement_duration: BeatTime,
 }
@@ -23,6 +24,26 @@ impl MidiSourcePlayback {
         source_start: BeatTime,
         loop_range: Option<(BeatTime, BeatTime)>,
         arrangement_duration: BeatTime,
+    ) -> Result<Self, Invalid> {
+        Self::new_with_initial_end(
+            source_length,
+            source_start,
+            loop_range,
+            arrangement_duration,
+            loop_range.map_or(source_length, |(_, end)| end),
+        )
+    }
+
+    /// Retain the full authored source for validation while limiting the first
+    /// audible pass. With no loop this permits a captured cycle to play once
+    /// then become silent, without deleting notes outside that cycle.
+    /// Repeating mappings require the initial end to equal their loop end.
+    pub fn new_with_initial_end(
+        source_length: BeatTime,
+        source_start: BeatTime,
+        loop_range: Option<(BeatTime, BeatTime)>,
+        arrangement_duration: BeatTime,
+        initial_end: BeatTime,
     ) -> Result<Self, Invalid> {
         if source_length == BeatTime::ZERO || arrangement_duration == BeatTime::ZERO {
             return Err(Invalid(
@@ -39,9 +60,20 @@ impl MidiSourcePlayback {
         } else if source_start >= source_length {
             return Err(Invalid("midi source start must be inside its source"));
         }
+        if initial_end > source_length || source_start >= initial_end {
+            return Err(Invalid(
+                "midi initial playback end must follow its start inside the source",
+            ));
+        }
+        if loop_range.is_some_and(|(_, end)| end != initial_end) {
+            return Err(Invalid(
+                "midi repeating initial end must equal its loop end",
+            ));
+        }
         Ok(Self {
             source_length,
             source_start,
+            initial_end,
             loop_range,
             arrangement_duration,
         })
@@ -58,6 +90,10 @@ impl MidiSourcePlayback {
 
     pub fn source_start(self) -> BeatTime {
         self.source_start
+    }
+
+    pub fn initial_end(self) -> BeatTime {
+        self.initial_end
     }
 
     pub fn loop_range(self) -> Option<(BeatTime, BeatTime)> {
@@ -88,7 +124,7 @@ impl MidiSourcePlayback {
             self.source_start
                 .raw()
                 .checked_add(raw)
-                .filter(|phase| *phase < self.source_length.raw())
+                .filter(|phase| *phase < self.initial_end.raw())
                 .map(BeatTime::from_raw)
         }
     }
@@ -152,13 +188,13 @@ impl MidiSourcePlayback {
                 }
             }
         } else if note_start.raw() >= self.source_start.raw()
-            && note_start.raw() < self.source_length.raw()
+            && note_start.raw() < self.initial_end.raw()
         {
             let timeline_start = note_start.raw() - self.source_start.raw();
             if timeline_start < timeline_limit {
                 let gate = note_duration
                     .raw()
-                    .min(self.source_length.raw() - note_start.raw())
+                    .min(self.initial_end.raw() - note_start.raw())
                     .min(timeline_limit - timeline_start);
                 if gate > 0 {
                     initial = Some(MidiNoteOccurrence {

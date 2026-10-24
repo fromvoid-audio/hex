@@ -4,6 +4,7 @@
 #include "pluginterfaces/base/ipluginbase.h"
 #include "fixture_identity.hpp"
 #include "macos_scan_wire.hpp"
+#include "macos_bundle.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -11,66 +12,12 @@
 
 using namespace Steinberg;
 using namespace MacScan;
+using hex_bundle::utf8;using hex_bundle::string;using hex_bundle::canonical;
+using hex_bundle::member;using hex_bundle::digest;using hex_bundle::executable;
 #ifndef HEX_SCAN_HANG_AFTER_REPLY
 #define HEX_SCAN_HANG_AFTER_REPLY 0
 #endif
 
-static std::string utf8(NSString* value,size_t maximum) {
-    if(![value isKindOfClass:[NSString class]]) throw std::runtime_error("bundle string missing");
-    const char* bytes=[value UTF8String];
-    auto size=[value lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
-    if(!bytes || size>maximum) throw std::runtime_error("bundle text bound or encoding refused");
-    std::string result(bytes,size);
-    if(result.find('\0')!=std::string::npos) throw std::runtime_error("bundle text null refused");
-    return result;
-}
-static NSString* string(const std::string& value) {
-    NSString* result=[[NSString alloc] initWithBytes:value.data() length:value.size() encoding:NSUTF8StringEncoding];
-    if(!result) throw std::runtime_error("bundle path encoding refused");
-    return [result autorelease];
-}
-static std::string canonical(const std::string& path) {
-    std::unique_ptr<char,decltype(&std::free)> value(::realpath(path.c_str(),nullptr),&std::free);
-    if(!value) throw std::runtime_error("bundle filesystem resolution failed");
-    std::string result(value.get());
-    if(result.size()>path_limit) throw std::runtime_error("canonical bundle path bound");
-    return result;
-}
-static NSString* member(NSString* root,NSString* relative) {
-    NSString* current=root;
-    auto components=[relative pathComponents];
-    if(![components count] || [components count]>32) throw std::runtime_error("bundle member depth refused");
-    for(NSString* part in components) {
-        if([part isEqual:@".."] || [part isEqual:@"."] || [part isEqual:@"/"]) throw std::runtime_error("bundle member escape refused");
-        current=[current stringByAppendingPathComponent:part];
-        NSDictionary* info=[[NSFileManager defaultManager] attributesOfItemAtPath:current error:nullptr];
-        if(!info || [[info fileType] isEqual:NSFileTypeSymbolicLink]) throw std::runtime_error("linked/missing bundle member");
-    }
-    NSDictionary* info=[[NSFileManager defaultManager] attributesOfItemAtPath:current error:nullptr];
-    if(![[info fileType] isEqual:NSFileTypeRegular]) throw std::runtime_error("nonregular bundle input");
-    return current;
-}
-static std::string digest(NSString* path,uint64_t maximum) {
-    NSDictionary* info=[[NSFileManager defaultManager] attributesOfItemAtPath:path error:nullptr];
-    if(!info || ![[info fileType] isEqual:NSFileTypeRegular] || [info fileSize]>maximum) throw std::runtime_error("scan file bound refused");
-    std::ifstream input([path fileSystemRepresentation],std::ios::binary);
-    if(!input) throw std::runtime_error("scan file open failed");
-    CC_SHA256_CTX context{}; CC_SHA256_Init(&context);
-    std::array<char,65536> block{};
-    uint64_t total=0;
-    while(input) {
-        input.read(block.data(),block.size());
-        auto count=input.gcount();
-        if(count<0 || static_cast<uint64_t>(count)>maximum-total) throw std::runtime_error("scan file grew beyond bound");
-        total+=static_cast<uint64_t>(count);
-        CC_SHA256_Update(&context,block.data(),static_cast<CC_LONG>(count));
-    }
-    if(!input.eof()) throw std::runtime_error("scan file read failed");
-    std::array<unsigned char,CC_SHA256_DIGEST_LENGTH> hash{}; CC_SHA256_Final(hash.data(),&context);
-    char result[65]={};
-    for(size_t i=0;i<hash.size();++i) std::snprintf(result+2*i,3,"%02x",hash[i]);
-    return result;
-}
 struct Module {
     CFBundleRef bundle=nullptr;
     IPluginFactory* factory=nullptr;
@@ -88,27 +35,6 @@ struct Module {
     }
     ~Module() { try { close(); } catch(...) {} }
 };
-static std::string executable(Module& module,NSString* root) {
-    CFURLRef selected=CFBundleCopyExecutableURL(module.bundle);
-    CFURLRef absolute=selected?CFURLCopyAbsoluteURL(selected):nullptr;
-    CFStringRef path=absolute?CFURLCopyFileSystemPath(absolute,kCFURLPOSIXPathStyle):nullptr;
-    std::string relative;
-    try {
-        NSString* prefix=[root stringByAppendingString:@"/"];
-        NSString* value=path?(__bridge NSString*)path:nil;
-        if(!value || ![value hasPrefix:prefix]) throw std::runtime_error("executable outside selected bundle");
-        NSString* result=[value substringFromIndex:[prefix length]];
-        if(![result hasPrefix:@"Contents/MacOS/"]) throw std::runtime_error("native executable location refused");
-        member(root,result);
-        relative=utf8(result,path_limit);
-    } catch(...) {
-        if(path) CFRelease(path); if(absolute) CFRelease(absolute); if(selected) CFRelease(selected);
-        throw;
-    }
-    if(path) CFRelease(path); if(absolute) CFRelease(absolute); if(selected) CFRelease(selected);
-    return relative;
-}
-
 static Bytes discover(Module& module,const Attempt& attempt) {
     PFactoryInfo info{};
     if(module.factory->getFactoryInfo(&info)!=kResultOk) throw std::runtime_error("factory information failed");
@@ -171,7 +97,7 @@ int main(int argc,char**) {
             if(!url) throw std::runtime_error("bundle URL unavailable");
             module.bundle=CFBundleCreate(nullptr,url); CFRelease(url);
             if(!module.bundle) throw std::runtime_error("bundle metadata unavailable");
-            std::string selected=executable(module,root);
+            std::string selected=executable(module.bundle,root);
             std::string identifier=utf8((__bridge NSString*)CFBundleGetIdentifier(module.bundle),256);
             if(identifier.empty()) throw std::runtime_error("bundle identifier required");
             Bytes preflight; attempt.write(preflight); text(preflight,selected,path_limit);
@@ -182,7 +108,7 @@ int main(int argc,char**) {
             std::string admitted=ack.text(path_limit),admitted_info=ack.text(64),binary_hash=ack.text(64);
             auto image=ack.number(4); ack.end();
             if(admitted!=selected || admitted_info!=info_hash || binary_hash.size()!=64 || (image!=1 && image!=2) ||
-               digest(member(root,@"Contents/Info.plist"),65536)!=info_hash || executable(module,root)!=selected ||
+               digest(member(root,@"Contents/Info.plist"),65536)!=info_hash || executable(module.bundle,root)!=selected ||
                digest(member(root,string(selected)),16*1024*1024)!=binary_hash)
                 throw std::runtime_error("stale or changed executable admission");
             if(!CFBundleLoadExecutable(module.bundle)) throw std::runtime_error("native module load failed");

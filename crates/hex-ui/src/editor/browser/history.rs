@@ -124,7 +124,7 @@ impl EditorView {
             location: Location {
                 section: self.browser.section.clone(),
                 directory: self.browser.directory.clone(),
-                query: self.browser.search.read(cx).content.clone(),
+                query: self.browser.search.read(cx).text().to_owned(),
             },
             position: Position {
                 selected: self.browser_selected_item(cx),
@@ -155,14 +155,14 @@ impl EditorView {
     // Synchronize before navigation as well as from the observer: a queued observer
     // must not turn a restored query into another edit or reset restored selection.
     pub(super) fn sync_browser_query(&mut self, cx: &mut Context<Self>) {
-        let query = &self.browser.search.read(cx).content;
-        if *query == self.browser.observed_query {
+        let query = self.browser.search.read(cx).text();
+        if query == self.browser.observed_query {
             return;
         }
         let location = Location {
             section: self.browser.section.clone(),
             directory: self.browser.directory.clone(),
-            query: query.clone(),
+            query: query.to_owned(),
         };
         let editing = self.browser.history.editing_query;
         if self.browser.history.entries.is_empty() {
@@ -199,7 +199,7 @@ impl EditorView {
             None
         };
         history.editing_query = retained && !collapsed;
-        self.browser.observed_query = self.browser.search.read(cx).content.clone();
+        self.browser.observed_query = self.browser.search.read(cx).text().to_owned();
         if !retained {
             self.browser.places_status = Some("browser history field limit reached".into());
         }
@@ -273,7 +273,7 @@ impl EditorView {
             .observed_query
             .clone_from(&entry.location.query);
         self.browser.search.update(cx, |input, cx| {
-            input.restore_query(&entry.location.query, cx);
+            input.set_text(&entry.location.query, cx);
         });
         self.apply_browser_source(entry.location.section.clone(), cx);
         if self.browser.directory != entry.location.directory {
@@ -317,7 +317,7 @@ impl EditorView {
     }
 
     pub(super) fn restore_browser_history_position(&mut self, cx: &App) {
-        let query = &self.browser.search.read(cx).content;
+        let query = self.browser.search.read(cx).text();
         let indexed = samples::ResultsMode::for_query(query) == samples::ResultsMode::Indexed;
         let (listing, tree, catalog) = match self.browser.section {
             BrowserSection::Samples => (false, true, indexed),
@@ -345,7 +345,7 @@ impl EditorView {
         // have their own scan/tree/catalog generations and cannot change location.
         if entry.location.section != self.browser.section
             || entry.location.directory != self.browser.directory
-            || entry.location.query != self.browser.search.read(cx).content
+            || entry.location.query != self.browser.search.read(cx).text()
         {
             return;
         }

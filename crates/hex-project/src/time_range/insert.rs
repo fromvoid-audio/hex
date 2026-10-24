@@ -427,6 +427,7 @@ fn materialize_shifted_midi(
         start,
         length,
         source: Arc::new(MidiSource {
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,

@@ -1,4 +1,6 @@
 //! Device-selection keys own only the directly focused card, never its editors.
+//! Zero reads live canonical bypass and uses the same terminal barrier as pointer
+//! bypass; rendered generation/owner/type identity refuses retired card handlers.
 use super::*;
 use gpui::{FocusHandle, KeyBinding};
 
@@ -99,40 +101,48 @@ pub(in crate::editor) fn key_up(
     cx.notify();
 }
 
-fn removal(
+fn owned_device(
     project: &hex_project::Project,
     owner: DevicePanelOwner,
     device: DeviceId,
-) -> Option<Command> {
+) -> Option<&hex_project::Device> {
     match owner {
         DevicePanelOwner::Main => project
             .main_devices()
             .iter()
-            .any(|effect| effect.id() == device)
-            .then_some(Command::RemoveDevice(device)),
-        DevicePanelOwner::Track(id) => {
-            let track = project.track(id)?;
-            if track
-                .instrument()
-                .is_some_and(|instrument| instrument.id() == device)
-            {
-                Some(Command::RemoveInstrument { track: id })
-            } else {
-                track
-                    .devices()
-                    .iter()
-                    .any(|effect| effect.id() == device)
-                    .then_some(Command::RemoveDevice(device))
-            }
-        }
+            .find(|item| item.id() == device),
+        DevicePanelOwner::Track(id) => project.track(id)?.ordered_device_chain().find_map(|item| {
+            let item = match item {
+                hex_project::TrackDeviceRef::Instrument(item)
+                | hex_project::TrackDeviceRef::Effect(item) => item,
+            };
+            (item.id() == device).then_some(item)
+        }),
         DevicePanelOwner::Return(id) => project
             .return_tracks()
             .iter()
             .find(|track| track.id() == id)?
             .devices()
             .iter()
-            .any(|effect| effect.id() == device)
-            .then_some(Command::RemoveDevice(device)),
+            .find(|item| item.id() == device),
+    }
+}
+
+fn removal(
+    project: &hex_project::Project,
+    owner: DevicePanelOwner,
+    device: DeviceId,
+) -> Option<Command> {
+    owned_device(project, owner, device)?;
+    if let DevicePanelOwner::Track(id) = owner
+        && project
+            .track(id)?
+            .instrument()
+            .is_some_and(|item| item.id() == device)
+    {
+        Some(Command::RemoveInstrument { track: id })
+    } else {
+        Some(Command::RemoveDevice(device))
     }
 }
 
@@ -150,7 +160,63 @@ pub(super) fn card(
         owner,
         device,
     };
+    let toggle_focus = focus.clone();
+    let type_id = view.state.as_ref().and_then(|state| {
+        owned_device(&state.project, owner?, device).map(|item| item.state().type_id())
+    });
     card.key_context("hex_device_selection")
+        // A character binding in the ancestor key context would swallow 0 in
+        // nested text editors. Handle only the card's own exact focus instead.
+        .on_key_down(
+            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key != "0"
+                    || event.keystroke.modifiers != gpui::Modifiers::default()
+                    || !toggle_focus.is_focused(window)
+                {
+                    return;
+                }
+                cx.stop_propagation();
+                if generation != view.project_generation
+                    || owner != view.device_panel.owner
+                    || view.device_panel.selected_device != Some(device)
+                    || !view.clip_view_open
+                    || !view.device_panel_active
+                {
+                    return;
+                }
+                if view.opening_project
+                    || view.close_prompt_open
+                    || view.gain_recorder.blocks_edits()
+                    || !view.pending_requests.is_empty()
+                    || !view.device_gesture_barriers.is_empty()
+                    || view.worker_requests_pending > 1
+                    || (view.worker_requests_pending != 0
+                        && view.device_gesture.snapshot().is_none())
+                {
+                    view.error =
+                        Some("finish pending edits before toggling the selected device".into());
+                    cx.notify();
+                    return;
+                }
+                let bypassed = view.state.as_ref().and_then(|state| {
+                    let owner = owner?;
+                    if selected_owner(view, state) != Some(owner) {
+                        return None;
+                    }
+                    let item = owned_device(&state.project, owner, device)?;
+                    (Some(item.state().type_id()) == type_id).then_some(!item.bypassed())
+                });
+                if let Some(bypassed) = bypassed
+                    && finalize_controls(view, cx)
+                {
+                    view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
+                        device,
+                        bypassed,
+                    }));
+                    cx.notify();
+                }
+            }),
+        )
         .on_action(
             cx.listener(move |view, _: &RemoveSelectedDevice, window, cx| {
                 cx.stop_propagation();

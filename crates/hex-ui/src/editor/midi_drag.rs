@@ -89,6 +89,35 @@ pub(super) fn snap_raw(raw: u64, grid: MidiGrid) -> u64 {
     snap_clamped(i128::from(raw), 0, u64::MAX, step)
 }
 
+/// Creation starts at the grid line at or before the pointer. Move/resize
+/// deltas retain their existing nearest-grid policy.
+pub(super) fn creation_start(raw: u64, grid: MidiGrid) -> u64 {
+    grid.step_raw().map_or(raw, |step| raw / step * step)
+}
+
+/// Free creation starts one logical pixel wide. The prepared playback minimum
+/// prevents a positive beat duration rounding to zero audio frames at deep zoom.
+pub(super) fn creation_gate(
+    remaining: u64,
+    grid: MidiGrid,
+    span: u64,
+    width: f32,
+    minimum: u64,
+) -> Option<u64> {
+    if remaining == 0 || minimum == 0 || !width.is_finite() || width <= 0.0 || span == 0 {
+        return None;
+    }
+    let desired = if grid.step_raw().is_some() {
+        default_gate_raw(remaining, grid)
+    } else {
+        ((span as f64 / f64::from(width)).ceil() as u64)
+            .max(1)
+            .max(minimum)
+    };
+    let duration = desired.min(remaining);
+    (duration >= minimum).then_some(duration)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GestureKind {
     Move {
@@ -1144,5 +1173,44 @@ mod tests {
                 ..context
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod creation_geometry_tests {
+    use super::*;
+    #[test]
+    fn creation_uses_containing_grid_cell_and_bounded_positive_pixel_gate() {
+        let beat = BeatTime::ONE.raw();
+        assert_eq!(creation_start(beat * 7 / 4, MidiGrid::Quarter), beat);
+        assert_eq!(creation_start(beat - 1, MidiGrid::Quarter), 0);
+        assert_eq!(creation_start(beat, MidiGrid::Quarter), beat);
+        assert_eq!(
+            creation_start(u64::MAX, MidiGrid::Quarter),
+            u64::MAX / beat * beat
+        );
+        assert_eq!(creation_start(beat + 73, MidiGrid::Off), beat + 73);
+        assert_eq!(
+            creation_gate(beat, MidiGrid::Off, 4 * beat, 400.0, 1),
+            Some((beat as f64 / 100.0).ceil() as u64)
+        );
+        assert_eq!(creation_gate(beat, MidiGrid::Off, 4, 400.0, 20), Some(20));
+        assert_eq!(
+            creation_gate(beat, MidiGrid::Sixteenth, 4 * beat, 400.0, 1),
+            Some(beat / 4)
+        );
+        assert_eq!(creation_gate(1, MidiGrid::Off, 4, 400.0, 2), None);
+        for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(creation_gate(beat, MidiGrid::Off, beat, width, 1), None);
+        }
+        assert_eq!(
+            creation_gate(u64::MAX, MidiGrid::Off, u64::MAX, f32::MIN_POSITIVE, 1),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            default_gate_raw(beat, MidiGrid::Off),
+            beat / 4,
+            "step editing keeps its independent default"
+        );
     }
 }

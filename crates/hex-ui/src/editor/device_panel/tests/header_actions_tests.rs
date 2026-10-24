@@ -8,6 +8,25 @@ fn bounds(visual: &mut VisualTestContext, prefix: &str, device: DeviceId) -> Bou
         .unwrap_or_else(|| panic!("visible {prefix} for {device:?}"))
 }
 
+pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceId, enabled: bool) {
+    // Inspect completed idle paint, independently of the hover/click position.
+    visual.simulate_mouse_move(point(px(0.0), px(0.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    let selector = Box::leak(format!("device-bypass-{}", device.value()).into_boxed_str());
+    assert_eq!(
+        visual.rendered_background(selector),
+        Some(
+            rgb(theme::color(if enabled {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Border
+            }))
+            .into()
+        ),
+        "canonical power state must keep its semantic fill regardless of header selection"
+    );
+}
+
 fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {
     let title = bounds(visual, "device-drag-title", device);
     let bypass = bounds(visual, "device-bypass", device);
@@ -116,6 +135,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
     visual.simulate_resize(size(px(880.0), px(540.0)));
     visual.run_until_parked();
     assert_order(&mut visual, device, "return-device-remove");
+    assert_power_paint(&mut visual, device, true);
     let bypass = bounds(&mut visual, "device-bypass", device);
     visual.simulate_click(bypass.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
@@ -127,6 +147,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
             .unwrap()
             .bypassed()
     });
+    assert_power_paint(&mut visual, device, false);
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device));
         assert!(view.active_native_device_drag.is_none());
@@ -140,6 +161,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
         view.state.as_ref().unwrap().project == before
     });
     visual.run_until_parked();
+    assert_power_paint(&mut visual, device, true);
     let remove = bounds(&mut visual, "return-device-remove", device);
     visual.simulate_click(remove.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
@@ -173,6 +195,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     for (device, remove_prefix) in [(effect, "device-remove"), (instrument, "instrument-remove")] {
+        assert_power_paint(&mut visual, device, true);
         let bypass = bounds(&mut visual, "device-bypass", device);
         visual.simulate_click(bypass.center(), Modifiers::default());
         pump_until(&editor, cx, |view| {
@@ -184,6 +207,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
                 .unwrap()
                 .bypassed()
         });
+        assert_power_paint(&mut visual, device, false);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.device_panel.selected_device, Some(device));
             assert!(view.active_native_device_drag.is_none());
@@ -204,6 +228,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
             view.state.as_ref().unwrap().project == before
         });
         visual.run_until_parked();
+        assert_power_paint(&mut visual, device, true);
         let remove = bounds(&mut visual, remove_prefix, device);
         visual.simulate_click(remove.center(), Modifiers::default());
         pump_until(&editor, cx, |view| {

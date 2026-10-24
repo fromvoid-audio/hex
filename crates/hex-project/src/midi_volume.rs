@@ -175,11 +175,12 @@ impl MidiClipVolume {
         // enumerates its discarded loop prefix. The existing projection owns
         // first-pass and repeated-onset behavior.
         if let Some(phase) = playback.source_phase_at_elapsed(start) {
-            let projected = MidiSourcePlayback::new(
+            let projected = MidiSourcePlayback::new_with_initial_end(
                 playback.source_length(),
                 phase,
                 playback.loop_range(),
                 BeatTime::from_raw(length),
+                playback.initial_end(),
             )?;
             for point in self.points() {
                 if point.beat == playback.source_length() {
@@ -213,7 +214,7 @@ impl MidiClipVolume {
                 seam = next;
             }
         } else {
-            add(playback.source_length().raw() - playback.source_start().raw())?;
+            add(playback.initial_end().raw() - playback.source_start().raw())?;
         }
         boundaries.sort_unstable();
         boundaries.dedup();
@@ -250,16 +251,15 @@ impl MidiClipVolume {
                 {
                     return self.gain_before(end);
                 }
-            } else if elapsed.raw()
-                == playback.source_length().raw() - playback.source_start().raw()
+            } else if elapsed.raw() == playback.initial_end().raw() - playback.source_start().raw()
             {
-                return self.gain_before(playback.source_length());
+                return self.gain_before(playback.initial_end());
             }
         }
         match playback.source_phase_at_elapsed(elapsed) {
             Some(phase) if before => self.gain_before(phase),
             Some(phase) => self.gain_at(phase),
-            None => self.gain_at(playback.source_length()),
+            None => self.gain_at(playback.initial_end()),
         }
     }
     /// Copy a source-local half-open interval immediately after itself, keeping

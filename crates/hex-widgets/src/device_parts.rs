@@ -1,27 +1,15 @@
 //! Stateless device chrome. Owners supply meaning, state, input and colors.
-use crate::{ControlStyle, DeviceActionStyle};
+use crate::{ActionStyle, ControlStyle};
 use gpui::{Div, SharedString, div, prelude::*, px, rgb};
 
 pub const DEVICE_HEADER_ACTION_SIZE: f32 = 12.0;
 
 /// Compact action/segment; header consumers retain this shared twelve-pixel size.
 /// Non-header compositions may supply their own width/height without style forks.
-pub fn device_action(label: SharedString, style: DeviceActionStyle) -> Div {
-    div()
+pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
+    crate::action(label, style)
         .size(px(DEVICE_HEADER_ACTION_SIZE))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
         .text_size(px(8.0))
-        .bg(rgb(style.background))
-        .text_color(rgb(style.text))
-        .hover(move |hover| {
-            hover
-                .bg(rgb(style.hover_background))
-                .text_color(rgb(style.hover_text))
-        })
-        .child(label)
 }
 
 /// Compact identity cue with injected semantic color and selected/focus border.
@@ -66,7 +54,7 @@ pub fn device_divider(style: ControlStyle) -> Div {
 }
 
 /// Directly selectable compact segment, with the shared readout corner radius.
-pub fn device_segment(label: SharedString, style: DeviceActionStyle) -> Div {
+pub fn device_segment(label: SharedString, style: ActionStyle) -> Div {
     device_action(label, style).rounded(px(crate::CONTROL_CORNER_RADIUS))
 }
 

@@ -2,7 +2,7 @@ diff --git a/src/accessibility.rs b/src/accessibility.rs
 new file mode 100644
 --- /dev/null
 +++ b/src/accessibility.rs
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,247 @@
 +//! Bounded semantic control snapshots. Native backends never retain application pointers.
 +use crate::{App, Bounds, Pixels, SharedString, Window};
 +use std::{
@@ -34,6 +34,8 @@ new file mode 100644
 +/// User-facing semantics of a control, independent of its painted shape.
 +#[derive(Clone, Debug, PartialEq)]
 +pub enum AccessibilityValue {
++    /// A stateless action, with no editable value or option inventory.
++    Button,
 +    /// A finite adjustable canonical value and its actual formatted readout.
 +    Number {
 +        /// Canonical current value.
@@ -61,7 +63,7 @@ new file mode 100644
 +pub enum AccessibilityAction {
 +    /// Move keyboard focus without editing the parameter.
 +    Focus,
-+    /// Activate a boolean or open a choice control.
++    /// Activate a stateless action, boolean, or choice control.
 +    Press,
 +    /// Apply the control's existing positive keyboard step.
 +    Increment,
@@ -127,7 +129,7 @@ new file mode 100644
 +                        && (*min..=*max).contains(value)
 +                        && text_ok(text)
 +                }
-+                AccessibilityValue::Toggle(_) => true,
++                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => true,
 +                AccessibilityValue::Choice { selected, options } => {
 +                    !options.is_empty()
 +                        && options.len() <= 128
@@ -142,7 +144,7 @@ new file mode 100644
 +            + self.status.as_ref().map_or(0, |text| text.len())
 +            + match &self.value {
 +                AccessibilityValue::Number { text, .. } => text.len(),
-+                AccessibilityValue::Toggle(_) => 0,
++                AccessibilityValue::Button | AccessibilityValue::Toggle(_) => 0,
 +                AccessibilityValue::Choice { options, .. } => {
 +                    options.iter().map(|text| text.len()).sum()
 +                }
@@ -158,7 +160,9 @@ new file mode 100644
 +            (AccessibilityAction::Focus, _) => true,
 +            (
 +                AccessibilityAction::Press,
-+                AccessibilityValue::Toggle(_) | AccessibilityValue::Choice { .. },
++                AccessibilityValue::Button
++                | AccessibilityValue::Toggle(_)
++                | AccessibilityValue::Choice { .. },
 +            ) => true,
 +            (
 +                AccessibilityAction::Increment | AccessibilityAction::Decrement,
@@ -1652,7 +1656,7 @@ diff --git a/src/platform/mac/accessibility.rs b/src/platform/mac/accessibility.
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/mac/accessibility.rs
-@@ -0,0 +1,1000 @@
+@@ -0,0 +1,1049 @@
 +//! AppKit bridge: cross-thread objects contain data only; window/GPUI owners stay on UI.
 +use super::*;
 +use crate::platform::accessibility_bridge::{Bridge, Registry, WindowKey};
@@ -1836,7 +1840,7 @@ new file mode 100644
 +            }
 +            let value_bytes = match &descriptor.value {
 +                crate::AccessibilityValue::Number { text, .. } => text.len(),
-+                crate::AccessibilityValue::Toggle(_) => 0,
++                crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => 0,
 +                crate::AccessibilityValue::Choice { options, .. } => {
 +                    options.iter().map(|text| text.len()).sum()
 +                }
@@ -2323,6 +2327,7 @@ new file mode 100644
 +    };
 +    unsafe {
 +        ns_string(match node.descriptor.value {
++            crate::AccessibilityValue::Button => "AXButton",
 +            crate::AccessibilityValue::Number { .. } => "AXSlider",
 +            crate::AccessibilityValue::Toggle(_) => "AXCheckBox",
 +            crate::AccessibilityValue::Choice { .. } => "AXPopUpButton",
@@ -2338,6 +2343,7 @@ new file mode 100644
 +    };
 +    unsafe {
 +        match node.descriptor.value {
++            crate::AccessibilityValue::Button => nil,
 +            crate::AccessibilityValue::Number { value, .. } => {
 +                msg_send![class!(NSNumber), numberWithDouble: value]
 +            }
@@ -2360,7 +2366,7 @@ new file mode 100644
 +            crate::AccessibilityValue::Choice { selected, options } => {
 +                options.get(selected).map_or(nil, |text| ns_string(text))
 +            }
-+            crate::AccessibilityValue::Toggle(_) => nil,
++            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => nil,
 +        }
 +    }
 +}
@@ -2465,7 +2471,7 @@ new file mode 100644
 +                    }
 +                }
 +            }
-+            crate::AccessibilityValue::Toggle(_) => {}
++            crate::AccessibilityValue::Button | crate::AccessibilityValue::Toggle(_) => {}
 +        }
 +    }
 +}
@@ -2514,6 +2520,53 @@ new file mode 100644
 +                refused: false,
 +            },
 +        )
++    }
++    #[test]
++    fn appkit_stateless_button_has_button_role_no_value_and_only_action_semantics() {
++        let (_owner, mut snapshot) = fixture();
++        let descriptor = &mut snapshot.nodes[0].node.descriptor;
++        descriptor.value = crate::AccessibilityValue::Button;
++        descriptor.name = "clear search".into();
++        assert!(descriptor.permits(&crate::AccessibilityAction::Press));
++        assert!(descriptor.permits(&crate::AccessibilityAction::Focus));
++        for action in [
++            crate::AccessibilityAction::Increment,
++            crate::AccessibilityAction::Decrement,
++            crate::AccessibilityAction::SetNumber(1.0),
++            crate::AccessibilityAction::Choose(0),
++        ] {
++            assert!(!descriptor.permits(&action));
++        }
++        descriptor.enabled = false;
++        assert!(!descriptor.permits(&crate::AccessibilityAction::Press));
++        descriptor.enabled = true;
++        let descriptor = descriptor.clone();
++        let mut registry = Registry::default();
++        let bridge: Arc<NativeBridge> = registry.register(13, |_| ()).unwrap();
++        bridge.publish(snapshot);
++        // Same existing AppKit test boundary: release the actual semantic object
++        // before assertions, including when a getter returns the wrong role.
++        unsafe {
++            let class = Class::get("GPUISemanticControl").unwrap();
++            let object: id = msg_send![class, new];
++            assert!(!object.is_null());
++            (*object).set_ivar(
++                "semanticState",
++                Box::into_raw(Box::new(ElementData {
++                    bridge: bridge.clone(),
++                    id: descriptor.id,
++                    owner: descriptor.lifetime,
++                })) as *mut c_void,
++            );
++            let role: id = msg_send![object, accessibilityRole];
++            let expected = ns_string("AXButton");
++            let button: BOOL = msg_send![role, isEqualToString: expected];
++            let value: id = msg_send![object, accessibilityValue];
++            let description: id = msg_send![object, accessibilityValueDescription];
++            let _: () = msg_send![object, release];
++            assert_eq!(button, YES);
++            assert!(value.is_null() && description.is_null());
++        }
 +    }
 +    #[test]
 +    fn appkit_boolean_getters_follow_snapshot_and_revocation() {

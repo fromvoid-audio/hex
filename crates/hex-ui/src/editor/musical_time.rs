@@ -6,7 +6,7 @@ pub(super) use density::AdaptiveGridDensity;
 
 use super::viewport::Viewport;
 use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, px};
 use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
 use hex_session::service::Request;
 
@@ -1163,6 +1163,19 @@ impl SnapGrid {
 }
 
 impl super::EditorView {
+    /// Context-menu and keyboard density share the arranger resolver. Piano-roll
+    /// MidiGrid remains its independent fixed-note policy. No captured edit is changed.
+    pub(super) fn set_adaptive_grid_density(&mut self, density: AdaptiveGridDensity) {
+        self.snap_grid = self.snap_grid.with_density(density);
+        self.status = format!("arranger · {}", density.label());
+    }
+
+    pub(super) fn step_adaptive_grid_density(&mut self, coarser: bool) {
+        if self.mode == super::EditorMode::Arrangement {
+            self.set_adaptive_grid_density(self.snap_grid.density().stepped(coarser));
+        }
+    }
+
     pub(super) fn toggle_snap_grid(&mut self) {
         self.snap_grid = self.snap_grid.toggled();
         self.status = format!("arranger · snap {}", self.snap_grid.label());
@@ -1249,20 +1262,12 @@ impl super::EditorView {
         handler: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(description)
             .w(px(20.0))
             .h(px(19.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .opacity(if enabled { 1.0 } else { 0.45 })
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.into(),
@@ -1273,7 +1278,6 @@ impl super::EditorView {
                 handler(view, window, cx);
                 cx.notify();
             }))
-            .child(theme::text(label))
     }
 }
 

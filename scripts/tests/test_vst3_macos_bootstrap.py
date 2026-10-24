@@ -56,6 +56,62 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(BOOT.verify(self.receipt, run=True), {
             "version": 1, "scope": "original-macos-bootstrap", "effect_frames": 64, "instrument_frames": 64})
 
+    def processing(self, scenario):
+        run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--processing-self-test", str(scenario)],
+                             capture_output=True, text=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertLess(len(run.stdout), 4096)
+        value = json.loads(run.stdout)
+        self.assertEqual(value["scope"], "original-macos-processing")
+        self.assertEqual(value["scenario"], scenario)
+        for key in ("pcm", "descriptors", "active_preserved", "closed", "unloaded"):
+            self.assertIs(value[key], True, (scenario, key, value))
+        observed = value["observation"]
+        self.assertEqual(len(observed), 13)
+        self.assertEqual(observed[0], 0)  # actual SDK fixture thread/lifetime violations
+        self.assertEqual(observed[1:4], [observed[1]] * 3)
+        self.assertEqual(observed[11:], [0, 1])  # no component left; one loader factory reference
+        return value, observed
+
+    def test_processing_pcm_bus_shapes_aliasing_silence_and_rates(self):
+        for scenario in list(range(10)) + [23, 24, 25, 27, 28]:
+            with self.subTest(scenario=scenario):
+                value, observed = self.processing(scenario)
+                self.assertEqual(value["configuration"], 0)
+                self.assertEqual(observed[7:11], [1, 1, 3, 0])
+
+    def test_stopped_flush_and_local_descriptor_refusals_do_not_replay_dsp(self):
+        for scenario in (10, 11, 12, 29):
+            with self.subTest(scenario=scenario):
+                value, observed = self.processing(scenario)
+                self.assertEqual(value["configuration"], 0)
+                self.assertEqual(observed[9], 4 if scenario == 10 else 3)
+                self.assertEqual(observed[10], 2 if scenario == 10 else 0)
+                self.assertEqual(observed[4], 1)  # Float64/local validation never calls arrangements
+
+    def test_failed_candidate_configuration_preserves_running_instance(self):
+        for scenario in (13, 14):
+            with self.subTest(scenario=scenario):
+                _value, observed = self.processing(scenario)
+                self.assertEqual(observed[1:5], [2, 2, 2, 2])
+                self.assertEqual(observed[7:11], [1, 1, 3, 0])
+                self.assertEqual(observed[5], 1 if scenario == 13 else 2)
+
+    def test_configuration_refusals_and_foreign_output_fault_retirement(self):
+        for scenario, refusal in ((15, 6), (16, 4), (17, 3), (18, 8), (31, 6)):
+            with self.subTest(scenario=scenario):
+                value, observed = self.processing(scenario)
+                self.assertEqual(value["configuration"], refusal)
+                self.assertEqual(observed[7:11], [0, 0, 0, 0])
+        value, observed = self.processing(30)
+        self.assertEqual(value["flush"], 4)
+        self.assertEqual(observed[7:11], [0, 0, 0, 1])
+        for scenario in (19, 20, 21, 22, 26):
+            with self.subTest(scenario=scenario):
+                _value, observed = self.processing(scenario)
+                self.assertEqual(observed[7:9], [1, 1])
+                self.assertEqual(observed[9], 1)  # one attempted DSP call, even when the plug-in refuses
+
     @staticmethod
     def stream_packet(sequence, *, graph=3, frames=8, events=True):
         header = struct.pack("<4sHHH6x6Q", b"HXVB", 1, frames, int(events),

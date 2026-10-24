@@ -176,12 +176,9 @@ fn isolated_source(
     let mut snapshot = project.snapshot();
     let source = if let Some(item) = project.session_midi_clip(clip) {
         let source = item.source();
-        let end = if source.looping() {
-            source.loop_end()
-        } else {
-            source.source_length()
-        };
+        let end = source.effective_end();
         MidiClipSnapshot {
+            one_shot_boundary: item.source().one_shot_boundary(),
             volume: item.volume().clone(),
             name: item.name().to_owned(),
             flavor: hex_project::ClipFlavor::default(),
@@ -344,6 +341,47 @@ mod volume_tests {
             assert_eq!(owner, track);
             assert_eq!(isolated.midi_clip(clip).unwrap().volume(), &volume);
             assert!(hex_engine::compile::project(&isolated, &BTreeMap::new()).is_err());
+            let mut snapshot = editor.project().snapshot();
+            if console {
+                let hex_project::SessionCellContentSnapshot::Midi(cell) =
+                    &mut snapshot.session.cells[0].content
+                else {
+                    panic!("midi")
+                };
+                cell.source.one_shot_boundary = hex_project::MidiOneShotBoundary::LoopEnd;
+                cell.source.loop_end_raw = BeatTime::ONE.raw() / 2;
+            } else {
+                let hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. } =
+                    &mut snapshot.tracks[0].content
+                else {
+                    panic!("hybrid")
+                };
+                midi_clips[0].one_shot_boundary = hex_project::MidiOneShotBoundary::LoopEnd;
+                midi_clips[0].loop_end_raw = BeatTime::ONE.raw() / 2;
+            }
+            let retained = Project::from_snapshot(snapshot).unwrap();
+            let (isolated, _, _) = isolated_source(&retained, clip).unwrap();
+            assert_eq!(
+                isolated
+                    .midi_clip(clip)
+                    .unwrap()
+                    .source()
+                    .one_shot_boundary(),
+                hex_project::MidiOneShotBoundary::LoopEnd
+            );
+            assert_eq!(
+                retained.midi_bounce_range(clip).unwrap(),
+                (0, if console { 12000 } else { 24000 })
+            );
+            assert_eq!(
+                isolated.midi_clip(clip).unwrap().length().raw(),
+                if console {
+                    BeatTime::ONE.raw() / 2
+                } else {
+                    BeatTime::ONE.raw()
+                }
+            );
+            assert_eq!(isolated.midi_clip(clip).unwrap().volume(), &volume);
         }
     }
 }

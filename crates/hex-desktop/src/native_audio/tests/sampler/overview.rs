@@ -5,13 +5,13 @@ use super::*;
 fn source_overview_quotes_match_actual_heap_and_backing_is_freed_before_budget_returns() {
     use hex_session::source_overview_test_support::Fixture;
     fn before_release(usage: hex_session::SourceOverviewUsage, bins: usize, metadata: usize) {
-        assert_eq!(usage.bin_capacity_bytes, 2048);
+        assert_eq!(usage.bin_capacity_bytes, 16);
         assert!(usage.metadata_bytes >= metadata);
         // The outer counter starts at zero. If this same-size probe allocation
         // precedes freeing the old Box/Vec, its positive high-water detects it.
         if bins != 0 {
-            assert_eq!(bins, 2048);
-            drop(std::hint::black_box(Box::new([0_u8; 2048])));
+            assert_eq!(bins, 16);
+            drop(std::hint::black_box(Box::new([0_u8; 16])));
         } else {
             const ROW: usize = std::mem::size_of::<(
                 hex_project::AssetId,
@@ -63,15 +63,65 @@ fn source_overview_quotes_match_actual_heap_and_backing_is_freed_before_budget_r
         "table Vec must be freed before its release observer allocates"
     );
     assert_eq!(table_drop.count_current, -2);
-    assert_eq!(fixture.usage().bin_capacity_bytes, 2048);
+    assert_eq!(fixture.usage().bin_capacity_bytes, 16);
     let peak_drop = allocation_counter::measure(|| fixture.drop_overview());
     assert_eq!(peak_drop.count_total, 1);
-    assert_eq!(peak_drop.bytes_total, 2048);
+    assert_eq!(peak_drop.bytes_total, 16);
     assert_eq!(
         peak_drop.bytes_max, 0,
         "peak Box must be freed before its release observer allocates"
     );
     assert_eq!(peak_drop.count_current, -2);
+    assert_eq!(fixture.usage().bin_capacity_bytes, 0);
+}
+
+#[test]
+fn detailed_source_overview_heap_quote_and_last_release_match_actual_capacity() {
+    use hex_session::source_overview_test_support::Fixture;
+    let mut editor = hex_project::Editor::new(hex_project::Project::new(8000).unwrap(), 1).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "original.wav".into(),
+            sample_rate: 8000,
+            frames: 8195,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let frames = vec![[0.5, -0.25]; 8195];
+    let mut fixture = None;
+    let measured = allocation_counter::measure(|| {
+        fixture = Some(
+            Fixture::new(
+                asset,
+                &frames,
+                8000,
+                hex_project::OriginalSourceFacts::new(1, [7; 32]).unwrap(),
+                None,
+            )
+            .unwrap(),
+        );
+    });
+    let fixture = fixture.as_mut().unwrap();
+    let usage = fixture.usage();
+    assert_eq!(usage.bin_capacity_bytes, 4096 * 16);
+    assert_eq!(
+        measured.bytes_total,
+        (usage.bin_capacity_bytes + usage.metadata_bytes) as u64
+    );
+    assert_eq!(measured.bytes_current, measured.bytes_total as i64);
+    fixture.drop_table();
+    let before_release = fixture.usage();
+    let released = allocation_counter::measure(|| fixture.drop_overview());
+    assert_eq!(released.count_total, 0);
+    assert_eq!(released.bytes_total, 0);
+    assert_eq!(released.count_current, -2);
+    assert_eq!(
+        released.bytes_current,
+        -((before_release.bin_capacity_bytes + before_release.metadata_bytes
+            - fixture.usage().metadata_bytes) as i64)
+    );
     assert_eq!(fixture.usage().bin_capacity_bytes, 0);
 }
 
@@ -321,12 +371,14 @@ fn bounds(
     let grid = visual.debug_bounds("sampler-controls").unwrap();
     assert!(
         overview.left() >= frame.left()
-            && overview.right() <= grid.left()
+            && overview.right() <= frame.right()
+            && overview.bottom() <= grid.top()
             && overview.bottom() <= frame.bottom()
     );
     assert!(grid.right() <= frame.right() && grid.bottom() <= frame.bottom());
-    assert_eq!(f32::from(waveform.size.width), 180.0);
-    assert_eq!(f32::from(waveform.size.height), 96.0);
+    assert!(f32::from(waveform.size.width) >= 900.0);
+    assert!(f32::from(waveform.size.height) >= 96.0);
+    assert!(grid.size.height <= gpui::px(30.0));
     for (selector, value) in [
         ("sampler-source-start", start),
         ("sampler-source-end", end),
@@ -336,7 +388,7 @@ fn bounds(
         let marker = visual.debug_bounds(selector).unwrap();
         let offset = f32::from(marker.left() - waveform.left());
         assert!(
-            (offset - (1.0 + 177.0 * value as f32 / 4.0)).abs() <= 0.5,
+            (offset - (f32::from(waveform.size.width) - 1.0) * value as f32 / 4.0).abs() <= 0.5,
             "{selector} uses original4-frame coordinates, not converted8: {offset}"
         );
         assert!(marker.left() >= waveform.left() && marker.right() <= waveform.right());

@@ -113,3 +113,116 @@ fn full_metadata_cache_keeps_unavailable_parameters_and_unsupported_errors_witho
     assert!(!panel.views[&devices[0].id()].2.as_ref().unwrap().parameters[0].enabled);
     assert!(panel.controls.is_empty());
 }
+
+fn assert_outline(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pixels> {
+    let selector = Box::leak(format!("device-shell-{}", device.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).expect("visible device shell");
+    let scale = visual.update(|window, _| window.scale_factor());
+    let (color, widths, _) = visual
+        .rendered_border(selector)
+        .expect("one completed shell stroke");
+    assert_eq!(
+        color,
+        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Border))),
+        "the shell outline uses its neutral theme token"
+    );
+    assert_ne!(
+        color,
+        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Surface))),
+        "body-colored paint cannot show an outline"
+    );
+    let stroke = px(hex_widgets::DEVICE_FRAME_BORDER_WIDTH).scale(scale);
+    assert_eq!(
+        [widths.top, widths.right, widths.bottom, widths.left],
+        [stroke; 4]
+    );
+    let (corners, _) = visual
+        .rendered_surface_geometry(selector)
+        .expect("rounded shell fill");
+    let radius = px(hex_widgets::DEVICE_CORNER_RADIUS).scale(scale);
+    assert_eq!(
+        [
+            corners.top_left,
+            corners.top_right,
+            corners.bottom_right,
+            corners.bottom_left
+        ],
+        [radius; 4]
+    );
+    assert_eq!(
+        visual.rendered_background(selector),
+        Some(rgb(theme::color(theme::PaletteRole::Surface)).into()),
+        "selection must keep the body neutral"
+    );
+    let physical = bounds.scale(scale);
+    // GPUI can split a rounded stroke into several masked scene fragments.
+    // Inspect their completed coverage rather than requiring the last fragment
+    // (often only the rounded top strip) to cover the whole frame.
+    let layers = visual.rendered_quad_paint_layers(selector, true);
+    let pane = visual.debug_bounds("device-panel");
+    let rail = visual.debug_bounds("device-chain-scroll");
+    assert!(
+        layers
+            .iter()
+            .any(|(_, mask)| mask.top() <= physical.top()
+                && mask.bottom() >= physical.top() + stroke)
+            && layers
+                .iter()
+                .any(|(_, mask)| mask.top() <= physical.bottom() - stroke
+                    && mask.bottom() >= physical.bottom()),
+        "both horizontal strokes must fit the actual pane across scene fragments: {layers:?}, shell={physical:?}, pane={pane:?}, rail={rail:?}"
+    );
+    bounds
+}
+
+#[gpui::test]
+fn device_shell_outline_is_visible_rounded_and_neutral_across_selection_and_owners(
+    cx: &mut TestAppContext,
+) {
+    let _restore = RestoreTheme(theme::preferences());
+    theme::apply_preferences(hex_preferences::ThemePreferences::default());
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (width, height) in [(1280.0, 700.0), (960.0, 600.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let before = [instrument, effect].map(|id| assert_outline(&mut visual, id));
+        editor.update(cx, |view, cx| {
+            view.device_panel.selected_device = Some(effect);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for (id, previous) in [instrument, effect].into_iter().zip(before) {
+            assert_eq!(
+                assert_outline(&mut visual, id).size,
+                previous.size,
+                "selection cannot change shell metrics"
+            );
+        }
+    }
+    theme::apply_preferences(hex_preferences::ThemePreferences {
+        background: hex_preferences::RgbColor::new(225, 229, 238),
+        text: hex_preferences::RgbColor::new(24, 27, 34),
+        primary: hex_preferences::RgbColor::new(145, 25, 45),
+        secondary: hex_preferences::RgbColor::new(16, 70, 145),
+    });
+    let (service, state, track, return_id, device, _) = actor_return_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_id);
+        view.device_panel.selected_device = Some(device);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(960.0), px(600.0)));
+    visual.run_until_parked();
+    assert_outline(&mut visual, device);
+}

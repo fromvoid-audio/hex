@@ -612,11 +612,13 @@ fn workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape(
                 track,
                 points: vec![
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 1.0,
                         outgoing: hex_project::GainInterpolation::Linear,
                     },
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ONE,
                         gain: 0.5,
                         outgoing: hex_project::GainInterpolation::Linear,

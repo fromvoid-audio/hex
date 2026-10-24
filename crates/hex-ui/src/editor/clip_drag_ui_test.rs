@@ -833,6 +833,14 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let target = point(down.x - px(42.0), down.y);
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("selected-track-lane-{}", source.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "resizing a clip must not promote its track into explicit selection paint"
+    );
     let snapped_duration = editor.read_with(cx, |view, _| {
         let drag = view.active_trim_drag.as_ref().expect("active trim drag");
         assert_eq!(drag.source_track, source);
@@ -956,11 +964,15 @@ impl Drop for UpperRailPendingSetup {
     }
 }
 fn upper_rail_next(service: &Service) -> hex_session::service::Event {
+    let event = upper_rail_terminal(service);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    event
+}
+fn upper_rail_terminal(service: &Service) -> hex_session::service::Event {
     use std::time::{Duration, Instant};
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(event) = service.try_event() {
-            assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
         assert!(Instant::now() < until);
@@ -2614,6 +2626,41 @@ fn selector(value: String) -> &'static str {
 }
 
 fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
+    assert_drag_handoff(cx, midi, vertical, false);
+}
+
+#[gpui::test]
+fn rendered_copy_retains_destination_until_real_worker_ack(cx: &mut TestAppContext) {
+    for midi in [&[false][..], &[true][..], &[false, true][..]] {
+        assert_drag_handoff(cx, midi, true, true);
+    }
+}
+
+#[gpui::test]
+fn rendered_move_survives_same_revision_worker_work(cx: &mut TestAppContext) {
+    for midi in [&[false][..], &[true][..], &[false, true][..]] {
+        assert_drag_handoff_with_pending_request(cx, midi, false, false, true);
+    }
+}
+
+#[gpui::test]
+fn rendered_copy_survives_same_revision_worker_work(cx: &mut TestAppContext) {
+    for midi in [&[false][..], &[true][..], &[false, true][..]] {
+        assert_drag_handoff_with_pending_request(cx, midi, false, true, true);
+    }
+}
+
+fn assert_drag_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool, copy: bool) {
+    assert_drag_handoff_with_pending_request(cx, midi, vertical, copy, false);
+}
+
+fn assert_drag_handoff_with_pending_request(
+    cx: &mut TestAppContext,
+    midi: &[bool],
+    vertical: bool,
+    copy: bool,
+    pending: bool,
+) {
     use hex_session::service::Request;
     let (_files, handle, editor) = upper_rail_owned_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -2726,6 +2773,11 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
     let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&tracks[usize::from(vertical)]]);
     let end = point(down.x + px(120.0), px(lane.top + lane.height * 0.5));
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    let release_modifiers = Modifiers {
+        alt: copy,
+        ..Default::default()
+    };
+    visual.simulate_modifiers_change(release_modifiers);
     visual.run_until_parked();
     let previews: Vec<_> = clips
         .iter()
@@ -2757,13 +2809,29 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
             )
         })
         .collect();
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    if pending {
+        // Real control-worker work that preserves the canonical project/revision.
+        // The fixture poll timer remains parked until pump_move below.
+        editor.update(&mut visual, |v, _| {
+            let revision = v.state.as_ref().unwrap().revision;
+            assert!(v.enqueue(Request::PrepareTuningAudition {
+                revision,
+                input: Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0)),
+            }));
+            assert_eq!(v.worker_requests_pending, 1);
+        });
+    }
+    visual.simulate_mouse_up(end, MouseButton::Left, release_modifiers);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, before);
-        assert_eq!(v.worker_requests_pending, 1);
+        assert_eq!(
+            v.worker_requests_pending,
+            if pending { 2 } else { 1 },
+            "a valid release must enqueue its own move behind unrelated work: {:?}",
+            v.error
+        );
         assert!(v.active_clip_drag.is_none());
-        assert!(v.pending_clip_move.is_some());
     });
     // Repaint explicitly with ACK intake held. These inspect completed scenes,
     // not only layout bounds or a wall-clock promise that a frame occurred.
@@ -2824,14 +2892,39 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
                 clip.value()
             ));
             assert!(
-                visual.debug_bounds(source).is_none(),
-                "no duplicate source paint"
+                visual.debug_bounds(source).is_some() == copy,
+                "copies retain originals; moves suppress originals"
             );
         }
     }
     let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
     let mut expected = Editor::new((*before).clone(), 32).unwrap();
-    expected.execute(command).unwrap();
+    let created = expected.execute(command).unwrap();
+    let canonical_ids: Vec<_> = if copy {
+        let (first, last) = match created {
+            hex_project::Created::Clip(id) => (id, id),
+            hex_project::Created::Clips { first, last } => (first, last),
+            other => panic!("expected canonical copies: {other:?}"),
+        };
+        let mut ids: Vec<_> = expected
+            .project()
+            .tracks()
+            .iter()
+            .flat_map(|track| {
+                track
+                    .clips()
+                    .iter()
+                    .map(|clip| clip.id())
+                    .chain(track.midi_clips().iter().map(|clip| clip.id()))
+            })
+            .filter(|id| *id >= first && *id <= last)
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids.len(), clips.len());
+        ids
+    } else {
+        clips.clone()
+    };
     pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.pending_clip_move.is_none());
@@ -2841,7 +2934,8 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
             "exact canonical content, IDs, offsets and extent"
         );
     });
-    for ((clip, is_midi), (preview, held, _, _, _)) in clips.iter().zip(midi).zip(&previews) {
+    for ((clip, is_midi), (preview, held, _, _, _)) in canonical_ids.iter().zip(midi).zip(&previews)
+    {
         assert!(visual.debug_bounds(preview).is_none());
         let canonical = selector(format!(
             "{}clip-visual-{}",
@@ -2860,11 +2954,12 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
     visual.simulate_keystrokes("cmd-z");
     pump_move(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(
-            v.state.as_ref().unwrap().project.snapshot(),
-            before.snapshot(),
-            "one group Undo"
-        )
+        let actual = v.state.as_ref().unwrap().project.snapshot();
+        let mut expected = before.snapshot();
+        // Undo retires copied identities; it never rewinds their allocator.
+        assert_eq!(actual.next_id, committed.next_id);
+        expected.next_id = committed.next_id;
+        assert_eq!(actual, expected, "one group Undo")
     });
     visual.simulate_keystrokes("cmd-shift-z");
     pump_move(&editor, &mut visual);
@@ -2911,8 +3006,21 @@ fn rendered_move_cancel_and_stale_controls_restore_source(cx: &mut TestAppContex
             }
         }
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-        // Pending-work rejection is intentional; preserve its diagnostic while
-        // taking the real independent edit's terminal through the controller.
+        if control == 2 {
+            editor.update(&mut visual, |v, cx| {
+                assert_eq!(v.worker_requests_pending, 2);
+                assert!(v.pending_clip_move.is_some());
+                let renamed = upper_rail_next(&v.service);
+                assert!(renamed.error.is_none());
+                v.receive(renamed);
+                assert!(v.pending_clip_move.is_some());
+                let refused = upper_rail_terminal(&v.service);
+                assert!(refused.error.as_ref().unwrap().contains("project changed"));
+                v.receive(refused);
+                assert!(v.pending_clip_move.is_none());
+                cx.notify();
+            });
+        }
         editor.update(&mut visual, |v, _| {
             v.error = None;
         });
@@ -2925,10 +3033,17 @@ fn rendered_move_cancel_and_stale_controls_restore_source(cx: &mut TestAppContex
                 let p = &v.state.as_ref().unwrap().project;
                 assert_eq!(p.clip(clip).unwrap().start(), 0);
                 assert_eq!(p.clip_name(clip), Some("independent edit"));
-                assert!(matches!(
-                    v.last_enqueued_edit,
-                    Some(Command::RenameClip { .. })
-                ));
+                if control == 3 {
+                    assert!(matches!(
+                        v.last_enqueued_edit,
+                        Some(Command::RenameClip { .. })
+                    ));
+                } else {
+                    assert!(matches!(
+                        v.last_enqueued_edit,
+                        Some(Command::MoveClipWithOverwrite { .. })
+                    ));
+                }
             }
         });
         assert!(visual.debug_bounds("clip-drop-preview").is_none());
@@ -2971,6 +3086,7 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
         v.pending_clip_move = Some(super::pending_clip_move::Pending::new(
             drag,
             invalid.clone(),
+            Arc::clone(&v.state.as_ref().unwrap().project),
         ));
         assert!(v.enqueue(Request::DeviceGesture(
             hex_session::device_gesture::GestureRequest::Cancel {

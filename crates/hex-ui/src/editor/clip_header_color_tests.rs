@@ -244,6 +244,11 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     "title retains inherited hue"
                 );
                 assert_eq!(
+                    visual.rendered_background(selector(prefix, clip)).unwrap(),
+                    gpui::Background::from(gpui::rgb(expected)),
+                    "actual audio/MIDI body and title consume the same shared fill"
+                );
+                assert_eq!(
                     visual.debug_bounds(header).unwrap(),
                     bounds[i],
                     "colors and selection preserve header hit bounds"
@@ -288,4 +293,129 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
         assert_eq!(project.clip(f.audio).unwrap(), &original_audio);
         assert_eq!(project.midi_clip(f.midi).unwrap(), &original_midi);
     });
+}
+
+#[gpui::test]
+fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_changes(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    let mut cells = Vec::new();
+    for (source, audio) in [(f.audio, true), (f.midi, false)] {
+        f.editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::AddScene {
+                name: "colors".into()
+            })));
+        });
+        pump(&f.editor, &mut visual);
+        let scene = f.editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .scenes()
+                .last()
+                .unwrap()
+                .id()
+        });
+        f.editor.update(&mut visual, |v, _| {
+            let command = if audio {
+                Command::CopyArrangementAudioClipToSession { source, scene }
+            } else {
+                Command::CopyArrangementMidiToSession { source, scene }
+            };
+            assert!(v.enqueue(Request::Edit(command)));
+        });
+        pump(&f.editor, &mut visual);
+        let clip = f.editor.read_with(&visual, |v, _| {
+            match v
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .session_cell(f.track, scene)
+                .unwrap()
+            {
+                hex_project::SessionCellContent::Audio(clip) => clip.id(),
+                hex_project::SessionCellContent::Midi(clip) => clip.id(),
+                hex_project::SessionCellContent::Stop => panic!("copied clip cell"),
+            }
+        });
+        cells.push((scene, clip));
+    }
+    f.editor.update(&mut visual, |v, cx| {
+        v.mode = super::super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for (scene, clip) in cells {
+        let cell = Box::leak(
+            format!("console-cell-{}-{}", f.track.value(), scene.value()).into_boxed_str(),
+        );
+        let bounds = visual.debug_bounds(cell).unwrap();
+        for hue in [ElementColor::Cyan, ElementColor::Rose] {
+            f.editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::SetTrackColor {
+                    track: f.track,
+                    color: hue
+                })));
+            });
+            pump(&f.editor, &mut visual);
+            for flavor in [ClipFlavor::Muted, ClipFlavor::Accent] {
+                f.editor.update(&mut visual, |v, _| {
+                    assert!(v.enqueue(Request::Edit(Command::SetClipFlavor { clip, flavor })));
+                });
+                pump(&f.editor, &mut visual);
+                let before = f
+                    .editor
+                    .read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+                for selected in [false, true] {
+                    f.editor.update(&mut visual, |v, cx| {
+                        v.selected_cell = selected.then_some((f.track, scene));
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    assert_eq!(
+                        visual.rendered_background(cell).unwrap(),
+                        gpui::Background::from(gpui::rgb(theme::clip_fill(hue, flavor, selected)))
+                    );
+                    assert_eq!(visual.debug_bounds(cell).unwrap(), bounds);
+                }
+                f.editor.update(&mut visual, |v, _| {
+                    assert!(v.enqueue(Request::Edit(Command::SetClipFlavor {
+                        clip,
+                        flavor: flavor.toggled()
+                    })))
+                });
+                pump(&f.editor, &mut visual);
+                f.editor
+                    .update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+                pump(&f.editor, &mut visual);
+                f.editor.read_with(&visual, |v, _| {
+                    assert_eq!(v.state.as_ref().unwrap().project, before)
+                });
+                f.editor
+                    .update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+                pump(&f.editor, &mut visual);
+                let selected = f.editor.read_with(&visual, |v, _| {
+                    assert_eq!(
+                        v.state.as_ref().unwrap().project.clip_flavor(clip),
+                        Some(flavor.toggled())
+                    );
+                    // Existing history reconciliation may retire cell selection;
+                    // compare the actual painted state, not a fabricated focus.
+                    v.selected_cell == Some((f.track, scene))
+                });
+                assert_eq!(
+                    visual.rendered_background(cell).unwrap(),
+                    gpui::Background::from(gpui::rgb(theme::clip_fill(
+                        hue,
+                        flavor.toggled(),
+                        selected
+                    )))
+                );
+            }
+        }
+    }
 }

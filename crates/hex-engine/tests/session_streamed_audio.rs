@@ -22,6 +22,7 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),

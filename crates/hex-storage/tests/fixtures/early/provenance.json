@@ -1,0 +1,1039 @@
+{
+  "generator": "artifacts/early-migration-evidence/generate.py",
+  "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+  "fixtures": [
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema13-hybrid-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "branch": "hybrid",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "6b2c42d726b1ea763818060edc29bef4dd045027cd780bbba867d30de250b24e",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5",
+      "seconds": 7.45,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema14-effects-9efed7e1.json",
+      "source_sha": "9efed7e1c22934c21d756700d40baf0bf8d27602",
+      "branch": "effects",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "061a566f1b6309e7c2c84f428e66504337426f9bc0412aca665569997834bc03",
+      "harness_sha256": "794ae6bb534ddeb18363973bc60b5213bc8ae96d651bb52f9ea344e1a21419f7",
+      "seconds": 7.52,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "ea7e26da26037900d676c31b9f2a0fffccd400141c480cbbf38c4543068e9628"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema15-instrument-a5de1baa.json",
+      "source_sha": "a5de1baab3264b9b5fa90fe073fbe8aa1ee37b5f",
+      "branch": "instrument",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "d317a831010141d5020e2bf0a50ec02e6fff85317d90be0a55d4af8b25a96b97",
+      "harness_sha256": "9b831ebc9c44dc5c0f69d98b6b66bdeb15e6041e577cc5a175a9fbbfa2e30cbd",
+      "seconds": 7.06,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "e1d4cd6ed64d3cb45b91507266cc1cec2d481de847fa02dc80e5a141de7096f8"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema16-position-65410c68.json",
+      "source_sha": "65410c68807e37d2be15f64a21f996cca3a3d7b7",
+      "branch": "position",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "d0bfce37e43e3c3e4fae42551cf9210803a0ead7dac8e9891b57385441ab46a2",
+      "harness_sha256": "9b831ebc9c44dc5c0f69d98b6b66bdeb15e6041e577cc5a175a9fbbfa2e30cbd",
+      "seconds": 10.26,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "6274e4677e87564934b3732e100699edf5a65674946609b39ed19028df12f722"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema17-returns-583bfdc1.json",
+      "source_sha": "583bfdc15f12c140c0733b6d44547c02aeb0e959",
+      "branch": "returns",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "47f648c9766ae90cb3eb72bc3881156336cc37f1a791d8f7b863bd5832cab645",
+      "harness_sha256": "b279f3c6982951da42e3913c27c9936cc09c9fff540e992214a0c1bce55a42d1",
+      "seconds": 5.96,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "2917012bc0ad08b96b08ad7f739b27b4691548e13db28a6cc8b847806b24ba36"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema18-provenance-173482a3.json",
+      "source_sha": "173482a373d8938ad5820f3774bb013470a30776",
+      "branch": "provenance",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "16d7de22ff620ee47041c7c9077b1e1de442b9e6b9f324e3533725a10a394e40",
+      "harness_sha256": "b279f3c6982951da42e3913c27c9936cc09c9fff540e992214a0c1bce55a42d1",
+      "seconds": 7.13,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "952689adf0bbd0d18ffddc5ac92136de532d1bf0c6a37b931217d404ad332f44"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema18-output-dc6c050a.json",
+      "source_sha": "dc6c050a611f5c446adf8172250a32e509309367",
+      "branch": "output",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "b4df575c9f7b3c2f652b4bb6a3b599e431cf0b8db32a8caf92f43c253e6fc34f",
+      "harness_sha256": "767f9d54f36bd9cdc1274c615286f80b342dcd725b8aa4b6d1259e2b117fe0ec",
+      "seconds": 11.49,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "5150b60288e07122177ec964f2aae1f0f216f242e008cef45f0fec3fcf5f4143"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema20-inline-gain-b9274930.json",
+      "source_sha": "b92749302883e971d899add3aeb3788f0d11ebc6",
+      "branch": "inline-gain",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "dcec11784f344c09fc0e094c092c0d20b8eb1e3c4809ae2197fe2528252f2f7c",
+      "harness_sha256": "2fd6c7d454977872f92842653e363b81237aa3d2791fecf16c510a2b25f19933",
+      "seconds": 12.66,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "03f81c20ed8e3f3164cdcbbf764a518742adb919dfeec8055bff11809fc0375e"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema21-inline-edit-a9da374e.json",
+      "source_sha": "a9da374e2babc5a9540bd540b34bbad6ff6a3a95",
+      "branch": "inline-edit",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "8c53c6502c7b10851388bde0a9a184cd4a47a82159f99d8eeab644a80f9d55a7",
+      "harness_sha256": "5b28f5d857b560b94746cd71420f5133baf80f3589f4988817db28c014677964",
+      "seconds": 14.41,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "c2cb6bf3116f36f2c8168d1092eefeacb659e3923d360d0bfab051489101cc1a"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema22-touch-60c88034.json",
+      "source_sha": "60c8803427b3f61cec8c46fd96db724d785a856c",
+      "branch": "touch",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode_schema22",
+      "sha256": "3353b2d467e1ff40f6bdc8d9be20d1e74cef891409a0f2480eaaaa8909ac53b3",
+      "harness_sha256": "e2030474f7cd9b378eca9b82197e81e8412989fa96c6d04f5767b188459ca074",
+      "seconds": 13.21,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "d2a8d42131ce29a4d324935bf6c68ad5590e827a6d76b5224d3a163e16ebd096"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema23-two-trim-c3076a24.json",
+      "source_sha": "c3076a2418b6bb6ac5cad3ee927a919996d2ba0b",
+      "branch": "two-trim",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "b8075800ec13d76e0aa5df143bf0cb8d09cc0f535968c5833606da99c38e990a",
+      "harness_sha256": "1a9290a295cdbbb5584dd921b2179a283c1d61f0893fefacadbcaf5b6649c99d",
+      "seconds": 17.0,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "eb8b77d10459ba3e6c379829464716449ce977a5a050a387add867491f7271ea"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema23-combined-3c7c786b.json",
+      "source_sha": "3c7c786b5c3841f7c2d28feec434dc3284dd7aed",
+      "branch": "combined",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "659d2f545a4bf11521c9dfdee696eaa333422af88f6634ee190bf994a209d69b",
+      "harness_sha256": "1a9290a295cdbbb5584dd921b2179a283c1d61f0893fefacadbcaf5b6649c99d",
+      "seconds": 8.41,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "e04c2a479d450ed05222cb9384d4cb97ff3e2aefb9b3b38a80fde458d5561d61"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema24-routes-f7c73dd0.json",
+      "source_sha": "f7c73dd0a6b54fa79bc28706815fccd22989d4ed",
+      "branch": "routes",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "6886d5ce57add733469d17586309850a067fb7154390a073829ea00ba2a157fb",
+      "harness_sha256": "a7dfb7d66aa87d726a5f82574cc277b50e982d7ae6cf61b2599126de42b35439",
+      "seconds": 14.94,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "ae6234f74bd796dd56941dea300aa857c759c895db0f72d0ddfb659bc69f0f9f"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema25-audio-e9736fce.json",
+      "source_sha": "e9736fcee2cb33db294bdc0f0db3420eb7aeaa4f",
+      "branch": "audio",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "435cfc90dae0dd9584f8033e2f6e7dc59e663e991e064241879fbc9ae4060331",
+      "harness_sha256": "d4d637831bfc4e6b01d03afc9669e37b069b1f97b6335547247a5b5a2f7bae38",
+      "seconds": 20.74,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "cf653bbebb64a4c6868b78cd369cc906165e106b7d013bc9b1a361e7e0410ec3"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema26-names-9f381a6f.json",
+      "source_sha": "9f381a6fec1d51095588172a522f7aaa425bf5c6",
+      "branch": "names",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "17f7687faf0ab2e88c1879eed86388f90362187db02aca6c8df9b816ca5f77cb",
+      "harness_sha256": "3377f7c9ba5d3a55eecf245c3bee753fc4859170ced0126639c445d314b42d20",
+      "seconds": 31.3,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "0f04791f2bddc3ccc79b3fd31418494b217aaa9c508956d254ac41ddb2587f45"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema26-events-309d41ae.json",
+      "source_sha": "309d41ae541d70a3dfbf2669e1ff2454cfe5ddfb",
+      "branch": "events",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "4aab5205e7af0b723b67d59660d987be2b2d8ebd96851914e6521e67e5124a8e",
+      "harness_sha256": "5605121f3ed71ce071177f5530c939cf74aca020aae5258faea16b58b69cd6bd",
+      "seconds": 23.88,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "a4ba261954ffffeed3bed859a23c22cb33ae3e261fb8f86cad8576ec51e5d289"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema27-appearance-e409a8f2.json",
+      "source_sha": "e409a8f2a44ff3e1ea993ba21bcd9216a1e32364",
+      "branch": "appearance",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "c35d0769bde2cffff1f6cb11cc808b728b2d49e30e04a53cb7651687610a4625",
+      "harness_sha256": "31f7bd05f71c0c0324ae8a388737ae3b86bd6236880e8ac91be7093acadb65f0",
+      "seconds": 36.76,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "9f286723cc41a023027424ef6feea33bf7d1c5cdb2c0d258a33528f7b66b7d0d"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema27-named-events-d8922776.json",
+      "source_sha": "d8922776fbff142e0484bbf782ad9559a0cea142",
+      "branch": "named-events",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "c90e7c1d77ad72ffff8721f91c657a500ebef4b4d331169f5635ce94bf5715f7",
+      "harness_sha256": "de5e243e7f7dcd2679dbae17d8f069eacf6f7367422fb77ba8747256db9fa9ec",
+      "seconds": 35.4,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "0a55d69bcf9783a0d1974b7d7b5ccc74de007e0414f24dac314c2ae4039f0653"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema27-named-fades-0298bf88.json",
+      "source_sha": "0298bf88e39414509fb0bddd99e04187e76e0a60",
+      "branch": "named-fades",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "4845292cb7bb60b9363d93b430ba48de0bb202c03875075f93a44795892a4f68",
+      "harness_sha256": "52e3c6351290a387798fda3237b40a073caef7fbd5c299b41b5555bef1af87fd",
+      "seconds": 36.54,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "a8a8c3e09a1f26a5a7dc1e1e1a6bf241142d1e4880e2faef0b7abec96518a4e2"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema28-appearance-events-819a4cc4.json",
+      "source_sha": "819a4cc485ffd6a3037730a5e34f34566986b484",
+      "branch": "appearance-events",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "fda0d10bac3ee7c0681eb5c42bf2ae4162e5aa0fb3a9c0d9fd9daa057f7f1464",
+      "harness_sha256": "35aed3319e55c8bd53afda9a13e260eca2bb92ed77ec30ef65c1cfabe1b40fc1",
+      "seconds": 63.93,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "811fd712f7d85d2bb9df0a2d0b270d944457f7cdc33f9f56ba5a0c7ce08af5d5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema28-appearance-fades-e50ffea3.json",
+      "source_sha": "e50ffea38895cbdfe0ac9fc9b89110fabbe2417e",
+      "branch": "appearance-fades",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "c37dce7e90a688cb891d2a3e9d52feb5cae3696d7ce53a6fba63c63fefbc8838",
+      "harness_sha256": "2cdc813bf6ac16f55913c39a2957c82738447bd4ebc97e059b80db11059bb13a",
+      "seconds": 34.28,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "fe231816cea5086f530063959cbdf0623d70014b80973b7ad45d8a7d8fd2166d"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema29-combined-caed5306.json",
+      "source_sha": "caed5306deb782b0e537ea4cf22c40a5ac5662b3",
+      "branch": "combined",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "155e22f88597ac159260df56183e2303f6871d40394abae69914eeb6c7852719",
+      "harness_sha256": "ab1b73c25fb198d67e2bcca7a9c45ef78353608edf568339c209f2fd48d76cd7",
+      "seconds": 37.2,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "9503de7adf3e64d0eb473726c72101a8a2abb4826ad8f05d84c1db1f43ca4c79"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema29-sample-bpm-a0cedd1d.json",
+      "source_sha": "a0cedd1d4ef457d431108c26de956c732b9c06e8",
+      "branch": "sample-bpm",
+      "kind": "original public encoder",
+      "encoder": "hex_storage::encode",
+      "sha256": "ad14f88f479cc38db795fa6ff85a236a87505608ab9de9d7bc330f7e25f21c84",
+      "harness_sha256": "a5ffcdb6e56fa004871cc8057845a09989398734926a43d421c399db019b02c4",
+      "seconds": 16.52,
+      "original_roundtrip": "snapshot equality; byte-identical reencode",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ],
+      "original_rust_sources_sha256": "be5ae53ed671aa337c88295810fc64535f9c107a5734b82d7a8c138344d518ef"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema1-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "e0361f715af6b1834cfc925ccd77f2e32ca3247c9b3633f2e90eb9764e1c1a00",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema1-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema1-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "1dc0569e2e1c0858284244f7b67acd0f774b60b7af18b3b9aead97a23d23f509",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema1-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema2-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "1eddbf789197a43b1c39f3186c7e4f3f621a5a6cef8025e3c2bad381445c60c0",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema2-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema2-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "85291f6239470045471efaad1c504a61265ab70b781f0f89258ec72c144dd5e2",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema2-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema3-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "8546924952a77ed7dd1eb8560fb6f9c277bdc0fc07aa370eefc95a59a96b1fc4",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema3-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema3-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "be04fdc66bc3d1792da353ab1ea28e08a80e2c7b6d4af0f373791de72be34845",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema3-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema4-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "26527b2b1e51c26838de771b113abe606282b24eb27d03f11b77722ef0229195",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema4-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema4-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "958b7aa643a7e8cbf56ec038495e94dc497983fba6058d03df98628cf45f7d97",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema4-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema5-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "6b5e5fb1b3f17e567dfdebb7390f9be2259f28657770ce9cd63bea94ecb14453",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema5-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema5-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "6cb16f2659cd90c7a54c6b5af4436bd8013a2f492d075bcfdd3345fc24d62583",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema5-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema6-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "f297c7ad4e1049dd882bd395c991cec7ccfb5535241553d3c97e3c10716b8f63",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema6-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema6-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "27653062d054ae96689d5fda2bcc557e725a65f4d57fe5a4aa842d5ed09e63a5",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema6-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema7-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "0ed4098273ff3c6e8537990120d266724056d3420ff4c158eae3999e98964ece",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema7-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema7-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "eba058e54b06c402aaf7dacbf82dd5cf9eb28aca9e75474af125ee83da7f1792",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema7-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema8-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original test construction",
+      "sha256": "ed401d870225de60290970a1978697e777d253f96958853cfba08022bfae5158",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema8-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema8-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "e403506976bdefd916255f0eb5d2d08dd884e3b1fd4db7c58501fd08013474ab",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema8-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema9-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original literal test fixture",
+      "sha256": "7a1f500b7faa2a7a51080cfb5f56bbda44ae9764f8be100e689bbe37b518b325",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema9-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema9-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "a434205f1a3cb71dadf71d3c8cc9b60fa72ced4e48f9d3002cdc5667fcb6e650",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema9-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema10-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original literal test fixture",
+      "sha256": "347dc8f2b2ad0d941be05cbc1809052ad9a234ee098039d772812ebedd202b50",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema10-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema10-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "fd4556fd771e8a697a42acc4386eb83a7e4d7c612897beecce40d73775848a9b",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema10-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema11-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original literal test fixture",
+      "sha256": "98d3b749db2a00bd79389aba3bc47da16d85313638badf2574551b4c0daf2cb4",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema11-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema11-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "2803820e9a068b511e932b51f083150eeceb17c0396161cd77ab284f80f5b2ea",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema11-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema12-reader-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original literal test fixture",
+      "sha256": "6806422f58b784fb6c98acc7db764bd19d037f6b02429f6b34932fee442c83dd",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema12-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema12-oracle13-89674b36.json",
+      "source_sha": "89674b362cc2234cdc359fdd353618c707878848",
+      "kind": "original frozen reader normalization to13",
+      "sha256": "0384afa2599e30de9fa0ebddaf4cf1451e4468b8a86f486e274a9ebaacc21004",
+      "original_roundtrip": "original reader accepts; normalized13 original encode/decode equality",
+      "command": [
+        "target/debug/examples/early_fixture",
+        "crates/hex-storage/tests/fixtures/early/schema12-reader-89674b36.json"
+      ],
+      "original_rust_sources_sha256": "e9823919a9f72b8c6f3b800d2774b43911c9030172bc5df3499f4cf17595d937",
+      "harness_sha256": "2412ed9424f9541575982dc17c24e6295a9cf49eee38ce863d4bb39eb7b77de5"
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema20-empty-b9274930.json",
+      "source_sha": "b92749302883e971d899add3aeb3788f0d11ebc6",
+      "kind": "original public encoder empty-project boundary",
+      "sha256": "d8b59616a8bb3f802e285da662bbd3c6964e6d7134fe386ea21e07a52b53cd68",
+      "original_roundtrip": "original reader project equality",
+      "original_rust_sources_sha256": "03f81c20ed8e3f3164cdcbbf764a518742adb919dfeec8055bff11809fc0375e",
+      "harness_sha256": "a753806ad397f54061504d18581ba7ce5f63e12112e3e8a4778af9816b289daf",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ]
+    },
+    {
+      "path": "crates/hex-storage/tests/fixtures/early/schema21-empty-a9da374e.json",
+      "source_sha": "a9da374e2babc5a9540bd540b34bbad6ff6a3a95",
+      "kind": "original public encoder empty-project boundary",
+      "sha256": "4c1b0fa99b4a9aa782ff0ead3d6e7449a4da05d2beafbe8ee2fa4739f3c45aa3",
+      "original_roundtrip": "original reader project equality",
+      "original_rust_sources_sha256": "c2cb6bf3116f36f2c8168d1092eefeacb659e3923d360d0bfab051489101cc1a",
+      "harness_sha256": "a753806ad397f54061504d18581ba7ce5f63e12112e3e8a4778af9816b289daf",
+      "command": [
+        "cargo",
+        "run",
+        "--offline",
+        "--quiet",
+        "-p",
+        "hex-storage",
+        "--example",
+        "early_fixture"
+      ]
+    }
+  ],
+  "session_audio_writers": {
+    "generator": "artifacts/early-migration-evidence/generate_session_audio.py",
+    "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+    "fixtures": [
+      {
+        "path": "crates/hex-storage/tests/fixtures/early/schema20-session-audio-b9274930.json",
+        "source_sha": "b92749302883e971d899add3aeb3788f0d11ebc6",
+        "version": 20,
+        "sha256": "852fecc47df29cacb1bb4f09c9c81fc59edc23adbece6799354cdfdfb003d015",
+        "harness_sha256": "82260c3cc5ac1cdc7737c0b132dcbb3aba19ca91fb3b7e2927b3ca13444d418c",
+        "harness": "artifacts/early-migration-evidence/b9274930-session-audio/crates/hex-storage/examples/session_audio_fixture.rs",
+        "source_rs_sha256": {
+          "crates/hex-lattice-contract/src/lib.rs": "590ed1c54c23c824c5b71e51e9e4bb4c1b79c6b63421a05bab90cee452783ae4",
+          "crates/hex-project/examples/profile_edits.rs": "69e1ee2c547f49f4361ce13db4277a89b49117fff6c9fb228c25296bd7fae604",
+          "crates/hex-project/src/clip_copy.rs": "78605cc8b84976951a72e0faeb44b00735cee75a4f1e57ea8c079c335e533a20",
+          "crates/hex-project/src/clip_fragment.rs": "68110378c50dceba55fe997029bacfc3105d5f88821837626b1b972afe571012",
+          "crates/hex-project/src/conversion.rs": "89a3189bc54f8e9e4afd384d34ffe8df7e84139ecc79e12805920e0cbc141506",
+          "crates/hex-project/src/device.rs": "cf8d2fcde202ff751f79b0ff20a2c95e157444c058edf696a6b90ad9f13c6352",
+          "crates/hex-project/src/edit.rs": "a56e7b7bae6b89dd4705f23a01a9befd227213b3095e26970d2d3c14fb7d90ab",
+          "crates/hex-project/src/history.rs": "22eee9c5839fb43b37acb2fcd4dc51e441815ab438f03f74d9b2e50b73946560",
+          "crates/hex-project/src/lib.rs": "60543e780d791217cc327fd18cb5528d2d696e165362769c3204aed957d86818",
+          "crates/hex-project/src/midi.rs": "0e175ecb2daa1543c2cb5c9653eea607198643dc840fa85d74a4c3a0d3f2b716",
+          "crates/hex-project/src/midi_batch.rs": "c9ed9bd35afdf2574f2bf484adbe653f5208b71facba6aaa99550557728ec9e1",
+          "crates/hex-project/src/midi_playback.rs": "700706aed94ccad7824844a2d2bc89b67e6b08a28bd2b3af0595e2c0bb8a1c95",
+          "crates/hex-project/src/returns.rs": "7f78ac806d6ec5745e9abcc83c126089869b68acf9d4b20cfb5c0634a7b12298",
+          "crates/hex-project/src/session.rs": "d6b2adcc2c102530ccddf775c13ef86d28dac32d1a4955243eb80ec2ca40d3d2",
+          "crates/hex-project/src/snapshot.rs": "9ea71e5404c27ed8c8e12fecc93b5d4adecdc290460beb48e0e88fa15e8a2080",
+          "crates/hex-project/src/split_tracks.rs": "6843c444a613593b465f6e6ed3025193c4a083a5d8f9f8880c6a654009e8b21c",
+          "crates/hex-project/src/time_range.rs": "e9f85ba357d46af374280631ca5ab4dee279cba66b365713aa3036b33a6facf0",
+          "crates/hex-project/src/time_range/insert.rs": "629a31263221243c0130ce05b06c96977d9c7dab05ddbdb9428ad851e6bf35aa",
+          "crates/hex-project/src/timebase/meter.rs": "dcb2807f6eb4e3f14f35cbe79e16661f08e6b4ab77bbaf572e3ec83c29fa2bae",
+          "crates/hex-project/src/timebase/mod.rs": "fa89f92305df21675dadd21c2b80829390c296c74d103cd4fa4fed00f54d5ae6",
+          "crates/hex-project/src/timebase/pulses.rs": "41bd8cfdce79e0f859eeb7c8a46449af63ed0905748be15d9081c538e07b6e78",
+          "crates/hex-project/src/timebase/pulses/tests.rs": "67f9f7ac02b1a3a3c38015c3d35dec6c03faafdb9a5a97d4f4d976e8619f60d5",
+          "crates/hex-project/src/timebase/tempo.rs": "903a00d8355945e444aafc8a2572d9d6794bfaa2150e6130846415add49a192f",
+          "crates/hex-project/src/timebase/units.rs": "72a4583162c2715d549cd748ab00c130576638adf948ab49ad6bb1b489ccce18",
+          "crates/hex-project/tests/audio_clip_looping.rs": "3e3e5ad6ff88c04bbe2965c93c368697f5dda5f58098fa3a96b9ee97635d8ac7",
+          "crates/hex-project/tests/audio_clip_source_phase.rs": "c5ac6ba47d095402b6c35e1ed4d14d9b235b397d6152917c7c804afb4ad2bea8",
+          "crates/hex-project/tests/clip_fades.rs": "4f5f8e375a8a30d37b43bd97ceb7ac4f82c34db2ed3717e574f27744b8955f71",
+          "crates/hex-project/tests/clip_fragment.rs": "37226acb168b4248b05fd840699e556f4f491ebf57b3253bf945979d8c56958a",
+          "crates/hex-project/tests/clip_gain.rs": "3fd226e0b7dbea8d8dccdabf72118815ea922d26c1e178d3fdffa9109af91839",
+          "crates/hex-project/tests/clip_trim.rs": "09e8a9bd626fc80274b06fcd39eff4dcbb5c95b5912029ea046fdd067d19838d",
+          "crates/hex-project/tests/duplicate.rs": "a72aa03ae5fd518bee402d35919cc96c1c0fd4c092109aaf3bd739e3efb1757e",
+          "crates/hex-project/tests/editing.rs": "cb9b5a1f364c0953c8d7e1896c1d9ff1926948c50c794e595abed54eeade525f",
+          "crates/hex-project/tests/import.rs": "c6d00a6bb451e629db95e7382ee353577aa4e05175c6a82296f31a418f2749a9",
+          "crates/hex-project/tests/insert_time.rs": "967b657cffcf6ccd53d896354699dff7415bade799e12fd0fc58e064183a5b61",
+          "crates/hex-project/tests/loop_region.rs": "58ed630e8a74b6e9b08f941431b2a8b4b1009f47dd3092371ecd7366f4574048",
+          "crates/hex-project/tests/midi.rs": "d59e4c1f9977348ffe68827b967a241cec13e93cf7f7f8bd5224854d825ed014",
+          "crates/hex-project/tests/midi_split.rs": "aaaff7f1fa1692a7592ec423dbc160923caf2890ad2299221d46802b88a8edbe",
+          "crates/hex-project/tests/midi_trim.rs": "70d68e42ed9960776884b4387eb10738bdd2b5c9c2f4ab841285dd4fcec8ce44",
+          "crates/hex-project/tests/mix_controls.rs": "9dba0b0bb9c41825c7e1bbc76794b26ab3b78b958d03c369569ca426069a226f",
+          "crates/hex-project/tests/relative.rs": "cc16350d2fe32304facc0ede24e0ea8121eb552fbf3ea66a66fa614c1bcc7aba",
+          "crates/hex-project/tests/return_tracks.rs": "d393f3ede4ee504c813b071848e87c0088d5a8d57a01f5961fabe34213094389",
+          "crates/hex-project/tests/scene_editing.rs": "f13b6da720d3108f9fe892317e99478154a37af04d7b0892d87272f95e626b16",
+          "crates/hex-project/tests/session.rs": "3a1111147f3eb049ff3d16f1afbbf93d00711650c3afdc9214f1442341974ce0",
+          "crates/hex-project/tests/session_audio.rs": "fce4567d882db89387079a8067311ced6fee448501ab36a7f5936cfc9cbb2035",
+          "crates/hex-project/tests/snapshot.rs": "70a0935077222e2d2fb100b3da97a8044b01c39e77501da3b6c3d9e7b97b08d6",
+          "crates/hex-project/tests/solo.rs": "98f3c466d358d70ce421315483c4fff44528a5547f03ed163871d75a4b595349",
+          "crates/hex-project/tests/split.rs": "8a41817ec0eebc58e290088c4332c04ebc84adcf8549e4d6c7f072cd214351a2",
+          "crates/hex-project/tests/time_range.rs": "404241ea267f7176f9326a9545f40caaabbf4907d4f794c8cee8105e9b87305a",
+          "crates/hex-project/tests/timebase.rs": "2b621e449f4a9930e728371c248b4f62c392b671faaf51a47b2a6f3aade6b5ff",
+          "crates/hex-project/tests/timebase_quantization.rs": "5a884f3522705036d1c353a28381488a235eeb4227f0dca0bd757f92ce2e5f09",
+          "crates/hex-project/tests/track_insertion.rs": "1e7483919e2115df0d4e7b0c5fd46e82683bb10a084dcd27535911f1a2a12f36",
+          "crates/hex-project/tests/validated_history.rs": "09e059be11b0eb35321ac43b721ddcc20667550490d1d452ced271a5d8398ce6",
+          "crates/hex-storage/src/files.rs": "ab6d46db9b85975b7ab22744a4be366c861b0c880b3799cb80bcf4e3c02492c3",
+          "crates/hex-storage/src/journal.rs": "59499b0efa54ab64a49913483c61afda56ab72efd5679b8bb2429c5e79426841",
+          "crates/hex-storage/src/journal/slot_lock.rs": "f8773d19a78093662ac9fef0e35dda3a3c4c1711abdd03bfccd0948b151a9222",
+          "crates/hex-storage/src/lib.rs": "86890f4721266f629a1283997671e3c9284ecf588f3b8ad2e188843e26f86f48",
+          "crates/hex-storage/src/replacement.rs": "c5df59a8853601e8443d56605d32d67bf4319965e992e90131699efd9431aafd",
+          "crates/hex-storage/src/schema.rs": "4faeb231fffd139aca148f4451410bf5a7ec2b6e4c343c67b233d1290431f571",
+          "crates/hex-storage/tests/persistence.rs": "46eccaaa34b10db8d35268c534864241bf4752f2c3fe127ef56bc5023905031f"
+        },
+        "original_rs_unchanged_before_and_after_build": true,
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "session_audio_fixture"
+        ],
+        "original_assertions": "complete snapshot equality; byte-identical public encode/decode/encode; exact Session asset, nonzero17..143 source window, case-preserved name and-9350 millidb gain",
+        "wire_audit": "Session Audio exact keys id/name/asset/source_start/source_end/gain_millidb; no audio_edit"
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/early/schema21-session-audio-a9da374e.json",
+        "source_sha": "a9da374e2babc5a9540bd540b34bbad6ff6a3a95",
+        "version": 21,
+        "sha256": "4029f3af4b52372fede172ea64469ff897b1c568aff4bccbd145ba210f148863",
+        "harness_sha256": "f22c4f54b49d8fd4c611b4967d0f4fd4f79d1f14004befa355c1e73d9da455bc",
+        "harness": "artifacts/early-migration-evidence/a9da374e-session-audio/crates/hex-storage/examples/session_audio_fixture.rs",
+        "source_rs_sha256": {
+          "crates/hex-lattice-contract/src/lib.rs": "590ed1c54c23c824c5b71e51e9e4bb4c1b79c6b63421a05bab90cee452783ae4",
+          "crates/hex-project/examples/profile_edits.rs": "5dda05b675feee8965f0701ca53505a42e1bfb171b9c7e109b40464712ffc570",
+          "crates/hex-project/src/audio_edit.rs": "625b7f652ede744652bf1318fcec4331841373c5c3323cc15f89360011c33a51",
+          "crates/hex-project/src/audio_edit/commands.rs": "b83bb4240205387cd49110899d37e00bd6415a20b5646bdc3c23a8071fdf9162",
+          "crates/hex-project/src/clip_copy.rs": "077af0c2b68542f02f4ce4f4859ce0c05ac15b4abf8d0ee646af12530c5592df",
+          "crates/hex-project/src/clip_fragment.rs": "ae32a0c2f5b75354de04606d95d8f7b34202c9be92d7208eb20684b5097bbf20",
+          "crates/hex-project/src/conversion.rs": "89a3189bc54f8e9e4afd384d34ffe8df7e84139ecc79e12805920e0cbc141506",
+          "crates/hex-project/src/device.rs": "cf8d2fcde202ff751f79b0ff20a2c95e157444c058edf696a6b90ad9f13c6352",
+          "crates/hex-project/src/edit.rs": "003053f5c13004eee0aee9df0a0d5f73fcd966e7e79023703286ab7420fb24af",
+          "crates/hex-project/src/history.rs": "22eee9c5839fb43b37acb2fcd4dc51e441815ab438f03f74d9b2e50b73946560",
+          "crates/hex-project/src/lib.rs": "442603a44930edc1ac80fb338161ebe637ed7fad84aa5d552ccbdd1100419289",
+          "crates/hex-project/src/midi.rs": "0e175ecb2daa1543c2cb5c9653eea607198643dc840fa85d74a4c3a0d3f2b716",
+          "crates/hex-project/src/midi_batch.rs": "c9ed9bd35afdf2574f2bf484adbe653f5208b71facba6aaa99550557728ec9e1",
+          "crates/hex-project/src/midi_playback.rs": "700706aed94ccad7824844a2d2bc89b67e6b08a28bd2b3af0595e2c0bb8a1c95",
+          "crates/hex-project/src/returns.rs": "7f78ac806d6ec5745e9abcc83c126089869b68acf9d4b20cfb5c0634a7b12298",
+          "crates/hex-project/src/session.rs": "afee8e80cdee1eeb56a8c63a065d0aeca1e1a768e51ec35265cb7848e0d859c0",
+          "crates/hex-project/src/snapshot.rs": "95a401734b9d09a7658f57126c7529aca6759dad1b04b892c8996a73082f0b3d",
+          "crates/hex-project/src/split_tracks.rs": "6843c444a613593b465f6e6ed3025193c4a083a5d8f9f8880c6a654009e8b21c",
+          "crates/hex-project/src/time_range.rs": "8e179906f897df750f2ae89d42ab39407a1b156b101d72d1dc13a98bfec708f0",
+          "crates/hex-project/src/time_range/insert.rs": "aec57dfd3d45848567a0dd7feb6f188687de12d6c39bccddc7944154e2ea66c3",
+          "crates/hex-project/src/timebase/meter.rs": "dcb2807f6eb4e3f14f35cbe79e16661f08e6b4ab77bbaf572e3ec83c29fa2bae",
+          "crates/hex-project/src/timebase/mod.rs": "fa89f92305df21675dadd21c2b80829390c296c74d103cd4fa4fed00f54d5ae6",
+          "crates/hex-project/src/timebase/pulses.rs": "41bd8cfdce79e0f859eeb7c8a46449af63ed0905748be15d9081c538e07b6e78",
+          "crates/hex-project/src/timebase/pulses/tests.rs": "67f9f7ac02b1a3a3c38015c3d35dec6c03faafdb9a5a97d4f4d976e8619f60d5",
+          "crates/hex-project/src/timebase/tempo.rs": "903a00d8355945e444aafc8a2572d9d6794bfaa2150e6130846415add49a192f",
+          "crates/hex-project/src/timebase/units.rs": "72a4583162c2715d549cd748ab00c130576638adf948ab49ad6bb1b489ccce18",
+          "crates/hex-project/tests/audio_clip_looping.rs": "3e3e5ad6ff88c04bbe2965c93c368697f5dda5f58098fa3a96b9ee97635d8ac7",
+          "crates/hex-project/tests/audio_clip_source_phase.rs": "c5ac6ba47d095402b6c35e1ed4d14d9b235b397d6152917c7c804afb4ad2bea8",
+          "crates/hex-project/tests/audio_domain.rs": "19314c21e05489e9abb4b45b687512bddec0c7d5583ec264bd8593636d4ae64e",
+          "crates/hex-project/tests/clip_fades.rs": "4f5f8e375a8a30d37b43bd97ceb7ac4f82c34db2ed3717e574f27744b8955f71",
+          "crates/hex-project/tests/clip_fragment.rs": "37226acb168b4248b05fd840699e556f4f491ebf57b3253bf945979d8c56958a",
+          "crates/hex-project/tests/clip_gain.rs": "3fd226e0b7dbea8d8dccdabf72118815ea922d26c1e178d3fdffa9109af91839",
+          "crates/hex-project/tests/clip_trim.rs": "09e8a9bd626fc80274b06fcd39eff4dcbb5c95b5912029ea046fdd067d19838d",
+          "crates/hex-project/tests/duplicate.rs": "0c706dd854e808b26070f348792701d85dadb195e9ff5b8bf502e30e1c347fdd",
+          "crates/hex-project/tests/editing.rs": "cb9b5a1f364c0953c8d7e1896c1d9ff1926948c50c794e595abed54eeade525f",
+          "crates/hex-project/tests/import.rs": "c6d00a6bb451e629db95e7382ee353577aa4e05175c6a82296f31a418f2749a9",
+          "crates/hex-project/tests/insert_time.rs": "967b657cffcf6ccd53d896354699dff7415bade799e12fd0fc58e064183a5b61",
+          "crates/hex-project/tests/loop_region.rs": "58ed630e8a74b6e9b08f941431b2a8b4b1009f47dd3092371ecd7366f4574048",
+          "crates/hex-project/tests/midi.rs": "d59e4c1f9977348ffe68827b967a241cec13e93cf7f7f8bd5224854d825ed014",
+          "crates/hex-project/tests/midi_split.rs": "aaaff7f1fa1692a7592ec423dbc160923caf2890ad2299221d46802b88a8edbe",
+          "crates/hex-project/tests/midi_trim.rs": "70d68e42ed9960776884b4387eb10738bdd2b5c9c2f4ab841285dd4fcec8ce44",
+          "crates/hex-project/tests/mix_controls.rs": "9dba0b0bb9c41825c7e1bbc76794b26ab3b78b958d03c369569ca426069a226f",
+          "crates/hex-project/tests/relative.rs": "cc16350d2fe32304facc0ede24e0ea8121eb552fbf3ea66a66fa614c1bcc7aba",
+          "crates/hex-project/tests/return_tracks.rs": "d393f3ede4ee504c813b071848e87c0088d5a8d57a01f5961fabe34213094389",
+          "crates/hex-project/tests/scene_editing.rs": "f13b6da720d3108f9fe892317e99478154a37af04d7b0892d87272f95e626b16",
+          "crates/hex-project/tests/session.rs": "3ddc03db2194c3aeeb23d43086a5e7338f5c2687022ed46598c23174e803573f",
+          "crates/hex-project/tests/session_audio.rs": "fce4567d882db89387079a8067311ced6fee448501ab36a7f5936cfc9cbb2035",
+          "crates/hex-project/tests/snapshot.rs": "eecb96576cd71a7cfb7cfda8befcffbf417c0a606eafe7fa55d0ce4a9d598f46",
+          "crates/hex-project/tests/solo.rs": "98f3c466d358d70ce421315483c4fff44528a5547f03ed163871d75a4b595349",
+          "crates/hex-project/tests/split.rs": "ec9b0d1ca5b0656d5fca206906b6daea0f07c9351fff7ee657502fd0e8437e13",
+          "crates/hex-project/tests/time_range.rs": "404241ea267f7176f9326a9545f40caaabbf4907d4f794c8cee8105e9b87305a",
+          "crates/hex-project/tests/timebase.rs": "2b621e449f4a9930e728371c248b4f62c392b671faaf51a47b2a6f3aade6b5ff",
+          "crates/hex-project/tests/timebase_quantization.rs": "5a884f3522705036d1c353a28381488a235eeb4227f0dca0bd757f92ce2e5f09",
+          "crates/hex-project/tests/track_insertion.rs": "1e7483919e2115df0d4e7b0c5fd46e82683bb10a084dcd27535911f1a2a12f36",
+          "crates/hex-project/tests/validated_history.rs": "09e059be11b0eb35321ac43b721ddcc20667550490d1d452ced271a5d8398ce6",
+          "crates/hex-storage/src/audio_edit.rs": "846aed36b8eb9bcd160f323b56fc4863cdddfbda00d64988c0d3d52fd1ddba01",
+          "crates/hex-storage/src/files.rs": "ab6d46db9b85975b7ab22744a4be366c861b0c880b3799cb80bcf4e3c02492c3",
+          "crates/hex-storage/src/journal.rs": "59499b0efa54ab64a49913483c61afda56ab72efd5679b8bb2429c5e79426841",
+          "crates/hex-storage/src/journal/slot_lock.rs": "f8773d19a78093662ac9fef0e35dda3a3c4c1711abdd03bfccd0948b151a9222",
+          "crates/hex-storage/src/lib.rs": "6e5fea458123c855e6401ae1d231d5607d21fe6ed505a7c387b418299c627138",
+          "crates/hex-storage/src/replacement.rs": "c5df59a8853601e8443d56605d32d67bf4319965e992e90131699efd9431aafd",
+          "crates/hex-storage/src/schema.rs": "97d4fb4ad277ad5cece33ecec055bd0f400fbee8b7c3831f8126952e2249a276",
+          "crates/hex-storage/tests/audio_edit.rs": "aab5cdbd4cc5b5667bbb58cfbbf7c2d19c2a36cbf51b5a3ed41e026785a2b0d8",
+          "crates/hex-storage/tests/persistence.rs": "f48badd712880fd812dc6b3d9d23d9953b2a57fbbdaf09fe08840f3386a63e60"
+        },
+        "original_rs_unchanged_before_and_after_build": true,
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "session_audio_fixture"
+        ],
+        "original_assertions": "complete snapshot equality; byte-identical public encode/decode/encode; exact Session asset, nonzero17..143 source window, case-preserved name and-9350 millidb gain",
+        "wire_audit": "Session Audio exact keys id/name/asset/source_start/source_end/gain_millidb; no audio_edit"
+      }
+    ]
+  }
+}

@@ -297,7 +297,7 @@ mod ui_tests {
             assert!((f32::from(toolbar.size.height) - super::TOOLBAR_HEIGHT).abs() < 1.0);
             assert!((toolbar_top - title_bottom).abs() < 1.0);
             assert!((title_center - window_center).abs() < 1.0);
-            assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
+            assert!(title_label.origin.x + title_label.size.width + px(8.0) <= version.origin.x);
             assert!(version.size.width > px(0.0));
             assert!(
                 (f32::from(

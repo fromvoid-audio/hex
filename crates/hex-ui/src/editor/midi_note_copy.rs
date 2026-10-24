@@ -107,6 +107,7 @@ impl EditorView {
             });
         match result {
             Ok(insert) => {
+                self.finish_live_midi_marquees();
                 self.cancel_midi_note_gesture();
                 self.enqueue(Request::Edit(Command::EditMidiNotesWithSourceExtent {
                     clip,

@@ -116,7 +116,12 @@ pub(super) fn double_down(
 fn double_click_hold_resizes_one_snapped_note_and_one_history_step(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
-    let at = |fraction| point(roll.origin.x + roll.size.width * fraction, roll.center().y);
+    let at = |fraction| {
+        point(
+            roll.origin.x + gpui::px(1.0) + (roll.size.width - gpui::px(2.0)) * fraction,
+            roll.center().y,
+        )
+    };
     let down = at(0.25);
     double_down(&mut visual, down, Modifiers::default());
     editor.read_with(&visual, |v, _| {
@@ -166,7 +171,7 @@ fn held_creation_respects_grid_override_free_motion_and_plain_click(cx: &mut Tes
         (MidiGrid::Quarter, true, true, 1.56),
         (MidiGrid::Off, false, true, 1.56),
         (MidiGrid::Sixteenth, false, false, 0.25),
-        (MidiGrid::Off, false, false, 0.25),
+        (MidiGrid::Off, false, false, 0.0),
     ] {
         let (mut visual, editor, _environment, clip) = fixture(cx);
         editor.update(&mut visual, |v, cx| {
@@ -177,7 +182,7 @@ fn held_creation_respects_grid_override_free_motion_and_plain_click(cx: &mut Tes
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         let at = |fraction| {
             point(
-                roll.origin.x + roll.size.width * fraction,
+                roll.origin.x + gpui::px(1.0) + (roll.size.width - gpui::px(2.0)) * fraction,
                 roll.origin.y + roll.size.height * 0.52,
             )
         };
@@ -206,6 +211,11 @@ fn held_creation_respects_grid_override_free_motion_and_plain_click(cx: &mut Tes
                 .notes();
             assert_eq!(notes.len(), 1);
             assert_eq!(notes[0].start(), start, "drag must not move the anchor");
+            let expected = if grid == MidiGrid::Off && !motion {
+                4.0 / f64::from(f32::from(roll.size.width - gpui::px(2.0)))
+            } else {
+                expected
+            };
             let gate = notes[0].duration().raw() as f64 / BeatTime::ONE.raw() as f64;
             assert!(
                 (gate - expected).abs() < 0.01,
@@ -285,7 +295,7 @@ fn normal_delete_and_draw_mode_still_use_their_own_gestures(cx: &mut TestAppCont
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let at = |fraction| {
         point(
-            roll.origin.x + roll.size.width * fraction,
+            roll.origin.x + gpui::px(1.0) + (roll.size.width - gpui::px(2.0)) * fraction,
             roll.origin.y + roll.size.height * 0.52,
         )
     };
@@ -359,7 +369,12 @@ fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext
         });
         visual.run_until_parked();
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
-        let at = |fraction| point(roll.origin.x + roll.size.width * fraction, roll.center().y);
+        let at = |fraction| {
+            point(
+                roll.origin.x + gpui::px(1.0) + (roll.size.width - gpui::px(2.0)) * fraction,
+                roll.center().y,
+            )
+        };
         double_down(&mut visual, at(from), Modifiers::default());
         visual.simulate_mouse_move(at(to), Some(MouseButton::Left), Modifiers::default());
         visual.simulate_mouse_up(at(to), MouseButton::Left, Modifiers::default());
@@ -445,7 +460,7 @@ fn zoomed_out_creation_continues_past_first_two_time_cells(cx: &mut TestAppConte
             .enumerate()
         {
             let at = point(
-                roll.origin.x + roll.size.width * fraction,
+                roll.origin.x + gpui::px(1.0) + (roll.size.width - gpui::px(2.0)) * fraction,
                 roll.origin.y + roll.size.height * (index as f32 + 3.5) / 24.0,
             );
             let before = editor.read_with(&visual, |v, _| {
