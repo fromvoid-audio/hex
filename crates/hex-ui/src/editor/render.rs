@@ -635,6 +635,10 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                if view.reverse_clip_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.activation_key(event, window, cx) {
                     cx.stop_propagation();
                     return;

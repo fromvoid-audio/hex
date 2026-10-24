@@ -466,6 +466,7 @@ impl Command {
             | Self::TrimClip { clip, .. }
             | Self::StretchAudioClipEdge { clip, .. }
             | Self::ResizeAudioClipView { clip, .. }
+            | Self::ResizeMidiClipView { clip, .. }
             | Self::NudgeClip { clip, .. }
             | Self::TrimClipEndBy { clip, .. }
             | Self::TrimMidiClipEdge { clip, .. }
@@ -504,7 +505,8 @@ impl Command {
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
             | Self::MoveClipsWithOverwrite { .. }
-            | Self::DuplicateClips(_) => ClipCommandScope::Explicit,
+            | Self::DuplicateClips(_)
+            | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::RenameArrangementSection { .. }

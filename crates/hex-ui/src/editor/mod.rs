@@ -63,6 +63,7 @@ mod clip_detail_resize;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
+mod clip_reverse;
 mod clip_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_view_ui_test;
@@ -192,6 +193,7 @@ mod tuning;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
+mod waveform_loop;
 mod waveform_stretch;
 mod zoom_fit;
 

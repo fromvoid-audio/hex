@@ -148,6 +148,7 @@ impl MidiSource {
 /// identity, and a separately shared clip-owned source-beat volume curve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
+    pub(crate) content_view: Option<crate::ContentWindow>,
     pub(crate) active: bool,
     pub(crate) playback_offset: BeatTime,
     pub(crate) name: String,
@@ -161,6 +162,7 @@ pub struct MidiClip {
 /// Metadata-only edge candidate. A silent source prefix is materialized only on commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiClipTrim {
+    content_view: Option<crate::ContentWindow>,
     playback_offset: BeatTime,
     start: BeatTime,
     length: BeatTime,
@@ -220,6 +222,49 @@ impl MidiClip {
         validate_clip(self.start, self.length)?;
         self.source_playback()?;
         let start = self.start.raw();
+        if let Some(view) = self.content_view {
+            let end = start
+                .checked_add(self.length.raw())
+                .ok_or(Invalid("midi end overflow"))?;
+            let (new_start, new_end) = match edge {
+                crate::TrimEdge::Left => (beat.raw(), end),
+                crate::TrimEdge::Right => (start, beat.raw()),
+            };
+            let length = new_end
+                .checked_sub(new_start)
+                .filter(|n| *n > 0)
+                .ok_or(Invalid("midi trim must retain positive length"))?;
+            let delta = i128::from(new_start) - i128::from(start);
+            let raw_end = if view.reversed {
+                i128::from(view.end) - delta
+            } else {
+                i128::from(view.start) + delta + i128::from(length)
+            };
+            let raw_start = raw_end - i128::from(length);
+            let rewind = u64::try_from((-raw_start).max(0))
+                .map_err(|_| Invalid("midi directed trim overflow"))?;
+            let source_start=self.source_start().raw().checked_sub(rewind).ok_or(Invalid("midi extension precedes retained source; a forward clip can add a blank prefix"))?;
+            let window = crate::ContentWindow::new(
+                u64::try_from(raw_start + i128::from(rewind))
+                    .map_err(|_| Invalid("midi directed trim overflow"))?,
+                u64::try_from(raw_end + i128::from(rewind))
+                    .map_err(|_| Invalid("midi directed trim overflow"))?,
+                view.reversed,
+            )?;
+            let offset = self
+                .playback_offset
+                .raw()
+                .checked_add(rewind)
+                .ok_or(Invalid("midi directed trim offset overflow"))?;
+            return Ok(MidiClipTrim {
+                content_view: Some(window),
+                playback_offset: BeatTime::from_raw(offset),
+                start: BeatTime::from_raw(new_start),
+                length: BeatTime::from_raw(length),
+                source_start: BeatTime::from_raw(source_start),
+                source_prefix: BeatTime::ZERO,
+            });
+        }
         let end = start
             .checked_add(self.length.raw())
             .ok_or(Invalid("midi timeline end overflow"))?;
@@ -259,6 +304,7 @@ impl MidiClip {
                 .checked_add(new_end - new_start)
                 .ok_or(Invalid("midi playback window end overflow"))?;
             return Ok(MidiClipTrim {
+                content_view: None,
                 playback_offset: BeatTime::from_raw(new_offset),
                 start: BeatTime::from_raw(new_start),
                 length: BeatTime::from_raw(new_end - new_start),
@@ -333,6 +379,7 @@ impl MidiClip {
                 .ok_or(Invalid("midi source prefix overflow"))
         };
         let preview = MidiClipTrim {
+            content_view: None,
             playback_offset: BeatTime::ZERO,
             start: BeatTime::from_raw(new_start),
             length: BeatTime::from_raw(new_end - new_start),
@@ -389,10 +436,16 @@ impl MidiClip {
     }
 
     /// Return the validated finite source mapping used by playback compilers.
+    pub fn content_view(&self) -> Option<crate::ContentWindow> {
+        self.content_view
+    }
     pub fn source_playback(&self) -> Result<MidiSourcePlayback, Invalid> {
-        self.source
+        let playback = self
+            .source
             .playback_for_duration(self.length)?
-            .with_playback_offset(self.playback_offset)
+            .with_playback_offset(self.playback_offset)?;
+        self.content_view
+            .map_or(Ok(playback), |view| playback.with_content_window(view))
     }
 }
 impl std::ops::Deref for MidiClip {
@@ -535,6 +588,9 @@ pub(crate) fn validate_note(
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
+        Command::ResizeMidiClipView { clip, operation } => {
+            crate::midi_loop_resize::apply(project, clip, operation)
+        }
         Command::AddMidiTrack { name } => {
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
@@ -561,6 +617,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .track(track)
                 .ok_or(Invalid("track no longer exists"))?;
             let incoming = MidiClip {
+                content_view: None,
                 active: true,
                 playback_offset: crate::BeatTime::ZERO,
                 name: "clip".into(),
@@ -616,6 +673,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     note.start = shifted(note.start)?;
                 }
             }
+            target.content_view = preview.content_view;
             target.start = preview.start;
             target.length = preview.length;
             target.playback_offset = preview.playback_offset;
@@ -640,6 +698,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?
                 .clone();
+            if original.content_view.is_some() {
+                return crate::clip_reverse::split_midi(project, track, original, beat);
+            }
             let end = original
                 .start
                 .raw()
@@ -748,6 +809,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
+                content_view: None,
                 active: left.active,
                 playback_offset: crate::BeatTime::ZERO,
                 name: left.name.clone(),
@@ -804,6 +866,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 )?;
             }
             let mut target = target.clone();
+            target.content_view = target
+                .content_view
+                .map(|view| view.resized(0, length.raw()))
+                .transpose()?;
             target.length = length;
             target.source_length = source_length;
             target.source_start = source_start;
@@ -1173,6 +1239,7 @@ pub(crate) fn materialize_overwrite_ranges(
                 .ok_or(Invalid("midi retained range must be positive"))?,
         );
         fragments.push(MidiClip {
+            content_view: None,
             active: original.active,
             playback_offset: crate::BeatTime::ZERO,
             name: original.name.clone(),

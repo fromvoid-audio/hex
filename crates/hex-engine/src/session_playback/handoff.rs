@@ -503,12 +503,14 @@ impl SessionPlayback {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
-        let same_periodic = previous.periodic_tempo == self.periodic_tempo;
+        let candidate_periodic =
+            self.periodic_tempo_at(previous.arrangement_frame, previous.arrangement_loop_pass);
+        let same_periodic = previous.periodic_tempo() == candidate_periodic;
         let old_clock = previous.timing_view();
         let old_beat = old_clock
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let new_base_view = base_timing_for(self.revision.session(), self.periodic_tempo);
+        let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
         let new_beat = new_base_view
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;

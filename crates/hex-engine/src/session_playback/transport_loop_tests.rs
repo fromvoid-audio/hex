@@ -3,6 +3,111 @@ use super::*;
 
 const Q: u64 = 1_u64 << 32;
 
+#[test]
+fn post_loop_session_launch_admits_the_faster_canonical_tempo() {
+    let mut snapshot = session_only_project(&project(1.0, 0, Q)).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+    snapshot.tempo_points.push(TempoPoint::new(
+        BeatTime::from_quarters(2).unwrap(),
+        Tempo::new(240_000_000).unwrap(),
+    ));
+    let looped = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = None;
+    let linear = legacy_project_from_snapshot(snapshot).unwrap();
+    let prepare = |p: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(p, &BTreeMap::new(), Arc::new(crate::SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    let mut output = [[0.0; 2]; 513];
+    let mut expected = [[0.0; 2]; 513];
+    for (source, buffer) in [(&looped, &mut output), (&linear, &mut expected)] {
+        let revision = prepare(source);
+        let clip = revision.session().midi_clips()[0].id;
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(72_000)).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(buffer).unwrap();
+    }
+    assert_eq!(output, expected);
+    assert!(output.iter().any(|frame| frame[0] != 0.0));
+}
+
+#[test]
+fn interactive_cursor_after_loop_keeps_absolute_history_and_forward_pcm() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let linear = transport_loop_project(true);
+            let mut snapshot = linear.snapshot();
+            let region = LoopRegion::new(48_000, 96_000, true).unwrap();
+            snapshot.loop_region = Some(region);
+            let looped = legacy_project_from_snapshot(snapshot).unwrap();
+            let revision = prepare_mutable(&looped);
+            for target in [96_000, 100_003, 144_123] {
+                for start_playing in [false, true] {
+                    let mut actual =
+                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                            Arc::clone(&revision),
+                            target,
+                            target,
+                            start_playing,
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                        .unwrap();
+                    let mut oracle =
+                        SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                            prepare_mutable(&linear),
+                            target,
+                            target,
+                            start_playing,
+                            &std::sync::atomic::AtomicBool::new(false),
+                        )
+                        .unwrap();
+                    assert_eq!(actual.arrangement_frame(), target);
+                    assert_eq!(actual.performance_frame(), target);
+                    assert_eq!(
+                        actual.prepared_revision().arrangement().loop_region(),
+                        Some(region)
+                    );
+                    if !start_playing {
+                        actual.apply(SessionPlaybackCommand::Play).unwrap();
+                        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+                    }
+                    let mut output = [[0.0; 2]; 513];
+                    let mut expected = [[0.0; 2]; 513];
+                    for chunk in output.chunks_mut(17) {
+                        actual.render(chunk).unwrap();
+                    }
+                    oracle.render(&mut expected).unwrap();
+                    assert_eq!(output, expected, "target {target}");
+                    assert!(output.iter().any(|frame| frame[0] != 0.0));
+                    let mut replacement = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                    replacement.try_inherit_state_from(&mut actual).unwrap();
+                    let mut continued = [[0.0; 2]; 257];
+                    let mut expected = [[0.0; 2]; 257];
+                    replacement.render(&mut continued).unwrap();
+                    oracle.render(&mut expected).unwrap();
+                    assert_eq!(continued, expected, "post-loop handoff at {target}");
+                    actual = replacement;
+                    actual.apply(SessionPlaybackCommand::Stop).unwrap();
+                    assert_eq!(actual.arrangement_frame(), 0);
+                    assert_eq!(actual.loop_region(), Some(region));
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn transport_loop_project(expanded: bool) -> Project {
     let mut snapshot = project(1.0, 0, 5 * Q).snapshot();
     let note_id = snapshot.next_id;
