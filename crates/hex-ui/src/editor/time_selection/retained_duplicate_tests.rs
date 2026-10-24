@@ -1063,10 +1063,6 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
         let after = editor.read_with(&visual, |view, _| {
             view.state.as_ref().unwrap().project.snapshot()
         });
-        let saved = environment.root().join("frame-range-copy.hex");
-        let project = hex_project::Project::from_snapshot(after.clone()).unwrap();
-        hex_storage::save_new(&saved, &project).unwrap();
-        assert_eq!(hex_storage::load(&saved).unwrap().snapshot(), after);
         for _ in 0..2 {
             visual.simulate_keystrokes("cmd-z");
             pump(&editor, &mut visual);
@@ -1082,6 +1078,36 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
         }
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
+        let saved = environment.root().join("frame-range-copy.hex");
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::SaveNew(saved.clone())));
+        });
+        pump(&editor, &mut visual);
+        assert!(saved.is_file());
+        let generation = editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(!view.state.as_ref().unwrap().unsaved);
+            view.project_generation
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+                track: tracks[0],
+                name: "unsaved sentinel".into(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_ne!(view.state.as_ref().unwrap().project.snapshot(), after);
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Open(saved)));
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.project_generation, generation + 1);
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after);
         });
     }
 }
