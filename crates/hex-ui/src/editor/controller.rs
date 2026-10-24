@@ -993,6 +993,7 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_clip_move();
@@ -1168,7 +1169,7 @@ impl EditorView {
                             self.retire_pending_track_reorder();
                         }
                         if track_clipboard_request {
-                            self.track_clipboard_submitted();
+                            self.pending_track_clipboard = None;
                         }
                         if duplicate_request {
                             self.duplicate_intent.reject();

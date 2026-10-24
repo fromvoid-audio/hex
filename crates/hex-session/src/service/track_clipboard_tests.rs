@@ -168,3 +168,67 @@ fn track_clipboard_stale_cut_preserves_previous_copy_and_replacement_clears_it()
     );
     assert!(empty.state.project.tracks().is_empty());
 }
+
+#[test]
+fn track_clipboard_full_midi_copy_renders_both_independent_instruments_across_note_off() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    let initial = next_event(&service);
+    let inserted = run(
+        &service,
+        Request::InsertBrowserInstrumentTrack {
+            project_generation: 0,
+            revision: initial.state.revision,
+            class: hex_engine::NativeDeviceClass::Instrument,
+            type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+        },
+    );
+    let track = inserted.state.project.tracks()[0].id();
+    let placed = run(
+        &service,
+        Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        }),
+    );
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    let mut original = run(
+        &service,
+        Request::Edit(Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 80,
+        }),
+    );
+    let mut copied = run(
+        &service,
+        request(
+            &original,
+            TrackClipboardAction::Duplicate {
+                tracks: members(&original),
+                without_clips: false,
+            },
+        ),
+    );
+    let mut before = original.playback.take().unwrap();
+    let mut after = copied.playback.take().unwrap();
+    before.apply(hex_engine::PlaybackCommand::PlayFrom(23_800));
+    after.apply(hex_engine::PlaybackCommand::PlayFrom(23_800));
+    let mut signal = false;
+    for _ in 0..8 {
+        let mut expected = [[0.0; 2]; 64];
+        let mut actual = [[0.0; 2]; 64];
+        before.render(&mut expected).unwrap();
+        after.render(&mut actual).unwrap();
+        signal |= expected.iter().flatten().any(|sample| *sample != 0.0);
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(actual, expected.map(|sample| sample * 2.0));
+        }
+    }
+    assert!(signal, "actual prepared instrument output was exercised");
+}
