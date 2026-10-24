@@ -2,6 +2,8 @@
 //! Rebuild once per document/revision/section selection change, never per row.
 //! Nonadjacent sections form a union, not a hull. No selection leaves the normal
 //! view visible while the mode stays armed. Edits retain canonical IDs/indices.
+//! A newly acknowledged track stays visible while it is the active track. This
+//! exception is view-only and ends on selection, section, mode or document change.
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Focusable, Subscription, Window, div, prelude::*, px};
@@ -14,12 +16,14 @@ struct Stamp {
     generation: u64,
     revision: u64,
     enabled: bool,
+    new_track: Option<TrackId>,
 }
 #[derive(Default)]
 pub(super) struct State {
     pub(super) enabled: bool,
     stamp: Option<Stamp>,
     selected: Vec<SectionId>,
+    new_track: Option<TrackId>,
     ranges: Rc<[(u64, u64)]>,
     indices: Vec<usize>,
     tracks: BTreeSet<TrackId>,
@@ -57,22 +61,37 @@ fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64
     union.into()
 }
 impl State {
+    pub(super) fn reveal_created_track(&mut self, track: TrackId) {
+        self.new_track = (self.enabled && !self.ranges.is_empty()).then_some(track);
+    }
+
     fn rebuild(
         &mut self,
         generation: u64,
         revision: u64,
         project: &Project,
         selected: &[SectionId],
+        active_track: Option<TrackId>,
     ) -> bool {
         if self.stamp.is_some_and(|s| s.generation != generation) {
             self.enabled = false;
             self.restore_scroll = None;
             self.pending_restore = None;
+            self.new_track = None;
         }
-        let stamp = Stamp {
+        if !self.enabled
+            || self.selected != selected
+            || self
+                .new_track
+                .is_some_and(|id| active_track != Some(id) || project.track(id).is_none())
+        {
+            self.new_track = None;
+        }
+        let mut stamp = Stamp {
             generation,
             revision,
             enabled: self.enabled,
+            new_track: self.new_track,
         };
         if self.stamp == Some(stamp) && self.selected == selected {
             return false;
@@ -82,6 +101,10 @@ impl State {
         } else {
             Rc::from([])
         };
+        if self.ranges != ranges {
+            self.new_track = None;
+            stamp.new_track = None;
+        }
         if !self.ranges.is_empty() && ranges.is_empty() && self.pending_restore.is_none() {
             self.pending_restore = self.restore_scroll;
         }
@@ -118,7 +141,8 @@ impl State {
                         self.clips.insert(clip.id());
                     }
                 }
-                if !track.clips().iter().any(|c| self.clips.contains(&c.id()))
+                if self.new_track != Some(track.id())
+                    && !track.clips().iter().any(|c| self.clips.contains(&c.id()))
                     && !track
                         .midi_clips()
                         .iter()
@@ -127,6 +151,12 @@ impl State {
                     continue;
                 }
                 self.tracks.insert(track.id());
+                if self.new_track == Some(track.id()) {
+                    self.clips
+                        .extend(track.clips().iter().map(|clip| clip.id()));
+                    self.clips
+                        .extend(track.midi_clips().iter().map(|clip| clip.id()));
+                }
             }
             self.indices.push(index);
         }
@@ -198,12 +228,15 @@ impl EditorView {
     }
     pub(super) fn reconcile_arrangement_focus(&mut self) {
         if let Some(state) = &self.state {
-            self.arrangement_focus.rebuild(
+            if self.arrangement_focus.rebuild(
                 self.project_generation,
                 state.revision,
                 &state.project,
                 self.sections.selected_ids(),
-            );
+                self.selected_track,
+            ) {
+                self.invalidate_arrangement_track_layout();
+            }
         } else {
             self.arrangement_focus = State::default();
         }
