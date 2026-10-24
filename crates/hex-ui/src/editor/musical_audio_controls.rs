@@ -419,7 +419,12 @@ fn button(
     disabled: bool,
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
-    hex_widgets::action(theme::text(value), theme::action_style())
+    let surface = if matches!(action, Action::Warp) {
+        hex_widgets::toggle_action(theme::text(value), theme::action_style())
+    } else {
+        hex_widgets::action(theme::text(value), theme::action_style())
+    };
+    surface
         .id(gpui::ElementId::Name(
             format!("musical-{}-{}", capture.clip.value(), action_key(action)).into(),
         ))

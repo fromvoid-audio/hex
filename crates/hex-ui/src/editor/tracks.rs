@@ -6,8 +6,8 @@ use super::time_move_preview::{
 use super::trim::TrimDrag;
 use super::viewport::Viewport;
 use super::waveform::{
-    ClipTooltip, button, button_with_style, fade_envelope_samples, waveform_source_segment_view,
-    waveform_summary_view,
+    ClipTooltip, button, fade_envelope_samples, toggle_button_with_style,
+    waveform_source_segment_view, waveform_summary_view,
 };
 use super::{EditorView, ViewState};
 use crate::theme;
@@ -60,14 +60,8 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         grid,
         contents,
     } = decor;
-    let mut ghost = div()
+    let mut ghost = hex_widgets::rectangle_surface_pixels(left, top, width, height)
         .debug_selector(move || selector.to_owned())
-        .absolute()
-        .left(px(left))
-        .top(px(top))
-        .w(px(width.max(3.0)))
-        .h(px(height.max(3.0)))
-        .overflow_hidden()
         .border_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
         .bg(rgb(fill));
@@ -574,29 +568,23 @@ impl EditorView {
                 if visible_start < visible_end {
                     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                    let mut overlay = div()
-                        .id(("midi-trim-live-preview", track_id.value()))
-                        .debug_selector(|| "midi-trim-live-preview".to_owned())
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(left as f32))
-                        .w(relative(width as f32))
-                        .min_w(px(4.0))
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(rgb(if self.clip_is_selected(clip.id()) {
-                            theme::color(theme::PaletteRole::Primary)
-                        } else {
-                            0x000000
-                        }))
-                        .bg(rgb(theme::clip_activity_fill(
-                            track.color(),
-                            clip.flavor(),
-                            false,
-                            clip.active(),
-                        )))
-                        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                    let mut overlay =
+                        hex_widgets::rectangle_surface(left as f32, width as f32, 4.0)
+                            .id(("midi-trim-live-preview", track_id.value()))
+                            .debug_selector(|| "midi-trim-live-preview".to_owned())
+                            .border_1()
+                            .border_color(rgb(if self.clip_is_selected(clip.id()) {
+                                theme::color(theme::PaletteRole::Primary)
+                            } else {
+                                0x000000
+                            }))
+                            .bg(rgb(theme::clip_activity_fill(
+                                track.color(),
+                                clip.flavor(),
+                                false,
+                                clip.active(),
+                            )))
+                            .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                         let shapes = midi_trim_note_shapes(
                             &state.project,
@@ -639,29 +627,23 @@ impl EditorView {
                 if visible_start < visible_end {
                     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                    let mut preview = div()
-                        .id(("trim-live-preview", track_id.value()))
-                        .debug_selector(|| "trim-live-preview".to_owned())
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(relative(left as f32))
-                        .w(relative(width as f32))
-                        .min_w(px(3.0))
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(rgb(if self.clip_is_selected(original_clip.id()) {
-                            theme::color(theme::PaletteRole::Primary)
-                        } else {
-                            0x000000
-                        }))
-                        .bg(rgb(theme::clip_activity_fill(
-                            track.color(),
-                            preview_clip.flavor(),
-                            false,
-                            preview_clip.active(),
-                        )))
-                        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                    let mut preview =
+                        hex_widgets::rectangle_surface(left as f32, width as f32, 3.0)
+                            .id(("trim-live-preview", track_id.value()))
+                            .debug_selector(|| "trim-live-preview".to_owned())
+                            .border_1()
+                            .border_color(rgb(if self.clip_is_selected(original_clip.id()) {
+                                theme::color(theme::PaletteRole::Primary)
+                            } else {
+                                0x000000
+                            }))
+                            .bg(rgb(theme::clip_activity_fill(
+                                track.color(),
+                                preview_clip.flavor(),
+                                false,
+                                preview_clip.active(),
+                            )))
+                            .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                         if let Some(waveform) = super::waveform::preview_waveform_view_cached(
                             super::waveform::WaveformPreview {
@@ -1218,7 +1200,7 @@ impl EditorView {
                         cx.notify();
                     })),
                 );
-            let activator = button_with_style(
+            let activator = toggle_button_with_style(
                 "",
                 if track.muted() {
                     "activate track"
@@ -1238,7 +1220,7 @@ impl EditorView {
                 view.toggle_mute(track_id);
                 cx.notify();
             }));
-            let solo = button_with_style(
+            let solo = toggle_button_with_style(
                 "s",
                 "solo track · s · cmd+click additive",
                 ("track-solo", track_id.value()),
@@ -1765,16 +1747,9 @@ impl EditorView {
                 selected_clip,
                 clip.active(),
             );
-            let mut midi = div()
+            let mut midi = hex_widgets::rectangle_surface(left as f32, width as f32, 4.0)
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(relative(left as f32))
-                .w(relative(width as f32))
-                .min_w(px(4.0))
-                .overflow_hidden()
                 .cursor(gpui::CursorStyle::Arrow)
                 .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
                 .bg(rgb(fill))
@@ -2069,7 +2044,7 @@ impl EditorView {
                             duration: clip.duration(),
                         },
                         grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
-                        origin_pointer_x: std::rc::Rc::new(std::cell::Cell::new(None)),
+                        capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
                         scroll: Default::default(),
@@ -2100,14 +2075,7 @@ impl EditorView {
             selected,
             clip.active(),
         );
-        let mut content = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left(relative(left as f32))
-            .w(relative(width as f32))
-            .min_w(px(3.0))
-            .overflow_hidden()
+        let mut content = hex_widgets::rectangle_surface(left as f32, width as f32, 3.0)
             .cursor(gpui::CursorStyle::Arrow)
             .opacity(if active_trim_preview { 0.0 } else { 1.0 })
             .bg(rgb(fill))
@@ -2458,7 +2426,7 @@ impl EditorView {
                 clip: clip.id(),
                 position: ClipPosition::Midi { start, length },
                 grab_offset: std::rc::Rc::new(std::cell::Cell::new(None)),
-                origin_pointer_x: std::rc::Rc::new(std::cell::Cell::new(None)),
+                capture: std::rc::Rc::new(std::cell::Cell::new(None)),
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
                 scroll: Default::default(),
@@ -2504,15 +2472,9 @@ impl EditorView {
         let source_generation = payload.project_generation;
         let mouse_down_payload = payload.clone();
         let mouse_up_payload = payload.clone();
-        div()
+        hex_widgets::rectangle_body(-1.0, super::time_selection::header_hit_height(lane.height))
             .id(("clip-move", clip_id.value()))
             .debug_selector(|| format!("clip-drag-surface-{}", clip_id.value()))
-            .absolute()
-            .top(px(-1.0))
-            .left_0()
-            .right_0()
-            .h(px(super::time_selection::header_hit_height(lane.height)))
-            .cursor(gpui::CursorStyle::OpenHand)
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     // Click consumes the mouse-up before the separate release
@@ -2561,7 +2523,7 @@ impl EditorView {
                 view.drop_clip(drag, source_track, window, cx);
             }))
             .on_drag(payload, move |payload, _, window, cx| {
-                let original_down_x = drag_entity.update(cx, |view, _| {
+                let capture = drag_entity.update(cx, |view, _| {
                     if view.drag_start_is_current(payload) {
                         view.take_pointer_down(payload.project_generation, payload.clip, None)
                     } else {
@@ -2569,6 +2531,8 @@ impl EditorView {
                         None
                     }
                 });
+                payload.capture.set(capture);
+                let original_down_x = capture.map(|capture| capture.origin_x);
                 let frame_offset = original_down_x.and_then(|x| {
                     drag::grab_offset_from_pointer(
                         x,
@@ -2579,7 +2543,6 @@ impl EditorView {
                         source_start_frame,
                     )
                 });
-                payload.origin_pointer_x.set(original_down_x);
                 let offset = match (payload.position, frame_offset, source_start_beat) {
                     (ClipPosition::Audio { .. }, Some(offset), _) => Some(offset),
                     (ClipPosition::Midi { .. }, Some(offset), Some(start_beat)) => {

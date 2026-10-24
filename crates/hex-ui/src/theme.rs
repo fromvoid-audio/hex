@@ -46,7 +46,7 @@ pub(crate) fn action_style() -> hex_widgets::ActionStyle {
 }
 
 /// Shared translucency for arranger and clip-editor time ranges.
-pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.22;
 
 /// Explicit track membership stays quieter than time/clip selection overlays.
 pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;

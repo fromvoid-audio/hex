@@ -81,6 +81,7 @@ impl ComputerKeyboardRuntime {
             live_consumed: 0,
             live_activation: None,
             scratch_live_activation: None,
+            capture: None,
         }))
     }
     pub(crate) fn current_sampler_preflight_bytes() -> Option<usize> {

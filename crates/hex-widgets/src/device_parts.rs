@@ -4,7 +4,7 @@ use gpui::{Div, SharedString, Stateful, div, prelude::*, px, rgb};
 
 pub const DEVICE_HEADER_ACTION_SIZE: f32 = 12.0;
 
-/// Compact action/segment; header consumers retain this shared twelve-pixel size.
+/// Compact momentary action; header consumers retain this shared twelve-pixel size.
 /// Non-header compositions may supply their own width/height without style forks.
 pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
     crate::action(label, style)
@@ -14,8 +14,8 @@ pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
 
 /// Boolean state presentation, distinct from a momentary action surface.
 /// The owner supplies acknowledged state, semantic colors and all input/focus/
-/// accessibility handlers. Only an eight-pixel circle paints; the transparent
-/// twelve-pixel target retains compact header geometry. Hover/press never imply
+/// accessibility handlers. An eight-pixel square with small corners paints inside
+/// the transparent twelve-pixel target. Hover/press never imply
 /// a state change, and this view owns no command, history or local toggle state.
 pub fn device_state_indicator(
     id: SharedString,
@@ -38,7 +38,7 @@ pub fn device_state_indicator(
             div()
                 .debug_selector(move || indicator.clone())
                 .size(px(8.0))
-                .rounded_full()
+                .rounded(px(crate::TOGGLE_CORNER_RADIUS))
                 .bg(rgb(if checked { on_color } else { off_color })),
         )
 }
@@ -86,7 +86,10 @@ pub fn device_divider(style: ControlStyle) -> Div {
 
 /// Directly selectable compact segment, with the shared readout corner radius.
 pub fn device_segment(label: SharedString, style: ActionStyle) -> Div {
-    device_action(label, style).rounded(px(crate::CONTROL_CORNER_RADIUS))
+    crate::action_surface(style)
+        .child(label)
+        .size(px(DEVICE_HEADER_ACTION_SIZE))
+        .text_size(px(8.0))
 }
 
 /// Focus boundary for owner-controlled navigation artwork.

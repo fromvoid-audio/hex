@@ -314,7 +314,7 @@ pub(super) fn toggle(
     let enabled = view.device_panel.eq_spectrum.enabled(device);
     let generation = view.project_generation;
     let revision = view.state.as_ref().map(|state| state.revision);
-    text_action_button(
+    text_segment_button(
         format!("eq8-spectrum-{}", device.value()),
         "spectrum",
         "show live spectrum for the selected eq; audio output must be available",

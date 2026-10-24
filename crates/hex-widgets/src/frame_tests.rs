@@ -565,7 +565,7 @@ impl Render for SharedActionFixture {
                     .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
             )
             .child(
-                action("solo".into(), style.with_state_colors(0x123456, 0xffffff))
+                toggle_action("solo".into(), style.with_state_colors(0x123456, 0xffffff))
                     .id("state-action")
                     .debug_selector(|| "state-action".into())
                     .size(px(18.0)),
@@ -597,7 +597,12 @@ fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppC
         assert_eq!(bounds.size, size(px(width), px(height)));
         assert_eq!(
             visual.rendered_surface_geometry(name).unwrap().0.top_left,
-            px(CONTROL_CORNER_RADIUS).scale(scale)
+            px(if name == "state-action" {
+                crate::TOGGLE_CORNER_RADIUS
+            } else {
+                width.min(height) / 2.0
+            })
+            .scale(scale)
         );
         assert_eq!(
             visual.rendered_background(name),

@@ -96,10 +96,12 @@ warp off keeps its natural playback speed. if a faster bpm makes an audio tail
 reach the next clip on that track, hex crops that tail at the next start. original
 media remains available, and undo restores the previous tempo and clip extents.
 
-with the computer midi keyboard off, **l** sets a loop around selected clips, a
-time selection, or the selected main sections. **command+l** also sets this loop.
+with the computer midi keyboard off, **l** or **w** sets and enables a loop around
+selected clips, a time selection, or the selected main sections. pressing again
+with the same bounds toggles looping off or on, retaining the range. with no
+selection, these keys toggle the existing loop. **command+l** uses the same action.
 for multiple sections, the loop spans the earliest start to the latest end,
-including gaps. while the computer midi keyboard is on, plain **l** plays a note.
+including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
@@ -238,8 +240,52 @@ hardware notes play the selected instrument with their original note-on velocity
 computer-keyboard notes use the same selected track and keep separate ownership.
 selection audition waits while hardware input is selected. pressure, pitch bend,
 modulation and held-note piano-roll step entry remain available. live input timing
-is currently resolved at audio-block boundaries; sustain, recording and mpe are
-not included in this input workflow.
+is currently resolved at audio-block boundaries; sustain and mpe are not included.
+
+## input quantization
+
+use **in off ▾** in the transport to choose off, quarter notes (1/4), eighth notes
+(1/8), sixteenth notes (1/16), or adaptive. the same setting controls recorded midi
+note starts and browser sample insertion with enter. the browser's grid button
+switches between off and adaptive; choose a fixed subdivision in the transport.
+
+fixed subdivisions work independently of the arrangement snap toggle. adaptive
+uses the arrangement's visible grid and density, so enable that grid first.
+placement uses the nearest grid point, including backwards; exact ties move later.
+
+recording captures the grid when you click record, before preparation. zoom,
+density and later input changes cannot alter the retained take. finish or discard
+the take before changing its input setting. monitoring remains immediate at the
+recorder's stated next-block timing; quantization moves authored note starts when
+the take commits. played musical note lengths are preserved, with cropping at the
+clip end and a one-output-frame minimum for notes moved across tempo changes.
+a final-frame note retains a valid output interval. off preserves original timing.
+the take is still one undo/redo edit.
+
+## record midi notes
+
+select an active midi clip in arrange with an enabled instrument. enable the
+computer midi keyboard or configure a hardware input, then start playback inside
+the clip. click **●** in the transport to prepare and start midi recording. wait
+for the recording status before performing. preparation releases existing monitored
+notes while it installs the recording input. newly played notes are captured;
+notes already held before recording are not added to the take.
+
+click **●** again to finish while playback continues, or press **escape** to stop.
+held notes end at the last delivered recording boundary. recording also finishes
+at the clip end. the completed take becomes one undoable edit; undo and redo
+restore the whole take. timing follows the next audio block, without arrival-time
+or device-latency compensation.
+
+keep the selected clip, input and instrument unchanged during the take. a refused
+commit retains the take: click **●** to retry. **×** explicitly discards a retained
+take. an interrupted take is marked incomplete and is never committed silently.
+finish or explicitly discard it before opening, creating or closing a project.
+
+this recorder supports finite nonlooping arrangement midi clips on resident
+native output. disable the project loop before recording. console, streamed
+projects, audio recording, loop overdub and per-note expression recording are not
+available through this control.
 
 # instruments and effects
 

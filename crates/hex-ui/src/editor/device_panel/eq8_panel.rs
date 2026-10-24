@@ -364,7 +364,7 @@ pub(super) fn spectrum_toggle(
                     .to_owned()
             }
         });
-    hex_widgets::device_action(
+    hex_widgets::device_segment(
         theme::text("spectrum"),
         theme::device_segment_style(selected && available),
     )

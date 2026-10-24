@@ -62,6 +62,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         sampler_load_complete: None,
         sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        midi_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,

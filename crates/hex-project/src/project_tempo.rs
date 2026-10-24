@@ -3,6 +3,9 @@
 //! positive placement on their track. Original media/processing roots and clip
 //! identities survive; crop and map replacement share one history transaction.
 //! Bounds are sorted once per track, not rescanned for every pair of clips.
+//! A global replacement deliberately replaces retained warped section clocks:
+//! their original domain/crop stays intact, while processing follows the new
+//! constant map at the current musical placement. Warp-off roots stay frozen.
 use crate::{AudioClipTiming, BeatTime, Invalid, Project, Tempo, TempoMap};
 use std::sync::Arc;
 
@@ -12,24 +15,25 @@ impl Project {
         if self.tempo_map == map {
             return Ok(());
         }
-        if self
-            .tracks
-            .iter()
-            .flat_map(|track| track.clips())
-            .any(|clip| {
-                clip.audio_edit().is_some_and(|edit| {
-                    edit.processing_projection.is_some() && edit.domain.warp_enabled
-                })
-            })
-        {
-            return Err(Invalid(
-                "global tempo changes after warped audio section reorder require an unsupported processing rebase; undo the reorder first",
-            ));
-        }
         let old = Arc::new(self.tempo_map.clone());
         let mut candidate = self.clone();
         candidate.tempo_map = map;
         for track in &mut candidate.tracks {
+            for clip in &mut track.content.audio_clips {
+                if let Some(edit) = clip.edit.as_mut()
+                    && edit.domain.warp_enabled
+                    && edit.processing_projection.is_some()
+                {
+                    // Section relocation retained the old processing phase and
+                    // at most one frame of rounding at each edge. A deliberate
+                    // global tempo edit returns warped roots to live musical
+                    // projection; keeping the old clock would freeze their speed.
+                    let edit = Arc::make_mut(edit);
+                    edit.processing_projection = None;
+                    edit.placement_start_offset = 0;
+                    edit.placement_end_offset = 0;
+                }
+            }
             retime_track(track, &old, &candidate.tempo_map)?;
         }
         // Includes combined audio/MIDI occupancy and every current-format
