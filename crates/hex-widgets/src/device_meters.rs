@@ -50,10 +50,9 @@ pub(crate) fn well(
         near_peak: readout.warning,
         clipping: readout.clipping,
     };
-    let well = crate::level_meter(
+    let well = crate::level_meter::meter_body(
         selector.clone().into(),
         height,
-        false,
         crate::LevelMeterStyle {
             background: style.rail,
             fill: colors.color(crate::MeterLevel::from_amplitude(level, above)),
@@ -114,19 +113,12 @@ pub(crate) fn well(
                         .bg(rgb(readout.warning)),
                 ),
         )
-        .when(above || held_above, |surface| {
-            // Paint evidence after the gain overlay: a +24 dB handle at the
-            // top must not cover a held overload while the current fill is low.
-            surface.child(
-                div()
-                    .debug_selector(move || overload_selector.clone())
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w(px(8.0))
-                    .h(px(2.0))
-                    .bg(rgb(readout.clipping)),
-            )
+        // Paint the cap after the handle without a second signal/peak owner.
+        .child(crate::meter_clip::ClipIndicator {
+            id: overload_selector.into(),
+            clipping: above,
+            held_clipping: held_above,
+            color: readout.clipping,
         })
         .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }

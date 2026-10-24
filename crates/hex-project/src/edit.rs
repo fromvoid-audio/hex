@@ -725,6 +725,18 @@ pub enum Command {
         source: ClipId,
         scene: crate::SceneId,
     },
+    /// Create one normal track and optional scene, then copy through the same
+    /// Session law. Editor prepares the whole candidate and commits one history edge.
+    CopyArrangementAudioClipToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
+    CopyArrangementMidiToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
     MoveSessionCell {
         from_track: TrackId,
         from_scene: crate::SceneId,
@@ -1785,6 +1797,8 @@ impl Project {
             | Command::CreateSessionAudioClip { .. }
             | Command::CopyArrangementAudioClipToSession { .. }
             | Command::CopyArrangementMidiToSession { .. }
+            | Command::CopyArrangementAudioClipToNewSessionTrack { .. }
+            | Command::CopyArrangementMidiToNewSessionTrack { .. }
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }

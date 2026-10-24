@@ -265,6 +265,25 @@ mod tests {
             panic!("scene")
         };
         let before = e.project().snapshot();
+        for target in [
+            crate::SessionSceneTarget::Existing(scene),
+            crate::SessionSceneTarget::Insert { before: None },
+        ] {
+            assert!(
+                e.execute(Command::CopyArrangementMidiToNewSessionTrack {
+                    source: clip,
+                    before_track: None,
+                    scene: target,
+                })
+                .is_err(),
+                "a new console track must not discard directed content"
+            );
+            assert_eq!(
+                e.project().snapshot(),
+                before,
+                "refusal preserves tracks, scenes and next identity"
+            );
+        }
         assert!(
             e.execute(Command::CopyArrangementMidiToSession {
                 source: clip,

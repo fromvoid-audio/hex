@@ -9,11 +9,15 @@
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
 mod action;
-pub use action::{ROUND_ACTION_SIZE, action, action_surface, round_action_surface, toggle_action};
+pub use action::{
+    ActionPressStyle, ROUND_ACTION_SIZE, action, action_surface, pressed_action_surface,
+    round_action_surface, toggle_action,
+};
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 mod color_picker;
 mod curve;
+mod device_housing;
 mod device_meters;
 mod device_parts;
 pub use device_parts::{
@@ -96,6 +100,7 @@ pub use text_input::{
 };
 
 mod level_meter;
+mod meter_clip;
 pub use level_meter::{
     LevelMeterStyle, METER_NEAR_PEAK_AMPLITUDE, METER_NEAR_PEAK_DBFS, MeterColors, MeterLevel,
     level_meter,
@@ -115,3 +120,10 @@ pub use rectangle::{
 };
 #[cfg(test)]
 mod rectangle_tests;
+
+mod waveform_plot;
+pub use waveform_plot::{
+    MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformColors,
+    WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
+    WaveformStroke, WaveformViewport, waveform_plot,
+};
