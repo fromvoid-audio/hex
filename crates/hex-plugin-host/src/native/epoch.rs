@@ -84,6 +84,16 @@ impl Quiescent {
     pub fn configuration(&self) -> &Configuration {
         &self.instance.config
     }
+    /// Same retained native backing while processing is quiescent. Old copied
+    /// callback/worker queues belong to their separate joining control owner.
+    pub fn retained_storage_on_control(&self) -> Option<PreparedStorage> {
+        self.instance.retained_storage_on_control()
+    }
+    /// Preserve this exact cancelled lease for independent disposal observation.
+    /// This is not return of any callback or graph that previously referenced it.
+    pub fn cancel_retained_on_control(self) -> PreparationFailure {
+        self.instance.cancel_retained_on_control()
+    }
     /// Cumulative actual completed blocks, not a graph or callback acceptance.
     pub fn completed_blocks(&self) -> u64 {
         self.instance.sequence

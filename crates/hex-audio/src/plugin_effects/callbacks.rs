@@ -9,6 +9,9 @@ pub(crate) struct NativeEffectEntry {
     staged: bool,
 }
 impl NativeEffectEntry {
+    pub(crate) fn has_live_epoch(&self) -> bool {
+        !self.staged && !self.callback.transport.is_revoked()
+    }
     pub(crate) fn new(callback: NativeEffectCallback) -> Self {
         Self {
             callback,

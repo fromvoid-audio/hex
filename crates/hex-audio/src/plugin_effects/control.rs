@@ -12,6 +12,12 @@ impl NativeEffect {
     pub(crate) fn loan_on_control(
         self,
     ) -> Result<(NativeEffectControl, NativeEffectCallback), Self> {
+        // Physical return preserves custody, not processing eligibility. Stop
+        // and rejected delivery revoke this exact transport permanently; only
+        // retained native quiescence/resume can construct a fresh paired epoch.
+        if self.callback.transport.is_revoked() {
+            return Err(self);
+        }
         let Some(storage) = self.constructor_storage_on_control() else {
             return Err(self);
         };

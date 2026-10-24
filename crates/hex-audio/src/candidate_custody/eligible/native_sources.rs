@@ -15,6 +15,7 @@ mod completion;
 mod definition;
 mod effect;
 mod endpoints;
+mod epoch;
 mod references;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
@@ -185,6 +186,7 @@ impl Bank {
 enum Owner {
     Pending(Pending),
     Prepared(native::Prepared),
+    Quiescent(native::Quiescent),
     Effect(crate::plugin_effects::NativeEffect),
     Loaned(crate::plugin_effects::NativeEffectControl),
     WorkerRefused(crate::plugin_worker::NativeWorkerStartFailure),
@@ -584,6 +586,11 @@ impl Custody {
                     }
                     if let Some(Owner::Prepared(_)) = cell.owner.as_ref()
                         && let Some(Owner::Prepared(owner)) = cell.owner.take()
+                    {
+                        cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
+                    }
+                    if let Some(Owner::Quiescent(_)) = cell.owner.as_ref()
+                        && let Some(Owner::Quiescent(owner)) = cell.owner.take()
                     {
                         cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
                     }
