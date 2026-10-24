@@ -1,0 +1,15 @@
+[package]
+name = "hex-plugin-catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hex-plugin-scan = { path = "../hex-plugin-scan" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+fs2 = "=0.4.3"

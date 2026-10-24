@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -14,6 +16,7 @@ fn valid_snapshot() -> Snapshot {
         sample_rate: 48_000,
         next_id: 100,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 10,
             path: PathBuf::from("Media/Source.WAV"),
             source_sample_rate: 48_000,
@@ -48,13 +51,14 @@ fn valid_snapshot() -> Snapshot {
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
                         asset: 10,
-                        start: 128,
+                        start: 1_024,
                         duration: 80,
                         source_offset: 64,
                         source_length: 32,
@@ -63,6 +67,7 @@ fn valid_snapshot() -> Snapshot {
                         fade: hex_project::ClipFade::neutral(80).unwrap(),
                     },
                     ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,
@@ -206,6 +211,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut assets = valid_snapshot();
     assets.assets = (0..=MAX_ASSETS)
         .map(|index| AssetSnapshot {
+            original_source: None,
             id: 1_000 + index as u64,
             path: PathBuf::from(format!("Samples/{index}.wav")),
             source_sample_rate: 48_000,
@@ -222,6 +228,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let track = &mut clips.tracks[0];
     *track.audio_clips_mut().unwrap() = (0..=MAX_CLIPS)
         .map(|index| ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,

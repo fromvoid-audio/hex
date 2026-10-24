@@ -8,13 +8,13 @@ impl Drop for BrowserRoot {
 }
 // Match the existing exclusive output lease for these private headless fixtures.
 // No global environment/settings mutation, backend redesign or lease bypass.
-fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-fn headless_status_output() -> (
+pub(super) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,
     hex_audio::worker_fixture::HeadlessBackend,
 ) {
@@ -335,7 +335,7 @@ fn eq_real_selectors_keep_popup_anchor_keyboard_cancel_and_canonical_history(
 #[gpui::test]
 fn eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry(cx: &mut TestAppContext) {
     use hex_widgets::{
-        NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlKind,
+        NumericControl, NumericControlConfig, NumericControlKind, NumericControlPresentation,
         NumericScale, NumericSpec,
     };
     let config = NumericControlConfig::new(
@@ -355,7 +355,7 @@ fn eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry(cx: &mu
         theme::device_style(theme::DeviceStyleRole::Readout),
     )
     .unwrap()
-    .with_appearance(NumericControlAppearance::InlineValue);
+    .with_presentation(NumericControlPresentation::InlineValue);
     let window = cx.add_window(|_, cx| NumericControl::from_config(cx, config));
     let handle = *window;
     let control = window.root(cx).unwrap();

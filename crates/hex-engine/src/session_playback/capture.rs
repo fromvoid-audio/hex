@@ -362,7 +362,7 @@ impl SessionPlayback {
                         .slots()
                         .iter()
                         .flatten()
-                        .any(|tail| tail.return_id == id)
+                        .any(|tail| tail.return_id() == Some(id))
             }
         }
     }

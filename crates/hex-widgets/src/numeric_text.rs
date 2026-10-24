@@ -46,6 +46,7 @@ impl EntityInputHandler for NumericControl {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.marked = None;
+        self.invalidate_text_pointer_selection();
     }
 
     fn replace_text_in_range(
@@ -55,6 +56,7 @@ impl EntityInputHandler for NumericControl {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_text_pointer_selection();
         let new_text = new_text.replace(['\n', '\r'], "");
         let range = range
             .map(|range| range_utf16_to_bytes(&self.text, range))
@@ -92,6 +94,7 @@ impl EntityInputHandler for NumericControl {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.invalidate_text_pointer_selection();
         let new_text = new_text.replace(['\n', '\r'], "");
         let range = range
             .map(|range| range_utf16_to_bytes(&self.text, range))
@@ -419,6 +422,9 @@ mod tests {
             text: 0xe0e0e0,
             muted: 0xaaaaaa,
             accent,
+            accent_text: 0x202020,
+            numeric_fill: 0x31515a,
+            hover_text: 0xe0e0e0,
             focus_marker: 0xaaaaaa,
             dial_rail: 0x000000,
             hover: 0x404040,

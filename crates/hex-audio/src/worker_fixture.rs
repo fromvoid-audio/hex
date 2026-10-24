@@ -35,6 +35,13 @@ impl HeadlessBackend {
             .and_then(Guard::owner_ref)
             .map(NativeCallbackOwner::borrowed_status)
     }
+    /// Test-backend stop request only, never a stop/dispose or retirement ACK.
+    /// The fixture must actually close both carriers and await the real output
+    /// lease before a replacement can open, just like the existing close path.
+    pub fn shutdown_requested(&self) -> bool {
+        self.status()
+            .is_some_and(crate::prepared::Status::headless_shutdown_requested)
+    }
     /// Publish/release both real carriers. Their contents remain lifecycle-owned.
     pub fn close(&mut self) {
         drop(self.data.take());

@@ -188,62 +188,28 @@ pub(crate) fn paste(
         };
         crate::time_range::insert_empty(project, tracks, frame, duration)?;
     }
-    // Apply the existing replacement policy only to old destination content.
-    // Batch members may overlap in a valid project and must not erase each other.
-    // Empty gaps remain outside the replacement, just as with a single clip copy.
-    for copy in &prepared {
-        match &copy.content {
-            Content::Audio(_) => {
-                crate::edit::overwrite_audio_interval(
-                    project,
-                    copy.track,
-                    copy.frame,
-                    copy.end,
-                    ClipId(0),
-                )?;
-                crate::midi::overwrite_midi_in_frames(
-                    project,
-                    copy.track,
-                    copy.frame,
-                    copy.end,
-                    ClipId(0),
-                )?;
-            }
-            Content::Midi(clip) => {
-                let end = BeatTime::from_raw(
-                    copy.beat
-                        .raw()
-                        .checked_add(clip.length().raw())
-                        .ok_or(Invalid("midi timeline end overflow"))?,
-                );
-                crate::edit::overwrite_audio_in_beats(
-                    project,
-                    copy.track,
-                    copy.beat,
-                    end,
-                    ClipId(0),
-                )?;
-                crate::midi::overwrite_midi_interval(
-                    project,
-                    copy.track,
-                    copy.beat,
-                    end,
-                    ClipId(0),
-                )?;
-            }
-        }
-    }
+    // Plan all members together; gaps do not replace destination content.
+    let mut incoming = Vec::new();
+    incoming
+        .try_reserve_exact(prepared.len())
+        .map_err(|_| Invalid("could not reserve clipboard placement"))?;
     for copy in prepared {
-        match copy.content {
+        let content = match copy.content {
             Content::Audio(mut clip) => {
                 crate::audio_edit::move_clip(&mut clip, copy.frame, project.tempo_map())?;
-                crate::clip_copy::append_audio(project, clip, copy.track)?;
+                crate::ClipGroupContent::Audio(clip)
             }
-            Content::Midi(clip) => {
-                crate::clip_copy::append_midi(project, clip, copy.track, copy.beat)?;
+            Content::Midi(mut clip) => {
+                clip.start = copy.beat;
+                crate::ClipGroupContent::Midi(clip)
             }
-        }
+        };
+        incoming.push(crate::ClipGroupPreview {
+            track: copy.track,
+            content,
+        });
     }
+    crate::clip_group::place_batch(project, incoming, &[])?;
     Project::from_snapshot(project.snapshot())?;
     Ok(Created::None)
 }
@@ -458,22 +424,9 @@ mod tests {
         equal_midi_content(&original_midi, second_midi);
     }
     #[test]
-    fn overlapping_whole_members_survive_without_erasing_each_other() {
+    fn disjoint_whole_members_preserve_their_gap_and_source_content() {
         let (editor, _, target, audio, midi, _) = fixture();
-        let mut snapshot = editor.project().snapshot();
-        for track in &mut snapshot.tracks {
-            let clips = match &mut track.content {
-                crate::TrackContentSnapshot::Audio(_) => continue,
-                crate::TrackContentSnapshot::Instrument(clips) => clips,
-                crate::TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
-            };
-            for clip in clips {
-                if clip.id == midi.value() {
-                    clip.start_raw = beat(1).raw();
-                }
-            }
-        }
-        let project = Project::from_snapshot(snapshot).unwrap();
+        let project = editor.project().clone();
         let original_audio = project.clip(audio).unwrap().clone();
         let original_midi = project.midi_clip(midi).unwrap().clone();
         let clipboard = Arc::new(project.capture_clips(&[audio, midi]).unwrap());
@@ -495,7 +448,7 @@ mod tests {
         let m = destination
             .midi_clips()
             .iter()
-            .find(|c| c.start() == beat(11))
+            .find(|c| c.start() == beat(14))
             .unwrap();
         equal_audio_content(&original_audio, a);
         equal_midi_content(&original_midi, m);

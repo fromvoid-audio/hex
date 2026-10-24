@@ -196,4 +196,5 @@ fn actual_meter_label_styles_meet_contrast_for_valid_saved_themes() {
 }
 
 #[cfg(feature = "ui-test-support")]
+#[path = "tests/rendered.rs"]
 mod rendered;

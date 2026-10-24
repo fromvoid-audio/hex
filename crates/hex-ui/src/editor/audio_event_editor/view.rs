@@ -5,11 +5,13 @@ use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
+    render_window: &gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
     let (clip_id, root, revision) = view.event_context()?;
     let owner = (clip_id, view.project_generation);
     if view.audio_event_editor.owner != Some(owner) {
+        view.retire_arrange_range_owner();
         let clipboard = view.audio_event_editor.clipboard.take();
         view.audio_event_editor = State {
             owner: Some(owner),
@@ -32,6 +34,7 @@ pub(in crate::editor) fn view(
         });
         view.audio_event_editor.revision = revision;
     }
+    view.reflect_arrange_clip_range(render_window, cx);
     let state = view.state.as_ref()?;
     let clip = state.project.clip(clip_id)?.clone();
     let events = match clip.editable_audio_events() {
@@ -247,10 +250,11 @@ pub(in crate::editor) fn view(
                     .left(relative(frame_to_x(a)))
                     .w(relative((b - a) as f32 / local.length.max(1) as f32))
                     .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                    .opacity(0.2),
+                    .opacity(theme::TIME_SELECTION_OPACITY),
             );
         }
     }
+    body = body.children(view.arrange_audio_highlights(local.start, local.length));
     let cursor = frame_at(
         view.audio_event_editor
             .cursor
@@ -504,15 +508,8 @@ pub(in crate::editor) fn view(
                 cx.notify();
             })),
         )
-        .child(
-            waveform::button("↔", "fit audio events · cmd+0", ("audio-event-fit", 0)).on_click(
-                cx.listener(|view, _, window, cx| {
-                    view.audio_event_focus.focus(window);
-                    view.audio_event_editor.viewport = None;
-                    cx.notify();
-                }),
-            ),
-        )
+        .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, false, cx))
+        .child(view.zoom_fit_button(super::super::zoom_fit::Target::Audio, true, cx))
         .child(
             div()
                 .flex_1()

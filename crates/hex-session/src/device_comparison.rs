@@ -51,6 +51,7 @@ pub(crate) fn validate_project(project: &Project) -> Result<(), Invalid> {
         .return_tracks()
         .iter()
         .flat_map(|track| track.devices())
+        .chain(project.main_devices())
         .filter(|device| device.comparison().is_some())
     {
         validate_states(
@@ -84,6 +85,7 @@ pub(crate) fn metadata_pair(
                     .iter_mut()
                     .flat_map(|track| track.devices.iter_mut()),
             )
+            .chain(snapshot.main_devices.iter_mut())
             .for_each(|device| device.comparison = None);
     };
     devices(&mut left);
@@ -102,6 +104,7 @@ pub(crate) fn metadata_pair(
                     .iter()
                     .flat_map(|track| track.devices().iter()),
             )
+            .chain(from.main_devices())
         {
             if to
                 .device(device.id())
@@ -132,6 +135,108 @@ pub(crate) fn metadata_pair(
 mod metadata_tests {
     use super::*;
     use hex_project::{Command, DeviceComparisonAction as Action, DeviceVariant as Slot, Editor};
+    #[test]
+    fn main_comparison_typed_metadata_edges_include_main_without_stripping_audio() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state_for_class(
+                    NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let source = editor.project().clone();
+        let device = source.main_devices()[0].id();
+        editor
+            .execute(Command::CompareDevice {
+                device,
+                expected: Slot::A,
+                action: Action::Switch,
+            })
+            .unwrap();
+        let switched = editor.project().clone();
+        assert!(
+            metadata_pair(&source, &switched).unwrap(),
+            "same-audio typed Main switch is metadata"
+        );
+        assert!(
+            metadata_pair(&switched, &source).unwrap(),
+            "exact undo edge"
+        );
+        editor
+            .execute(Command::CompareDevice {
+                device,
+                expected: Slot::B,
+                action: Action::CopyToInactive,
+            })
+            .unwrap();
+        // When banks already match, Copy is an honest no-op rather than a metadata edit.
+        assert_eq!(editor.project(), &switched);
+        let mut copy = Editor::new(source.clone(), 16).unwrap();
+        copy.execute(Command::CompareDevice {
+            device,
+            expected: Slot::A,
+            action: Action::CopyToInactive,
+        })
+        .unwrap();
+        assert_eq!(
+            copy.project(),
+            &source,
+            "absent B already represents an identical bank"
+        );
+        assert!(
+            !metadata_pair(&source, copy.project()).unwrap(),
+            "no-op is not a metadata edit"
+        );
+        let active = switched.device(device).unwrap().state().clone();
+        let inactive = hex_engine::patch_native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            &active,
+            hex_lattice_contract::ParameterId::from_static(1),
+            hex_lattice_contract::ParameterValue::Float(0.25),
+        )
+        .unwrap()
+        .with_host_metadata_from(&active)
+        .unwrap();
+        assert_ne!(active, inactive);
+        copy = Editor::new(switched.clone(), 16).unwrap();
+        copy.execute(Command::ReplaceDeviceComparison {
+            device,
+            state: active,
+            comparison: Some(DeviceComparison::new(Slot::B, inactive)),
+        })
+        .unwrap();
+        let before_copy = copy.project().clone();
+        copy.execute(Command::CompareDevice {
+            device,
+            expected: Slot::B,
+            action: Action::CopyToInactive,
+        })
+        .unwrap();
+        assert_eq!(
+            copy.project(),
+            &switched,
+            "directional copy retains active bank and audible state"
+        );
+        assert!(metadata_pair(&before_copy, copy.project()).unwrap());
+        assert!(
+            metadata_pair(copy.project(), &before_copy).unwrap(),
+            "exact copy Undo edge"
+        );
+        copy.execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+        assert!(
+            !metadata_pair(&switched, copy.project()).unwrap(),
+            "bypass must not be stripped"
+        );
+    }
+
     #[test]
     fn comparison_metadata_classification_refuses_audio_changes_arbitrary_bank_edits_and_malformed_payloads()
      {

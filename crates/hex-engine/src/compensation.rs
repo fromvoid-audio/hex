@@ -322,6 +322,54 @@ impl CompensationRuntime {
         Ok(())
     }
 
+    pub(crate) fn latest_stamp(&self) -> Option<TransportStamp> {
+        self.stamp_at_delay(0)
+    }
+    pub(crate) fn is_closed(&self) -> bool {
+        !self.transaction_active
+    }
+    pub(crate) fn history_horizon(&self) -> u32 {
+        self.plan.max_latency_frames()
+    }
+    pub(crate) fn can_copy_edge_history_from(
+        &self,
+        target: usize,
+        source: &Self,
+        origin: usize,
+    ) -> bool {
+        self.is_closed()
+            && source.is_closed()
+            && self
+                .edges
+                .get(target)
+                .zip(source.edges.get(origin))
+                .is_some_and(|(target, origin)| target.can_copy_history_from(origin))
+    }
+    pub(crate) fn copy_edge_history_from(
+        &mut self,
+        target: usize,
+        source: &Self,
+        origin: usize,
+    ) -> Result<(), CompensationError> {
+        if !self.can_copy_edge_history_from(target, source, origin) {
+            return Err(CompensationError::InvalidIndex);
+        }
+        self.edges[target].copy_history_from(&source.edges[origin]);
+        Ok(())
+    }
+    pub(crate) fn copy_stamp_history_from(
+        &mut self,
+        source: &Self,
+    ) -> Result<(), CompensationError> {
+        if !self.is_closed()
+            || !source.is_closed()
+            || self.stamps.capacity() < source.stamps.capacity()
+        {
+            return Err(CompensationError::StorageLimit);
+        }
+        self.stamps.copy_history_from(&source.stamps);
+        Ok(())
+    }
     /// Discard both speculative and committed history at a transport epoch change.
     /// This bounded clear must be coordinated with the owner's DSP/clock reset.
     pub fn reset_epoch(&mut self) {

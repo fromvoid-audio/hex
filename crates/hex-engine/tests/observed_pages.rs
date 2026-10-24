@@ -137,11 +137,13 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
                 track,
                 points: vec![
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 0.25,
                         outgoing: hex_project::GainInterpolation::Linear,
                     },
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ONE,
                         gain: 1.5,
                         outgoing: hex_project::GainInterpolation::Step,

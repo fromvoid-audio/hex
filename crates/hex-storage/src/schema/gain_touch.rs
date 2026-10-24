@@ -127,6 +127,7 @@ impl DocumentV22 {
                     .gain_envelope()
                     .iter()
                     .map(|point| GainPointDto {
+                        incoming_gain: point.incoming_gain,
                         beat_raw: point.beat.raw(),
                         gain: point.gain,
                         outgoing: match point.outgoing {
@@ -189,6 +190,7 @@ impl DocumentV22 {
                 .gain_envelope
                 .into_iter()
                 .map(|point| GainPoint {
+                    incoming_gain: point.incoming_gain,
                     beat: BeatTime::from_raw(point.beat_raw),
                     gain: point.gain,
                     outgoing: match point.outgoing {
@@ -308,6 +310,7 @@ struct StepDto {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SpanDto {
+    source_start_raw: u64,
     start_raw: u64,
     end_raw: u64,
     context: ContextDto,
@@ -317,6 +320,7 @@ struct SpanDto {
 impl SpanDto {
     fn from_model(s: &GainTouchSpan) -> Self {
         Self {
+            source_start_raw: s.source_start.raw(),
             start_raw: s.start.raw(),
             end_raw: s.end.raw(),
             context: ContextDto::from_model(s.context),
@@ -334,6 +338,7 @@ impl SpanDto {
     }
     fn into_model(self) -> GainTouchSpan {
         GainTouchSpan {
+            source_start: BeatTime::from_raw(self.source_start_raw),
             start: BeatTime::from_raw(self.start_raw),
             end: BeatTime::from_raw(self.end_raw),
             context: self.context.into_model(),
