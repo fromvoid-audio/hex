@@ -6,15 +6,53 @@ use std::sync::Arc;
 #[gpui::test]
 fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
-    for midi in [false, true] {
+    for (midi, session) in [(false, false), (true, false), (false, true), (true, true)] {
         let (project, track, _, clip) = if midi {
             midi_project()
         } else {
             audio_project()
         };
+        let (project, clip, scene) = if session {
+            let mut model = hex_project::Editor::new(project, 8).unwrap();
+            let hex_project::Created::Scene(scene) = model
+                .execute(hex_project::Command::AddScene {
+                    name: "scene".into(),
+                })
+                .unwrap()
+            else {
+                panic!("scene fixture")
+            };
+            model
+                .execute(if midi {
+                    hex_project::Command::CopyArrangementMidiToSession {
+                        source: clip,
+                        scene,
+                    }
+                } else {
+                    hex_project::Command::CopyArrangementAudioClipToSession {
+                        source: clip,
+                        scene,
+                    }
+                })
+                .unwrap();
+            let clip = match model.project().session_cell(track, scene).unwrap() {
+                hex_project::SessionCellContent::Audio(clip) => clip.id(),
+                hex_project::SessionCellContent::Midi(clip) => clip.id(),
+                _ => panic!("clip fixture"),
+            };
+            (model.project().clone(), clip, Some(scene))
+        } else {
+            (project, clip, None)
+        };
         let (handle, editor) = editor_window(cx, project, Arc::default());
         let visual = &mut VisualTestContext::from_window(handle, cx);
         editor.update(visual, |view, cx| {
+            view.mode = if session {
+                crate::editor::EditorMode::Session
+            } else {
+                crate::editor::EditorMode::Arrangement
+            };
+            view.selected_cell = scene.map(|scene| (track, scene));
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
             view.clip_view_open = true;
@@ -24,6 +62,8 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
         visual.run_until_parked();
         let body_selector = if midi {
             "midi-note-roll"
+        } else if session {
+            "session-audio-source-panel"
         } else {
             "arrangement-audio-clip-view"
         };
