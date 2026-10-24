@@ -96,6 +96,7 @@ pub use text_input::{
 };
 
 mod level_meter;
+mod meter_clip;
 pub use level_meter::{
     LevelMeterStyle, METER_NEAR_PEAK_AMPLITUDE, METER_NEAR_PEAK_DBFS, MeterColors, MeterLevel,
     level_meter,
