@@ -27,6 +27,8 @@ impl EditorView {
 
     fn loop_shortcut_context(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
+            && !self.sections.naming()
+            && !self.changelog.is_open()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
             && self.context_menu.is_none()
@@ -50,6 +52,8 @@ impl EditorView {
             || self.active_fade_drag.is_some()
             || self.track_resize_active()
             || self.loop_rail_gesture.is_some()
+            || self.sections.held()
+            || self.section_install_pending()
         {
             self.error = Some("finish the current edit before setting the loop".into());
             return;
@@ -68,6 +72,9 @@ impl EditorView {
     }
 
     fn selection_loop_bounds(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        if let Some(bounds) = self.section_loop_bounds()? {
+            return Ok(Some(bounds));
+        }
         // Match range-copy precedence. A stale non-empty rectangle must refuse,
         // rather than silently looping a different whole-clip selection.
         if self

@@ -321,6 +321,11 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(selection.tracks(), ids);
         assert!(selection.end() > selection.start());
         assert_eq!(view.selected_track, Some(ids[3]));
+        assert_eq!(
+            view.selected_track_ids(),
+            [ids[3]],
+            "lane highlight follows the active endpoint, independent of the time range"
+        );
         assert!(view.selected_clip.is_none());
         assert_eq!(
             view.time_selection_paste_target(),
@@ -376,6 +381,11 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         let range = view.normalized_time_selection().expect("replacement range");
         assert_eq!(range.tracks(), &ids[2..]);
         assert_eq!(view.selected_track, Some(ids[3]));
+        assert_eq!(
+            view.selected_track_ids(),
+            [ids[3]],
+            "lane highlight follows the active endpoint, independent of the time range"
+        );
         assert!(
             view.last_enqueued_edit.is_none(),
             "reselection does not edit project content"

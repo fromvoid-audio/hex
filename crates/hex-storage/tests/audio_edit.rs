@@ -276,11 +276,20 @@ fn frozen_tempo_map_roundtrips_and_rejects_malformed_current_timing() {
             },
         })
         .unwrap();
+    let track = editor.project().tracks()[0].id();
     editor
-        .execute(Command::SetProjectTempo {
-            tempo: Tempo::new(60_000_000).unwrap(),
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::from_quarters(3).unwrap(),
+            length: BeatTime::ONE,
         })
         .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 36_000);
     let AudioClipTiming::Frozen { tempo, .. } = &editor
         .project()
         .clip(clip)
