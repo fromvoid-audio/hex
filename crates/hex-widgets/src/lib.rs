@@ -9,7 +9,7 @@
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
 mod action;
-pub use action::{action, action_surface};
+pub use action::{action, action_surface, round_action_surface};
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
 mod color_picker;
@@ -88,3 +88,9 @@ pub use text_input::{
 
 mod level_meter;
 pub use level_meter::{LevelMeterStyle, level_meter};
+
+mod meter_indicator;
+pub use meter_indicator::{
+    METER_INDICATOR_TICKS_DBFS, MeterChannelReadout, MeterIndicatorReadout, MeterIndicatorStyle,
+    meter_indicator,
+};

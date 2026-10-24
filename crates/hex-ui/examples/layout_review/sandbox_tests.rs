@@ -27,49 +27,66 @@ fn choose(visual: &mut VisualTestContext, view: &Entity<Sandbox>, name: &str) {
     });
     visual.run_until_parked();
 }
+// GPUI's test selector API requires a static key; these small fixture-only
+// strings live for the duration of the test process.
+fn key(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
+}
+fn selector(view: &Entity<Sandbox>, cx: &TestAppContext, suffix: &str) -> &'static str {
+    key(view.read_with(cx, |s, _| format!("sample-{}-{suffix}", s.selected)))
+}
 #[gpui::test]
 fn every_named_entry_renders_in_bounded_native_viewports(cx: &mut TestAppContext) {
     let _restore = RestoreTheme(theme::preferences());
     let (handle, view) = open(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    let names = view.read_with(cx, |s, _| {
-        s.items.iter().map(|i| i.name).collect::<Vec<_>>()
-    });
-    let unique: std::collections::HashSet<_> = names.iter().collect();
-    assert_eq!(unique.len(), names.len());
+    let pages = view.read_with(cx, |s, _| s.pages.clone());
     for (width, light) in [(1040.0, false), (760.0, true)] {
         if light {
             view.update(cx, |s, cx| s.theme(cx));
         }
         visual.simulate_resize(size(px(width), px(720.0)));
-        for name in &names {
+        for page in &pages {
+            let name = view.read_with(cx, |s, _| {
+                s.items
+                    .iter()
+                    .find(|item| item.page() == *page)
+                    .unwrap()
+                    .name
+            });
             choose(&mut visual, &view, name);
-            if light {
-                view.update(cx, |s, cx| {
-                    if let Some(sample) = s.samples.get(&s.selected) {
+            view.update(cx, |s, cx| {
+                for index in s.configurations() {
+                    if let Some(sample) = s.samples.get(&index) {
                         sample.update(cx, |sample, cx| {
-                            sample.narrow = true;
+                            sample.narrow = light;
                             cx.notify();
                         });
                     }
-                });
-                visual.run_until_parked();
-            }
-            view.read_with(cx, |s, cx| {
-                assert!(s.error.is_none(), "{name}: {:?}", s.error);
-                if let Some(sample) = s.samples.get(&s.selected) {
-                    assert!(!sample.read(cx).status.contains("invalid"), "{name}");
                 }
             });
+            visual.run_until_parked();
+            view.read_with(cx, |s, cx| {
+                assert!(s.error.is_none(), "{name}: {:?}", s.error);
+                for index in s.configurations() {
+                    if let Some(sample) = s.samples.get(&index) {
+                        assert!(!sample.read(cx).status.contains("invalid"), "{name}");
+                    }
+                }
+            });
+            for index in view.read_with(cx, |s, _| s.configurations()) {
+                assert!(
+                    visual
+                        .debug_bounds(key(format!("configuration-{index}")))
+                        .is_some()
+                );
+            }
             let content = visual.debug_bounds("sandbox-content").expect("viewport");
             assert!(
                 content.origin.x >= px(0.0) && content.right() <= px(width),
                 "{name}"
             );
             assert!(content.size.height > px(200.0), "{name}");
-            if *name != "device compositions · 12 fixtures" {
-                assert!(visual.debug_bounds("widget-preview").is_some(), "{name}");
-            }
         }
     }
 }
@@ -82,7 +99,9 @@ fn controls_emit_local_feedback_and_retain_values_across_navigation_theme_and_di
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     choose(&mut visual, &view, "standard toggle");
-    let hit = visual.debug_bounds("sandbox-toggle").expect("toggle");
+    let hit = visual
+        .debug_bounds(selector(&view, cx, "sandbox-toggle"))
+        .expect("toggle");
     visual.simulate_click(hit.center(), Modifiers::default());
     visual.run_until_parked();
     view.read_with(cx, |s, cx| {
@@ -106,10 +125,13 @@ fn controls_emit_local_feedback_and_retain_values_across_navigation_theme_and_di
     });
     choose(&mut visual, &view, "standard toggle");
     let enable = visual
-        .debug_bounds("sandbox-enable")
+        .debug_bounds(selector(&view, cx, "enable"))
         .expect("disable control");
     visual.simulate_click(enable.center(), Modifiers::default());
     visual.run_until_parked();
+    let hit = visual
+        .debug_bounds(selector(&view, cx, "sandbox-toggle"))
+        .expect("toggle");
     visual.simulate_click(hit.center(), Modifiers::default());
     visual.run_until_parked();
     view.update(cx, |s, cx| s.theme(cx));
@@ -120,11 +142,13 @@ fn controls_emit_local_feedback_and_retain_values_across_navigation_theme_and_di
         assert_eq!(sample.status, "toggle · false");
     });
     choose(&mut visual, &view, "standard selector");
-    let hit = visual.debug_bounds("sandbox-selector").expect("selector");
+    let hit = visual
+        .debug_bounds(selector(&view, cx, "sandbox-selector"))
+        .expect("selector");
     visual.simulate_click(hit.center(), Modifiers::default());
     visual.run_until_parked();
     let option = visual
-        .debug_bounds("sandbox-selector-option-1")
+        .debug_bounds(selector(&view, cx, "sandbox-selector-option-1"))
         .expect("real popup");
     visual.simulate_click(option.center(), Modifiers::default());
     visual.run_until_parked();
@@ -147,7 +171,9 @@ fn bars_graph_color_and_chrome_accept_real_pointer_input(cx: &mut TestAppContext
         ("action", "chrome-hit", "local action ·"),
     ] {
         choose(&mut visual, &view, name);
-        let hit = visual.debug_bounds(selector).expect(name);
+        let hit = visual
+            .debug_bounds(self::selector(&view, cx, selector))
+            .expect(name);
         visual.simulate_click(hit.center(), Modifiers::default());
         visual.run_until_parked();
         view.read_with(cx, |s, cx| {
@@ -158,4 +184,55 @@ fn bars_graph_color_and_chrome_accept_real_pointer_input(cx: &mut TestAppContext
             )
         });
     }
+}
+
+#[gpui::test]
+fn configurations_coexist_with_independent_state_and_scoped_reset(cx: &mut TestAppContext) {
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, view) = open(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    choose(&mut visual, &view, "standard toggle");
+    let names = ["standard toggle", "compact button"];
+    let indices = view.read_with(cx, |s, _| {
+        names.map(|name| s.items.iter().position(|item| item.name == name).unwrap())
+    });
+    let hit = visual
+        .debug_bounds(key(format!("sample-{}-sandbox-toggle", indices[0])))
+        .unwrap();
+    visual.simulate_click(hit.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |s, cx| {
+        assert_eq!(s.configurations().len(), 5);
+        assert_eq!(s.samples[&indices[0]].read(cx).status, "toggle · false");
+        assert_eq!(
+            s.samples[&indices[1]].read(cx).status,
+            "local fixture · ready"
+        );
+    });
+    for index in view.read_with(cx, |s, _| s.configurations()) {
+        assert!(
+            visual
+                .debug_bounds(key(format!("sample-{index}-widget-preview")))
+                .is_some()
+        );
+    }
+    choose(&mut visual, &view, "compact button");
+    let enable = visual
+        .debug_bounds(key(format!("sample-{}-enable", indices[1])))
+        .unwrap();
+    visual.simulate_click(enable.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |s, cx| {
+        assert!(s.samples[&indices[0]].read(cx).enabled);
+        assert!(!s.samples[&indices[1]].read(cx).enabled);
+    });
+    let reset = visual
+        .debug_bounds(key(format!("sample-{}-reset", indices[1])))
+        .unwrap();
+    visual.simulate_click(reset.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(cx, |s, cx| {
+        assert_eq!(s.samples[&indices[0]].read(cx).status, "toggle · false");
+        assert!(s.samples[&indices[1]].read(cx).enabled);
+    });
 }
