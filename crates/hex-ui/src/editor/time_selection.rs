@@ -378,7 +378,7 @@ impl EditorView {
             last_tick: Instant::now(),
         });
         self.retain_clip_detail_for_time_selection();
-        self.selected_track = Some(track);
+        self.select_lane_track(track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -932,7 +932,7 @@ impl EditorView {
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope {
-            self.selected_track = Some(track);
+            self.select_lane_track(track);
         }
         self.selected_clip = None;
         true
@@ -1094,6 +1094,39 @@ impl EditorView {
             .unwrap_or((false, false))
     }
 
+    /// Paint one opaque marker at the true dragged endpoint, above the range's
+    /// translucent fill. Reuse the loop rail's checked musical-duration law.
+    fn time_selection_binary_marker(
+        &self,
+        selection: TimeSelection,
+        viewport: super::viewport::Viewport,
+    ) -> Option<Div> {
+        if selection.end_frame < viewport.start || selection.end_frame > viewport.end()? {
+            return None;
+        }
+        let region = hex_project::LoopRegion::new(
+            selection.anchor_frame.min(selection.end_frame),
+            selection.anchor_frame.max(selection.end_frame),
+            true,
+        )
+        .ok()?;
+        if !super::loop_rail::binary_duration(&self.state.as_ref()?.project, region) {
+            return None;
+        }
+        let marker = div()
+            .debug_selector(|| "time-selection-binary-length-marker".into())
+            .absolute()
+            .top(px(2.0))
+            .size(px(5.0))
+            .rounded_full()
+            .bg(rgb(theme::color(theme::PaletteRole::Background)));
+        Some(if selection.end_frame > selection.anchor_frame {
+            marker.right_0()
+        } else {
+            marker.left_0()
+        })
+    }
+
     pub(super) fn time_selection_overlay(
         &self,
         track: TrackId,
@@ -1166,18 +1199,34 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
-                        .id(("time-selection-handle", track.value()))
-                        .debug_selector(|| format!("time-selection-handle-{}", track.value()))
                         .absolute()
-                        .top_0()
-                        .w_full()
-                        .h(px(header_hit_height(self.track_height(track))))
-                        .cursor(CursorStyle::OpenHand)
-                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
+                        .inset_0()
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .opacity(theme::TIME_SELECTION_OPACITY)
+                        .child(
+                            div()
+                                .id(("time-selection-handle", track.value()))
+                                .debug_selector(|| {
+                                    format!("time-selection-handle-{}", track.value())
+                                })
+                                .absolute()
+                                .top_0()
+                                .w_full()
+                                .h(px(header_hit_height(self.track_height(track))))
+                                .cursor(CursorStyle::OpenHand)
+                                .hover(|style| {
+                                    style.bg(rgb(theme::color(theme::PaletteRole::Text)))
+                                }),
+                        ),
+                )
+                .children(
+                    if track_index == first_index && !self.time_selection_project_scope {
+                        self.time_selection_binary_marker(raw_selection, viewport)
+                    } else {
+                        None
+                    },
                 ),
         )
     }
@@ -1238,19 +1287,27 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
-                        .id("main-project-time-selection-handle")
-                        .debug_selector(|| "main-project-time-selection-handle".to_owned())
                         .absolute()
-                        .top_0()
-                        .w_full()
-                        .h(relative(SELECTION_HANDLE_FRACTION))
-                        .cursor(CursorStyle::OpenHand)
-                        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Text)))),
-                ),
+                        .inset_0()
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .opacity(theme::TIME_SELECTION_OPACITY)
+                        .child(
+                            div()
+                                .id("main-project-time-selection-handle")
+                                .debug_selector(|| "main-project-time-selection-handle".to_owned())
+                                .absolute()
+                                .top_0()
+                                .w_full()
+                                .h(relative(SELECTION_HANDLE_FRACTION))
+                                .cursor(CursorStyle::OpenHand)
+                                .hover(|style| {
+                                    style.bg(rgb(theme::color(theme::PaletteRole::Text)))
+                                }),
+                        ),
+                )
+                .children(self.time_selection_binary_marker(selection, viewport)),
         )
     }
 

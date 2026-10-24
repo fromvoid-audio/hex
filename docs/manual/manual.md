@@ -91,6 +91,20 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+changing the project bpm keeps clips at their musical start positions. audio with
+warp off keeps its natural playback speed. if a faster bpm makes an audio tail
+reach the next clip on that track, hex crops that tail at the next start. original
+media remains available, and undo restores the previous tempo and clip extents.
+
+with the computer midi keyboard off, **l** sets a loop around selected clips, a
+time selection, or the selected main sections. **command+l** also sets this loop.
+for multiple sections, the loop spans the earliest start to the latest end,
+including gaps. while the computer midi keyboard is on, plain **l** plays a note.
+
+a time selection shows a dark dot when its musical length is a power of two,
+such as two or four beats. the dot follows the dragged top-right or top-left
+corner and stays visible after release.
+
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
