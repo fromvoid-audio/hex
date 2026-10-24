@@ -331,7 +331,8 @@ impl Inputs<'_> {
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, None)
+        let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
+        self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, section_loop)
     }
     #[allow(clippy::too_many_arguments)] // One existing publication path with an optional transient clock.
     fn publish_tagged_with_loop(
@@ -343,18 +344,7 @@ impl Inputs<'_> {
         policy: ResidentPublicationPolicy,
         section_loop: Option<hex_project::LoopRegion>,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = match section_loop {
-            Some(region) => Playback::try_from_prepared_section_candidate(
-                Arc::clone(&snapshot.prepared),
-                &snapshot.resources,
-                region,
-            ),
-            None => Playback::try_from_prepared_with_device_resources(
-                Arc::clone(&snapshot.prepared),
-                &snapshot.resources,
-            ),
-        }
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
@@ -387,17 +377,11 @@ impl Inputs<'_> {
         {
             return Err(SessionError::Invalid("resident publication cancelled"));
         }
-        let quoted = if let Some(region) = playback.section_loop() {
-            hex_engine::SessionPlayback::section_runtime_allowance(&snapshot.prepared, region)
-                .map_err(|error| SessionError::NativeAudio(error.to_string()))?
-                .checked_add(additional_runtime_bytes)
-                .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
-                .ok_or(SessionError::Invalid(
-                    "section runtime input allowance overflow",
-                ))?
-        } else {
-            runtime_allowance(&snapshot.prepared, additional_runtime_bytes)?
-        };
+        let quoted = runtime_allowance_with_loop(
+            &snapshot.prepared,
+            additional_runtime_bytes,
+            playback.section_loop(),
+        )?;
         if playback
             .accounted_session_runtime_bytes_on_control()
             .is_none_or(|bytes| bytes > quoted)
@@ -481,6 +465,65 @@ fn runtime_allowance(prepared: &PreparedRevision, extra: usize) -> Result<usize,
         .checked_add(extra)
         .map(|quote| quote.min(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
         .ok_or(SessionError::Invalid("runtime input allowance overflow"))
+}
+
+/// Capture only ordinary inheritance. Fresh seek/replacement callers own their
+/// explicit loop and discontinuity policy; unavailable output stays editable.
+fn inherited_runtime(
+    sink: &mut dyn WorkerAudioSink,
+    context: hex_engine::AudioSourceContext,
+    policy: ResidentPublicationPolicy,
+) -> Result<(ResidentPublicationPolicy, Option<hex_project::LoopRegion>), SessionError> {
+    match policy {
+        ResidentPublicationPolicy::InheritRuntime => {
+            let actual = sink
+                .resident_runtime_loop(context)
+                .map_err(SessionError::NativeAudio)?;
+            Ok(actual.map_or((policy, None), |actual| {
+                (
+                    ResidentPublicationPolicy::InheritRuntimeAt(actual),
+                    actual.section_loop,
+                )
+            }))
+        }
+        ResidentPublicationPolicy::InheritRuntimeAt(actual) => Ok((policy, actual.section_loop)),
+        _ => Ok((policy, None)),
+    }
+}
+
+fn playback_with_loop(
+    snapshot: &Snapshot,
+    section_loop: Option<hex_project::LoopRegion>,
+) -> Result<Playback, SessionError> {
+    match section_loop {
+        Some(region) => Playback::try_from_prepared_section_candidate(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+            region,
+        ),
+        None => Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+        ),
+    }
+    .map_err(|error| SessionError::NativeAudio(error.to_string()))
+}
+
+fn runtime_allowance_with_loop(
+    prepared: &PreparedRevision,
+    extra: usize,
+    section_loop: Option<hex_project::LoopRegion>,
+) -> Result<usize, SessionError> {
+    let Some(region) = section_loop else {
+        return runtime_allowance(prepared, extra);
+    };
+    hex_engine::SessionPlayback::section_runtime_allowance(prepared, region)
+        .map_err(|error| SessionError::NativeAudio(error.to_string()))?
+        .checked_add(extra)
+        .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+        .ok_or(SessionError::Invalid(
+            "section runtime input allowance overflow",
+        ))
 }
 
 /// One command seam for typed worker requests and ordinary edits. The native consumer publishes
@@ -1096,7 +1139,9 @@ impl Session {
         SessionError,
     > {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
-        let quote = runtime_allowance(&snapshot.prepared, selected.allowance()?)?;
+        let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
+        let quote =
+            runtime_allowance_with_loop(&snapshot.prepared, selected.allowance()?, section_loop)?;
         inputs.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -1107,11 +1152,7 @@ impl Session {
                 .ok_or(SessionError::Invalid("runtime input allowance overflow"))?,
             0,
         )?;
-        let mut playback = Playback::try_from_prepared_with_device_resources(
-            Arc::clone(&snapshot.prepared),
-            &snapshot.resources,
-        )
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
         selected.attach(project, &mut playback)?;
         if required.is_some_and(|required| !selected.satisfies(&requested, required)) {

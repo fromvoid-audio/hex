@@ -27,6 +27,16 @@ pub struct ResidentFreshRuntimeFence {
     pub route_generation: u64,
     pub admitted_command_ticket: u64,
 }
+/// Nonowning scalar witness for the actual installed graph's audition loop.
+/// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
+/// `source_context == None` describes a cold output at audio revision zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentRuntimeLoop {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub source_context: Option<hex_engine::AudioSourceContext>,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
 /// One callback-observed source and transport witness under the arrangement gate.
 #[derive(Clone, Copy, Debug)]
 pub struct ArrangementEditPosition {
@@ -55,7 +65,11 @@ impl ArrangementEditPosition {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
+    /// Offline inheritance or an output without a transient audition loop.
     InheritRuntime,
+    /// Preserve this exact applied graph's loop through ordinary inheritance.
+    /// The native owner revalidates it before admission/enqueue; it grants no custody.
+    InheritRuntimeAt(ResidentRuntimeLoop),
     /// The sink owns the shared arrangement gate through exact callback installation.
     /// A playing witness inherits the actual boundary runtime; a stopped witness
     /// installs its prepared musical cursor.
@@ -105,6 +119,16 @@ pub trait WorkerAudioSink: Send {
     /// Resident mode, while cross-mode admission still borrows actual resident/retired owners.
     fn resident_publication_enabled(&self) -> bool {
         false
+    }
+    /// Actual output/source/revision-bound loop, never the saved loop marker.
+    /// None means no active ordinary output; offline edits remain available.
+    /// A witness may become stale during preparation and must be revalidated by
+    /// `publish_resident` before admitting `InheritRuntimeAt`.
+    fn resident_runtime_loop(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<ResidentRuntimeLoop>, String> {
+        Ok(None)
     }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.
     /// No borrow may survive this worker call; each actual root is selected once per union.
