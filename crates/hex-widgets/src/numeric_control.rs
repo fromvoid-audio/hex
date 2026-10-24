@@ -215,6 +215,8 @@ impl NumericControlConfig {
 enum PressTarget {
     Control,
     Value,
+    // A slider handle scrubs like a readout but does not enter text on click.
+    Fader,
 }
 
 #[derive(Clone, Copy)]
@@ -789,7 +791,9 @@ impl NumericControl {
         }
         let sensitivity = if shift { 1200.0 } else { 120.0 };
         let delta = f64::from(primary_delta) / sensitivity;
-        let adjusted = if self.value_drag_steps && matches!(press.target, PressTarget::Value) {
+        let adjusted = if self.value_drag_steps
+            && matches!(press.target, PressTarget::Value | PressTarget::Fader)
+        {
             // Accumulate each movement with its current modifier, preserving
             // fractional motion. Clamping here prevents overshoot debt.
             match self
@@ -1408,7 +1412,7 @@ impl gpui::Render for NumericControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self
             .press
-            .is_some_and(|press| matches!(press.target, PressTarget::Value))
+            .is_some_and(|press| matches!(press.target, PressTarget::Value | PressTarget::Fader))
             && !self.focus.is_focused(window)
         {
             self.cancel(cx);
@@ -1434,10 +1438,9 @@ impl gpui::Render for NumericControl {
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |control, _, cx| {
-                if control
-                    .press
-                    .is_some_and(|press| matches!(press.target, PressTarget::Value))
-                {
+                if control.press.is_some_and(|press| {
+                    matches!(press.target, PressTarget::Value | PressTarget::Fader)
+                }) {
                     control.cancel(cx);
                 } else {
                     control.finish_text_edit_on_blur(cx);
@@ -1449,9 +1452,9 @@ impl gpui::Render for NumericControl {
             self.window_activation =
                 Some(cx.observe_window_activation(window, |control, window, cx| {
                     if !window.is_window_active()
-                        && control
-                            .press
-                            .is_some_and(|press| matches!(press.target, PressTarget::Value))
+                        && control.press.is_some_and(|press| {
+                            matches!(press.target, PressTarget::Value | PressTarget::Fader)
+                        })
                     {
                         control.cancel(cx);
                     }
@@ -1929,12 +1932,9 @@ impl Element for GestureCaptureElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if self
-            .move_entity
-            .read(cx)
-            .press
-            .is_some_and(|press| press.dragging && matches!(press.target, PressTarget::Value))
-            && window.is_window_active()
+        if self.move_entity.read(cx).press.is_some_and(|press| {
+            press.dragging && matches!(press.target, PressTarget::Value | PressTarget::Fader)
+        }) && window.is_window_active()
         {
             window.set_window_cursor_style(CursorStyle::Hidden);
         }

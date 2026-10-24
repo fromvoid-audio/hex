@@ -383,6 +383,31 @@ fn vertical_fader_keeps_handle_in_bounds_and_readout_below_with_shared_drag_life
         events.borrow().last().unwrap().phase,
         NumericEventPhase::Cancel
     );
+    for deactivate in [false, true] {
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let start = visual.debug_bounds("fader-slider-thumb").unwrap().center();
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(start.x, start.y + px(12.0)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        if deactivate {
+            visual.deactivate_window();
+        } else {
+            visual.update(|window, _| window.blur());
+        }
+        visual.run_until_parked();
+        assert!(!control.read_with(cx, |c, _| c.is_interacting()));
+        assert!((control.read_with(cx, |c, _| c.value()) - 0.4).abs() < 1e-6);
+        assert_eq!(
+            events.borrow().last().unwrap().phase,
+            NumericEventPhase::Cancel
+        );
+        assert!(!visual.update(|window, _| window.has_hidden_cursor_override()));
+    }
 }
 
 #[gpui::test]

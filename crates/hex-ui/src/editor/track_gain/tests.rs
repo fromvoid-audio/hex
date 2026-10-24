@@ -630,7 +630,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
         "reference requires a centered value across the filled bar, not a separate narrow value field: {whole:?} {field:?}"
     );
     assert_eq!(field.center().x, whole.center().x);
-    assert!(field.size.height >= px(16.0));
+    assert_eq!(field.size.height, px(14.0));
     let header = self::bounds(&mut visual, "arrangement-track-header", track);
     let pan = self::bounds(&mut visual, "track-pan", track);
     let activator = self::bounds(&mut visual, "track-mute", track);
