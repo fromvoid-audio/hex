@@ -60,7 +60,6 @@ fn track_clipboard_header_duplicate_cut_copy_paste_and_setup_only_menu(cx: &mut 
     v.simulate_keystrokes("cmd-x");
     receive(&mut v, &e);
     assert_eq!(snapshot(&v, &e).tracks.len(), 1);
-    select(&mut v, ids[1], false);
     v.simulate_keystrokes("cmd-v");
     receive(&mut v, &e);
     assert_eq!(snapshot(&v, &e).tracks.len(), 3);
@@ -163,4 +162,94 @@ fn track_clipboard_delayed_completion_preserves_newer_header_selection(cx: &mut 
         "exact terminal cannot steal a newer selection"
     );
     assert!(e.read_with(&v, |e, _| e.pending_track_clipboard.is_none()));
+}
+
+#[gpui::test]
+fn track_clipboard_cut_all_then_paste_immediately_restores_tracks_and_keeps_clip_context_separate(
+    cx: &mut TestAppContext,
+) {
+    let (mut v, e, ids) = live_tracks(cx, 3, false);
+    for (i, id) in ids.iter().enumerate() {
+        select(&mut v, *id, i != 0);
+    }
+    v.simulate_keystrokes("cmd-x");
+    receive(&mut v, &e);
+    assert!(snapshot(&v, &e).tracks.is_empty());
+    v.simulate_keystrokes("cmd-v");
+    assert!(
+        e.read_with(&v, |e, _| e.pending_track_clipboard.is_some()),
+        "paste is dispatched after the focused track is removed"
+    );
+    receive(&mut v, &e);
+    assert_eq!(
+        snapshot(&v, &e).tracks.len(),
+        3,
+        "paste keeps the track context after cut removed the focused header"
+    );
+    let restored = e.read_with(&v, |e, _| e.selected_track_ids());
+    assert_eq!(restored.len(), 3);
+    assert!(restored.iter().all(|id| !ids.contains(id)));
+    v.simulate_keystrokes("cmd-d");
+    receive(&mut v, &e);
+    assert_eq!(
+        snapshot(&v, &e).tracks.len(),
+        6,
+        "track editing continues after the pasted selection"
+    );
+    let lane = v
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", restored[0].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let at = lane.center();
+    v.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    v.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    v.run_until_parked();
+    v.simulate_keystrokes("cmd-d");
+    v.run_until_parked();
+    e.read_with(&v, |e, _| {
+        assert!(e.pending_track_clipboard.is_none());
+        assert_eq!(
+            e.worker_requests_pending, 0,
+            "a fresh empty-lane selection owns clip/time input, not track duplication"
+        );
+    });
+    assert_eq!(snapshot(&v, &e).tracks.len(), 6);
+}
+
+#[gpui::test]
+fn track_clipboard_context_menu_copy_then_keyboard_paste_retains_its_input_scope(
+    cx: &mut TestAppContext,
+) {
+    let (mut v, e, ids) = live_tracks(cx, 3, false);
+    let before = snapshot(&v, &e);
+    let at = bounds(&mut v, ids[1]).center();
+    v.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    v.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    v.run_until_parked();
+    let index = e.read_with(&v, |e, _| {
+        e.context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .position(|i| i.label == "copy tracks · cmd+c")
+            .unwrap()
+    });
+    for _ in 0..index {
+        v.simulate_keystrokes("down");
+    }
+    v.simulate_keystrokes("enter");
+    receive(&mut v, &e);
+    assert_eq!(snapshot(&v, &e), before);
+    v.simulate_keystrokes("cmd-v");
+    assert!(e.read_with(&v, |e, _| e.pending_track_clipboard.is_some()));
+    receive(&mut v, &e);
+    e.read_with(&v, |e, _| {
+        let ids = e.selected_track_ids();
+        assert_eq!(ids.len(), 1);
+        let state = e.state.as_ref().unwrap();
+        assert_eq!(state.project.tracks().len(), 4);
+        assert_eq!(state.project.track(ids[0]).unwrap().name(), "track 1");
+    });
 }
