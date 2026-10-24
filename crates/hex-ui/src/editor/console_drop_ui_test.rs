@@ -1198,6 +1198,15 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
     );
     let before = project(&editor, cx);
     let source = before.track(track).unwrap().clips()[0].id();
+    // The fixture is 512 frames: zoom to expose its real body rather than a
+    // subpixel edge at the default whole-song scale.
+    editor.update(cx, |view, cx| {
+        view.viewport = Some(super::super::viewport::Viewport {
+            start: 0,
+            length: 4096,
+        });
+        cx.notify();
+    });
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
     let at = bounds(
         &mut visual,
