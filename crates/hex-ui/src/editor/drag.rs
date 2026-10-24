@@ -731,10 +731,12 @@ impl super::EditorView {
         pointer_x: f32,
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
+        drag.group.borrow_mut().invalidate();
         let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+            drag.destination.set(None);
+            drag.insertion_line_y.set(None);
             return (None, false);
         };
-        drag.group.borrow_mut().invalidate();
         if !self.drag_start_is_current(drag) {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
