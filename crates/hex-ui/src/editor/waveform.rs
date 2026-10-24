@@ -614,18 +614,34 @@ pub(super) fn button(
     tooltip: &'static str,
     id: (&'static str, u64),
 ) -> gpui::Stateful<Div> {
-    button_with_style(label, tooltip, id, theme::action_style())
+    button_surface(
+        hex_widgets::action(theme::text(label), theme::action_style()),
+        tooltip,
+        id,
+    )
 }
 
 /// Tooltip/identity adapter; stateful callers resolve their hover colors before
 /// the shared widget is built, rather than installing a second GPUI hover style.
-pub(super) fn button_with_style(
+pub(super) fn toggle_button_with_style(
     label: &'static str,
     tooltip: &'static str,
     id: (&'static str, u64),
     style: hex_widgets::ActionStyle,
 ) -> gpui::Stateful<Div> {
-    hex_widgets::action(theme::text(label), style)
+    button_surface(
+        hex_widgets::toggle_action(theme::text(label), style),
+        tooltip,
+        id,
+    )
+}
+
+fn button_surface(
+    surface: Div,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+) -> gpui::Stateful<Div> {
+    surface
         .id(id)
         .w(px(19.0))
         .h(px(21.0))

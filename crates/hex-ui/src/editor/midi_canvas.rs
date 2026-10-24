@@ -1579,15 +1579,17 @@ impl EditorView {
                     .child(theme::text(format!("{displayed} {value_text}"))),
             );
             if field == super::midi_source_controls::SourceField::Looping {
-                group = group.children([self.midi_button_with_id(
-                    field.plus_id(),
-                    label,
-                    plus_tooltip,
-                    cx.listener(move |view, _, _, cx| {
-                        view.edit_midi_source(clip_id, revision, generation, field, 1);
-                        cx.notify();
-                    }),
-                )]);
+                group = group.children([self
+                    .midi_button_with_id(
+                        field.plus_id(),
+                        label,
+                        plus_tooltip,
+                        cx.listener(move |view, _, _, cx| {
+                            view.edit_midi_source(clip_id, revision, generation, field, 1);
+                            cx.notify();
+                        }),
+                    )
+                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))]);
             } else {
                 let minus_field = field;
                 let plus_field = field;
@@ -1704,7 +1706,7 @@ impl EditorView {
                     v.midi_group_gesture = None;
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_draw_pitch_locked {
                     "l"
@@ -1721,7 +1723,7 @@ impl EditorView {
                     v.cancel_midi_note_gesture();
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_audition.enabled { "a+" } else { "a" },
                 "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
@@ -1731,7 +1733,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_step.enabled { "st" } else { "s" },
                 "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
@@ -1743,7 +1745,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_pan.enabled { "↔+" } else { "↔" },
                 "toggle pan mode · drag to move time and pitch · middle-drag always pans",
@@ -1754,7 +1756,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 "←",
                 "pan piano roll left",
