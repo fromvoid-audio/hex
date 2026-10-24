@@ -10,8 +10,8 @@ type Interval = (u64, u64);
 struct Row {
     frames: Vec<Interval>,
     beats: Vec<Interval>,
-    // Bounded by the same incoming cuts. Distinguish frame-derived starts from
-    // exact beat edits when choosing a newly clipped prefix's beat endpoint.
+    // Integer frame starts, bounded by the same incoming cuts. Distinguish
+    // frame-derived starts from exact beat edits at a clipped prefix edge.
     frame_cut_starts: Vec<u64>,
     audio: Vec<Clip>,
     midi: Vec<MidiClip>,
@@ -174,7 +174,7 @@ pub(super) fn apply_with_cuts(
         push(&mut rows[index].frames, (start, end))?;
         if left < right {
             push(&mut rows[index].beats, (left.raw(), right.raw()))?;
-            push(&mut rows[index].frame_cut_starts, left.raw())?;
+            push(&mut rows[index].frame_cut_starts, start)?;
         }
     }
     // All incoming ownership is part of the final count, before any fragments.
@@ -220,7 +220,7 @@ pub(super) fn apply_with_cuts(
         if beats.0 < beats.1 {
             push(&mut row.beats, (beats.0.raw(), beats.1.raw()))?;
             if matches!(member.content, ClipGroupContent::Audio(_)) {
-                push(&mut row.frame_cut_starts, beats.0.raw())?;
+                push(&mut row.frame_cut_starts, frames.0)?;
             }
         }
     }
@@ -283,16 +283,18 @@ pub(super) fn apply_with_cuts(
             if prefix {
                 let mut clip = original.clone();
                 let mut end = pieces[0].1;
-                if row.frame_cut_starts.binary_search(&end).is_ok() {
-                    // The conservative cut start is the last beat rounding to
-                    // this frame. A note starting in that same frame must not
-                    // acquire a zero-frame gate in the retained prefix. Use
-                    // the first beat of this frame, preserving the frame edge
-                    // and every authored source note. Untouched clips never
-                    // enter this branch; exact beat edits retain their law.
-                    let frame = tempo.beat_to_frame(BeatTime::from_raw(end))?;
-                    end = u64::try_from(tempo.beat_lower_bound_for_frame(frame)?)
-                        .map_err(|_| Invalid("midi frame prefix exceeds beat range"))?;
+                if !row.frame_cut_starts.is_empty() {
+                    let end_frame = tempo.beat_to_frame(BeatTime::from_raw(end))?;
+                    if row.frame_cut_starts.binary_search(&end_frame).is_ok() {
+                        // Pasted MIDI and frame cuts can choose different beat
+                        // endpoints in this same frame. Use its first beat so
+                        // a note starting here gets no zero-frame prefix gate.
+                        // Preserve the frame edge and every authored source
+                        // note. Untouched clips never enter this branch;
+                        // exact beat-only edits retain their existing law.
+                        end = u64::try_from(tempo.beat_lower_bound_for_frame(end_frame)?)
+                            .map_err(|_| Invalid("midi frame prefix exceeds beat range"))?;
+                    }
                 }
                 clip.length = BeatTime::from_raw(
                     end.checked_sub(pieces[0].0)

@@ -963,7 +963,11 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
 fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker(
     cx: &mut TestAppContext,
 ) {
-    for drag in [false, true] {
+    for (drag, bpm, leading_silence) in [
+        (false, 120_000_000, true),
+        (true, 120_000_000, true),
+        (false, 143_000_000, false),
+    ] {
         let (mut visual, editor, environment, tracks, clips) = fixture(cx);
         let clip = clips[0];
         let note = editor.read_with(&visual, |view, _| {
@@ -993,6 +997,10 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
                 track: tracks[0],
                 start: BeatTime::ONE,
             },
+            Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: hex_project::Tempo::new(bpm).unwrap(),
+            },
         ] {
             editor.update(&mut visual, |view, _| {
                 assert!(view.enqueue(Request::Edit(command)))
@@ -1004,19 +1012,42 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
             view.state.as_ref().unwrap().project.snapshot()
         });
         editor.update(&mut visual, |view, cx| {
-            view.snap_grid = super::super::musical_time::SnapGrid::Quarter;
+            view.snap_grid = super::super::musical_time::SnapGrid::Eighth;
+            view.viewport = Some(super::super::viewport::Viewport {
+                start: 0,
+                length: 384_000,
+            });
             cx.notify();
         });
         visual.run_until_parked();
-        let range = pointer_range_frames(&mut visual, &editor, &tracks[..1], 0, 48_000);
-        assert_eq!((range.start(), range.end()), (0, 48_000));
+        let (start, end) = editor.read_with(&visual, |view, _| {
+            let tempo = view.state.as_ref().unwrap().project.tempo_map();
+            (
+                if leading_silence {
+                    0
+                } else {
+                    // Begin inside the clip body, beyond its resize target.
+                    tempo
+                        .beat_to_frame(BeatTime::from_ratio(3, 2).unwrap())
+                        .unwrap()
+                },
+                tempo
+                    .beat_to_frame(BeatTime::from_quarters(2).unwrap())
+                    .unwrap(),
+            )
+        });
+        let range = pointer_range_frames(&mut visual, &editor, &tracks[..1], start, end);
+        assert_eq!((range.start(), range.end()), (start, end));
+        let duration = range.duration();
+        let first = (end, end + duration);
+        let second = (end + duration, end + duration * 2);
         if drag {
             let row = lane(&mut visual, tracks[0]);
             let a = point(
-                row.origin.x + row.size.width * (16_000.0 / 384_000.0),
+                row.origin.x + row.size.width * ((start + duration / 3) as f32 / 384_000.0),
                 row.origin.y + row.size.height * 0.15,
             );
-            let b = point(a.x + row.size.width * (48_000.0 / 384_000.0), a.y);
+            let b = point(a.x + row.size.width * (duration as f32 / 384_000.0), a.y);
             let option = Modifiers {
                 alt: true,
                 ..Modifiers::default()
@@ -1028,13 +1059,13 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
                 assert!(preview.copy_modifier);
                 (preview.destination_start, preview.destination_end)
             });
-            assert_eq!(destination, (48_000, 96_000));
+            assert_eq!(destination, first);
             visual.simulate_mouse_up(b, MouseButton::Left, option);
         } else {
             visual.simulate_keystrokes("cmd-d");
         }
-        for expected in [(48_000, 96_000), (96_000, 144_000)] {
-            if expected.0 == 96_000 {
+        for (iteration, expected) in [first, second].into_iter().enumerate() {
+            if iteration == 1 {
                 visual.simulate_keystrokes("cmd-d");
             }
             pump(&editor, &mut visual);

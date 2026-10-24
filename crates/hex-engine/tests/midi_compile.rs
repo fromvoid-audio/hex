@@ -1383,14 +1383,15 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
 }
 
 #[test]
-fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() {
-    for (rate, bpm, tail) in [
-        (48_000, 120_000_000, false),
-        (48_000, 120_000_000, true),
-        (48_000, 143_000_000, false),
-        (48_000, 143_000_000, true),
-        (44_100, 143_000_000, false),
-        (44_100, 143_000_000, true),
+fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
+    for (rate, bpm, tail, leading_silence) in [
+        (48_000, 120_000_000, false, true),
+        (48_000, 120_000_000, true, true),
+        (48_000, 143_000_000, false, true),
+        (48_000, 143_000_000, false, false),
+        (48_000, 143_000_000, true, true),
+        (44_100, 143_000_000, false, true),
+        (44_100, 143_000_000, true, true),
     ] {
         let (mut editor, track) = setup_at_rate(rate);
         editor
@@ -1419,6 +1420,7 @@ fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() 
         } else {
             (BeatTime::ONE, two, two, vec![])
         };
+        let selection_start = if leading_silence { 0 } else { one };
         let clip = add_clip(&mut editor, track, BeatTime::ONE, beat(4, 1));
         editor
             .execute(Command::AddMidiNote {
@@ -1435,7 +1437,8 @@ fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() 
         assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
         editor
             .execute(Command::CopyTimeRangeTo {
-                range: hex_project::TimeRange::new(vec![track], 0, selection_end).unwrap(),
+                range: hex_project::TimeRange::new(vec![track], selection_start, selection_end)
+                    .unwrap(),
                 track,
                 frame: destination,
             })
