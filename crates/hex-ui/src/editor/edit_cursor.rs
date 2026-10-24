@@ -263,7 +263,7 @@ impl EditorView {
                 .left_0()
                 .right(px(self.track_header_width()))
                 .debug_selector(|| "edit-cursor-layer".into())
-                .child(markers),
+                .children([markers]),
         )
     }
 
