@@ -19,7 +19,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
@@ -36,7 +36,7 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     gpui::AnyWindowHandle,
@@ -118,7 +118,7 @@ fn fixture(
         .unwrap();
     (handle, editor, audio, midi, files)
 }
-fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
+pub(super) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     let selector = Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
     let bounds = visual.debug_bounds(selector).expect("rendered header");
     let modifiers = Modifiers {

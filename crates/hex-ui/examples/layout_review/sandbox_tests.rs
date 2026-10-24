@@ -236,3 +236,50 @@ fn configurations_coexist_with_independent_state_and_scoped_reset(cx: &mut TestA
         assert!(s.samples[&indices[1]].read(cx).enabled);
     });
 }
+
+#[gpui::test]
+fn numeric_kind_pages_navigate_without_mixing_configurations(cx: &mut TestAppContext) {
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, view) = open(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (name, count) in [
+        ("knob", 7),
+        ("horizontal slider", 5),
+        ("vertical slider", 2),
+    ] {
+        let page_index = view.read_with(cx, |s, _| {
+            s.pages.iter().position(|page| page.name == name).unwrap()
+        });
+        let hit = visual
+            .debug_bounds(key(format!("page-{page_index}")))
+            .unwrap();
+        visual.simulate_click(hit.center(), Modifiers::default());
+        visual.run_until_parked();
+        let membership = view.read_with(cx, |s, _| {
+            assert_eq!(s.page().name, name);
+            assert_eq!(s.configurations().len(), count);
+            s.items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| matches!(item.demo, Demo::Numeric(..)))
+                .map(|(index, item)| (index, item.name, item.page() == s.page()))
+                .collect::<Vec<_>>()
+        });
+        for (index, item_name, visible) in membership {
+            assert_eq!(
+                visual
+                    .debug_bounds(key(format!("configuration-{index}")))
+                    .is_some(),
+                visible,
+                "{item_name} on {name}"
+            );
+        }
+    }
+    visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    view.read_with(cx, |s, _| assert_eq!(s.page().name, "horizontal slider"));
+    visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    view.read_with(cx, |s, _| assert_eq!(s.page().name, "knob"));
+}

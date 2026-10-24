@@ -15,6 +15,7 @@ use std::sync::Arc;
 /// clip volume points. A candidate preserves the source's one-shot/loop policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiClipStretch {
+    playback_offset: BeatTime,
     start: BeatTime,
     length: BeatTime,
     original_length: BeatTime,
@@ -25,6 +26,10 @@ pub struct MidiClipStretch {
 }
 
 impl MidiClipStretch {
+    /// Elapsed source-law window scaled by the same checked ratio as notes.
+    pub fn playback_offset(self) -> BeatTime {
+        self.playback_offset
+    }
     pub fn start(self) -> BeatTime {
         self.start
     }
@@ -126,6 +131,7 @@ impl MidiClip {
             .ok_or(Invalid("midi stretch edge must preserve positive length"))?;
         crate::midi::validate_clip(start, length)?;
         let mut preview = MidiClipStretch {
+            playback_offset: BeatTime::ZERO,
             start,
             length,
             original_length: self.length(),
@@ -134,6 +140,12 @@ impl MidiClip {
             loop_start: BeatTime::ZERO,
             loop_end: BeatTime::ZERO,
         };
+        preview.playback_offset = preview.scale(self.playback_offset())?;
+        preview
+            .playback_offset
+            .raw()
+            .checked_add(length.raw())
+            .ok_or(Invalid("midi stretched playback window overflow"))?;
         preview.source_start = preview.scale(self.source_start())?;
         preview.source_length = preview.scale(self.source_length())?;
         preview.loop_start = preview.scale(self.loop_start())?;
@@ -191,6 +203,12 @@ pub(crate) fn apply(
     }
     target.start = preview.start;
     target.length = preview.length;
+    target.playback_offset = preview.playback_offset;
+    target
+        .playback_offset
+        .raw()
+        .checked_add(target.length.raw())
+        .ok_or(Invalid("midi stretched playback window overflow"))?;
     target.volume = volume;
     crate::clip_group::replace_midi(project, target)
 }

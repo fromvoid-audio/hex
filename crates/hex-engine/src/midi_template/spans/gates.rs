@@ -9,6 +9,8 @@ pub(crate) struct PreparedMidiGateTemplate {
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
     first_pass: u64,
+    intro_iteration: u64,
+    repeat_iteration: u64,
     period: Option<u64>,
     release_raw: u64,
     intro: Vec<VoiceSpan>,
@@ -25,6 +27,8 @@ pub(super) struct SpanQueryView<'a> {
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
     first_pass: u64,
+    intro_iteration: u64,
+    repeat_iteration: u64,
     period: Option<u64>,
     release_raw: u64,
     intro: &'a [VoiceSpan],
@@ -70,6 +74,8 @@ impl PreparedMidiInstrumentTemplate {
             sample_rate: self.sample_rate,
             admitted_max_micro_bpm: self.admitted_max_micro_bpm,
             first_pass: self.first_pass,
+            intro_iteration: self.intro_iteration,
+            repeat_iteration: self.repeat_iteration,
             period: self.period,
             release_raw: self.release_raw,
             intro_root: self.intro_root,
@@ -88,6 +94,8 @@ impl PreparedMidiInstrumentTemplate {
             sample_rate: self.sample_rate,
             admitted_max_micro_bpm: self.admitted_max_micro_bpm,
             first_pass: self.first_pass,
+            intro_iteration: self.intro_iteration,
+            repeat_iteration: self.repeat_iteration,
             period: self.period,
             release_raw: self.release_raw,
             intro_root: self.intro_root,
@@ -141,6 +149,8 @@ impl PreparedMidiGateTemplate {
             sample_rate: self.sample_rate,
             admitted_max_micro_bpm: self.admitted_max_micro_bpm,
             first_pass: self.first_pass,
+            intro_iteration: self.intro_iteration,
+            repeat_iteration: self.repeat_iteration,
             period: self.period,
             release_raw: self.release_raw,
             intro_root: self.intro_root,
@@ -224,7 +234,7 @@ impl SpanQueryView<'_> {
             0,
             low,
             high,
-            0,
+            self.intro_iteration,
             &mut context,
         )?;
         if let Some(period) = self.period {
@@ -281,7 +291,7 @@ impl SpanQueryView<'_> {
                 .ok_or(MidiTemplateError::BeatDomainExhausted)?;
             let repeat_number = u64::try_from(iteration)
                 .map_err(|_| MidiTemplateError::BeatDomainExhausted)?
-                .checked_add(1)
+                .checked_add(self.repeat_iteration)
                 .ok_or(MidiTemplateError::BeatDomainExhausted)?;
             self.append_intervals(
                 self.repeats,

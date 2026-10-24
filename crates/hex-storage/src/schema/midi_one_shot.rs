@@ -63,6 +63,7 @@ fn bounded_policies<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Policy
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::clip_activation::require_legacy_compatible(project)?;
     let base = crate::encode_document(&super::fade_curve_positions::encode(project)?)?;
     let mut value: serde_json::Value = serde_json::from_slice(&base)?;
     let policies: Vec<_> = project
@@ -256,7 +257,7 @@ mod tests {
     fn policy39_roundtrip_preserves_retained_notes_and_all_frozen38_fields() {
         for boundary in [MidiOneShotBoundary::SourceEnd, MidiOneShotBoundary::LoopEnd] {
             let project = fixture(boundary);
-            let bytes = crate::encode(&project).unwrap();
+            let bytes = crate::encode_document(&encode(&project).unwrap()).unwrap();
             assert_eq!(crate::decode(&bytes).unwrap(), project);
             let mut value: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(value["version"], 39);
@@ -281,7 +282,10 @@ mod tests {
             let path = dir.join("retained.hex");
             crate::save_new(&path, &project).unwrap();
             assert_eq!(crate::load(&path).unwrap(), project);
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                crate::encode(&project).unwrap()
+            );
             std::fs::remove_dir_all(dir).unwrap();
         }
     }

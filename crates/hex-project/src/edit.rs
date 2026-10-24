@@ -15,6 +15,17 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Set one authored clip's activation across Arrangement or Session.
+    SetClipActive {
+        clip: ClipId,
+        active: bool,
+    },
+    /// Split only intersected Arrangement clips at the selected frame edges and
+    /// set the selected spans atomically, preserving both exterior fragments.
+    SetTimeRangeActive {
+        range: crate::TimeRange,
+        active: bool,
+    },
     /// Apply one clip-wide value to a frozen Arrangement selection atomically.
     EditClips {
         clips: Vec<ClipId>,
@@ -1176,6 +1187,7 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        active: true,
         name: clip.name.clone(),
         flavor: clip.flavor,
         gain: clip.gain,
@@ -1249,6 +1261,7 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        active: original.active,
         name: original.name.clone(),
         flavor: original.flavor,
         id: right_id,
@@ -1466,6 +1479,7 @@ impl Project {
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
             let mut clip = Clip {
+                active: true,
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
                 id: ClipId(0),
@@ -1646,6 +1660,12 @@ impl Project {
             Command::SetTrackColor { track, color } => {
                 self.track_mut(track)?.color = color;
                 Ok(Created::None)
+            }
+            Command::SetClipActive { clip, active } => {
+                crate::clip_activation::set(self, clip, active)
+            }
+            Command::SetTimeRangeActive { range, active } => {
+                crate::clip_activation::set_range(self, &range, active)
             }
             Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::ReplaceMidiClipVolume { clip, volume } => {
@@ -2423,6 +2443,7 @@ impl Project {
                 interval_valid(start, duration, source_offset, source_length, media)?;
                 let fade = ClipFade::neutral(duration)?;
                 let incoming = Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id: ClipId(0),
@@ -2787,6 +2808,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id,
@@ -2850,6 +2872,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id,

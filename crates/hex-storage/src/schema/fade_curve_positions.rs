@@ -41,6 +41,7 @@ fn bounded_positions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Posit
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::clip_activation::require_legacy_compatible(project)?;
     // Bound the prior envelope before constructing an adaptation tree, just as
     // decode bounds source bytes. Large valid models must not bypass the document
     // limit by allocating their entire JSON tree before serialization refuses.

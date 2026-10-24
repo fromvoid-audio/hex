@@ -1011,6 +1011,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 track: 1,
                 scene: 2,
                 content: SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                    active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id: 3,
@@ -1068,6 +1069,8 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+            active: true,
+            playback_offset_raw: 0,
             one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
             volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
@@ -1096,6 +1099,8 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         track: 6,
         scene: 2,
         content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+            active: true,
+            playback_offset_raw: 0,
             volume: hex_project::MidiClipVolume::default(),
             flavor: hex_project::ClipFlavor::default(),
             id: 10,
@@ -1158,6 +1163,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
@@ -1205,6 +1211,8 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
@@ -1237,6 +1245,8 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                 track: 1,
                 scene: 4,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    active: true,
+                    playback_offset_raw: 0,
                     volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: 5,
@@ -1901,6 +1911,7 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         edit: None,
@@ -2128,6 +2139,7 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         edit: None,
@@ -4071,6 +4083,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     });
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
@@ -5252,6 +5265,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     });
     source.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
@@ -5697,6 +5711,208 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
     next.render(&mut actual_release).unwrap();
     reference.render(&mut expected_release).unwrap();
     assert_eq!(actual_release, expected_release);
+}
+
+#[test]
+fn activation_mute_cuts_held_mutable_gate_with_instrument_still_enabled() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    for session in [false, true] {
+        let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+        let old_revision = revision_with_instrument_registry(&base, Arc::clone(&table), &registry);
+        let clip = if session {
+            old_revision.session().midi_clips()[0].id
+        } else {
+            base.tracks()[0].midi_clips()[0].id()
+        };
+        let mut old = SessionPlayback::new(old_revision).unwrap();
+        if session {
+            old.apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        }
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 16]).unwrap();
+        let mut editor = Editor::new(base, 8).unwrap();
+        editor
+            .execute(Command::SetClipActive {
+                clip,
+                active: false,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+            editor.project(),
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let tail = candidate
+            .tail_mutable_instruments
+            .iter()
+            .flatten()
+            .next()
+            .unwrap();
+        assert!(
+            tail.runtime
+                .proofs()
+                .all(|proof| proof.gate_end_frame == 16)
+        );
+        let mut actual = [[0.0; 2]; 16];
+        candidate.render(&mut actual).unwrap();
+        assert!(actual[..8].iter().any(|frame| frame[0] != 0.0));
+        assert!(
+            candidate
+                .tail_mutable_instruments
+                .iter()
+                .flatten()
+                .all(|tail| tail.runtime.committed_is_quiescent())
+        );
+        assert!(candidate.revision.arrangement().tracks()[0].instrument_slot_enabled());
+    }
+}
+
+#[test]
+fn activation_time_span_shortens_mutable_prefix_and_retriggers_right_window() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    for publish in [16usize, 48] {
+        let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+        let track = base.tracks()[0].id();
+        let mut old = SessionPlayback::new(revision_with_instrument_registry(
+            &base,
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut vec![[0.0; 2]; publish]).unwrap();
+        let mut editor = Editor::new(base, 8).unwrap();
+        editor
+            .execute(Command::SetTimeRangeActive {
+                range: hex_project::TimeRange::new(vec![track], 32, 64).unwrap(),
+                active: false,
+            })
+            .unwrap();
+        let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+            editor.project(),
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let expected_gate = 32u64.max(publish as u64);
+        assert!(
+            candidate
+                .tail_mutable_instruments
+                .iter()
+                .flatten()
+                .any(|tail| tail
+                    .runtime
+                    .proofs()
+                    .any(|proof| proof.gate_end_frame == expected_gate))
+        );
+        // A repeated publication retains the admitted shortened gate, including
+        // the prospective proof carried under the new canonical signature.
+        let mut next = SessionPlayback::new(Arc::clone(&candidate.revision)).unwrap();
+        next.try_inherit_state_from(&mut candidate).unwrap();
+        let mut output = vec![[0.0; 2]; 80 - publish];
+        next.render(&mut output).unwrap();
+        assert!(output[64 - publish..].iter().any(|frame| frame[0] != 0.0));
+        assert!(
+            next.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .proofs()
+                .any(|proof| proof.onset_frame == 64)
+        );
+        assert!(
+            next.tail_mutable_instruments
+                .iter()
+                .flatten()
+                .all(|tail| tail.runtime.proofs().all(|proof| proof.note_off_sent))
+        );
+    }
+}
+
+#[test]
+fn activation_of_other_clip_keeps_existing_mutable_gate_deadline() {
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = with_test_instrument(&project(0.5, 0, 1 << 28), id, 0);
+    let track = base.tracks()[0].id();
+    let first = base.tracks()[0].midi_clips()[0].id();
+    let mut editor = Editor::new(base, 8).unwrap();
+    let Created::Clip(other) = editor.execute(Command::DuplicateMidiClip(first)).unwrap() else {
+        panic!("clip")
+    };
+    let mut old = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 16]).unwrap();
+    let deadline = old.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .proofs()
+        .next()
+        .unwrap()
+        .gate_end_frame;
+    editor
+        .execute(Command::SetClipActive {
+            clip: other,
+            active: false,
+        })
+        .unwrap();
+    let mut candidate = SessionPlayback::new(revision_with_instrument_registry(
+        editor.project(),
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    candidate.try_inherit_state_from(&mut old).unwrap();
+    let proof = candidate
+        .tail_mutable_instruments
+        .iter()
+        .flatten()
+        .flat_map(|tail| tail.runtime.proofs())
+        .find(|proof| proof.signature.key().clip == first)
+        .unwrap();
+    assert_eq!(proof.gate_end_frame, deadline);
+    assert!(candidate.revision.arrangement().tracks()[0].instrument_slot_enabled());
+    assert!(candidate.revision.arrangement().tracks()[0].canonical_track_id() == Some(track));
 }
 
 #[test]
@@ -6748,6 +6964,8 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
@@ -6775,6 +6993,8 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             track,
             scene: snapshot.session.scenes[0].id,
             content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 volume: hex_project::MidiClipVolume::default(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: session_clip,
@@ -8739,6 +8959,8 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                active: true,
+                playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),

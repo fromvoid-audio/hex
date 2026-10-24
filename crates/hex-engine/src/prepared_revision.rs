@@ -40,9 +40,12 @@ impl From<&Device> for PreparedDeviceIdentity {
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedArrangementMidiSource {
+    active: bool,
+    playback_offset: hex_project::BeatTime,
     id: hex_project::ClipId,
     start: hex_project::BeatTime,
     length: hex_project::BeatTime,
+    end_frame: u64,
     source: MidiSourceIdentity,
 }
 
@@ -895,6 +898,64 @@ impl PreparedRevision {
             )
     }
 
+    /// Exact authored inactivity for an existing prepared MIDI instance. Missing
+    /// or deleted clips retain their separate handoff policy. Routed sources
+    /// are queried through their destination's canonical descriptor.
+    pub(crate) fn midi_clip_inactive(&self, track: TrackId, clip: hex_project::ClipId) -> bool {
+        if let Some(clip) = self.session.midi_clip_for_track(clip, track) {
+            return !clip.active;
+        }
+        self.mutable_track_revision(track)
+            .and_then(|track| {
+                track
+                    .arrangement_midi_sources
+                    .binary_search_by_key(&clip, |source| source.id)
+                    .ok()
+                    .and_then(|index| track.arrangement_midi_sources.get(index))
+            })
+            .is_some_and(|clip| !clip.active)
+    }
+
+    /// A retained prefix is a strict narrowing of the same source clock, not
+    /// an edited/replaced source. Handoff separately validates clock/loop and
+    /// actual dispatched occurrence proofs before allowing a shorter gate.
+    pub(crate) fn retained_midi_prefix_end(
+        &self,
+        candidate: &Self,
+        key: crate::mutable_instrument::MutableOccurrenceKey,
+    ) -> Option<(hex_project::BeatTime, u64)> {
+        let old = self.mutable_track_revision(key.track)?;
+        let new = candidate.mutable_track_revision(key.track)?;
+        if !old.topology_matches(new) || old.midi_source_track != new.midi_source_track {
+            return None;
+        }
+        fn find(
+            track: &PreparedMutableTrackRevision,
+            clip: hex_project::ClipId,
+        ) -> Option<&PreparedArrangementMidiSource> {
+            track
+                .arrangement_midi_sources
+                .binary_search_by_key(&clip, |source| source.id)
+                .ok()
+                .and_then(|index| track.arrangement_midi_sources.get(index))
+        }
+        let old = find(old, key.clip)?;
+        let new = find(new, key.clip)?;
+        (old.active
+            && new.active
+            && old.source == new.source
+            && old.start == new.start
+            && old.playback_offset == new.playback_offset
+            && new.length < old.length)
+            .then(|| {
+                new.start
+                    .raw()
+                    .checked_add(new.length.raw())
+                    .map(|end| (hex_project::BeatTime::from_raw(end), new.end_frame))
+            })
+            .flatten()
+    }
+
     pub(crate) fn mutable_arrangement_sources_match(
         &self,
         candidate: &Self,
@@ -1006,14 +1067,25 @@ fn prepare_mutable_track_revisions(
         arrangement_midi_sources
             .try_reserve_exact(source.midi_clips().len())
             .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
-        arrangement_midi_sources.extend(source.midi_clips().iter().map(|clip| {
-            PreparedArrangementMidiSource {
+        for clip in source.midi_clips() {
+            let end = clip
+                .start()
+                .raw()
+                .checked_add(clip.length().raw())
+                .ok_or(Invalid("midi descriptor end overflow"))?;
+            arrangement_midi_sources.push(PreparedArrangementMidiSource {
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 id: clip.id(),
                 start: clip.start(),
                 length: clip.length(),
+                end_frame: project
+                    .tempo_map()
+                    .beat_to_frame(hex_project::BeatTime::from_raw(end))
+                    .map_err(|error| Invalid(error.0))?,
                 source: clip.source_identity(),
-            }
-        }));
+            });
+        }
         arrangement_midi_sources.sort_unstable_by_key(|clip| clip.id);
 
         revisions.push(PreparedMutableTrackRevision {
