@@ -1,7 +1,8 @@
-//! Read-only Arrangement visibility over selected canonical section intervals.
+//! Read-only Arrangement track visibility over selected canonical section intervals.
 //! Rebuild once per document/revision/section selection change, never per row.
 //! Nonadjacent sections form a union, not a hull. No selection leaves the normal
-//! view visible while the mode stays armed. Edits retain canonical IDs/indices.
+//! view visible while the mode stays armed. Retained tracks expose all their clips,
+//! including outside the selected intervals. Edits retain canonical IDs/indices.
 //! A newly acknowledged track stays visible while it is the active track. This
 //! exception is view-only and ends on selection, section, focus-mode or document change.
 use super::EditorView;
@@ -35,6 +36,33 @@ pub(super) struct State {
 }
 pub(super) fn interval_visible(start: u64, end: u64, ranges: &[(u64, u64)]) -> bool {
     ranges.is_empty() || (start < end && ranges.iter().any(|r| start < r.1 && end > r.0))
+}
+/// Section intervals choose whole tracks; clip visibility never crops those tracks.
+/// Empty intervals retain the ordinary unfiltered view.
+pub(super) fn track_intersects_sections(
+    project: &Project,
+    track: &Track,
+    ranges: &[(u64, u64)],
+) -> bool {
+    ranges.is_empty()
+        || track.clips().iter().any(|clip| {
+            clip.start()
+                .checked_add(clip.duration())
+                .is_some_and(|end| interval_visible(clip.start(), end, ranges))
+        })
+        || track.midi_clips().iter().any(|clip| {
+            let Some(end) = clip.start().raw().checked_add(clip.length().raw()) else {
+                return false;
+            };
+            let map = project.tempo_map();
+            match (
+                map.beat_to_frame(clip.start()),
+                map.beat_to_frame(hex_project::BeatTime::from_raw(end)),
+            ) {
+                (Ok(start), Ok(end)) => interval_visible(start, end, ranges),
+                _ => false,
+            }
+        })
 }
 fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64)]> {
     let mut intervals = selected
@@ -120,48 +148,20 @@ impl State {
         self.tracks.clear();
         self.clips.clear();
         for (index, track) in project.tracks().iter().enumerate() {
+            if self.new_track != Some(track.id())
+                && !track_intersects_sections(project, track, &self.ranges)
+            {
+                continue;
+            }
             if !self.ranges.is_empty() {
-                for clip in track.clips() {
-                    if clip
-                        .start()
-                        .checked_add(clip.duration())
-                        .is_some_and(|end| interval_visible(clip.start(), end, &self.ranges))
-                    {
-                        self.clips.insert(clip.id());
-                    }
-                }
-                for clip in track.midi_clips() {
-                    let end = clip
-                        .start()
-                        .raw()
-                        .checked_add(clip.length().raw())
-                        .map(hex_project::BeatTime::from_raw);
-                    if let Some((Ok(start), Ok(end))) = end.map(|end| {
-                        (
-                            project.tempo_map().beat_to_frame(clip.start()),
-                            project.tempo_map().beat_to_frame(end),
-                        )
-                    }) && interval_visible(start, end, &self.ranges)
-                    {
-                        self.clips.insert(clip.id());
-                    }
-                }
-                if self.new_track != Some(track.id())
-                    && !track.clips().iter().any(|c| self.clips.contains(&c.id()))
-                    && !track
-                        .midi_clips()
-                        .iter()
-                        .any(|c| self.clips.contains(&c.id()))
-                {
-                    continue;
-                }
                 self.tracks.insert(track.id());
-                if self.new_track == Some(track.id()) {
-                    self.clips
-                        .extend(track.clips().iter().map(|clip| clip.id()));
-                    self.clips
-                        .extend(track.midi_clips().iter().map(|clip| clip.id()));
-                }
+                self.clips.extend(
+                    track
+                        .clips()
+                        .iter()
+                        .map(|clip| clip.id())
+                        .chain(track.midi_clips().iter().map(|clip| clip.id())),
+                );
             }
             self.indices.push(index);
         }
@@ -172,6 +172,9 @@ impl State {
 impl EditorView {
     pub(super) fn arrangement_focus_ranges(&self) -> Rc<[(u64, u64)]> {
         Rc::clone(&self.arrangement_focus.ranges)
+    }
+    pub(super) fn arrangement_revealed_track(&self) -> Option<TrackId> {
+        self.arrangement_focus.new_track
     }
     pub(super) fn arrangement_clip_visible(&self, id: ClipId) -> bool {
         self.arrangement_focus.ranges.is_empty() || self.arrangement_focus.clips.contains(&id)
@@ -305,6 +308,9 @@ impl EditorView {
         }
         div()
             .id("section-focus-control")
+            .debug_selector(|| "section-focus-control".into())
+            .flex()
+            .items_center()
             .w(px(20.0))
             .h(px(20.0))
             .flex_shrink_0()

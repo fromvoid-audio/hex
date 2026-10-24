@@ -22,6 +22,8 @@ impl SessionPlayback {
             compensation,
             device_metering: _,
             revision,
+            transient_loop: _,
+            midi_admission,
             periodic_tempo: _,
             anchor: _,
             historical_floor: _,
@@ -67,7 +69,8 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open,
         } = self;
-        if live_expression.is_some()
+        if midi_admission.is_some()
+            || live_expression.is_some()
             || computer_keyboard.is_some()
             || compensation.is_some()
             || *linear_arrangement_export

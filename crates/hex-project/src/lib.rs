@@ -35,6 +35,7 @@ mod clip_activation;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
+mod source_ranges;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioImportWarp, AudioProcessingProjection, AudioViewMode, AudioViewOccurrence,

@@ -1,5 +1,7 @@
 //! Allocation-free placement of one retained processing cycle.
 use super::*;
+#[path = "view_ranges.rs"]
+mod ranges;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioViewMode {

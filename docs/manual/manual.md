@@ -103,6 +103,29 @@ selection, these keys toggle the existing loop. **command+l** uses the same acti
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 
+turn on **section autoplay and loop** in the top toolbar, then click the body of
+an arrange section to play it repeatedly. the launch dropdown beside it also
+sets quantization for console clip and scene launches: **none**, **8 bars**,
+**4 bars**, **2 bars**, **1 bar**, **1/2**, **1/2t**, **1/4**, **1/4t**, **1/8**,
+**1/8t**, **1/16**, **1/16t**, or **1/32**. **t** means triplet timing.
+
+current playback continues while hex prepares the section. the prepared section
+starts at the next selected boundary after it is ready; **none** starts as soon
+as it is ready. a stopped transport starts immediately. clicking another section
+replaces the pending launch. stop or turning autoplay off cancels a pending
+launch; turning autoplay off leaves current music playing.
+
+this section loop is temporary and does not change the saved project loop or
+undo history. a project edit, normal loop change, or other replacement of the
+playback graph restores the project's loop. autoplay stays armed for the next
+section click. modifier clicks, renaming and dragging keep their editing actions.
+at narrow window widths the top toolbar uses two compact lines to keep every
+control, the full view name and audio status visible.
+section playback currently requires resident audio mode and an applied arrange
+playback graph. verified streaming mode is unavailable for this control. a section
+past the bounded arrangement preroll range, or a source that exceeds existing
+runtime storage or midi density limits, is refused while current playback continues.
+
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
@@ -206,10 +229,19 @@ after loading, enter a few notes, play the clip and confirm that it triggers the
 intended sample. test undo/redo and save/reopen on a copy before relying on a new
 sampler edit in an important project.
 
-controller input can support pressure, pitch bend, modulation and held-note
-piano-roll step entry. the current controller-input path does not provide live
-note monitoring, sustain, recording or mpe. do not treat the presence of an input
-or keyboard control as a complete live-performance workflow.
+in settings, choose a midi input device and channel, then select a track with an
+enabled instrument. the midi control in the status bar opens the same device and
+channel choices. use refresh to discover or reconnect devices. hex remembers the
+chosen device; an unavailable saved port never selects another device automatically.
+choose off to disconnect. midi changes apply immediately; a save error means the
+change has not been retained for the next launch.
+
+hardware notes play the selected instrument with their original note-on velocity.
+computer-keyboard notes use the same selected track and keep separate ownership.
+selection audition waits while hardware input is selected. pressure, pitch bend,
+modulation and held-note piano-roll step entry remain available. live input timing
+is currently resolved at audio-block boundaries; sustain, recording and mpe are
+not included in this input workflow.
 
 # instruments and effects
 

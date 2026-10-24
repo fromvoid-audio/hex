@@ -139,13 +139,6 @@ fn with_quantization(
     }
 }
 
-fn next_quantization(quantization: LaunchQuantization) -> LaunchQuantization {
-    match quantization {
-        LaunchQuantization::Immediate => LaunchQuantization::FourQuarter,
-        LaunchQuantization::FourQuarter => LaunchQuantization::Immediate,
-    }
-}
-
 pub(super) fn action_is_current(
     project: Option<&Project>,
     command: SessionPlaybackCommand,
@@ -549,7 +542,6 @@ impl EditorView {
             .selected_cell
             .map(|cell| cell.0)
             .or(self.selected_track);
-        let quantization = self.session_quantization;
         let mut row = div()
             .h(px(26.0))
             .flex_shrink_0()
@@ -740,42 +732,6 @@ impl EditorView {
                     .opacity(if can_move_down { 1.0 } else { 0.45 }),
                 );
         }
-        let (quantization_label, quantization_tooltip) = match quantization {
-            LaunchQuantization::Immediate => (
-                "none",
-                "launch quantization: none · launches start immediately",
-            ),
-            LaunchQuantization::FourQuarter => (
-                "4 qn",
-                "launch quantization: 4 quarters · fixed quarter-note timing, not meter-aware bars",
-            ),
-        };
-        row = row.child(
-            div()
-                .id("session-launch-quantization")
-                .h(px(22.0))
-                .w(px(42.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Border))))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
-                        description: quantization_tooltip.into(),
-                    })
-                    .into()
-                })
-                .child(theme::text(quantization_label))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.session_quantization = next_quantization(view.session_quantization);
-                    cx.notify();
-                })),
-        );
         row = row.child(self.session_icon(
             "×",
             "cancel queued session launches",
@@ -1831,7 +1787,7 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeleteTarget, action_is_current, action_matches_project, launch_action, next_quantization,
+        DeleteTarget, action_is_current, action_matches_project, launch_action,
         resolve_delete_target, visible_track_range, with_quantization,
     };
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
@@ -1942,14 +1898,6 @@ mod tests {
 
     #[test]
     fn quantization_is_captured_by_each_session_command_and_queued_launch() {
-        assert_eq!(
-            next_quantization(LaunchQuantization::Immediate),
-            LaunchQuantization::FourQuarter
-        );
-        assert_eq!(
-            next_quantization(LaunchQuantization::FourQuarter),
-            LaunchQuantization::Immediate
-        );
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddMidiTrack {
