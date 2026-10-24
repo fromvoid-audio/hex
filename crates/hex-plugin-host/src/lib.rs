@@ -39,6 +39,45 @@ pub mod native;
 pub mod protocol;
 
 pub type Result<T> = std::result::Result<T, Error>;
+/// Actual native preparation/retirement paths retain at most two original
+/// boxed causes and one shared lost-custody I/O payload. The enclosing Error
+/// values are inline in their owners. This is known DATA, not a bound on
+/// arbitrary externally constructed recursive Errors, std I/O internals,
+/// allocator/Arc headers or unexpected unwind payloads. Those paths cannot
+/// establish native publication; Root never adopts caller-created Errors.
+pub const NATIVE_DIAGNOSTIC_DATA_BYTES: usize =
+    2 * std::mem::size_of::<Error>() + std::mem::size_of::<std::io::Error>();
+
+/// Sticky child-custody refusal. Lost OS custody retains one original I/O
+/// error in a shared payload so later observations cannot clone formatted
+/// Strings or retry a numeric PID. Arc/OS internals remain opaque resources;
+/// the known payload is `size_of::<std::io::Error>()`, not its rendered text.
+#[derive(Clone, Debug)]
+pub enum CustodyError {
+    Refused(&'static str),
+    Lost(std::sync::Arc<std::io::Error>),
+}
+impl From<&'static str> for CustodyError {
+    fn from(message: &'static str) -> Self {
+        Self::Refused(message)
+    }
+}
+impl std::fmt::Display for CustodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(message) => f.write_str(message),
+            Self::Lost(source) => source.fmt(f),
+        }
+    }
+}
+impl std::error::Error for CustodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lost(source) => Some(source.as_ref()),
+            Self::Refused(_) => None,
+        }
+    }
+}
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
@@ -46,14 +85,15 @@ pub enum Error {
     Protocol(&'static str),
     State(hex_plugin_state::Error),
     Source(String),
+    Validation(hex_plugin_scan::macos::validation::Error),
     Cancelled,
     Timeout,
     Worker(u32),
-    Custody(String),
+    Custody(CustodyError),
     Preparation {
         cause: Box<Error>,
         exit: Option<std::process::ExitStatus>,
-        custody_error: Option<String>,
+        custody_error: Option<Box<Error>>,
     },
 }
 impl std::fmt::Display for Error {
@@ -64,6 +104,7 @@ impl std::fmt::Display for Error {
             Self::Protocol(s) => out.write_str(s),
             Self::State(e) => e.fmt(out),
             Self::Source(s) => write!(out, "instance source refused: {s}"),
+            Self::Validation(error) => write!(out, "instance source refused: {error}"),
             Self::Cancelled => out.write_str("instance cancelled"),
             Self::Timeout => out.write_str("instance supervision timed out"),
             Self::Worker(n) => write!(out, "instance worker refused operation: {n}"),
@@ -72,7 +113,18 @@ impl std::fmt::Display for Error {
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) | Self::IoAt(_, error) => Some(error),
+            Self::Validation(error) => Some(error),
+            Self::Custody(error) => Some(error),
+            Self::State(error) => Some(error),
+            Self::Preparation { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// Copied bounded exchange; native callback and joining-worker custody belong to audio.
 pub mod transport;

@@ -1,6 +1,9 @@
 //! Bounded filesystem snapshots for explicitly trusted factory discovery.
 //! Hashes identify bytes, not authenticity or protection from malicious races.
-use super::macho::{self, Image, Role};
+use super::{
+    macho::{self, Image, Role},
+    validation::Error as ValidationError,
+};
 use crate::{MAX_BINARY, hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,29 +32,40 @@ pub struct SourceRevalidationStorageBound {
 /// payload capacity, no greater than `maximum`. Allocator overhead is opaque;
 /// this is not an RSS bound or a complete native-construction resource quote.
 /// Changed opened-file size, growth and truncation refuse rather than resizing.
-pub fn read_file(path: &Path, maximum: u64) -> Result<Vec<u8>, String> {
+pub fn read_file(path: &Path, maximum: u64) -> Result<Vec<u8>, ValidationError> {
     read_file_between(path, maximum, || {})
 }
 fn read_file_between(
     path: &Path,
     maximum: u64,
     after_metadata: impl FnOnce(),
-) -> Result<Vec<u8>, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| format!("file metadata failed: {e}"))?;
+) -> Result<Vec<u8>, ValidationError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| ValidationError::Io {
+        context: "file metadata failed",
+        source,
+    })?;
     if !metadata.is_file() || metadata.len() > maximum {
         return Err("nonregular or oversized discovery input".into());
     }
     after_metadata();
-    let file = fs::File::open(path).map_err(|e| format!("discovery input open failed: {e}"))?;
-    let opened = file
-        .metadata()
-        .map_err(|e| format!("opened discovery metadata failed: {e}"))?;
+    let file = fs::File::open(path).map_err(|source| ValidationError::Io {
+        context: "discovery input open failed",
+        source,
+    })?;
+    let opened = file.metadata().map_err(|source| ValidationError::Io {
+        context: "opened discovery metadata failed",
+        source,
+    })?;
     if !opened.is_file() || opened.len() != metadata.len() {
         return Err("discovery input changed while opening".into());
     }
     read_snapshot(file, opened.len(), maximum)
 }
-fn read_snapshot(mut input: impl Read, length: u64, maximum: u64) -> Result<Vec<u8>, String> {
+fn read_snapshot(
+    mut input: impl Read,
+    length: u64,
+    maximum: u64,
+) -> Result<Vec<u8>, ValidationError> {
     if length > maximum {
         return Err("oversized discovery input".into());
     }
@@ -66,18 +80,24 @@ fn read_snapshot(mut input: impl Read, length: u64, maximum: u64) -> Result<Vec<
     bytes.resize(length, 0);
     input
         .read_exact(&mut bytes)
-        .map_err(|e| format!("discovery input read failed: {e}"))?;
+        .map_err(|source| ValidationError::Io {
+            context: "discovery input read failed",
+            source,
+        })?;
     // Probe without appending/reserving: EOF must not trigger read_to_end's
     // geometric spare-capacity growth, even when the snapshot fills its Vec.
     let mut extra = [0];
     match input.read_exact(&mut extra) {
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(bytes),
         Ok(()) => Err("discovery input grew during snapshot".into()),
-        Err(error) => Err(format!("discovery input end read failed: {error}")),
+        Err(error) => Err(ValidationError::Io {
+            context: "discovery input end read failed",
+            source: error,
+        }),
     }
 }
 
-pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, ValidationError> {
     if relative.is_empty() || relative.len() > MAX_PATH_BYTES || relative.contains('\0') {
         return Err("discovery relative path bound refused".into());
     }
@@ -109,8 +129,10 @@ pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
         if path.capacity() != capacity {
             return Err("discovery path exceeded its allocation bound".into());
         }
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|e| format!("bundle member metadata failed: {e}"))?;
+        let metadata = fs::symlink_metadata(&path).map_err(|source| ValidationError::Io {
+            context: "bundle member metadata failed",
+            source,
+        })?;
         if metadata.file_type().is_symlink()
             || (index + 1 != depth && !metadata.is_dir())
             || (index + 1 == depth && !metadata.is_file())
@@ -131,19 +153,23 @@ fn relative_path_capacity(root: &Path, relative: &str) -> Option<usize> {
         .checked_add(relative.len())
 }
 
-fn canonical_bundle_path(path: &Path) -> Result<PathBuf, String> {
+fn canonical_bundle_path(path: &Path) -> Result<PathBuf, ValidationError> {
     let original = path.to_str().ok_or("bundle path encoding unsupported")?;
     if original.len() > MAX_PATH_BYTES || path.extension().and_then(|v| v.to_str()) != Some("vst3")
     {
         return Err("one explicit .vst3 bundle path required".into());
     }
-    let metadata = fs::symlink_metadata(path).map_err(|e| format!("bundle missing: {e}"))?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| ValidationError::Io {
+        context: "bundle missing",
+        source,
+    })?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err("selected bundle must be a nonlinked directory".into());
     }
-    let canonical = path
-        .canonicalize()
-        .map_err(|e| format!("bundle path failed: {e}"))?;
+    let canonical = path.canonicalize().map_err(|source| ValidationError::Io {
+        context: "bundle path failed",
+        source,
+    })?;
     if canonical.to_str().is_none_or(|v| v.len() > MAX_PATH_BYTES)
         || canonical.capacity() > MAX_PATH_BYTES
     {
@@ -181,7 +207,7 @@ impl Bundle {
         })
     }
 
-    pub fn unchanged(&self) -> Result<(), String> {
+    pub fn unchanged(&self) -> Result<(), ValidationError> {
         let current = canonical_bundle_path(&self.supplied_path)?;
         if current != self.canonical_path {
             return Err("selected bundle identity changed".into());
@@ -208,7 +234,7 @@ impl Bundle {
         })
     }
 
-    pub fn executable_unchanged(&self, expected: &Executable) -> Result<(), String> {
+    pub fn executable_unchanged(&self, expected: &Executable) -> Result<(), ValidationError> {
         self.unchanged()?;
         if !expected.relative_path.starts_with("Contents/MacOS/") {
             return Err("native bundle executable location refused".into());
@@ -320,7 +346,22 @@ mod tests {
             }
         }
         let error = read_snapshot(ProbeFailure(Cursor::new(b"abc")), 3, 3).unwrap_err();
-        assert!(error.contains("original end read refusal"));
+        assert!(error.to_string().contains("original end read refusal"));
+        assert!(matches!(
+            error,
+            ValidationError::Io {
+                context: "discovery input end read failed",
+                ..
+            }
+        ));
+        assert!(std::error::Error::source(&error).is_some());
+        let missing = read_file(&Directory::new().0.join("absent"), MAX_BINARY).unwrap_err();
+        let ValidationError::Io { context, source } = missing else {
+            panic!("original metadata I/O failure");
+        };
+        assert_eq!(context, "file metadata failed");
+        assert_eq!(source.kind(), io::ErrorKind::NotFound);
+        assert!(source.raw_os_error().is_some());
         struct Interrupted(bool, Cursor<&'static [u8]>);
         impl Read for Interrupted {
             fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
@@ -352,7 +393,12 @@ mod tests {
         let result = read_file_between(&path, MAX_BINARY, || {
             fs::write(&path, b"abc").unwrap();
         });
-        assert!(result.unwrap_err().contains("changed while opening"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("changed while opening")
+        );
         let file = fs::File::create(&path).unwrap();
         file.set_len(MAX_BINARY).unwrap();
         let maximum = read_file(&path, MAX_BINARY).unwrap();
@@ -414,6 +460,7 @@ mod tests {
             bundle
                 .executable_unchanged(&selected)
                 .unwrap_err()
+                .to_string()
                 .contains("bundle identity changed")
         );
         fs::write(&info, b"original info").unwrap();
@@ -424,6 +471,7 @@ mod tests {
             bundle
                 .executable_unchanged(&selected)
                 .unwrap_err()
+                .to_string()
                 .contains("executable changed")
         );
         fs::write(&executable, b"not mach-o").unwrap();
@@ -431,6 +479,7 @@ mod tests {
             bundle
                 .executable_unchanged(&selected)
                 .unwrap_err()
+                .to_string()
                 .contains("unsupported mach-o container")
         );
     }
@@ -452,6 +501,7 @@ mod tests {
         assert!(
             relative_file(&directory.0, &format!("d/{relative}"))
                 .unwrap_err()
+                .to_string()
                 .contains("depth refused")
         );
         #[cfg(unix)]
@@ -460,6 +510,7 @@ mod tests {
             assert!(
                 relative_file(&directory.0, "linked")
                     .unwrap_err()
+                    .to_string()
                     .contains("linked or nonregular")
             );
         }

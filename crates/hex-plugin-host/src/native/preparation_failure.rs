@@ -119,7 +119,7 @@ impl PreparationFailure {
         };
         let (exit, custody_error) = match child.reap() {
             Ok(status) => (Some(status), None),
-            Err(error) => (None, Some(error.to_string())),
+            Err(error) => (None, Some(Box::new(error))),
         };
         Error::Preparation {
             cause: Box::new(self.cause),

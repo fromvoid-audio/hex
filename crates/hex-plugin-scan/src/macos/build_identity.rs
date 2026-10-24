@@ -3,6 +3,7 @@
 use super::{
     identity::{MAX_PATH_BYTES, hash_matches, read_file, relative_file},
     macho::{self, Image, Role},
+    validation::Error as ValidationError,
 };
 use crate::{MAX_BINARY, PUBLIC_SDK, SDK, hash};
 use sha2::{Digest, Sha256};
@@ -288,18 +289,22 @@ impl Build {
         })
     }
 
+    fn instance_unchanged(&self) -> Result<(), ValidationError> {
+        // The receipt snapshot drops before fixed member I/O. No formatting,
+        // second inventory map or traversal worklist enters native custody.
+        let same = {
+            let bytes = read_file(&self.path, MAX_BINARY)?;
+            hash_matches(&bytes, &self.receipt_sha256)
+        };
+        if !same {
+            return Err("helper or build receipt changed during operation".into());
+        }
+        instance_inventory::verify(&self.root, &self.files)
+    }
+
     pub fn unchanged(&self) -> Result<(), String> {
         if matches!(self.role, HelperRole::Instance) {
-            // No second map/worklist or allocated digest for the fixed native
-            // instance package. The receipt snapshot drops before member I/O.
-            let same = {
-                let bytes = read_file(&self.path, MAX_BINARY)?;
-                hash_matches(&bytes, &self.receipt_sha256)
-            };
-            if !same {
-                return Err("helper or build receipt changed during operation".into());
-            }
-            return instance_inventory::verify(&self.root, &self.files);
+            return self.instance_unchanged().map_err(String::from);
         }
         // One file-data buffer at a time during revalidation (<= MAX_BINARY).
         // The bounded path/hash inventory metadata is a separate retained cost.
@@ -335,8 +340,8 @@ impl InstanceBuild {
     pub fn receipt_sha256(&self) -> &str {
         &self.0.receipt_sha256
     }
-    pub fn unchanged(&self) -> Result<(), String> {
-        self.0.unchanged()
+    pub fn unchanged(&self) -> Result<(), ValidationError> {
+        self.0.instance_unchanged()
     }
     /// The fixed helper revalidator's known path/name scratch and opaque I/O
     /// obligations. The one file snapshot is listed separately. This is not a

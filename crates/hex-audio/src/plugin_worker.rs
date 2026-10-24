@@ -322,7 +322,7 @@ impl NativeWorker {
                     return Err(hex_plugin_host::Error::Preparation {
                         cause: Box::new(error),
                         exit: None,
-                        custody_error: Some(custody.to_string()),
+                        custody_error: Some(Box::new(custody)),
                     });
                 }
             }
@@ -377,14 +377,14 @@ impl NativeWorker {
         }
         match instance.cancel_and_reap_on_control() {
             Ok(native) => Ok(NativeWorkerRetirement { native, failure }),
-            Err(custody) => {
-                let custody_error = Some(custody.to_string());
-                Err(Error::Preparation {
-                    cause: Box::new(failure.unwrap_or(custody)),
+            Err(custody) => match failure {
+                Some(cause) => Err(Error::Preparation {
+                    cause: Box::new(cause),
                     exit: None,
-                    custody_error,
-                })
-            }
+                    custody_error: Some(Box::new(custody)),
+                }),
+                None => Err(custody),
+            },
         }
     }
 }

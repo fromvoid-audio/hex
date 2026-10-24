@@ -46,7 +46,7 @@ impl InstanceBuild {
     /// Known DATA cannot exceed `self.retained_storage()`. Map-node/allocator
     /// implementation overhead remains a separate bounded lifetime obligation.
     /// This performs no I/O, source verification or native admission.
-    pub fn try_copy_on_control(&self) -> Result<Self, String> {
+    pub fn try_copy_on_control(&self) -> Result<Self, ValidationError> {
         let source = &self.0;
         if source.files.len() > MAX_MEMBERS {
             return Err("helper inventory bound".into());
@@ -67,7 +67,7 @@ impl InstanceBuild {
     }
 }
 
-fn copy_text(source: &str) -> Result<String, String> {
+fn copy_text(source: &str) -> Result<String, ValidationError> {
     let mut target = String::new();
     target
         .try_reserve_exact(source.len())
@@ -78,7 +78,7 @@ fn copy_text(source: &str) -> Result<String, String> {
     target.push_str(source);
     Ok(target)
 }
-fn copy_path(source: &Path) -> Result<PathBuf, String> {
+fn copy_path(source: &Path) -> Result<PathBuf, ValidationError> {
     let mut target = PathBuf::new();
     target
         .try_reserve_exact(source.as_os_str().len())

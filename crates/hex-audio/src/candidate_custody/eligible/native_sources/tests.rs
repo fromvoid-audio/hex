@@ -239,14 +239,21 @@ fn actual_preparation_retained_bound_is_checked_before_reservation_or_child() {
     let bound = source
         .preparation_storage_bound_on_control(&build, None)
         .unwrap();
-    let limit = bound.max_retained_data_bytes() - 1;
+    assert_eq!(
+        bound.diagnostic_data_bytes,
+        hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES
+    );
+    assert!(bound.diagnostic_data_bytes > 0);
+    // All former retained DATA fits; only the actual diagnostic allowance
+    // distinguishes this candidate from an admissible pre-start request.
+    let limit = bound.max_retained_data_bytes() - bound.diagnostic_data_bytes;
     assert!(bound.input_data_bytes <= limit, "request input alone fits");
     let root = root();
     root.configure_native_sources(
         1,
         NativeSourceDataReservation {
             max_retained_data_bytes: limit,
-            max_construction_peak_data_bytes: limit + hex_plugin_scan::MAX_BINARY as usize,
+            max_construction_peak_data_bytes: bound.base_peak_data_bytes().unwrap(),
         },
     )
     .unwrap();

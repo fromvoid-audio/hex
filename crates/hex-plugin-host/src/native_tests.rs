@@ -287,7 +287,7 @@ impl Drop for Case {
 
 #[cfg(feature = "allocation-probe")]
 #[test]
-fn revalidation_paths_allocate_one_buffer_and_depth_refusal_only_its_diagnostic() {
+fn revalidation_paths_allocate_one_buffer_and_depth_refusal_has_no_heap_diagnostic() {
     let case = Case::new();
     fs::create_dir_all(case.root.join("Contents/MacOS")).unwrap();
     fs::write(case.root.join("Contents/MacOS/fixture"), b"original").unwrap();
@@ -315,12 +315,12 @@ fn revalidation_paths_allocate_one_buffer_and_depth_refusal_only_its_diagnostic(
         );
     });
     let refusal = refusal.unwrap();
-    assert!(refusal.contains("depth refused"));
-    assert_eq!((measured.count_total, measured.count_current), (1, 1));
-    assert_eq!(
-        (measured.bytes_total, measured.bytes_current),
-        (refusal.capacity() as u64, refusal.capacity() as i64)
-    );
+    assert!(matches!(
+        refusal,
+        hex_plugin_scan::macos::validation::Error::Invalid("discovery path depth refused")
+    ));
+    assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
 }
 
 #[cfg(feature = "allocation-probe")]
@@ -561,11 +561,20 @@ fn actual_inherited_autoreap_refuses_before_foreign_entry_without_changing_calle
         )
         .err()
         .unwrap();
-        assert!(matches!(retained.cause(), Error::Custody(_)));
+        let Error::Custody(crate::CustodyError::Lost(original)) = retained.cause() else {
+            panic!("actual waitability probe must retain its original OS error");
+        };
+        assert!(original.raw_os_error().is_some());
+        let original = Arc::clone(original);
         for _ in 0..2 {
+            let Err(Error::Custody(crate::CustodyError::Lost(error))) =
+                retained.poll_disposal_on_control()
+            else {
+                panic!("lost waitability cannot become a no-instance or reaped result");
+            };
             assert!(
-                matches!(retained.poll_disposal_on_control(), Err(Error::Custody(_))),
-                "lost waitability cannot become a no-instance or reaped result"
+                Arc::ptr_eq(&original, &error),
+                "polling must retain the actual same OS cause"
             );
         }
         assert!(!case.trace().exists());
@@ -1213,7 +1222,7 @@ fn actual_source_change_while_pending_refuses_before_presentation_or_processing(
             exit,
             custody_error,
         }) => {
-            assert!(matches!(*cause, Error::Source(_)));
+            assert!(matches!(*cause, Error::Validation(_)));
             assert!(exit.is_some());
             assert!(custody_error.is_none());
         }
@@ -1527,4 +1536,27 @@ fn original_failure_diagnostic_transfers_without_copying_or_destroying_backing()
     ));
     drop(failure);
     assert_eq!(original, "original selected-source diagnostic");
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn sticky_lost_custody_preserves_original_io_error_without_heap_diagnostic_copies() {
+    let original = Arc::new(std::io::Error::from_raw_os_error(10));
+    let mut custody = ChildCustody::Lost(Arc::clone(&original));
+    let mut observed = None;
+    let mut reaped = None;
+    let measured = allocation_counter::measure(|| {
+        observed = Some(custody.observe().unwrap_err());
+        reaped = Some(custody.reap().unwrap_err());
+    });
+    assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+    for error in [observed.unwrap(), reaped.unwrap()] {
+        let Error::Custody(crate::CustodyError::Lost(source)) = error else {
+            panic!("original sticky OS failure");
+        };
+        assert!(Arc::ptr_eq(&source, &original));
+        assert_eq!(source.raw_os_error(), Some(10));
+    }
+    assert!(matches!(custody, ChildCustody::Lost(_)));
 }

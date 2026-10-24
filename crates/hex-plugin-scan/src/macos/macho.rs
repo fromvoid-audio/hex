@@ -18,7 +18,7 @@ pub enum Image {
     UniversalArm64,
 }
 
-fn word(bytes: &[u8], offset: usize, big: bool) -> Result<u32, String> {
+fn word(bytes: &[u8], offset: usize, big: bool) -> Result<u32, &'static str> {
     let end = offset.checked_add(4).ok_or("mach-o offset overflow")?;
     let value = bytes
         .get(offset..end)
@@ -32,7 +32,7 @@ fn word(bytes: &[u8], offset: usize, big: bool) -> Result<u32, String> {
     })
 }
 
-fn wide(bytes: &[u8], offset: usize) -> Result<u64, String> {
+fn wide(bytes: &[u8], offset: usize) -> Result<u64, &'static str> {
     let end = offset.checked_add(8).ok_or("mach-o offset overflow")?;
     Ok(u64::from_be_bytes(
         bytes
@@ -43,14 +43,14 @@ fn wide(bytes: &[u8], offset: usize) -> Result<u64, String> {
     ))
 }
 
-fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), String> {
+fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), &'static str> {
     if bytes.len() < 32 || word(bytes, 0, false)? != 0xfeed_facf {
-        return Err("64-bit little-endian mach-o required".into());
+        return Err("64-bit little-endian mach-o required");
     }
     let cpu = word(bytes, 4, false)?;
     let subtype = word(bytes, 8, false)?;
     if !matches!((cpu, subtype), (ARM64, 0) | (X86_64, 3)) {
-        return Err("unsupported mach-o architecture/subtype".into());
+        return Err("unsupported mach-o architecture/subtype");
     }
     let kind = word(bytes, 12, false)?;
     let expected = match role {
@@ -58,53 +58,53 @@ fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), String> {
         Role::Module => matches!(kind, 6 | 8),
     };
     if !expected || word(bytes, 28, false)? != 0 {
-        return Err("mach-o binary role refused".into());
+        return Err("mach-o binary role refused");
     }
     let count = word(bytes, 16, false)? as usize;
     let size = word(bytes, 20, false)? as usize;
     let end = 32_usize.checked_add(size).ok_or("load-command overflow")?;
     if count == 0 || count > 4096 || size < count * 8 || end > bytes.len() {
-        return Err("mach-o load-command bounds refused".into());
+        return Err("mach-o load-command bounds refused");
     }
     // Validate command framing too; a header-only claim cannot admit a slice.
     let mut offset = 32_usize;
     for _ in 0..count {
         let length = word(bytes, offset + 4, false)? as usize;
         if length < 8 || length % 8 != 0 {
-            return Err("invalid mach-o load command".into());
+            return Err("invalid mach-o load command");
         }
         offset = offset.checked_add(length).ok_or("load-command overflow")?;
         if offset > end {
-            return Err("mach-o command exceeds declared region".into());
+            return Err("mach-o command exceeds declared region");
         }
     }
     if offset != end {
-        return Err("mach-o command size mismatch".into());
+        return Err("mach-o command size mismatch");
     }
     Ok((cpu, subtype))
 }
 
-pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, String> {
+pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, &'static str> {
     let magic = word(bytes, 0, true)?;
     if magic == 0xcffa_edfe {
         if thin(bytes, role)?.0 != ARM64 {
-            return Err("native arm64 slice required; no translation fallback".into());
+            return Err("native arm64 slice required; no translation fallback");
         }
         return Ok(Image::ThinArm64);
     }
     let large = match magic {
         0xcafe_babe => false,
         0xcafe_babf => true,
-        _ => return Err("unsupported mach-o container".into()),
+        _ => return Err("unsupported mach-o container"),
     };
     let count = word(bytes, 4, true)? as usize;
     if count == 0 || count > MAX_SLICES {
-        return Err("fat mach-o slice count refused".into());
+        return Err("fat mach-o slice count refused");
     }
     let width = if large { 32 } else { 20 };
     let header_end = 8 + count * width;
     if header_end > bytes.len() {
-        return Err("truncated fat mach-o table".into());
+        return Err("truncated fat mach-o table");
     }
     let mut regions = [(0_usize, 0_usize); MAX_SLICES];
     let mut architectures = [(0_u32, 0_u32); MAX_SLICES];
@@ -115,7 +115,7 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, String> {
         let subtype = word(bytes, base + 4, true)?;
         let (offset, size, alignment) = if large {
             if word(bytes, base + 28, true)? != 0 {
-                return Err("fat mach-o reserved field refused".into());
+                return Err("fat mach-o reserved field refused");
             }
             (
                 wide(bytes, base + 8)?,
@@ -138,14 +138,14 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, String> {
             || offset % align != 0
             || end > bytes.len() as u64
         {
-            return Err("fat mach-o slice range refused".into());
+            return Err("fat mach-o slice range refused");
         }
         let start = usize::try_from(offset).map_err(|_| "fat offset range")?;
         let end = usize::try_from(end).map_err(|_| "fat end range")?;
         let slice = bytes.get(start..end).ok_or("fat slice bounds")?;
         if thin(slice, role)? != (cpu, subtype) || architectures[..index].contains(&(cpu, subtype))
         {
-            return Err("fat slice architecture mismatch or duplicate".into());
+            return Err("fat slice architecture mismatch or duplicate");
         }
         architectures[index] = (cpu, subtype);
         regions[index] = (start, end);
@@ -154,7 +154,7 @@ pub fn inspect(bytes: &[u8], role: Role) -> Result<Image, String> {
     let regions = &mut regions[..count];
     regions.sort_unstable();
     if regions.windows(2).any(|pair| pair[0].1 > pair[1].0) || !arm64 {
-        return Err("overlapping slices or absent native arm64 slice".into());
+        return Err("overlapping slices or absent native arm64 slice");
     }
     Ok(Image::UniversalArm64)
 }

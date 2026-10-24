@@ -33,7 +33,7 @@ impl Prepared {
         self.lease.cancel_native();
         let (exit, custody_error) = match self.lease.child.reap() {
             Ok(status) => (Some(status), None),
-            Err(error) => (None, Some(error.to_string())),
+            Err(error) => (None, Some(Box::new(error))),
         };
         Error::Preparation {
             cause: Box::new(cause),

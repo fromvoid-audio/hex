@@ -101,8 +101,11 @@ impl NativeEffect {
             ));
         }
         let dry_frames = configuration.prepared.total_latency_frames() as usize;
+        // Reserve the actual retirement diagnostics before starting the worker;
+        // the unused allowance is not part of its resident storage inventory.
         let known_data = NativeWorker::preconstruction_data_bytes_on_control(&instance)
-            .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?));
+            .and_then(|n| n.checked_add(dry_frames.checked_mul(std::mem::size_of::<[f32; 2]>())?))
+            .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if known_data.is_none_or(|bytes| bytes > max_data_bytes) {
             return Err(NativeWorkerStartFailure::retain_source_on_control(
                 Error::Protocol("native effect data reservation exceeded or unavailable"),

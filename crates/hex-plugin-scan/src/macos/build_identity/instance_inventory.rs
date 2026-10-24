@@ -68,7 +68,7 @@ fn set_path(
     root: &Path,
     relative: &str,
     capacity: usize,
-) -> Result<(), String> {
+) -> Result<(), ValidationError> {
     path.clear();
     path.push(root);
     path.push(relative);
@@ -78,7 +78,10 @@ fn set_path(
     Ok(())
 }
 
-pub(super) fn verify(root: &Path, expected: &BTreeMap<String, String>) -> Result<(), String> {
+pub(super) fn verify(
+    root: &Path,
+    expected: &BTreeMap<String, String>,
+) -> Result<(), ValidationError> {
     if expected.len() != FILES.len() || FILES.iter().any(|path| !expected.contains_key(*path)) {
         return Err("minimal instance helper inventory differs".into());
     }
@@ -91,15 +94,23 @@ pub(super) fn verify(root: &Path, expected: &BTreeMap<String, String>) -> Result
     }
     for (relative, names) in DIRECTORIES {
         set_path(&mut path, root, relative, capacity)?;
-        let metadata =
-            fs::symlink_metadata(&path).map_err(|e| format!("helper member missing: {e}"))?;
+        let metadata = fs::symlink_metadata(&path).map_err(|source| ValidationError::Io {
+            context: "helper member missing",
+            source,
+        })?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err("linked or nonregular helper directory refused".into());
         }
         let mut seen = 0_u8;
         let mut count = 0;
-        for entry in fs::read_dir(&path).map_err(|e| format!("helper enumeration failed: {e}"))? {
-            let entry = entry.map_err(|e| format!("helper enumeration failed: {e}"))?;
+        for entry in fs::read_dir(&path).map_err(|source| ValidationError::Io {
+            context: "helper enumeration failed",
+            source,
+        })? {
+            let entry = entry.map_err(|source| ValidationError::Io {
+                context: "helper enumeration failed",
+                source,
+            })?;
             if count == names.len() {
                 return Err("unexpected instance helper member".into());
             }

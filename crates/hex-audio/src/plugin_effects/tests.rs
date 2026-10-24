@@ -19,14 +19,16 @@ fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal()
         epoch: 4,
     };
     let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap();
-    for fits in [false, true] {
+    let diagnostic = hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES;
+    for allowance in [0, diagnostic - 1, diagnostic] {
+        let fits = allowance == diagnostic;
         let instance = original_instance_for_binding(binding);
         let configuration = NativeEffect::configuration_on_control(identity, &instance).unwrap();
         let quoted = NativeWorker::preconstruction_data_bytes_on_control(&instance).unwrap()
             + configuration.prepared.total_latency_frames() as usize
                 * std::mem::size_of::<[f32; 2]>();
         drop(configuration);
-        let limit = quoted - usize::from(!fits);
+        let limit = quoted + allowance;
         let mut outcome = None;
         let construct = || {
             outcome = Some(NativeEffect::prepare_retained_with_data_limit_on_control(

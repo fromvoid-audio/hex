@@ -60,7 +60,7 @@ impl Source {
     fn unchanged(&self) -> Result<()> {
         self.bundle
             .executable_unchanged(&self.executable)
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
     }
 }
 fn digest(text: &str) -> Result<[u8; 32]> {
@@ -316,14 +316,14 @@ impl Pending {
         // probe or instance child starts, never through a late derived Clone.
         let owned_build = build
             .try_copy_on_control()
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
         source
             .unchanged()
             .map_err(PreparationFailure::before_native)?;
         build
             .unchanged()
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
         // No foreign module is loaded by this exact executable's probe. A
         // missing/auto-reaped child refuses before any SDK instance starts.
@@ -347,7 +347,7 @@ impl Pending {
         }
         build
             .unchanged()
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
         source
             .unchanged()
@@ -408,7 +408,7 @@ impl Pending {
             let facts = Facts::decode(packet.body()?, &config)?;
             token.check()?;
             source.unchanged()?;
-            build.unchanged().map_err(Error::Source)?;
+            build.unchanged().map_err(Error::Validation)?;
             match pending.child.observe()? {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
@@ -485,7 +485,7 @@ impl Pending {
         let result = (|| {
             token.check()?;
             self.source.unchanged()?;
-            self.build.unchanged().map_err(Error::Source)?;
+            self.build.unchanged().map_err(Error::Validation)?;
             if self.facts.presentation_available && presentation.is_none() {
                 return Err(Error::Protocol(
                     "actual presentation contributions are unavailable",
@@ -521,7 +521,7 @@ impl Pending {
                 ));
             }
             self.source.unchanged()?;
-            self.build.unchanged().map_err(Error::Source)?;
+            self.build.unchanged().map_err(Error::Validation)?;
             if self.lease.child.observe()?.is_some() {
                 return Err(Error::Custody("prepared worker already exited".into()));
             }
@@ -721,14 +721,16 @@ struct Lease {
 enum ChildCustody {
     Owned(Child),
     Reaped(ExitStatus),
-    Lost(String),
+    Lost(Arc<std::io::Error>),
 }
 impl ChildCustody {
     fn observe(&mut self) -> Result<Option<ExitStatus>> {
         let result = match self {
             Self::Owned(child) => child.try_wait(),
             Self::Reaped(status) => return Ok(Some(*status)),
-            Self::Lost(error) => return Err(Error::Custody(error.clone())),
+            Self::Lost(error) => {
+                return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
+            }
         };
         match result {
             Ok(Some(status)) => {
@@ -737,9 +739,9 @@ impl ChildCustody {
             }
             Ok(None) => Ok(None),
             Err(error) => {
-                let message = error.to_string();
-                *self = Self::Lost(message.clone());
-                Err(Error::Custody(message))
+                let source = Arc::new(error);
+                *self = Self::Lost(Arc::clone(&source));
+                Err(Error::Custody(crate::CustodyError::Lost(source)))
             }
         }
     }
@@ -747,7 +749,9 @@ impl ChildCustody {
         let result = match self {
             Self::Owned(child) => child.wait(),
             Self::Reaped(status) => return Ok(*status),
-            Self::Lost(error) => return Err(Error::Custody(error.clone())),
+            Self::Lost(error) => {
+                return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
+            }
         };
         match result {
             Ok(status) => {
@@ -755,9 +759,9 @@ impl ChildCustody {
                 Ok(status)
             }
             Err(error) => {
-                let message = error.to_string();
-                *self = Self::Lost(message.clone());
-                Err(Error::Custody(message))
+                let source = Arc::new(error);
+                *self = Self::Lost(Arc::clone(&source));
+                Err(Error::Custody(crate::CustodyError::Lost(source)))
             }
         }
     }
