@@ -28,8 +28,9 @@ pub enum DocumentAudioMode {
     Resident,
     VerifiedStreaming,
 }
-/// Metadata-only preparation bounds, independent of resident duration. The
-/// desktop supplies existing source/catalog limits; no native admission follows.
+/// Metadata-only preparation bounds, independent of resident duration. An ordinary
+/// document may also reserve these for file-backed clip bindings without changing
+/// its document mode. No native custody, publication or readiness follows.
 #[derive(Clone, Copy, Debug)]
 pub struct SourcePlanReservation {
     pub reader: VerifiedWavReaderLimits,

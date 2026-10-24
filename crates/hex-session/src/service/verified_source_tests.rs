@@ -207,14 +207,16 @@ fn ordinary_document_keeps_placing_complete_samples_past_its_resident_working_se
     let b = files.wav("next-complete-source.wav", 48000, 4, 2000);
     let service = Service::new(48000, 16, 4).unwrap();
     let _ = next(&service);
-    run(
+    let new = run(
         &service,
         Request::NewWithAudioMode {
             mode: DocumentAudioMode::Resident,
             reservation: Some(reservation(4)),
         },
     );
+    assert!(new.error.is_none(), "{:?}", new.error);
     let first = run(&service, Request::Import(a));
+    assert!(first.error.is_none(), "{:?}", first.error);
     let track = first.state.project.tracks()[0].id();
     let original = first.state.project.tracks()[0].clips()[0].id();
     service
@@ -247,13 +249,28 @@ fn ordinary_document_keeps_placing_complete_samples_past_its_resident_working_se
             .any(|source| matches!(source, AudioSourceBinding::VerifiedFile(_))),
         "crossing the PCM working set must not just increase its frame ceiling"
     );
+    let expected = added.state.project.snapshot();
     let undone = run(&service, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
     assert_eq!(undone.state.project.track(track).unwrap().clips().len(), 1);
     let redone = run(&service, Request::Redo);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
     assert_eq!(redone.state.project.clip(new_clip).unwrap().duration(), 4);
     let saved = files.0.join("growing-project.hex");
-    run(&service, Request::SaveNew(saved.clone()));
+    let save = run(&service, Request::SaveNew(saved.clone()));
+    assert!(save.error.is_none(), "{:?}", save.error);
+    let reset = run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    assert!(reset.error.is_none(), "{:?}", reset.error);
+    assert!(reset.state.project.tracks().is_empty());
     let reopened = run(&service, Request::Open(saved));
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert_eq!(reopened.state.project.snapshot(), expected);
     assert_eq!(
         reopened.state.project.track(track).unwrap().clips().len(),
         2
@@ -539,5 +556,69 @@ fn verified_bindings_prepare_through_the_ordinary_resource_scope_without_pcm() {
             &cancel
         )
         .is_err()
+    );
+}
+
+#[test]
+fn ordinary_reserved_sources_verify_full_files_without_decoding_or_changing_mode() {
+    let files = Files::new();
+    let path = files.wav("metadata-only.wav", 48_000, 32, 1000);
+    let mut session = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::Resident,
+        Some(reservation(1)),
+    )
+    .unwrap();
+    let before = session.project().snapshot();
+    let epoch = session.semantic_source_epoch;
+    let source = session.verify_import(path.clone()).unwrap();
+    assert_eq!(source.playback_frames(), 32);
+    assert_eq!(session.audio_mode(), DocumentAudioMode::Resident);
+    assert_ne!(epoch, 0);
+    assert_eq!(session.resident_frames(), 0);
+    assert!(session.media.is_empty());
+    assert!(
+        session.verified_sources.is_empty(),
+        "verification is not commit authority"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert!(
+        session
+            .verify_import_with_pending(path.clone(), &[source], || false)
+            .is_err(),
+        "metadata capacity remains bounded"
+    );
+    assert!(
+        session
+            .verify_import_with_pending(path, &[], || true)
+            .is_err(),
+        "cancellation refuses before publication"
+    );
+    let other = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::Resident,
+        Some(reservation(1)),
+    )
+    .unwrap();
+    assert_ne!(other.semantic_source_epoch, epoch);
+    session
+        .source_reservation
+        .as_mut()
+        .unwrap()
+        .max_retained_sources = 0;
+    assert!(
+        Session::new_with_audio_mode(
+            48_000,
+            16,
+            0,
+            DocumentAudioMode::Resident,
+            session.source_reservation
+        )
+        .is_err(),
+        "ordinary plans receive the same validation"
     );
 }

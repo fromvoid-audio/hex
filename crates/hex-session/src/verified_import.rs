@@ -44,7 +44,9 @@ impl Session {
         let mut session =
             Self::new_with_overview_budget(rate, history, max_resident_frames, overview_budget)?;
         session.source_reservation = match mode {
-            DocumentAudioMode::Resident => None,
+            DocumentAudioMode::Resident => reservation
+                .map(SourcePlanReservation::validate)
+                .transpose()?,
             DocumentAudioMode::VerifiedStreaming => Some(
                 reservation
                     .ok_or(SessionError::Invalid(
@@ -54,7 +56,7 @@ impl Session {
             ),
         };
         session.audio_mode = mode;
-        if mode == DocumentAudioMode::VerifiedStreaming {
+        if session.source_reservation.is_some() {
             session.semantic_source_epoch = fresh_source_epoch()?;
         }
         Ok(session)
@@ -87,11 +89,6 @@ impl Session {
         path_bytes: usize,
         pending: &[VerifiedAudioFile],
     ) -> Result<hex_media::VerifiedWavReaderLimits, SessionError> {
-        if self.audio_mode != DocumentAudioMode::VerifiedStreaming {
-            return Err(SessionError::Invalid(
-                "document does not use verified streaming",
-            ));
-        }
         let reservation = self.source_reservation.ok_or(SessionError::Invalid(
             "verified source reservation is unavailable",
         ))?;
