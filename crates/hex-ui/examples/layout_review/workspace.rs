@@ -332,9 +332,10 @@ impl Workspace {
             METER_INDICATOR_TICKS_DBFS.map(|dbfs| theme::text(format!("{:.0}", -dbfs))),
             MeterIndicatorStyle {
                 controls: style,
-                signal: style.accent,
+                signal: theme::meter_colors().signal,
+                near_peak: theme::meter_colors().near_peak,
                 peak: style.text,
-                overload: theme::color(theme::PaletteRole::Secondary),
+                overload: theme::meter_colors().clipping,
             },
         ) {
             Ok(meter) => div().h(px(148.0)).child(meter),
@@ -526,11 +527,14 @@ impl Workspace {
                             level_meter(
                                 self.id(&format!("workspace-gauge-{i}")).into(),
                                 value,
-                                value > 1.0,
+                                value.is_finite() && value > 1.0,
                                 LevelMeterStyle {
                                     background: theme::control_style().rail,
-                                    fill: theme::control_style().accent,
-                                    above: theme::control_style().text,
+                                    fill: theme::meter_colors().color(MeterLevel::from_amplitude(
+                                        value,
+                                        value.is_finite() && value > 1.0,
+                                    )),
+                                    above: theme::meter_colors().clipping,
                                 },
                             )
                             .w(px(12.0))
@@ -912,6 +916,52 @@ mod tests {
         visual.run_until_parked();
         view.read_with(&visual, |s, _| assert_eq!(s.count, 11));
     }
+    #[gpui::test]
+    fn meter_fixtures_use_one_signal_warning_and_overload_palette(cx: &mut TestAppContext) {
+        for kind in [
+            Kind::LevelMeter,
+            Kind::OutputMeter,
+            Kind::MeterIndicator(MeterChannels::Mono),
+            Kind::MeterIndicator(MeterChannels::Stereo),
+        ] {
+            let (mut visual, view) = fixture(cx, kind);
+            let fill = match kind {
+                Kind::LevelMeter => "workspace-gauge-0-fill",
+                Kind::OutputMeter => "output-meter-left-fill",
+                _ => "workspace-indicator-channel-0-fill",
+            };
+            let calibrated = matches!(kind, Kind::MeterIndicator(_));
+            for (amplitude, dbfs, overload, color) in [
+                (
+                    0.1,
+                    -30.0,
+                    false,
+                    theme::color(theme::PaletteRole::Secondary),
+                ),
+                (0.75, -3.0, false, theme::color(theme::PaletteRole::Primary)),
+                (1.1, 1.0, true, 0xe34b4b),
+            ] {
+                view.update(&mut visual.cx, |view, cx| {
+                    view.numbers[0].update(cx, |n, cx| {
+                        n.set_external_value(if calibrated { dbfs } else { amplitude }, cx)
+                            .unwrap()
+                    });
+                    view.selector.update(cx, |s, cx| {
+                        s.set_selected(if calibrated && overload { 3 } else { 0 }, cx)
+                            .unwrap()
+                    });
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert_eq!(
+                    visual.rendered_background(fill),
+                    Some(rgb(color).into()),
+                    "{kind:?}"
+                );
+            }
+        }
+    }
+
     #[gpui::test]
     fn both_meter_fixtures_follow_local_levels_and_unavailable_choices(cx: &mut TestAppContext) {
         for kind in [Kind::LevelMeter, Kind::OutputMeter] {

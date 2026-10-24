@@ -89,7 +89,10 @@ pub use text_input::{
 };
 
 mod level_meter;
-pub use level_meter::{LevelMeterStyle, level_meter};
+pub use level_meter::{
+    LevelMeterStyle, METER_NEAR_PEAK_AMPLITUDE, METER_NEAR_PEAK_DBFS, MeterColors, MeterLevel,
+    level_meter,
+};
 
 mod meter_indicator;
 pub use meter_indicator::{

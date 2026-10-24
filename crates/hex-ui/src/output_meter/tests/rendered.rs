@@ -52,6 +52,82 @@ fn change(fixture: &Entity<Fixture>, visual: &mut VisualTestContext, input: Mete
 }
 
 #[gpui::test]
+fn output_meter_uses_shared_level_colors_without_inventing_clip_history(cx: &mut TestAppContext) {
+    let _restore = RestoreTheme(theme::preferences());
+    let window = cx.add_window(|_, _| Fixture {
+        input: MeterInput::Offline,
+    });
+    let fixture = window.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*window, cx);
+    for preferences in [
+        hex_preferences::ThemePreferences::default(),
+        hex_preferences::ThemePreferences {
+            background: hex_preferences::RgbColor::new(230, 230, 230),
+            text: hex_preferences::RgbColor::new(20, 20, 20),
+            primary: hex_preferences::RgbColor::new(180, 110, 20),
+            secondary: hex_preferences::RgbColor::new(20, 120, 70),
+        },
+    ] {
+        theme::apply_preferences(preferences);
+        let signal = theme::color(theme::PaletteRole::Secondary);
+        let warning = theme::color(theme::PaletteRole::Primary);
+        for (amplitude, color, above) in [
+            (0.1, signal, false),
+            (
+                f32::from_bits(hex_widgets::METER_NEAR_PEAK_AMPLITUDE.to_bits() - 1),
+                signal,
+                false,
+            ),
+            (hex_widgets::METER_NEAR_PEAK_AMPLITUDE, warning, false),
+            (0.75, warning, false),
+            (1.0, warning, false),
+            (f32::from_bits(1.0_f32.to_bits() + 1), 0xe34b4b, true),
+        ] {
+            change(
+                &fixture,
+                &mut visual,
+                MeterInput::Last {
+                    left: amplitude,
+                    right: amplitude,
+                },
+            );
+            for (fill, cap) in [
+                ("output-meter-left-fill", "output-meter-left-above"),
+                ("output-meter-right-fill", "output-meter-right-above"),
+            ] {
+                assert_eq!(visual.rendered_background(fill), Some(rgb(color).into()));
+                assert_eq!(visual.debug_bounds(cap).is_some(), above);
+                if above {
+                    assert_eq!(visual.rendered_background(cap), Some(rgb(0xe34b4b).into()));
+                }
+            }
+        }
+        change(
+            &fixture,
+            &mut visual,
+            MeterInput::Last {
+                left: 0.1,
+                right: f32::NAN,
+            },
+        );
+        assert_eq!(
+            visual.rendered_background("output-meter-left-fill"),
+            Some(rgb(signal).into())
+        );
+        assert!(visual.debug_bounds("output-meter-left-above").is_none());
+        assert_eq!(
+            visual
+                .debug_bounds("output-meter-right-fill")
+                .unwrap()
+                .size
+                .height,
+            px(0.0)
+        );
+        assert!(visual.debug_bounds("output-meter-right-above").is_none());
+    }
+}
+
+#[gpui::test]
 fn fixed_meter_slot_at_minimum_window_preserves_neighbors_and_actual_fill_geometry(
     cx: &mut TestAppContext,
 ) {
