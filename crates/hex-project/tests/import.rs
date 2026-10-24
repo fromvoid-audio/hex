@@ -720,3 +720,64 @@ fn imported_ids_are_not_reused_after_undo_branch() {
     assert!(second.2.value() > first.2.value());
     assert!(!editor.can_redo());
 }
+
+#[test]
+fn beats_import_is_visible_before_one_prepare_and_refusal_preserves_redo_and_ids() {
+    use hex_project::{AudioImportWarp, WarpMode};
+    let mut editor = editor(8);
+    editor
+        .execute(Command::AddTrack {
+            name: "existing".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let commands = [24_000, 12_000].map(|frames| Command::ImportPreparedAudioTrackAt {
+        name: "sample".into(),
+        before_track: None,
+        start: 0,
+        path: PathBuf::from(format!("{frames}.wav")),
+        source_sample_rate: 48_000,
+        source_frames: frames,
+        playback_frames: frames,
+        conversion_version: 0,
+    });
+    let mut calls = 0;
+    let result = editor.execute_audio_imports_with_warp_prepared(
+        commands.to_vec(),
+        AudioImportWarp::Beats,
+        |candidate, results| {
+            calls += 1;
+            assert_eq!(results.len(), 2);
+            for (index, track) in candidate.tracks().iter().enumerate() {
+                let clip = &track.clips()[0];
+                let domain = &clip.audio_edit().unwrap().domain;
+                assert!(domain.warp_enabled);
+                let settings = domain.warp.as_ref().unwrap();
+                assert!(matches!(settings.mode, WarpMode::Beats { .. }));
+                assert_eq!(
+                    settings.markers[1].source_frame,
+                    if index == 0 { 24_000 } else { 12_000 }
+                );
+            }
+            Err::<(), _>(hex_project::Invalid("injected preparation refusal"))
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(calls, 1);
+    assert_eq!(editor.project(), &before);
+    assert!(!editor.can_undo());
+    assert!(editor.can_redo());
+    // Existing zero-warp entry point remains an explicit Off default.
+    editor
+        .execute_audio_imports_prepared(commands.to_vec(), |candidate, _| {
+            assert!(
+                candidate
+                    .tracks()
+                    .iter()
+                    .all(|track| track.clips()[0].audio_edit().is_none())
+            );
+            Ok::<_, hex_project::Invalid>(())
+        })
+        .unwrap();
+}

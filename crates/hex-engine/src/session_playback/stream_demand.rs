@@ -173,6 +173,9 @@ impl SessionPlayback {
                         .session()
                         .audio_clip(clip)
                         .ok_or(Invalid("stream demand clip missing"))?;
+                    if !clip.active {
+                        continue;
+                    }
                     if let PreparedAudioSource::Streamed(source) = clip.source() {
                         if let Some(elapsed) = performance_frame.checked_sub(launch_frame) {
                             if let Some(start) = clip

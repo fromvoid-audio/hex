@@ -17,10 +17,13 @@ NATIVE = Path(__file__).resolve().parent
 ROOT = NATIVE.parents[2]
 APP = Path("hex-vst3-host.app")
 EXECUTABLE = APP / "Contents/MacOS/hex-vst3-host"
+INSTANCE_APP = Path("hex-vst3-instance.app")
+INSTANCE_EXECUTABLE = INSTANCE_APP / "Contents/MacOS/hex-vst3-instance"
 SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
            "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
-           "macos_host_messages.hpp", "macos_host.hpp", "macos_host_case.hpp", "macos_stream_case.hpp")
+           "macos_host_messages.hpp", "macos_host.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
+           "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp", "macos_bundle.hpp", "macos_state_stream.hpp", "macos_instance_wire.hpp", "macos_instance_worker.mm")
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -85,38 +88,48 @@ def verify(receipt, run=False):
     if receipt.stat().st_size > MAX_FILE:
         raise ValueError("oversized receipt")
     data = json.loads(receipt.read_text())
-    minimal = data.get("scope") == "native-macos-factory-discovery"
+    instance = data.get("scope") == "native-macos-instance"
+    minimal = data.get("scope") == "native-macos-factory-discovery" or instance
+    app = INSTANCE_APP if instance else APP
     if (data.get("version") != 1 or data.get("platform") != "darwin-arm64"
-            or data.get("scope") not in ("original-macos-bootstrap", "native-macos-factory-discovery")
+            or data.get("scope") not in ("original-macos-bootstrap", "native-macos-factory-discovery", "native-macos-instance")
             or data.get("sdk_pins") != PINS or data.get("source_sha256") != source_digest()):
         raise ValueError("unsupported or stale bootstrap receipt")
     root = receipt.parent
     if data.get("package_layout") is not None:
-        if (data["package_layout"] != "hex-app-discovery-v1" or not minimal
-                or receipt.name != "vst3-discovery.json" or root.name != "Resources"
+        expected_layout = "hex-app-instance-v1" if instance else "hex-app-discovery-v1"
+        expected_receipt = "vst3-instance.json" if instance else "vst3-discovery.json"
+        if (data["package_layout"] != expected_layout or not minimal
+                or receipt.name != expected_receipt or root.name != "Resources"
                 or root.parent.name != "Contents"):
             raise ValueError("unknown discovery package layout")
         root = root.parent / "Helpers"
-    actual = inventory(root / APP)
+    actual = inventory(root / app)
     if not actual or actual != data.get("bundle_files"):
         raise ValueError("missing or changed bundle contents")
-    scan_executable = root / APP / "Contents/MacOS/hex-vst3-factory-scan"
-    macho(scan_executable, 2)
-    info = plistlib.loads((root / APP / "Contents/Info.plist").read_bytes())
+    primary = INSTANCE_EXECUTABLE if instance else APP / "Contents/MacOS/hex-vst3-factory-scan"
+    macho(root / primary, 2)
+    info = plistlib.loads((root / app / "Contents/Info.plist").read_bytes())
     if minimal:
-        allowed = {str(APP / member) for member in (
-            "Contents/Info.plist", "Contents/MacOS/hex-vst3-factory-scan",
+        name = "hex-vst3-instance" if instance else "hex-vst3-factory-scan"
+        allowed = {str(app / member) for member in (
+            "Contents/Info.plist", "Contents/MacOS/" + name,
             "Contents/Resources/sdk-notices.json", "Contents/_CodeSignature/CodeResources")}
-        if set(actual) != allowed or data.get("factory_fixtures") != [] or data.get("factory_scan_fault_helper") is not None:
-            raise ValueError("minimal discovery bundle contains unexpected or fault assets")
-        if info.get("CFBundleExecutable") != "hex-vst3-factory-scan" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.vst3.discovery":
-            raise ValueError("unexpected discovery helper package identity")
+        if (set(actual) != allowed or data.get("factory_fixtures") != []
+                or data.get("factory_scan_fault_helper") is not None
+                or (instance and (data.get("instance_helper") != str(INSTANCE_EXECUTABLE)
+                                  or data.get("factory_scan_helper") is not None))):
+            raise ValueError("minimal helper bundle contains unexpected or fault assets")
+        expected_id = "org.portalsurfer.hex.vst3.instance" if instance else "org.portalsurfer.hex.vst3.discovery"
+        if info.get("CFBundleExecutable") != name or info.get("CFBundleIdentifier") != expected_id:
+            raise ValueError("unexpected helper package identity")
         if run:
-            raise ValueError("discovery helper requires owned factory protocol; use scanner fixture qualification")
+            raise ValueError("instance helper requires owned duplex protocol" if instance else
+                             "discovery helper requires owned factory protocol; use scanner fixture qualification")
         return data
     executable = root / EXECUTABLE
     macho(executable, 2)
-    for name in ("effect", "instrument", "lifecycle"):
+    for name in ("effect", "instrument", "lifecycle", "processing"):
         fixture = root / APP / "Contents/Resources/fixtures" / (name + ".vst3")
         info = plistlib.loads((fixture / "Contents/Info.plist").read_bytes())
         if info.get("CFBundleExecutable") != "fixture" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.fixture." + name:
@@ -144,7 +157,11 @@ def verify(receipt, run=False):
     return data
 
 
-def build(sdk, output, *, discovery_only=False):
+def build(sdk, output, *, discovery_only=False, instance_only=False):
+    if discovery_only and instance_only:
+        raise ValueError("choose one minimal helper role")
+    app = INSTANCE_APP if instance_only else APP
+    minimal = discovery_only or instance_only
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("native bootstrap builds require Darwin arm64")
     sdk, output = sdk.resolve(), output.resolve()
@@ -192,18 +209,19 @@ def build(sdk, output, *, discovery_only=False):
                 raise ValueError("unreviewed compiler input: " + str(path))
             base, label = owner
             closure[label + "/" + str(path.relative_to(base))] = sha(path)
-        macho(destination, 8 if "-bundle" in extra else 2, architecture)
+        macho(destination, 8 if "-bundle" in extra else 6 if "-dynamiclib" in extra else 2, architecture)
         # Ad hoc signatures qualify local original fixtures only, not distribution.
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination.parent.parent.parent)], check=True, timeout=120)
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination if "-dynamiclib" in extra else destination.parent.parent.parent)], check=True, timeout=120)
         runtime[str(destination.relative_to(output))] = command(["/usr/bin/otool", "-L", str(destination)]).splitlines()[1:]
 
-    resources = output / APP / "Contents/Resources"
+    resources = output / app / "Contents/Resources"
     resources.mkdir(parents=True, exist_ok=True)
     digests, factory_fixtures = {}, []
-    if not discovery_only:
+    if not minimal:
         for instrument, name, source in ((0, "effect", "macos_fixture.cpp"),
                                          (1, "instrument", "macos_fixture.cpp"),
-                                         (0, "lifecycle", "macos_lifecycle_fixture.cpp")):
+                                         (0, "lifecycle", "macos_lifecycle_fixture.cpp"),
+                                         (0, "processing", "macos_processing_fixture.cpp")):
             bundle = resources / "fixtures" / (name + ".vst3")
             (bundle / "Contents").mkdir(parents=True)
             info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
@@ -250,27 +268,33 @@ def build(sdk, output, *, discovery_only=False):
     header.write_text('#define HEX_SDK_PIN "' + PINS["sdk"] + '"\n' +
                       '#define HEX_PUBLIC_SDK_PIN "' + PINS["public.sdk"] + '"\n' + "".join(
         '#define HEX_' + name.upper() + '_SHA256 "' + digest + '"\n' for name, digest in digests.items()))
-    (output / APP / "Contents/Info.plist").write_bytes(plistlib.dumps({
-        "CFBundleExecutable": "hex-vst3-factory-scan" if discovery_only else "hex-vst3-host",
-        "CFBundleIdentifier": "org.portalsurfer.hex.vst3.discovery" if discovery_only else "org.portalsurfer.hex.vst3.bootstrap",
+    (output / app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleExecutable": "hex-vst3-instance" if instance_only else ("hex-vst3-factory-scan" if discovery_only else "hex-vst3-host"),
+        "CFBundleIdentifier": "org.portalsurfer.hex.vst3.instance" if instance_only else ("org.portalsurfer.hex.vst3.discovery" if discovery_only else "org.portalsurfer.hex.vst3.bootstrap"),
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "LSBackgroundOnly": True,
     }, sort_keys=True))
     # CommonCrypto's legacy one-shot function remains available for local identity.
-    if not discovery_only:
+    if not minimal:
         compile_one("macos_helper.mm", output / EXECUTABLE, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     scan_executable = APP / "Contents/MacOS/hex-vst3-factory-scan"
-    compile_one("macos_scan.mm", output / scan_executable, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
+    if instance_only:
+        compile_one("macos_instance_worker.mm", output / INSTANCE_EXECUTABLE, ["-framework", "Foundation", "-Wno-deprecated-declarations"])
+    else:
+        compile_one("macos_scan.mm", output / scan_executable, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     reply_hang = APP / "Contents/MacOS/hex-vst3-factory-scan-reply-hang"
-    if not discovery_only:
+    if not minimal:
         compile_one("macos_scan.mm", output / reply_hang,
                     ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations", "-DHEX_SCAN_HANG_AFTER_REPLY=1"])
-        compile_one("launch_ignored.cpp", output / APP / "Contents/MacOS/hex-vst3-launch-ignored", [])
+        compile_one("launch_ignored.cpp", output / app / "Contents/MacOS/hex-vst3-launch-ignored", [])
+        compile_one("launch_ignored.cpp", output / app / "Contents/MacOS/hex-vst3-autoreap-driver.dylib",
+                    ["-dynamiclib", "-DHEX_LAUNCH_IGNORED_DYLIB=1"])
     (resources / "sdk-notices.json").write_text(json.dumps(licenses, indent=2) + "\n")
-    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / APP)], check=True, timeout=120)
-    receipt = {"version": 1, "scope": "native-macos-factory-discovery" if discovery_only else "original-macos-bootstrap", "platform": "darwin-arm64",
-               "sdk_pins": PINS, "source_sha256": source_digest(), "factory_scan_helper": str(scan_executable),
+    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / app)], check=True, timeout=120)
+    receipt = {"version": 1, "scope": "native-macos-instance" if instance_only else ("native-macos-factory-discovery" if discovery_only else "original-macos-bootstrap"), "platform": "darwin-arm64",
+               "sdk_pins": PINS, "source_sha256": source_digest(), "factory_scan_helper": None if instance_only else str(scan_executable),
+               "instance_helper": str(INSTANCE_EXECUTABLE) if instance_only else None,
                "factory_fixtures": factory_fixtures,
-               "factory_scan_fault_helper": None if discovery_only else str(reply_hang),
+               "factory_scan_fault_helper": None if minimal else str(reply_hang),
                "source_commit": command(["git", "rev-parse", "HEAD"], cwd=ROOT),
                "source_dirty": bool(command(["git", "status", "--porcelain"], cwd=ROOT)),
                "compiler": {"path": str(compiler), "sha256": sha(compiler), "version": command([str(compiler), "--version"])},
@@ -282,11 +306,11 @@ def build(sdk, output, *, discovery_only=False):
                              "settings_sha256": sha(apple_sdk / "SDKSettings.json")},
                "runtime": {"os_build": command(["/usr/bin/sw_vers", "-buildVersion"]), "dependencies": runtime,
                            "qualification": "system runtime install names and OS build; shared-cache images are not individually hashed or compatibility-qualified"},
-               "build_commands": commands, "build_closure": closure, "bundle_files": inventory(output / APP),
-               "signing": "ad-hoc, local original fixtures only; no entitlements or notarization"}
+               "build_commands": commands, "build_closure": closure, "bundle_files": inventory(output / app),
+               "signing": "ad-hoc local helper build; no entitlements or notarization"}
     path = output / "controlled-macos.json"
     path.write_text(json.dumps(receipt, indent=2) + "\n")
-    verify(path, run=not discovery_only)
+    verify(path, run=not minimal)
     return path
 
 
@@ -294,7 +318,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     builder = commands.add_parser("build")
-    builder.add_argument("--discovery-only", action="store_true", help="minimal deployable factory scanner, without bootstrap/fault fixtures")
+    roles = builder.add_mutually_exclusive_group()
+    roles.add_argument("--discovery-only", action="store_true", help="minimal deployable factory scanner, without bootstrap/fault fixtures")
+    roles.add_argument("--instance-only", action="store_true", help="minimal source-bound ordinary-instance worker, without discovery/fault fixtures")
     builder.add_argument("--sdk", type=Path, required=True)
     builder.add_argument("--output", type=Path, required=True)
     checker = commands.add_parser("verify")
@@ -302,7 +328,7 @@ def main():
     checker.add_argument("--run", action="store_true")
     args = parser.parse_args()
     try:
-        result = build(args.sdk, args.output, discovery_only=args.discovery_only) if args.mode == "build" else verify(args.receipt, args.run)
+        result = build(args.sdk, args.output, discovery_only=args.discovery_only, instance_only=args.instance_only) if args.mode == "build" else verify(args.receipt, args.run)
         print(result if isinstance(result, Path) else json.dumps({"verified": True, "scope": result["scope"]}))
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, "controlled macOS bootstrap refused: " + str(error) + "\n")

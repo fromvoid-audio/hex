@@ -2,6 +2,7 @@ use super::*;
 use hex_project::{Command, Created, Editor, GainInterpolation, Project};
 fn point(raw: u64, gain: f32) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat: BeatTime::from_raw(raw),
         gain,
         outgoing: GainInterpolation::Linear,
@@ -346,7 +347,7 @@ mod native {
         visual.simulate_keystrokes("down escape");
         entity.read_with(visual, |view, cx| {
             assert!(
-                view.browser.search.read(cx).content.is_empty(),
+                view.browser.search.read(cx).text().is_empty(),
                 "browser escape must resolve after cancelling gain edit"
             )
         });
@@ -578,6 +579,7 @@ mod native {
             owner.gain = 0.25;
             owner.gain_touch_epoch = 1;
             owner.gain_touch_spans = vec![hex_project::GainTouchSpan {
+                source_start: BeatTime::ONE,
                 start: BeatTime::ONE,
                 end: BeatTime::from_quarters(100).unwrap(),
                 context: hex_project::GainTouchContext {

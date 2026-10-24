@@ -11,6 +11,7 @@
 #include "macos_lifecycle_case.hpp"
 #include "macos_host_case.hpp"
 #include "macos_stream_case.hpp"
+#include "macos_processing_case.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -91,6 +92,17 @@ static bool fixture(const char* kind,const char* expected) {
             CFRelease(bundle);
             return ok;
         }
+        if (std::strcmp(kind,"processing")==0) {
+            ok=processing_case(bundle,factory);
+            if (!processing_evidence.closed) return ok; // retain live custody until process exit
+            if (factory) factory->release();
+            if (!exit()) return false;
+            if (loaded) CFBundleUnloadExecutable(bundle);
+            processing_evidence.unloaded=!CFBundleIsExecutableLoaded(bundle);
+            ok=processing_evidence.unloaded && ok;
+            CFRelease(bundle);
+            return ok;
+        }
         PClassInfo info{};
         if(factory && factory->countClasses()==1 && factory->getClassInfo(0,&info)==kResultOk) {
             IComponent* component=nullptr;
@@ -151,6 +163,16 @@ static bool fixture(const char* kind,const char* expected) {
 
 int main(int argc,char** argv) {
     @autoreleasepool {
+        if (argc==3 && !std::strcmp(argv[1],"--processing-self-test")) {
+            const size_t length=std::strlen(argv[2]);
+            if (!length || length>2) return 2;
+            int scenario=0;
+            for (size_t n=0;n<length;++n) { if (argv[2][n]<'0' || argv[2][n]>'9') return 2; scenario=scenario*10+(argv[2][n]-'0'); }
+            if (scenario>31) return 2;
+            processing_evidence.scenario=scenario;
+            try { const bool valid=fixture("processing",HEX_PROCESSING_SHA256); print_processing(); return valid?0:1; }
+            catch (...) { std::fprintf(stderr,"processing fault; module custody retained until process exit\n"); return 1; }
+        }
         if (argc==2 && !std::strcmp(argv[1],"--stream-fixture")) {
             hex_stream_fixture::enabled=true; lifecycle_evidence.mode=1; lifecycle_evidence.failure=0;
             try { return fixture("lifecycle",HEX_LIFECYCLE_SHA256)?0:1; }

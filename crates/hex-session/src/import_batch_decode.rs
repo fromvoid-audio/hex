@@ -206,6 +206,7 @@ impl From<SessionError> for AudioBatchError {
 pub struct AudioBatchImport {
     paths: Vec<PathBuf>,
     destination: AudioBatchDestination,
+    options: crate::import_batch::AudioImportOptions,
     context: AudioBatchContext,
     project: Project,
     resident_frames: u64,
@@ -223,7 +224,14 @@ impl AudioBatchImport {
         context: AudioBatchContext,
     ) -> Result<Self, AudioBatchError> {
         let control = Arc::new(AudioBatchControl::new(paths.len())?);
-        Self::capture_with_control(paths, destination, session, context, control)
+        Self::capture_with_control(
+            paths,
+            destination,
+            session,
+            context,
+            control,
+            Default::default(),
+        )
     }
 
     pub(crate) fn capture_with_control(
@@ -232,6 +240,7 @@ impl AudioBatchImport {
         session: &Session,
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
+        options: crate::import_batch::AudioImportOptions,
     ) -> Result<Self, AudioBatchError> {
         if context.active_gesture {
             return Err(AudioBatchError::ContextChanged);
@@ -289,6 +298,7 @@ impl AudioBatchImport {
             control,
             paths,
             destination,
+            options,
             context,
             project: session.project().clone(),
             resident_frames: session.resident_frames(),
@@ -383,6 +393,12 @@ impl AudioBatchImport {
             return Err(AudioBatchError::ContextChanged);
         }
         if session.audio_mode() == crate::DocumentAudioMode::VerifiedStreaming {
+            if self.options.warp != hex_project::AudioImportWarp::Off {
+                return Err(SessionError::Invalid(
+                    "auto-warp import is unavailable for this audio backend",
+                )
+                .into());
+            }
             return self.run_verified(session, previous, current);
         }
         let mut remaining = self
@@ -457,7 +473,7 @@ impl AudioBatchImport {
             self.destination,
             &self.project,
             previous,
-            true,
+            self.options,
             || {
                 if let Err(error) = self.check(current) {
                     admission_error = Some(error);

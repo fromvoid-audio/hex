@@ -15,6 +15,32 @@ pub(super) fn zoom_limit(length: u64) -> u64 {
 pub(super) fn valid_pitch_range(low: u8, rows: u8) -> bool {
     rows > 0 && u16::from(low) + u16::from(rows) <= 128
 }
+/// Pitch wheel uses the current rows as one viewport, with a continuous pitch
+/// anchored under the pointer. Only integer row alignment and MIDI edges shift it.
+/// Each input batch is bounded to four wheel steps, as for horizontal zoom.
+pub(super) fn wheel_pitch_zoom(low: u8, rows: u8, fraction: f32, steps: i8) -> Option<(u8, u8)> {
+    if !valid_pitch_range(low, rows)
+        || !fraction.is_finite()
+        || !(0.0..=1.0).contains(&fraction)
+        || !(-4..=4).contains(&steps)
+    {
+        return None;
+    }
+    let mut next = u16::from(rows);
+    for _ in 0..steps.unsigned_abs() {
+        next = if steps < 0 {
+            (next * 4 / 5).max(1)
+        } else {
+            (next * 5).div_ceil(4).min(128)
+        };
+    }
+    let anchor = f64::from(low) + (1.0 - f64::from(fraction)) * f64::from(rows);
+    let next_low = (anchor - (1.0 - f64::from(fraction)) * f64::from(next))
+        .round()
+        .clamp(0.0, f64::from(128 - next)) as u8;
+    Some((next_low, next as u8))
+}
+
 pub(super) const MIN_HIT_WIDTH_PX: f32 = 4.0;
 pub(super) fn fit_span(clip_length: u64, beat: u64) -> u64 {
     if clip_length > 0 {
@@ -401,7 +427,7 @@ fn insert_geometry(key: SceneKey, start: u64, duration: u64, pitch: u8) -> Optio
 mod tests {
     use super::{
         HitCycle, MIN_HIT_WIDTH_PX, MidiScene, MidiSceneCache, SceneKey, clamp_start, fit_span,
-        pixel_bounds, zoom_span,
+        pixel_bounds, valid_pitch_range, wheel_pitch_zoom, zoom_span,
     };
     use hex_project::{
         BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, TrackContentSnapshot,
@@ -757,6 +783,49 @@ mod tests {
                 build.as_secs_f64() * 1_000_000.0,
                 start.elapsed().as_secs_f64() * 1_000_000.0
             );
+        }
+    }
+    #[test]
+    fn pitch_wheel_zoom_keeps_valid_rows_and_pointer_anchor_at_pitch_edges() {
+        for (low, rows) in [
+            (0, 1),
+            (127, 1),
+            (0, 128),
+            (48, 24),
+            (0, 12),
+            (116, 12),
+            (60, 1),
+            (40, 64),
+        ] {
+            for fraction in [0.0, 0.5, 1.0] {
+                for steps in [-4, -1, 0, 1, 4] {
+                    let (next_low, next_rows) =
+                        wheel_pitch_zoom(low, rows, fraction, steps).unwrap();
+                    assert!(valid_pitch_range(next_low, next_rows));
+                    if steps < 0 {
+                        assert!(next_rows <= rows);
+                    } else {
+                        assert!(next_rows >= rows);
+                    }
+                    let anchor = f32::from(low) + (1.0 - fraction) * f32::from(rows);
+                    let actual = f32::from(next_low) + (1.0 - fraction) * f32::from(next_rows);
+                    if next_low > 0 && u16::from(next_low) + u16::from(next_rows) < 128 {
+                        assert!((actual - anchor).abs() <= 0.5);
+                    }
+                }
+            }
+        }
+        for (low, rows, fraction, steps) in [
+            (0, 0, 0.5, 1),
+            (127, 2, 0.5, 1),
+            (128, 1, 0.5, 1),
+            (0, 24, f32::NAN, 1),
+            (0, 24, -0.1, 1),
+            (0, 24, 1.1, 1),
+            (0, 24, 0.5, i8::MIN),
+            (0, 24, 0.5, 5),
+        ] {
+            assert_eq!(wheel_pitch_zoom(low, rows, fraction, steps), None);
         }
     }
 }

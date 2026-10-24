@@ -778,6 +778,7 @@ fn ordinary_import_cannot_spend_frames_still_owned_by_captured_export() {
                     control: Arc::new(
                         crate::import_batch_decode::AudioBatchControl::new(2).unwrap(),
                     ),
+                    options: Default::default(),
                 },
             };
             service.submit(request).unwrap();

@@ -5,14 +5,10 @@ use hex_engine::live::{Command, Mode, NAMES, TRACKS};
 
 impl Daw {
     pub(crate) fn button(label: &'static str, active: bool) -> Div {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .min_w(px(28.0))
             .h(px(26.0))
             .px_2()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_sm()
             .bg(rgb(if active {
                 theme::color(theme::PaletteRole::PrimaryDark)
@@ -24,8 +20,6 @@ impl Daw {
             } else {
                 theme::color(theme::PaletteRole::Muted)
             }))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-            .child(theme::text(label))
     }
 
     pub(crate) fn with_tooltip(

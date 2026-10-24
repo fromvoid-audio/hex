@@ -20,6 +20,29 @@ pub(crate) use device::{
 use std::borrow::Cow;
 use std::cell::Cell;
 
+/// Common widget palette for device panels, workspace fields and preferences.
+pub(crate) fn control_style() -> hex_widgets::ControlStyle {
+    device_style(DeviceStyleRole::Control)
+}
+
+/// Common workspace action colors, resolved from the native widget palette.
+pub(crate) fn action_style() -> hex_widgets::ActionStyle {
+    let style = control_style();
+    hex_widgets::ActionStyle {
+        background: style.raised,
+        text: readable_text(style.raised, style.text),
+        hover_background: style.hover,
+        hover_text: None,
+    }
+}
+
+/// Shared translucency for arranger and clip-editor time ranges.
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
+
+/// Explicit track membership stays quieter than time/clip selection overlays.
+pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
+pub(crate) const TRACK_SELECTION_EDGE_OPACITY: f32 = 0.55;
+
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteRole {
@@ -46,6 +69,7 @@ pub enum PaletteRole {
 struct ThemeTokens {
     colors: hex_preferences::ThemePreferences,
     elements: [ElementColors; 10],
+    muted_clip_fills: [u32; 10],
     clip: u32,
     clip_fill: u32,
     clip_text: u32,
@@ -64,10 +88,12 @@ impl ThemeTokens {
         let background = colors.background.packed();
         let text = colors.text.packed();
         let primary = colors.primary.packed();
+        let elements = hex_project::ElementColor::ALL
+            .map(|identity| resolve_element_colors(identity, lighten(background, 5)));
         Self {
             colors,
-            elements: hex_project::ElementColor::ALL
-                .map(|identity| resolve_element_colors(identity, lighten(background, 5))),
+            muted_clip_fills: elements.map(|colors| muted_clip_fill(colors.accent)),
+            elements,
             clip: mix(background, text, 0.15),
             clip_fill: mix(primary, text, 0.15),
             clip_text: contrast_text(mix(primary, text, 0.15), text),
@@ -259,17 +285,79 @@ fn resolve_element_colors(identity: hex_project::ElementColor, surface: u32) -> 
         accent_text: contrast_text(accent, 0x000000),
     }
 }
+/// Darken the track hue by removing neutral light, increasing saturation without
+/// shifting its hue. Resolve once per theme; retain 4.5:1 contrast for the existing
+/// black waveform/note ink and Console foregrounds, including historical gray.
+fn muted_clip_fill(accent: u32) -> u32 {
+    (0..=40)
+        .rev()
+        .map(|amount| darken(accent, amount))
+        .find(|fill| contrast_ratio(*fill, 0x000000) >= 4.5)
+        .unwrap_or(accent)
+}
+
+/// Shared audio/MIDI body, Console cell, drag preview and title fill. The persisted
+/// `Muted` flavor is darker and more saturated; Accent keeps the track hue.
+/// Track strips, sections and browser marker palettes retain their own surfaces.
 pub fn clip_fill(
     color: hex_project::ElementColor,
     flavor: hex_project::ClipFlavor,
     selected: bool,
 ) -> u32 {
-    let colors = element_colors(color);
-    let base = match flavor {
-        hex_project::ClipFlavor::Muted => colors.muted,
-        hex_project::ClipFlavor::Accent => colors.accent,
-    };
+    let base = ACTIVE_THEME.with(|theme| {
+        let theme = theme.get();
+        match flavor {
+            hex_project::ClipFlavor::Muted => theme.muted_clip_fills[color as usize],
+            hex_project::ClipFlavor::Accent => theme.elements[color as usize].accent,
+        }
+    });
     if selected { lighten(base, 22) } else { base }
+}
+
+/// Activation is independent of the persisted color flavor. Keep inactive clips
+/// visible and retain selection borders while reducing their fill saturation.
+pub fn clip_activity_fill(
+    color: hex_project::ElementColor,
+    flavor: hex_project::ClipFlavor,
+    selected: bool,
+    active: bool,
+) -> u32 {
+    let fill = clip_fill(color, flavor, selected);
+    if active {
+        fill
+    } else {
+        mix(self::color(PaletteRole::Surface), fill, 0.18)
+    }
+}
+
+/// Restrained Main section surfaces; selection changes the whole fill and is also
+/// marked with a check in the lane. Hover remains distinct in both states.
+pub(crate) fn section_colors(
+    identity: hex_project::ElementColor,
+    selected: bool,
+    hovered: bool,
+) -> (u32, u32, u32) {
+    let surface = color(PaletteRole::Surface);
+    let hue = element_colors(identity).muted;
+    let fill = mix(
+        surface,
+        hue,
+        match (selected, hovered) {
+            (false, false) => 0.30,
+            (false, true) => 0.44,
+            (true, false) => 0.70,
+            (true, true) => 0.82,
+        },
+    );
+    let text = contrast_text(fill, color(PaletteRole::Text));
+    let border = if selected {
+        text
+    } else if hovered {
+        mix(hue, text, 0.4)
+    } else {
+        mix(surface, hue, 0.5)
+    };
+    (fill, text, border)
 }
 
 #[cfg(test)]
@@ -318,6 +406,85 @@ mod tests {
         apply_preferences(before);
         assert_eq!(preferences(), before);
         assert_eq!(color(PaletteRole::Primary), before.primary.packed());
+    }
+    #[test]
+    fn clip_flavors_remain_distinct_selected_and_legible_across_theme_surfaces() {
+        let _restore = RestoreTheme(preferences());
+        let defaults = hex_preferences::ThemePreferences::default();
+        let mut weakest = f32::INFINITY;
+        for surface in [
+            defaults.background.packed(),
+            0x000000,
+            0xf5f0e6,
+            0x2a1438,
+            0x808080,
+        ] {
+            apply_preferences(hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(
+                    (surface >> 16) as u8,
+                    (surface >> 8) as u8,
+                    surface as u8,
+                ),
+                ..defaults
+            });
+            for hue in hex_project::ElementColor::ALL {
+                let colors = element_colors(hue);
+                for selected in [false, true] {
+                    let regular = clip_fill(hue, hex_project::ClipFlavor::Muted, selected);
+                    let accent = clip_fill(hue, hex_project::ClipFlavor::Accent, selected);
+                    let separation = contrast_ratio(regular, accent);
+                    assert_eq!(
+                        accent,
+                        if selected {
+                            lighten(colors.accent, 22)
+                        } else {
+                            colors.accent
+                        }
+                    );
+                    let channels = |color: u32| [color >> 16 & 255, color >> 8 & 255, color & 255];
+                    let saturation = |color| {
+                        let c = channels(color);
+                        let max = *c.iter().max().unwrap() as f32;
+                        let min = *c.iter().min().unwrap() as f32;
+                        (max - min) / max
+                    };
+                    assert!(
+                        channels(regular)
+                            .into_iter()
+                            .zip(channels(accent))
+                            .all(|(muted, accent)| muted < accent),
+                        "muted clips must be darker for {hue:?}"
+                    );
+                    assert!(
+                        saturation(regular) > saturation(accent),
+                        "muted clips must be more saturated for {hue:?}"
+                    );
+                    weakest = weakest.min(separation);
+                    for (fill, cell_text) in
+                        [(regular, colors.muted_text), (accent, colors.accent_text)]
+                    {
+                        // Actual body ink is black; Console uses the cached text
+                        // role, and title strips derive text from their final fill.
+                        assert!(contrast_ratio(fill, 0x000000) >= 4.5);
+                        assert!(contrast_ratio(fill, cell_text) >= 4.5);
+                        assert!(
+                            contrast_ratio(fill, readable_text(fill, defaults.text.packed()))
+                                >= 4.5
+                        );
+                    }
+                    println!(
+                        "palette_swatch surface={surface:06x} hue={hue:?} selected={selected} regular={regular:06x} accent={accent:06x} separation={separation:.4}"
+                    );
+                }
+            }
+        }
+        // Both flavors retain black ink: the darkest red therefore has less
+        // luminance separation than the former pale tint. Selection must keep
+        // the dark, saturated flavor visibly distinct as well as readable.
+        assert!(
+            weakest >= 1.35,
+            "weakest regular/accent separation: {weakest:.4}:1"
+        );
     }
 }
 

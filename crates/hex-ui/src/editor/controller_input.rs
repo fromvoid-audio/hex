@@ -22,6 +22,11 @@ pub(super) struct ControllerInput {
     input: Option<Arc<LiveExpressionInput>>,
     held_notes: Option<Arc<hex_midi::HeldNoteInput>>,
     step_owner: Option<(u64, hex_project::TrackId, hex_project::ClipId)>,
+    live_owner: Option<(u64, hex_project::TrackId, hex_project::ClipId)>,
+    live_floor: u64,
+    live_computer_floor: u64,
+    live_floor_pending: bool,
+    displayed_notes: Option<hex_midi::HeldNotes>,
     step_floor: u64,
     step_floor_pending: bool,
     step_faulted: bool,
@@ -63,8 +68,21 @@ impl ControllerInput {
             self.step_floor_pending = false;
         }
     }
+    fn discard_live_prefix(&mut self) {
+        self.live_floor_pending = true;
+        if let Some(input) = &self.held_notes
+            && let hex_midi::HeldNotesRead::Snapshot(notes) = input.read()
+        {
+            self.live_floor = notes.through();
+            self.live_floor_pending = false;
+        }
+    }
     fn cancel(&mut self) {
         self.step_owner = None;
+        self.live_owner = None;
+        self.live_floor = 0;
+        self.live_floor_pending = false;
+        self.displayed_notes = None;
         self.step_floor = 0;
         self.step_floor_pending = false;
         if let Some(input) = self.input.take() {
@@ -105,8 +123,7 @@ impl EditorView {
     /// Called for every rendered focus/clip context. Both leaving and entering
     /// establish a floor, excluding keys pressed while the editor was unfocused.
     pub(super) fn sync_hardware_step_context(&mut self, window: &Window) {
-        let owner = (self.midi_step.enabled
-            && window.is_window_active()
+        let live_owner = (window.is_window_active()
             && self.midi_focus.is_focused(window)
             && self.clip_view_open)
             .then(|| {
@@ -115,6 +132,15 @@ impl EditorView {
                     .map(|(track, clip)| (self.project_generation, track, clip))
             })
             .flatten();
+        if live_owner != self.controller_input.live_owner {
+            self.controller_input.live_owner = live_owner;
+            self.controller_input.live_computer_floor = self.computer_keyboard.physical_through();
+            self.controller_input.discard_live_prefix();
+        }
+        if self.controller_input.live_floor_pending {
+            self.controller_input.discard_live_prefix();
+        }
+        let owner = live_owner.filter(|_| self.midi_step.enabled);
         if owner != self.controller_input.step_owner {
             self.controller_input.step_owner = owner;
             self.controller_input.discard_step_prefix();
@@ -125,7 +151,50 @@ impl EditorView {
     }
     pub(super) fn invalidate_hardware_step(&mut self) {
         self.controller_input.discard_step_prefix();
+        self.controller_input.discard_live_prefix();
+        self.controller_input.live_computer_floor = self.computer_keyboard.physical_through();
     }
+
+    pub(super) fn live_computer_floor(&self) -> u64 {
+        self.controller_input.live_computer_floor
+    }
+
+    pub(super) fn live_midi_context(&self) -> bool {
+        self.controller_input.live_owner.is_some()
+            && self.controller_input.live_owner
+                == self
+                    .selected_track
+                    .zip(self.detail_clip_id())
+                    .map(|(track, clip)| (self.project_generation, track, clip))
+    }
+
+    pub(super) fn hardware_live_notes(&self) -> Option<(hex_midi::HeldNotes, u64, u8)> {
+        if !self.live_midi_context()
+            || self.controller_input.live_floor_pending
+            || self.controller_input.step_faulted
+            || self.controller_input.target != self.controller_target()
+        {
+            return None;
+        }
+        match self.controller_input.held_notes.as_ref()?.read() {
+            hex_midi::HeldNotesRead::Snapshot(notes) => Some((
+                notes,
+                self.controller_input.live_floor,
+                self.controller_input.channel,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Poll the existing bounded capture endpoint so NoteOff and reset repaint
+    /// even when expression and project state have not changed. No audio writes.
+    pub(super) fn tick_midi_pitch_feedback(&mut self) -> bool {
+        let next = self.hardware_live_notes().map(|(notes, _, _)| notes);
+        let changed = next != self.controller_input.displayed_notes;
+        self.controller_input.displayed_notes = next;
+        changed
+    }
+
     /// Busy/invalid endpoints refuse the whole step, including a false rest.
     pub(super) fn hardware_step_notes(
         &self,
@@ -215,17 +284,13 @@ impl EditorView {
                 .iter()
                 .map(|port| theme::text(&port.name)),
         );
-        let port_config = SelectorConfig::new(
-            "controller-input-port",
-            choices,
-            0,
-            super::device_panel::control_style(),
-        );
+        let port_config =
+            SelectorConfig::new("controller-input-port", choices, 0, theme::control_style());
         let channel_config = SelectorConfig::new(
             "controller-input-channel",
             (1..=16).map(|channel| theme::text(format!("channel {channel}"))),
             usize::from(self.controller_input.channel),
-            super::device_panel::control_style(),
+            theme::control_style(),
         );
         let (Ok(port_config), Ok(channel_config)) = (port_config, channel_config) else {
             self.error = Some("controller input options exceed supported limits".into());
@@ -1227,3 +1292,7 @@ fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui
         );
     });
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pitch_feedback_ui_tests.rs"]
+mod pitch_feedback_tests;

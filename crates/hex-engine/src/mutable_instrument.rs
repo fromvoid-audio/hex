@@ -640,13 +640,27 @@ impl MutableInstrumentTrackRuntime {
     /// frame-zero NoteOff in its next segment; feedback and release state stay
     /// owned and are not reset.
     pub(crate) fn cut_gate_deadlines_at(&mut self, performance_frame: u64) {
+        self.reconcile_gate_deadlines_at(performance_frame, |_| Some(performance_frame));
+    }
+
+    /// Apply admitted per-occurrence gate cuts without resetting voices or
+    /// changing their dispatch identity. The existing event path emits the
+    /// NoteOff at the exact future offset, or zero at a publication cutoff.
+    pub(crate) fn reconcile_gate_deadlines_at(
+        &mut self,
+        performance_frame: u64,
+        mut cutoff: impl FnMut(MutableOccurrenceSignature) -> Option<u64>,
+    ) {
         let release_tail_frames = self.max_release_tail_frames();
         for occurrence in &mut self.primary {
             if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
-                occurrence.gate_end_frame = performance_frame;
-                occurrence.note_off_sent = false;
-                occurrence.quiet_deadline_frame =
-                    performance_frame.saturating_add(release_tail_frames);
+                if let Some(deadline) = cutoff(occurrence.signature)
+                    .map(|deadline| deadline.max(performance_frame))
+                    .filter(|deadline| *deadline < occurrence.gate_end_frame)
+                {
+                    occurrence.gate_end_frame = deadline;
+                    occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
+                }
             }
         }
     }

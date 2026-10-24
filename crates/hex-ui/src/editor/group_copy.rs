@@ -42,7 +42,16 @@ impl Pending {
         self.remaining = Some(remaining);
     }
     fn matches(&self, request: &Request) -> bool {
-        matches!(request, Request::Edit(Command::MoveClipsWithOverwrite { clips, anchor, track, position, copy: true })
+        let command = match request {
+            Request::Edit(command) => command,
+            Request::MoveExistingClips {
+                project_generation,
+                revision,
+                command,
+            } if *project_generation == self.generation && *revision == self.revision => command,
+            _ => return false,
+        };
+        matches!(command, Command::MoveClipsWithOverwrite { clips, anchor, track, position, copy: true }
             if self.remaining.is_none() && *anchor == self.anchor && *track == self.track
             && *position == self.position && clips.len() == self.count)
     }

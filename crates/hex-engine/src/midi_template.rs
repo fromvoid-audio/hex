@@ -124,17 +124,24 @@ pub(super) struct SourceSpan {
     pub(super) velocity: u8,
 }
 
-pub(crate) fn session_source_note_has_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
-    source_note_has_intro_occurrence(source, note)
-        || source_note_has_repeat_occurrence(source, note)
+pub(crate) fn session_source_note_has_occurrence(
+    source: &MidiSource,
+    offset: BeatTime,
+    note: &MidiNote,
+) -> bool {
+    source_note_has_repeat_occurrence(source, note)
+        || source_note_has_intro_occurrence(source, note)
+            && note
+                .start()
+                .raw()
+                .saturating_add(note.duration().raw())
+                .min(source.effective_end().raw())
+                .saturating_sub(source.source_start().raw())
+                > offset.raw()
 }
 
 fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
-    let intro_end = if source.looping() {
-        source.loop_end().raw()
-    } else {
-        source.source_length().raw()
-    };
+    let intro_end = source.effective_end().raw();
     note.start().raw() >= source.source_start().raw() && note.start().raw() < intro_end
 }
 
@@ -192,6 +199,8 @@ pub struct PreparedMidiSourceTemplate {
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
     first_pass: u64,
+    intro_iteration: u64,
+    repeat_iteration: u64,
     period: Option<u64>,
     source: MidiSourcePlayback,
     intro: Vec<SourceEdge>,
@@ -217,7 +226,14 @@ impl PreparedMidiSourceTemplate {
     ) -> Result<Self, MidiTemplateError> {
         clip.source_playback()
             .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
-        Self::prepare_source(track, clip.id(), clip.source(), timing)
+        Self::prepare_source_window_active(
+            track,
+            clip.id(),
+            clip.source(),
+            clip.playback_offset(),
+            clip.active(),
+            timing,
+        )
     }
 
     /// Prepare an independently-owned MIDI source, including Session clips
@@ -228,17 +244,48 @@ impl PreparedMidiSourceTemplate {
         source_data: &MidiSource,
         timing: &T,
     ) -> Result<Self, MidiTemplateError> {
-        let sample_rate = timing.sample_rate();
-        let max_micro_bpm = timing.max_micro_bpm();
-        Self::prepare_source_admitted(track, clip, source_data, sample_rate, max_micro_bpm)
+        Self::prepare_source_window(track, clip, source_data, BeatTime::ZERO, timing)
     }
 
-    /// Constructor preparation needs only these validated admission bounds;
-    /// runtime queries still borrow the actual prepared musical clock.
-    pub(crate) fn prepare_source_admitted(
+    /// Prepare an ongoing source beginning at an elapsed source-law window.
+    /// Crossing gates are chased at local zero with their remaining duration.
+    /// Original repeat ordinals survive normalization; skipped loops are never
+    /// expanded. Session launch still ignores finite Arrangement clip length.
+    pub fn prepare_source_window<T: MidiTiming + ?Sized>(
         track: TrackId,
         clip: ClipId,
         source_data: &MidiSource,
+        playback_offset: BeatTime,
+        timing: &T,
+    ) -> Result<Self, MidiTemplateError> {
+        Self::prepare_source_window_active(track, clip, source_data, playback_offset, true, timing)
+    }
+
+    pub(crate) fn prepare_source_window_active<T: MidiTiming + ?Sized>(
+        track: TrackId,
+        clip: ClipId,
+        source_data: &MidiSource,
+        playback_offset: BeatTime,
+        active: bool,
+        timing: &T,
+    ) -> Result<Self, MidiTemplateError> {
+        Self::prepare_source_window_admitted(
+            track,
+            clip,
+            source_data,
+            playback_offset,
+            active,
+            timing.sample_rate(),
+            timing.max_micro_bpm(),
+        )
+    }
+
+    pub(crate) fn prepare_source_window_admitted(
+        track: TrackId,
+        clip: ClipId,
+        source_data: &MidiSource,
+        playback_offset: BeatTime,
+        active: bool,
         sample_rate: u32,
         max_micro_bpm: u64,
     ) -> Result<Self, MidiTemplateError> {
@@ -247,15 +294,14 @@ impl PreparedMidiSourceTemplate {
                 "invalid midi admission timing",
             ));
         }
-        let source = MidiSourcePlayback::new(
-            source_data.source_length(),
-            source_data.source_start(),
-            source_data
-                .looping()
-                .then_some((source_data.loop_start(), source_data.loop_end())),
-            source_data.source_length(),
-        )
-        .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+        let horizon = u64::MAX
+            .checked_sub(playback_offset.raw())
+            .filter(|remaining| *remaining != 0)
+            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
+        let source = source_data
+            .playback_for_duration(BeatTime::from_raw(horizon))
+            .and_then(|source| source.with_playback_offset(playback_offset))
+            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
         let source_start = source.source_start().raw();
         let first_pass = if let Some((_, loop_end)) = source.loop_range() {
             loop_end
@@ -264,14 +310,31 @@ impl PreparedMidiSourceTemplate {
                 .ok_or(MidiTemplateError::ArithmeticOverflow)?
         } else {
             source
-                .source_length()
+                .initial_end()
                 .raw()
                 .checked_sub(source_start)
                 .ok_or(MidiTemplateError::ArithmeticOverflow)?
         };
-        let period = source
-            .loop_range()
+        let period = active
+            .then(|| source.loop_range())
+            .flatten()
             .map(|(loop_start, loop_end)| loop_end.raw() - loop_start.raw());
+        let elapsed = playback_offset.raw();
+        let (first_pass, intro_iteration, repeat_iteration) = if elapsed < first_pass {
+            (first_pass - elapsed, 0, 1)
+        } else if let Some(period) = period {
+            let iteration = (elapsed - first_pass) / period + 1;
+            let remaining = period - (elapsed - first_pass) % period;
+            (
+                remaining.min(horizon),
+                iteration,
+                iteration
+                    .checked_add(1)
+                    .ok_or(MidiTemplateError::BeatDomainExhausted)?,
+            )
+        } else {
+            (0, 0, 1)
+        };
         let max_window_raw = conservative_window_raw(sample_rate, max_micro_bpm)?;
 
         if let Some(period) = period {
@@ -279,9 +342,8 @@ impl PreparedMidiSourceTemplate {
                 .map_err(|_| MidiTemplateError::LoopPeriodTooShortForAdmission)?;
         }
 
-        let max_edges = source_data
-            .notes()
-            .len()
+        let note_count = if active { source_data.notes().len() } else { 0 };
+        let max_edges = note_count
             .checked_mul(4)
             .ok_or(MidiTemplateError::ArithmeticOverflow)?;
         let mut intro = Vec::new();
@@ -295,43 +357,51 @@ impl PreparedMidiSourceTemplate {
             .try_reserve_exact(max_edges / 2)
             .map_err(|_| MidiTemplateError::Allocation)?;
         intro_spans
-            .try_reserve_exact(source_data.notes().len())
+            .try_reserve_exact(note_count)
             .map_err(|_| MidiTemplateError::Allocation)?;
         repeat_spans
-            .try_reserve_exact(source_data.notes().len())
+            .try_reserve_exact(note_count)
             .map_err(|_| MidiTemplateError::Allocation)?;
-        let intro_end = source
-            .loop_range()
-            .map_or(source.source_length().raw(), |(_, loop_end)| loop_end.raw());
-
-        for note in source_data.notes() {
+        let intro_window = if first_pass == 0 {
+            None
+        } else {
+            Some(
+                source_data
+                    .playback_for_duration(BeatTime::from_raw(first_pass))
+                    .and_then(|source| source.with_playback_offset(playback_offset))
+                    .map_err(|error| MidiTemplateError::InvalidSource(error.0))?,
+            )
+        };
+        for note in source_data.notes().iter().filter(|_| active) {
             let note_start = note.start().raw();
             let note_end = note_start
                 .checked_add(note.duration().raw())
                 .ok_or(MidiTemplateError::InvalidSource("midi note end overflow"))?;
-
-            if source_note_has_intro_occurrence(source_data, note) {
-                let gate_end = note_end.min(intro_end);
-                let gate = gate_end
-                    .checked_sub(note_start)
-                    .ok_or(MidiTemplateError::ArithmeticOverflow)?;
-                require_positive_frame_advance(gate, sample_rate, max_micro_bpm)
-                    .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
-                let onset = note_start - source_start;
-                let offset = gate_end - source_start;
-                intro_spans.push(SourceSpan::from_note(onset, offset, note));
-                intro.push(SourceEdge::from_note(onset, MidiEventKind::NoteOn, note));
-                intro.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
+            if let Some(window) = &intro_window {
+                let plan = window
+                    .note_occurrences(note.start(), note.duration())
+                    .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+                for occurrence in plan.iter() {
+                    let onset = occurrence.timeline_start().raw();
+                    let offset = onset
+                        .checked_add(occurrence.gate_duration().raw())
+                        .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+                    require_positive_frame_advance(offset - onset, sample_rate, max_micro_bpm)
+                        .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
+                    intro_spans.push(SourceSpan::from_note(onset, offset, note));
+                    intro.push(SourceEdge::from_note(onset, MidiEventKind::NoteOn, note));
+                    intro.push(SourceEdge::from_note(offset, MidiEventKind::NoteOff, note));
+                }
             }
-
             if source_note_has_repeat_occurrence(source_data, note) {
                 if let Some((loop_start, loop_end)) = source.loop_range() {
                     let gate_end = note_end.min(loop_end.raw());
-                    let gate = gate_end
-                        .checked_sub(note_start)
-                        .ok_or(MidiTemplateError::ArithmeticOverflow)?;
-                    require_positive_frame_advance(gate, sample_rate, max_micro_bpm)
-                        .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
+                    require_positive_frame_advance(
+                        gate_end - note_start,
+                        sample_rate,
+                        max_micro_bpm,
+                    )
+                    .map_err(|_| MidiTemplateError::GateTooShortForAdmission)?;
                     let onset = note_start - loop_start.raw();
                     let offset = gate_end - loop_start.raw();
                     repeat_spans.push(SourceSpan::from_note(onset, offset, note));
@@ -374,6 +444,8 @@ impl PreparedMidiSourceTemplate {
             sample_rate,
             admitted_max_micro_bpm: max_micro_bpm,
             first_pass,
+            intro_iteration,
+            repeat_iteration,
             period,
             source,
             intro,
@@ -416,11 +488,11 @@ impl PreparedMidiSourceTemplate {
         })
     }
     fn occurrence_span(&self, note: NoteId, iteration: u64) -> Option<(SourceSpan, u128)> {
-        let (spans, base) = if iteration == 0 {
+        let (spans, base) = if iteration == self.intro_iteration {
             (&self.intro_spans, 0_u128)
         } else {
             let period = u128::from(self.period?);
-            let repeat_index = u128::from(iteration.checked_sub(1)?);
+            let repeat_index = u128::from(iteration.checked_sub(self.repeat_iteration)?);
             let base =
                 u128::from(self.first_pass).checked_add(repeat_index.checked_mul(period)?)?;
             (&self.repeat_spans, base)
@@ -570,7 +642,7 @@ impl PreparedMidiSourceTemplate {
             .intro
             .partition_point(|edge| u128::from(edge.phase) < relative_end);
         for edge in &self.intro[begin..end] {
-            self.push_edge(*edge, 0, u128::from(edge.phase), context)?;
+            self.push_edge(*edge, self.intro_iteration, u128::from(edge.phase), context)?;
         }
         Ok(())
     }
@@ -628,7 +700,7 @@ impl PreparedMidiSourceTemplate {
                     .ok_or(MidiTemplateError::BeatDomainExhausted)?;
                 let repeat_number = u64::try_from(iteration)
                     .map_err(|_| MidiTemplateError::BeatDomainExhausted)?
-                    .checked_add(1)
+                    .checked_add(self.repeat_iteration)
                     .ok_or(MidiTemplateError::BeatDomainExhausted)?;
                 self.push_edge(*edge, repeat_number, relative, context)?;
             }
@@ -828,3 +900,6 @@ fn ceil_div(numerator: u128, denominator: u128) -> Result<u128, MidiTemplateErro
             .ok_or(MidiTemplateError::ArithmeticOverflow)
     }
 }
+
+#[cfg(test)]
+mod window_tests;

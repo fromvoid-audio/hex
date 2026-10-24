@@ -6,7 +6,7 @@ use crate::source_overview::OverviewBudget;
 fn actual_worker_old_view_survives_new_open_remains_charged_until_last_reference_and_retry() {
     let files = Files::new(true);
     let standard = OverviewBudget::standard().unwrap().usage();
-    let budget = OverviewBudget::with_limits(128 * 16, standard.max_metadata_bytes).unwrap();
+    let budget = OverviewBudget::with_limits(4 * 16, standard.max_metadata_bytes).unwrap();
     let baseline = budget.usage();
     let service = Service::start_configured_in_overview_domain(
         16000,
@@ -110,7 +110,7 @@ fn actual_worker_old_view_survives_new_open_remains_charged_until_last_reference
     assert!(empty.state.source_overviews.is_empty());
     assert_eq!(
         budget.usage().bin_capacity_bytes,
-        128 * 16,
+        4 * 16,
         "old view retains peak backing after actual New clears Session"
     );
     service.submit(Request::Open(saved.clone())).unwrap();
@@ -133,13 +133,13 @@ fn actual_worker_old_view_survives_new_open_remains_charged_until_last_reference
             .source_overviews
             .shares_storage_with(&empty.state.source_overviews)
     );
-    assert_eq!(budget.usage().bin_capacity_bytes, 128 * 16);
+    assert_eq!(budget.usage().bin_capacity_bytes, 4 * 16);
     drop(saved_event);
     drop(changed);
     drop(loaded);
     assert_eq!(
         budget.usage().bin_capacity_bytes,
-        128 * 16,
+        4 * 16,
         "last external old view still owns the same backing"
     );
     drop(retained);
@@ -155,5 +155,5 @@ fn actual_worker_old_view_survives_new_open_remains_charged_until_last_reference
             .map(|f| f.map(|s| hex_media::waveform::Peak { min: s, max: s }))
             .to_vec()
     );
-    assert_eq!(budget.usage().bin_capacity_bytes, 128 * 16);
+    assert_eq!(budget.usage().bin_capacity_bytes, 4 * 16);
 }

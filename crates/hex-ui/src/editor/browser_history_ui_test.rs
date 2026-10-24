@@ -86,7 +86,9 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
 }
 
 fn query(editor: &gpui::Entity<EditorView>, cx: &mut VisualTestContext) -> String {
-    editor.read_with(cx, |view, cx| view.browser.search.read(cx).content.clone())
+    editor.read_with(cx, |view, cx| {
+        view.browser.search.read(cx).text().to_owned()
+    })
 }
 
 #[gpui::test]
@@ -276,7 +278,7 @@ fn browser_history_query_back_restores_item_before_filter_and_ime_restore_is_not
     visual.run_until_parked();
     click(visual, "browser-history-back");
     editor.read_with(visual,|view,cx| {
-        assert_eq!(view.browser.search.read(cx).content,"");
+        assert_eq!(view.browser.search.read(cx).text(),"");
         assert!(matches!(view.browser_selected_item(cx),Some(crate::editor::browser::BrowserItemKey::File(path)) if path.ends_with("loop.wav")),"query back must restore the original highlighted identity");
     });
     click(visual, "browser-search");
@@ -355,7 +357,7 @@ fn browser_history_same_name_rows_collection_and_queued_query_observer_keep_late
     editor.update(visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("new query", cx));
+            .update(cx, |input, cx| input.set_text("new query", cx));
         view.move_browser_history(false, cx);
     });
     visual.run_until_parked();

@@ -13,8 +13,10 @@ use crate::{BeatTime, Invalid};
 pub struct MidiSourcePlayback {
     source_length: BeatTime,
     source_start: BeatTime,
+    initial_end: BeatTime,
     loop_range: Option<(BeatTime, BeatTime)>,
     arrangement_duration: BeatTime,
+    playback_offset: BeatTime,
 }
 
 impl MidiSourcePlayback {
@@ -23,6 +25,26 @@ impl MidiSourcePlayback {
         source_start: BeatTime,
         loop_range: Option<(BeatTime, BeatTime)>,
         arrangement_duration: BeatTime,
+    ) -> Result<Self, Invalid> {
+        Self::new_with_initial_end(
+            source_length,
+            source_start,
+            loop_range,
+            arrangement_duration,
+            loop_range.map_or(source_length, |(_, end)| end),
+        )
+    }
+
+    /// Retain the full authored source for validation while limiting the first
+    /// audible pass. With no loop this permits a captured cycle to play once
+    /// then become silent, without deleting notes outside that cycle.
+    /// Repeating mappings require the initial end to equal their loop end.
+    pub fn new_with_initial_end(
+        source_length: BeatTime,
+        source_start: BeatTime,
+        loop_range: Option<(BeatTime, BeatTime)>,
+        arrangement_duration: BeatTime,
+        initial_end: BeatTime,
     ) -> Result<Self, Invalid> {
         if source_length == BeatTime::ZERO || arrangement_duration == BeatTime::ZERO {
             return Err(Invalid(
@@ -39,12 +61,38 @@ impl MidiSourcePlayback {
         } else if source_start >= source_length {
             return Err(Invalid("midi source start must be inside its source"));
         }
+        if initial_end > source_length || source_start >= initial_end {
+            return Err(Invalid(
+                "midi initial playback end must follow its start inside the source",
+            ));
+        }
+        if loop_range.is_some_and(|(_, end)| end != initial_end) {
+            return Err(Invalid(
+                "midi repeating initial end must equal its loop end",
+            ));
+        }
         Ok(Self {
             source_length,
             source_start,
+            initial_end,
             loop_range,
             arrangement_duration,
+            playback_offset: BeatTime::ZERO,
         })
+    }
+
+    /// Select a finite elapsed window without rewriting the authored source law.
+    /// Crossing gates are chased at local zero with only their remaining duration.
+    pub fn with_playback_offset(mut self, offset: BeatTime) -> Result<Self, Invalid> {
+        offset
+            .raw()
+            .checked_add(self.arrangement_duration.raw())
+            .ok_or(Invalid("midi playback window end overflow"))?;
+        self.playback_offset = offset;
+        Ok(self)
+    }
+    pub fn playback_offset(self) -> BeatTime {
+        self.playback_offset
     }
 
     /// Construct the current canonical one-shot mapping for a clip.
@@ -60,6 +108,10 @@ impl MidiSourcePlayback {
         self.source_start
     }
 
+    pub fn initial_end(self) -> BeatTime {
+        self.initial_end
+    }
+
     pub fn loop_range(self) -> Option<(BeatTime, BeatTime)> {
         self.loop_range
     }
@@ -71,9 +123,23 @@ impl MidiSourcePlayback {
     /// Source phase at an elapsed clip beat, independent of note content. An
     /// ongoing Session loop can repeat beyond `arrangement_duration`; finite
     /// placement consumers must check their placement duration separately.
+    /// Ongoing loops reduce retained offsets and elapsed time without overflowing.
     /// One-shot sources return `None` at their exclusive end. No note is chased.
     pub fn source_phase_at_elapsed(self, elapsed: BeatTime) -> Option<BeatTime> {
-        let raw = elapsed.raw();
+        let raw = match self.playback_offset.raw().checked_add(elapsed.raw()) {
+            Some(raw) => raw,
+            None => {
+                // Only ongoing queries can exceed the validated finite window.
+                // Retain the ordinary 64-bit path; normalize this larger loop
+                // clock before narrowing back to a representable source phase.
+                let (start, end) = self.loop_range?;
+                let raw = u128::from(self.playback_offset.raw()) + u128::from(elapsed.raw());
+                let first_pass = u128::from(end.raw() - self.source_start.raw());
+                let phase = u128::from(start.raw())
+                    + (raw - first_pass) % u128::from(end.raw() - start.raw());
+                return u64::try_from(phase).ok().map(BeatTime::from_raw);
+            }
+        };
         if let Some((start, end)) = self.loop_range {
             let first_pass = end.raw() - self.source_start.raw();
             let phase = if raw < first_pass {
@@ -88,7 +154,7 @@ impl MidiSourcePlayback {
             self.source_start
                 .raw()
                 .checked_add(raw)
-                .filter(|phase| *phase < self.source_length.raw())
+                .filter(|phase| *phase < self.initial_end.raw())
                 .map(BeatTime::from_raw)
         }
     }
@@ -110,7 +176,10 @@ impl MidiSourcePlayback {
             return Err(Invalid("midi note exceeds its source"));
         }
 
-        let timeline_limit = self.arrangement_duration.raw();
+        let window_start = self.playback_offset.raw();
+        let timeline_limit = window_start
+            .checked_add(self.arrangement_duration.raw())
+            .ok_or(Invalid("midi playback window end overflow"))?;
         let mut initial = None;
         let mut repeats = 0_u64;
         let mut first_repeat = 0_u64;
@@ -152,13 +221,13 @@ impl MidiSourcePlayback {
                 }
             }
         } else if note_start.raw() >= self.source_start.raw()
-            && note_start.raw() < self.source_length.raw()
+            && note_start.raw() < self.initial_end.raw()
         {
             let timeline_start = note_start.raw() - self.source_start.raw();
             if timeline_start < timeline_limit {
                 let gate = note_duration
                     .raw()
-                    .min(self.source_length.raw() - note_start.raw())
+                    .min(self.initial_end.raw() - note_start.raw())
                     .min(timeline_limit - timeline_start);
                 if gate > 0 {
                     initial = Some(MidiNoteOccurrence {
@@ -170,7 +239,38 @@ impl MidiSourcePlayback {
             }
         }
 
+        initial = initial.and_then(|occurrence| {
+            let start = occurrence.timeline_start.raw();
+            let end = start.checked_add(occurrence.gate_duration.raw())?;
+            (end > window_start).then(|| MidiNoteOccurrence {
+                iteration: 0,
+                timeline_start: BeatTime::from_raw(start.saturating_sub(window_start)),
+                gate_duration: BeatTime::from_raw(end - start.max(window_start)),
+            })
+        });
+        let mut repeat_iteration_offset = 0;
+        if repeats != 0
+            && first_repeat <= window_start
+            && repeat_source_gate <= window_start - first_repeat
+        {
+            let skipped = (window_start - first_repeat - repeat_source_gate) / period + 1;
+            if skipped >= repeats {
+                repeats = 0;
+            } else {
+                first_repeat = first_repeat
+                    .checked_add(
+                        skipped
+                            .checked_mul(period)
+                            .ok_or(Invalid("midi playback repeat overflow"))?,
+                    )
+                    .ok_or(Invalid("midi playback repeat overflow"))?;
+                repeats -= skipped;
+                repeat_iteration_offset = skipped;
+            }
+        }
         Ok(MidiNoteOccurrencePlan {
+            window_start,
+            repeat_iteration_offset,
             initial,
             first_repeat,
             period,
@@ -207,6 +307,8 @@ impl MidiNoteOccurrence {
 /// O(1)-sized arithmetic plan for a single note's finite occurrences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiNoteOccurrencePlan {
+    window_start: u64,
+    repeat_iteration_offset: u64,
     initial: Option<MidiNoteOccurrence>,
     first_repeat: u64,
     period: u64,
@@ -240,6 +342,11 @@ pub struct MidiNoteOccurrenceIter {
 impl Iterator for MidiNoteOccurrenceIter {
     type Item = MidiNoteOccurrence;
 
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.ordinal = self.ordinal.checked_add(u64::try_from(n).ok()?)?;
+        self.next()
+    }
+
     fn next(&mut self) -> Option<Self::Item> {
         let initial_offset = u64::from(self.plan.initial.is_some());
         if let Some(initial) = self.plan.initial {
@@ -256,14 +363,22 @@ impl Iterator for MidiNoteOccurrenceIter {
             .plan
             .first_repeat
             .checked_add(repeat_index.checked_mul(self.plan.period)?)?;
-        let gate_duration = self
-            .plan
-            .repeat_source_gate
-            .min(self.plan.timeline_limit - timeline_start);
+        let end = timeline_start.checked_add(
+            self.plan
+                .repeat_source_gate
+                .min(self.plan.timeline_limit - timeline_start),
+        )?;
+        let gate_duration = end.checked_sub(timeline_start.max(self.plan.window_start))?;
         self.ordinal = self.ordinal.checked_add(1)?;
         Some(MidiNoteOccurrence {
-            iteration: repeat_index.checked_add(1)?,
-            timeline_start: BeatTime::from_raw(timeline_start),
+            iteration: self
+                .plan
+                .repeat_iteration_offset
+                .checked_add(repeat_index)?
+                .checked_add(1)?,
+            timeline_start: BeatTime::from_raw(
+                timeline_start.saturating_sub(self.plan.window_start),
+            ),
             gate_duration: BeatTime::from_raw(gate_duration),
         })
     }
@@ -416,6 +531,18 @@ mod tests {
         let inside = MidiSourcePlayback::new(b(10), b(5), Some((b(3), b(7))), b(2)).unwrap();
         assert_eq!(inside.source_phase_at_elapsed(b(1)), Some(b(6)));
         assert_eq!(inside.source_phase_at_elapsed(b(2)), Some(b(3)));
+    }
+
+    #[test]
+    fn ongoing_loop_phase_retains_large_playback_windows_without_sum_overflow() {
+        let b = BeatTime::from_raw;
+        let playback = MidiSourcePlayback::new(b(10), b(0), Some((b(2), b(5))), b(1))
+            .unwrap()
+            .with_playback_offset(b(u64::MAX - 1))
+            .unwrap();
+        assert_eq!(playback.source_phase_at_elapsed(b(0)), Some(b(2)));
+        assert_eq!(playback.source_phase_at_elapsed(b(5)), Some(b(4)));
+        assert_eq!(playback.source_phase_at_elapsed(b(u64::MAX)), Some(b(2)));
     }
 
     #[test]

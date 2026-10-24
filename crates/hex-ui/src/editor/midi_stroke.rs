@@ -2,7 +2,7 @@
 //!
 //! Hex's off-grid quarter-beat lattice and lowest-ID baseline overlap choice
 //! are explicit stroke policies; neither is claimed as measured Live behavior.
-use super::midi_drag::{MidiGrid, default_gate_raw, snap_raw};
+use super::midi_drag::{MidiGrid, creation_gate, creation_start};
 use hex_project::{ClipId, Command, MAX_NOTES, MidiNoteInsert, NoteId};
 use std::{
     collections::{HashMap, HashSet},
@@ -37,6 +37,7 @@ pub(super) struct StrokeContext {
     pub(super) revision: u64,
     pub(super) clip: ClipId,
     pub(super) clip_length: u64,
+    pub(super) minimum_gate: u64,
     pub(super) grid: MidiGrid,
     pub(super) effective_grid: MidiGrid,
     pub(super) snap_modifier: bool,
@@ -60,7 +61,8 @@ impl StrokeContext {
     }
 
     fn is_valid(self) -> bool {
-        self.view_span > 0
+        self.minimum_gate > 0
+            && self.view_span > 0
             && self.clip_length > 0
             && self.view_span <= super::midi_scene::zoom_limit(self.clip_length)
             && self.view_start
@@ -191,7 +193,7 @@ impl MidiStroke {
         let anchor = match context.effective_grid.step_raw() {
             Some(step) => {
                 let last_grid = (clip_length - 1) / step * step;
-                snap_raw(down.beat_raw, context.effective_grid).min(last_grid)
+                creation_start(down.beat_raw, context.effective_grid).min(last_grid)
             }
             None => down.beat_raw,
         };
@@ -284,6 +286,11 @@ impl MidiStroke {
         Arc::clone(&self.preview)
     }
 
+    pub(super) fn minimum_gate_for(&self, generation: u64, revision: u64) -> Option<u64> {
+        (self.context.generation == generation && self.context.revision == revision)
+            .then_some(self.context.minimum_gate)
+    }
+
     pub(super) fn modifiers_match(&self, snap: bool, pitch: bool) -> bool {
         self.context.snap_modifier == snap && self.context.pitch_modifier == pitch
     }
@@ -365,13 +372,20 @@ impl MidiStroke {
     fn point_cell(&self, point: StrokePoint) -> Result<Cell, StrokeError> {
         let delta = i128::from(point.beat_raw) - i128::from(self.anchor);
         let step = i128::from(self.step);
-        let magnitude = delta.unsigned_abs();
-        let divisor = u128::from(self.step);
-        let quotient = magnitude / divisor;
-        let remainder = magnitude % divisor;
-        let rounded = quotient + u128::from(remainder.saturating_mul(2) >= divisor);
-        let signed = i128::try_from(rounded).map_err(|_| StrokeError::TooManyCells)?;
-        let index = if delta < 0 { -signed } else { signed };
+        let index = if self.context.effective_grid.step_raw().is_some() {
+            // Every snapped painted onset belongs to the cell at the pointer's
+            // left. In particular releasing inside the initial cell adds no
+            // second note. The explicit off-grid stroke lattice stays nearest.
+            delta.div_euclid(step)
+        } else {
+            let magnitude = delta.unsigned_abs();
+            let divisor = u128::from(self.step);
+            let quotient = magnitude / divisor;
+            let remainder = magnitude % divisor;
+            let rounded = quotient + u128::from(remainder.saturating_mul(2) >= divisor);
+            let signed = i128::try_from(rounded).map_err(|_| StrokeError::TooManyCells)?;
+            if delta < 0 { -signed } else { signed }
+        };
         let min_index = ceil_div(-i128::from(self.anchor), step);
         let max_index =
             (i128::from(self.authoring_length - 1) - i128::from(self.anchor)).div_euclid(step);
@@ -466,10 +480,15 @@ impl MidiStroke {
         };
         let Some(existing) = self.baseline_hit(cell, onset)? else {
             let remaining = self.authoring_length - onset;
-            let duration = default_gate_raw(remaining, self.context.effective_grid).min(remaining);
-            if duration == 0 {
+            let Some(duration) = creation_gate(
+                remaining,
+                self.context.effective_grid,
+                self.context.view_span,
+                self.context.bounds.width,
+                self.context.minimum_gate,
+            ) else {
                 return self.cancel_with(StrokeError::InvalidPoint);
-            }
+            };
             let note = MidiNoteInsert {
                 start: hex_project::BeatTime::from_raw(onset),
                 duration: hex_project::BeatTime::from_raw(duration),
@@ -700,6 +719,7 @@ mod tests {
             revision: 9,
             clip,
             clip_length: length,
+            minimum_gate: 1,
             grid,
             effective_grid: grid,
             snap_modifier: false,
@@ -963,7 +983,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (_, _, fixed_insert) = command_parts(fixed_command);
-        assert_eq!(fixed_insert[0].start.raw(), beat(1) / 4);
+        assert_eq!(fixed_insert[0].start.raw(), 0);
         assert_eq!(fixed_insert[0].duration.raw(), beat(1) / 4);
 
         let mut free = stroke(&editor, clip, beat(4), MidiGrid::Off, false, down);
@@ -973,7 +993,10 @@ mod tests {
             .unwrap();
         let (_, _, free_insert) = command_parts(free_command);
         assert_eq!(free_insert[0].start.raw(), down.beat_raw);
-        assert_eq!(free_insert[0].duration.raw(), beat(1) / 4);
+        assert_eq!(
+            free_insert[0].duration.raw(),
+            (beat(4) as f64 / 880.0).ceil() as u64
+        );
 
         let mut free_path_stroke = stroke(&editor, clip, beat(4), MidiGrid::Off, false, down);
         free_path_stroke
@@ -1036,7 +1059,7 @@ mod tests {
         let empty_preview = empty.shared_preview();
         assert!(empty_preview.removed.is_empty());
         assert_eq!(empty_preview.inserted.len(), 1);
-        assert_eq!(empty_preview.inserted[0].start.raw(), beat(1) / 4);
+        assert_eq!(empty_preview.inserted[0].start.raw(), 0);
     }
 
     #[test]

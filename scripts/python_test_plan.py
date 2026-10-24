@@ -13,6 +13,12 @@ REVIEWED_MODULES = frozenset({
     "test_eq8_response_compare", "test_gpui_patch", "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
     "test_local_ci", "test_pcm_build_gate", "test_python_test_plan",
+    # Release-ledger fixtures use only their tool and changelog module; edits
+    # to those scripts still take the comprehensive unknown/tooling path.
+    "test_release_notes",
+    # Release/manual fixtures own temporary inputs and mocked native tools; app
+    # Rust edits do not affect them. Tooling/docs/config edits remain full checks.
+    "test_hex_release", "test_manual",
     "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
     # Architecture fixtures exercise check-architecture.py policy/refusal logic;
     # that guard still runs for app source/doc edits. Policy/test edits fall back.
@@ -20,13 +26,17 @@ REVIEWED_MODULES = frozenset({
     # Mach-O/parser and receipt-bound bootstrap fixtures depend on native helper
     # sources/build inputs, not ordinary app Rust. Those inputs fall back below.
     "test_vst3_macos_bootstrap",
+    "test_vst3_instance_worker",
 })
 # Explicit native acceptance must never disappear behind app-only selection.
 # Keep partial opt-ins comprehensive too; each owning suite validates its inputs.
 NATIVE_ACCEPTANCE_ENV = (
     "HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
     "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
+    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP",
 )
+
+
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",
     "test_ci_plan.ScopeTests.test_review_target_directory_is_ownership_not_semantic_config",
@@ -47,6 +57,16 @@ UNITTEST_BOOTSTRAP = (
 COMPREHENSIVE_ARGV = (
     "python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py",
 )
+
+
+def native_acceptance_inputs(env: dict) -> list[str]:
+    """External fixtures/SDKs/signing state require fresh observations.
+
+    Return names only, never paths or credentials. Include future/partial native
+    opt-ins conservatively rather than treating an incomplete setup as absent.
+    """
+    return sorted(key for key, value in env.items() if value and (
+        key.startswith("HEX_VST3_") or key == "HEX_TEST_SIGNING_IDENTITY"))
 
 
 def available_modules(root: Path) -> list[str]:
@@ -78,8 +98,7 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     if not paths:
         return {"mode": "none", "selected_groups": [], "excluded_groups": modules,
                 "test_selectors": [], "reasons": ["prose-only plan retains metadata checks"]}
-    native = [key for key in NATIVE_ACCEPTANCE_ENV
-              if (os.environ if env is None else env).get(key)]
+    native = native_acceptance_inputs(os.environ if env is None else env)
     if native:
         return comprehensive("explicit native acceptance inputs retain full Python coverage: "
                              + ", ".join(native))

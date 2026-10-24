@@ -175,11 +175,12 @@ impl MidiClipVolume {
         // enumerates its discarded loop prefix. The existing projection owns
         // first-pass and repeated-onset behavior.
         if let Some(phase) = playback.source_phase_at_elapsed(start) {
-            let projected = MidiSourcePlayback::new(
+            let projected = MidiSourcePlayback::new_with_initial_end(
                 playback.source_length(),
                 phase,
                 playback.loop_range(),
                 BeatTime::from_raw(length),
+                playback.initial_end(),
             )?;
             for point in self.points() {
                 if point.beat == playback.source_length() {
@@ -197,7 +198,12 @@ impl MidiClipVolume {
         if let Some((loop_start, loop_end)) = playback.loop_range() {
             let first = loop_end.raw() - playback.source_start().raw();
             let period = loop_end.raw() - loop_start.raw();
-            let skipped = start.raw().saturating_sub(first) / period;
+            let absolute_start = playback
+                .playback_offset()
+                .raw()
+                .checked_add(start.raw())
+                .ok_or(Invalid("clip volume window overflow"))?;
+            let skipped = absolute_start.saturating_sub(first) / period;
             let mut seam = first
                 .checked_add(
                     skipped
@@ -205,15 +211,26 @@ impl MidiClipVolume {
                         .ok_or(Invalid("clip volume loop projection overflow"))?,
                 )
                 .ok_or(Invalid("clip volume loop projection overflow"))?;
-            while seam < end.raw() {
-                add(seam)?;
+            let absolute_end = playback
+                .playback_offset()
+                .raw()
+                .checked_add(end.raw())
+                .ok_or(Invalid("clip volume window overflow"))?;
+            while seam < absolute_end {
+                if let Some(local) = seam.checked_sub(playback.playback_offset().raw()) {
+                    add(local)?;
+                }
                 let Some(next) = seam.checked_add(period) else {
                     break;
                 };
                 seam = next;
             }
         } else {
-            add(playback.source_length().raw() - playback.source_start().raw())?;
+            if let Some(local) = (playback.initial_end().raw() - playback.source_start().raw())
+                .checked_sub(playback.playback_offset().raw())
+            {
+                add(local)?;
+            }
         }
         boundaries.sort_unstable();
         boundaries.dedup();
@@ -242,24 +259,24 @@ impl MidiClipVolume {
         elapsed: BeatTime,
         before: bool,
     ) -> MidiClipGain {
+        let absolute = playback.playback_offset().raw().checked_add(elapsed.raw());
         if before && elapsed != BeatTime::ZERO {
             if let Some((start, end)) = playback.loop_range() {
                 let first = end.raw() - playback.source_start().raw();
-                if elapsed.raw() >= first
-                    && (elapsed.raw() - first) % (end.raw() - start.raw()) == 0
-                {
+                if absolute.is_some_and(|absolute| {
+                    absolute >= first && (absolute - first) % (end.raw() - start.raw()) == 0
+                }) {
                     return self.gain_before(end);
                 }
-            } else if elapsed.raw()
-                == playback.source_length().raw() - playback.source_start().raw()
+            } else if absolute == Some(playback.initial_end().raw() - playback.source_start().raw())
             {
-                return self.gain_before(playback.source_length());
+                return self.gain_before(playback.initial_end());
             }
         }
         match playback.source_phase_at_elapsed(elapsed) {
             Some(phase) if before => self.gain_before(phase),
             Some(phase) => self.gain_at(phase),
-            None => self.gain_at(playback.source_length()),
+            None => self.gain_at(playback.initial_end()),
         }
     }
     /// Copy a source-local half-open interval immediately after itself, keeping
@@ -502,6 +519,44 @@ mod tests {
             );
             assert_eq!(curve.points().len(), 3);
         }
+    }
+    #[test]
+    fn materialized_elapsed_window_retains_loop_seam_limits() {
+        let curve = MidiClipVolume::new(
+            vec![
+                point(0, 0.0, 0.0),
+                point(2, 1.0, 1.0),
+                point(4, 3.0, 3.0),
+                point(6, 0.5, 0.5),
+            ],
+            BeatTime::from_raw(8),
+        )
+        .unwrap();
+        let original = MidiSourcePlayback::new(
+            BeatTime::from_raw(8),
+            BeatTime::from_raw(2),
+            Some((BeatTime::from_raw(2), BeatTime::from_raw(6))),
+            BeatTime::from_raw(20),
+        )
+        .unwrap();
+        let window = MidiSourcePlayback::new(
+            BeatTime::from_raw(8),
+            BeatTime::from_raw(2),
+            original.loop_range(),
+            BeatTime::from_raw(8),
+        )
+        .unwrap()
+        .with_playback_offset(BeatTime::from_raw(3))
+        .unwrap();
+        let expected = curve
+            .materialized(original, BeatTime::from_raw(3), BeatTime::from_raw(11))
+            .unwrap();
+        let actual = curve
+            .materialized(window, BeatTime::ZERO, BeatTime::from_raw(8))
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.gain_before(BeatTime::from_raw(1)).linear(), 0.5);
+        assert_eq!(actual.gain_at(BeatTime::from_raw(1)).linear(), 1.0);
     }
     #[test]
     fn materialized_loop_interval_preserves_ramps_seams_and_late_range_without_prefix_walk() {

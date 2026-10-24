@@ -17,13 +17,17 @@ use crate::{
 pub(crate) fn compiler_quote(
     track: &hex_project::Track,
 ) -> Result<(usize, usize), AudioStorageError> {
-    let notes = track.midi_clips().iter().try_fold(0usize, |n, c| {
-        if c.source().looping() {
-            return Err(AudioStorageError::UnsupportedGraph);
-        }
-        n.checked_add(c.notes().len())
-            .ok_or(AudioStorageError::Overflow)
-    })?;
+    let notes = track
+        .midi_clips()
+        .iter()
+        .filter(|clip| clip.active())
+        .try_fold(0usize, |n, c| {
+            if c.source().looping() {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            n.checked_add(c.notes().len())
+                .ok_or(AudioStorageError::Overflow)
+        })?;
     let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?;
     let (payload, overhead) = crate::owned_shared::OwnedShared::<
         crate::midi_note_bank::PreparedMidiNoteBank,

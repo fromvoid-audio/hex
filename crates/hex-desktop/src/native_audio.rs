@@ -22,6 +22,7 @@ use std::sync::{
 
 mod resident;
 mod sampler;
+mod section_edit;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
 
@@ -91,6 +92,7 @@ pub(super) struct NativeAudioSink {
     blocked: Option<AudioSourceContext>,
     sampler: Option<sampler::Sampler>,
     sampler_parameter: Option<sampler::EditPending>,
+    section_edit: Option<section_edit::Pending>,
     ordinary_pcm_frames: u64,
     verified_pcm_frames: u64,
     suspended_output: Option<u64>,
@@ -128,6 +130,7 @@ impl NativeAudioSink {
             blocked: None,
             sampler: None,
             sampler_parameter: None,
+            section_edit: None,
             ordinary_pcm_frames: 0,
             verified_pcm_frames: 0,
             suspended_output: None,
@@ -143,6 +146,8 @@ impl NativeAudioSink {
         // All accepted construction stays inside Root's terminal/lifecycle book.
         self.retain_relinquished_output();
         drop(self.output.take());
+        self.section_edit = None;
+        self.resident.current_submission = None;
         self.opening = None;
         self.open_pending = false;
         self.pending_open_event = None; // Client close only: endpoint Drop is terminal-owned
@@ -898,6 +903,15 @@ impl WorkerAudioSink for NativeAudioSink {
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.advance_sampler(input);
     }
+    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
+        NativeAudioSink::begin_section_edit(self, context)
+    }
+    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+        NativeAudioSink::section_edit_ready(self)
+    }
+    fn cancel_section_edit(&mut self) {
+        NativeAudioSink::cancel_section_edit(self);
+    }
     fn begin_sampler_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
         self.begin_edit(context)
     }
@@ -951,6 +965,7 @@ impl WorkerAudioSink for NativeAudioSink {
     fn poll(&mut self) {
         self.resident.reap_observations();
         self.poll_edit_timeout();
+        self.poll_section_edit();
         self.poll_open();
         self.deliver_open();
         if let Some(mut output) = self.output.take() {

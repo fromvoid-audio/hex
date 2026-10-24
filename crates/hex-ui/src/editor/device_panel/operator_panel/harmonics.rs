@@ -334,7 +334,10 @@ fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
     style.border = style.background;
     style.rail = style.background;
     match control.overview.points {
-        Some(points) => hex_widgets::curve_plot(points.points, style).unwrap_or_else(div),
+        Some(points) => {
+            hex_widgets::curve_plot(points.points, style, hex_widgets::CurvePlotGrid::Horizontal)
+                .unwrap_or_else(div)
+        }
         None => div(),
     }
 }

@@ -7,7 +7,7 @@ use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_widgets::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericDragAxis, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
@@ -20,6 +20,20 @@ pub(super) struct Controls {
     revision: Option<u64>,
     bindings: BTreeMap<TrackId, Binding>,
     mixer: BTreeMap<MixerKey, Binding>,
+}
+
+impl Controls {
+    /// Read-only admission check; drafts remain with their numeric owners.
+    /// Unlike finalization, it does not collect bindings or commit values.
+    pub(super) fn has_pending_draft(&self, cx: &gpui::App) -> bool {
+        self.bindings
+            .values()
+            .chain(self.mixer.values())
+            .any(|binding| {
+                let control = binding.entity.read(cx);
+                control.is_interacting() || control.is_editing()
+            })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -185,7 +199,7 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     f64::from(track.gain()),
-                    device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
             let Ok(config) = config else { return div() };
@@ -267,7 +281,7 @@ impl EditorView {
         let binding = &self.track_gain_controls.bindings[&id];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
-            let _ = control.set_external_style(device_panel::control_style(), cx);
+            let _ = control.set_external_style(theme::control_style(), cx);
             let _ = control.set_external_value(f64::from(active.unwrap_or(track.gain())), cx);
         });
         div()
@@ -337,16 +351,11 @@ impl EditorView {
                 NumericControlKind::HorizontalSlider,
                 spec,
                 f64::from(canonical),
-                device_panel::control_style(),
+                theme::control_style(),
             ) else {
                 return div();
             };
             let config = config.with_appearance(NumericControlAppearance::FilledSlider);
-            let config = if matches!(key, MixerKey::Balance(_)) {
-                config.with_drag_axis(NumericDragAxis::Vertical)
-            } else {
-                config
-            };
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();
@@ -405,7 +414,7 @@ impl EditorView {
         let binding = &self.track_gain_controls.mixer[&key];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
-            let _ = control.set_external_style(device_panel::control_style(), cx);
+            let _ = control.set_external_style(theme::control_style(), cx);
             let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
         });
         div()

@@ -364,7 +364,7 @@ impl EditorView {
     }
 
     pub(super) fn session_grid(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.state.clone() else {
             return div().flex_1().min_h_0();
         };
         let revision = state.revision;
@@ -426,8 +426,19 @@ impl EditorView {
                     .iter()
                     .map(|track| {
                         let track_id = track.id();
-                        div()
+                        let header_focus = self.track_header_focus(track_id, cx);
+                        let click_focus = header_focus.clone();
+                        let header = div()
                             .id(("session-track", track.id().value()))
+                            .track_focus(&header_focus)
+                            .key_context("hex_track_header")
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.select_track(track_id, window);
+                                view.selected_cell = None;
+                                view.selected_scene = None;
+                                click_focus.focus(window);
+                                cx.notify();
+                            }))
                             .debug_selector(move || format!("session-track-{}", track_id.value()))
                             .relative()
                             .child(
@@ -478,7 +489,8 @@ impl EditorView {
                                 route_snapshot,
                                 routes_ready,
                                 transport_playing,
-                            ))
+                            ));
+                        self.device_drop_header(track_id, header, cx)
                     }),
             )
             .child(div().flex_1().min_w_0())
@@ -980,17 +992,30 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
                             selected_cell,
+                            clip.active(),
                         )))
-                        .text_color(rgb(match clip.flavor() {
-                            hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
-                            }
-                            hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                        .text_color(rgb(if !clip.active() {
+                            theme::readable_text(
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    false,
+                                ),
+                                theme::color(theme::PaletteRole::Text),
+                            )
+                        } else {
+                            match clip.flavor() {
+                                hex_project::ClipFlavor::Muted => {
+                                    theme::element_colors(track.color()).muted_text
+                                }
+                                hex_project::ClipFlavor::Accent => {
+                                    theme::element_colors(track.color()).accent_text
+                                }
                             }
                         }))
                         .on_mouse_down(
@@ -1076,17 +1101,30 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
                             selected_cell,
+                            clip.active(),
                         )))
-                        .text_color(rgb(match clip.flavor() {
-                            hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
-                            }
-                            hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                        .text_color(rgb(if !clip.active() {
+                            theme::readable_text(
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    false,
+                                ),
+                                theme::color(theme::PaletteRole::Text),
+                            )
+                        } else {
+                            match clip.flavor() {
+                                hex_project::ClipFlavor::Muted => {
+                                    theme::element_colors(track.color()).muted_text
+                                }
+                                hex_project::ClipFlavor::Accent => {
+                                    theme::element_colors(track.color()).accent_text
+                                }
                             }
                         }))
                         .on_mouse_down(
@@ -1394,24 +1432,16 @@ impl EditorView {
         id: impl Into<ElementId>,
         listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        let icon = div()
+        let icon = hex_widgets::action(theme::text(glyph), theme::action_style())
             .id(id)
             .size(px(23.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
             .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: label.into(),
                 })
                 .into()
             })
-            .child(theme::text(glyph))
             .on_click(listener);
         #[cfg(feature = "ui-test-support")]
         let icon = icon.debug_selector(move || label.into());
