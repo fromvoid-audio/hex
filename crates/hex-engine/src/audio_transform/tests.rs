@@ -2880,3 +2880,195 @@ fn edited_frame_events_can_enable_warp_and_keep_sound_through_timing_toggles() {
         );
     }
 }
+
+#[test]
+fn per_event_source_fades_are_audible_and_survive_split_move_seek_and_blocks() {
+    use hex_project::{AudioEventEdit, AudioEventFade, ClipFade};
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(AudioEventFade::new(0, ClipFade::new(8000, 0, 8, 8).unwrap()).unwrap()),
+            },
+        })
+        .unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    let actual = render(&prepared, 0, 8000, 257);
+    let mut expected = baseline.clone();
+    for (index, frame) in expected.iter_mut().enumerate() {
+        let gain = if index < 8 {
+            index as f32 / 7.0
+        } else if index >= 7992 {
+            (7999 - index) as f32 / 7.0
+        } else {
+            1.0
+        };
+        for sample in frame {
+            *sample *= gain;
+        }
+    }
+    for (i, (a, b)) in actual.iter().zip(&expected).enumerate() {
+        assert!(
+            (a[0] - b[0]).abs() <= 1e-7 && (a[1] - b[1]).abs() <= 1e-7,
+            "event fade PCM at {i}: {a:?} != {b:?}"
+        );
+    }
+    assert_eq!(render(&prepared, 0, 8000, 1), actual);
+    assert_eq!(render(&prepared, 3, 7995, 17), actual[3..7998]);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 4000 },
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 127),
+        actual
+    );
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Move {
+                event: 1,
+                start: 4000,
+            },
+        })
+        .unwrap();
+    let mut moved = vec![[0.0; 2]; 8000];
+    moved[4000..].copy_from_slice(&actual[..4000]);
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 17),
+        moved
+    );
+}
+
+#[test]
+fn per_event_short_overlapping_fades_keep_literal_endpoint_law() {
+    use hex_project::{AudioEventEdit, AudioEventFade, ClipFade};
+    for (length, ramp, gains) in [
+        (1, 1, vec![0.0]),
+        (2, 2, vec![0.0, 0.0]),
+        (4, 3, vec![0.0, 0.5, 0.5, 0.0]),
+    ] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        let context = AudioTransformPreparation::default();
+        let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: length },
+            })
+            .unwrap();
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::SetFade {
+                    event: 1,
+                    fade: Some(
+                        AudioEventFade::new(0, ClipFade::new(length, 0, ramp, ramp).unwrap())
+                            .unwrap(),
+                    ),
+                },
+            })
+            .unwrap();
+        let actual = render(&prepare(&editor, &media, &context), 0, 8000, 17);
+        for (i, gain) in gains.into_iter().enumerate() {
+            assert_eq!(actual[i], [baseline[i][0] * gain, baseline[i][1] * gain]);
+        }
+        assert_eq!(actual[length as usize..], baseline[length as usize..]);
+    }
+}
+
+#[test]
+fn per_event_frame_fades_reproject_through_warp_and_a_tempo_seam() {
+    use hex_project::{AudioEventEdit, AudioEventFade, ClipFade};
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: Some(
+                    AudioEventFade::new(0, ClipFade::new(8000, 0, 2000, 2000).unwrap()).unwrap(),
+                ),
+            },
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let event = editor.project().clip(clip).unwrap().audio_events().events[0];
+    assert_eq!(event.fade.unwrap().shape().span(), BeatTime::ONE.raw());
+    assert_eq!(
+        event.fade.unwrap().shape().fade_in(),
+        BeatTime::ONE.raw() / 4
+    );
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 6000);
+    let context = AudioTransformPreparation::default();
+    let with_fade = prepare(&editor, &media, &context);
+    let actual = render(&with_fade, 0, 6000, 127);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::SetFade {
+                event: 1,
+                fade: None,
+            },
+        })
+        .unwrap();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 6000, 17);
+    for (i, (a, b)) in actual.iter().zip(&baseline).enumerate() {
+        let gain = if i < 2000 {
+            i as f32 / 1999.0
+        } else if i >= 5000 {
+            (5999 - i) as f32 / 999.0
+        } else {
+            1.0
+        };
+        assert!(
+            (a[0] - b[0] * gain).abs() < 1e-7 && (a[1] - b[1] * gain).abs() < 1e-7,
+            "tempo fade sample {i}"
+        );
+    }
+    assert_eq!(render(&with_fade, 3993, 2007, 31), actual[3993..]);
+}

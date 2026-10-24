@@ -653,3 +653,89 @@ fn reversing_a_group_reflects_composite_pcm_but_keeps_destination_fades_forward(
         "composite reflection/fade differs at {mismatch:?}"
     );
 }
+
+#[test]
+fn grouped_child_and_event_fades_keep_source_phase_through_move_and_history() {
+    let (mut editor, ids, media) = group_fixture();
+    let child = ids[0];
+    let event = editor.project().clip(child).unwrap().audio_events().events[0];
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: child,
+            operation: hex_project::AudioEventEdit::SetFade {
+                event: event.id,
+                fade: Some(
+                    hex_project::AudioEventFade::new(
+                        event.source_start,
+                        hex_project::ClipFade::new(event.length(), 0, 37, 53).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            },
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let before = render(&prepare(&editor, &media, &context), 0, 15_000, 127);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 15_000, 17),
+        before
+    );
+    let first = editor.project().clip(group).unwrap().audio_events().events[0];
+    let length = first.length() as usize;
+    let fade = hex_project::AudioEventFade::new(
+        first.source_start,
+        hex_project::ClipFade::new(first.length(), 0, 101, 179).unwrap(),
+    )
+    .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::SetFade {
+                event: first.id,
+                fade: Some(fade),
+            },
+        })
+        .unwrap();
+    let mut expected = before.clone();
+    for (i, frame) in expected.iter_mut().take(length).enumerate() {
+        let gain =
+            ((i as f64 / 100.0).min(1.0) * ((length - 1 - i) as f64 / 178.0).min(1.0)) as f32;
+        frame[0] *= gain;
+        frame[1] *= gain;
+    }
+    for block in [1, 17, 257] {
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 15_000, block),
+            expected
+        );
+    }
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: group,
+            operation: hex_project::AudioEventEdit::Move {
+                event: first.id,
+                start: 1_000,
+            },
+        })
+        .unwrap();
+    let mut moved = expected.clone();
+    moved[..length + 1_000].fill([0.0; 2]);
+    moved[1_000..length + 1_000].copy_from_slice(&expected[..length]);
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 15_000, 31),
+        moved
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 15_000, 257),
+        expected
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 15_000, 17),
+        moved
+    );
+}

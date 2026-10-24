@@ -187,6 +187,17 @@ impl AudioTransformPreparation {
                             sample[0] *= gain;
                             sample[1] *= gain;
                         }
+                        if let Some(fade) = event.fade {
+                            let at = event
+                                .source_start
+                                .checked_add(offset as u64)
+                                .and_then(|at| at.checked_sub(fade.source_start()))
+                                .filter(|at| *at < fade.shape().span())
+                                .ok_or(Invalid("grouped event sample exceeds its fade domain"))?;
+                            let gain = fade.shape().gain_at(at);
+                            sample[0] *= gain;
+                            sample[1] *= gain;
+                        }
                         *frame = sample;
                     }
                 }

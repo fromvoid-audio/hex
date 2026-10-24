@@ -209,6 +209,23 @@ in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
 
+## audio event fades
+
+select an audio clip and choose **events** in its detail area. focus the event
+waveform and hold **f** to show its fade controls. release **f** to hide default
+controls; edited fades remain visible. the computer midi keyboard must be off.
+
+drag an upper square to change a fade length. drag a diamond horizontally and
+vertically to shape its curve. lower squares trim the event; they move freely by
+default, with **command** opting into the event grid. double-click a fade control
+to reset that event's fades. one undo restores each completed gesture.
+
+the preview becomes prepared audio after release. **escape** or leaving the
+editor cancels a held gesture. splitting retains the source fade, moving keeps
+it attached to the sound, and an explicit trim fits it to the new event window.
+event fades use the same supported resident clips as event editing; a refused
+preparation leaves the project unchanged. original media files stay intact.
+
 # find, preview and import audio
 
 open the browser with **command+option+b**. press **command+f** to search.

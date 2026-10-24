@@ -56,6 +56,21 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
         operation: hex_project::AudioEventEdit::Delete { start: 11, end: 23 },
     }));
     (applied, _) = h.applied(applied);
+    // A child-authored envelope must survive native grouping and reconstruction.
+    h.run(Request::Edit(Command::EditAudioEvents {
+        clip: first_clip,
+        operation: hex_project::AudioEventEdit::SetFade {
+            event: 1,
+            fade: Some(
+                hex_project::AudioEventFade::new(
+                    0,
+                    hex_project::ClipFade::new(11, 0, 3, 4).unwrap(),
+                )
+                .unwrap(),
+            ),
+        },
+    }));
+    (applied, _) = h.applied(applied);
     let before = h.run(Request::Edit(Command::SetAudioClipGain {
         clip: second_clip,
         millidb: -3_111,
@@ -102,15 +117,58 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(undone.state.project.snapshot(), restored);
     assert_eq!(replay(&mut h), expected);
     let redone = h.run(Request::Redo);
-    h.applied(applied);
+    (applied, _) = h.applied(applied);
     assert_eq!(redone.state.project, grouped.state.project);
+    assert_eq!(replay(&mut h), expected);
+    let grouped_clip = redone
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|clip| clip.has_retained_audio_roots())
+        .unwrap()
+        .id();
+    let event = redone
+        .state
+        .project
+        .clip(grouped_clip)
+        .unwrap()
+        .audio_events()
+        .events[0];
+    let faded = h.run(Request::Edit(Command::EditAudioEvents {
+        clip: grouped_clip,
+        operation: hex_project::AudioEventEdit::SetFade {
+            event: event.id,
+            fade: Some(
+                hex_project::AudioEventFade::new(
+                    event.source_start,
+                    hex_project::ClipFade::new(event.length(), 0, 17, 9).unwrap(),
+                )
+                .unwrap(),
+            ),
+        },
+    }));
+    h.applied(applied);
+    let mut expected = expected;
+    for (i, frame) in expected
+        .iter_mut()
+        .take(event.length() as usize)
+        .enumerate()
+    {
+        let gain = ((i as f64 / 16.0).min(1.0)
+            * ((event.length() as usize - 1 - i) as f64 / 8.0).min(1.0)) as f32;
+        frame[0] *= gain;
+        frame[1] *= gain;
+    }
     assert_eq!(replay(&mut h), expected);
     let saved = files.0.join("grouped.hex");
     h.run(Request::SaveNew(saved.clone()));
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let reopened = h.run(Request::Open(saved));
     assert!(reopened.open_complete && reopened.project_replaced);
-    assert_eq!(reopened.state.project, redone.state.project);
+    assert_eq!(reopened.state.project, faded.state.project);
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
     let (applied, _) = h.applied(0);

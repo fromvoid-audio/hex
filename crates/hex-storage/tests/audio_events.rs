@@ -99,6 +99,7 @@ fn event_serialization_respects_the_existing_document_byte_limit() {
                     start: i * 2,
                     end: i * 2 + 1,
                     source_start: i * 2,
+                    fade: None,
                 })
                 .collect(),
         }));

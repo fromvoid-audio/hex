@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 42;
+pub const CURRENT_SCHEMA_VERSION: u32 = 43;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -144,7 +144,7 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema42 with retained audio roots and directed content views, preserving
+/// Encode schema43 with retained audio roots and event fades/directed content views, preserving
 /// complete activation, MIDI source/window/volume, fade, tuning and device state.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::grouped_audio::encode(project)?)
@@ -164,6 +164,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
     schema::grouped_audio::require_legacy_compatible(project)?;
+    schema::audio_events::require_legacy_compatible(project)?;
     schema::content_views::require_legacy_compatible(project)?;
     schema::clip_activation::require_legacy_compatible(project)?;
     if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)
@@ -251,8 +252,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
-/// Schema42 retains independent audio sources and their captured processing tempos.
-/// Schema41 inventories finite directed content views. The evidenced unmerged
+/// Schema43 retains independent audio sources and their captured processing tempos.
+/// Schema42 adds source-clock event fades; schema41 inventories directed content views. The evidenced unmerged
 /// grouped41 branch is selected by its disjoint complete inventory; mixed layouts refuse.
 /// Earlier schemas migrate to empty root tables/source-zero events and identity views.
 /// Pre40 schemas default clip activation to true and elapsed MIDI windows to
@@ -283,6 +284,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     match header.version {
         CURRENT_SCHEMA_VERSION => schema::grouped_audio::decode(bytes),
+        42 => schema::event_fades::decode(bytes),
         41 => schema::grouped_audio::decode41(bytes),
         40 => schema::clip_activation::decode(bytes),
         39 => schema::midi_one_shot::decode(bytes),

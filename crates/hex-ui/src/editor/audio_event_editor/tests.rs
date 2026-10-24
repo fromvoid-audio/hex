@@ -705,6 +705,7 @@ fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
                     start: 0,
                     end: 10,
                     source_start: 70,
+                    fade: None,
                 }],
             },
         })

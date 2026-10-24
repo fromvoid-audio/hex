@@ -271,6 +271,7 @@ fn audio(
                     .try_reserve(1)
                     .map_err(|_| Invalid("could not reserve grouped audio events"))?;
                 events.push(AudioEvent {
+                    fade: event.fade,
                     source,
                     id: events.len() as u64 + 1,
                     start: offset + a - edit.view_start,
@@ -301,6 +302,7 @@ fn audio(
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve grouped audio events"))?;
             events.push(AudioEvent {
+                fade: None,
                 source: id,
                 id: events.len() as u64 + 1,
                 start: offset,

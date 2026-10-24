@@ -84,6 +84,7 @@ mod tests {
                     start,
                     end,
                     source_start: start,
+                    fade: None,
                 })
                 .collect(),
         };

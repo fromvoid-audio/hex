@@ -187,6 +187,7 @@ fn audio_group_retains_all_dependencies_and_can_regroup_neutral_containers() {
                 at: 0,
                 length: 10,
                 events: vec![hex_project::AudioEvent {
+                    fade: None,
                     id: 1,
                     source: 0,
                     start: 0,
@@ -403,4 +404,123 @@ fn grouping_a_source_event_range_in_a_directed_view_refuses_atomically() {
     assert!(e.project().clip(clips[0]).unwrap().audio_edit().is_none());
     assert!(e.redo());
     assert_eq!(e.project().snapshot(), before);
+}
+
+#[test]
+fn grouped_event_fade_bounds_follow_its_retained_source_not_container_length() {
+    use hex_project::{AudioEventEdit, AudioEventFade, ClipFade};
+    let (mut e, track, clips) = audio_fixture();
+    let Created::Clip(group) = e.execute(Command::GroupClips(clips[..2].to_vec())).unwrap() else {
+        panic!("group")
+    };
+    let Created::Clip(range) = e
+        .execute(Command::GroupAudioEventRange {
+            clip: group,
+            start: 90,
+            end: 100,
+        })
+        .unwrap()
+    else {
+        panic!("range")
+    };
+    let removed: Vec<_> = e.project().tracks()[0]
+        .clips()
+        .iter()
+        .map(|c| c.id())
+        .filter(|id| *id != range && *id != clips[2])
+        .collect();
+    for id in removed {
+        e.execute(Command::RemoveClip(id)).unwrap();
+    }
+    let Created::Clip(tail) = e
+        .execute(Command::SplitClip {
+            clip: clips[2],
+            frame: 410,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    e.execute(Command::RemoveClip(tail)).unwrap();
+    e.execute(Command::MoveClip {
+        clip: clips[2],
+        track,
+        start: 110,
+    })
+    .unwrap();
+    let Created::Clip(group) = e
+        .execute(Command::GroupClips(vec![range, clips[2]]))
+        .unwrap()
+    else {
+        panic!("regroup")
+    };
+    let root = e.project().clip(group).unwrap().audio_event_root();
+    let event = e.project().clip(group).unwrap().audio_events().events[0];
+    assert!(event.source_start > root.domain.clock.length());
+    assert!(
+        root.root_frame_at(event.source_start, e.project().tempo_map())
+            .is_err()
+    );
+    assert_eq!(
+        root.event_source_clock(event.source).unwrap(),
+        hex_project::AudioDomainClock::Frames(100)
+    );
+    assert_eq!(
+        root.event_source_frame_at(event.source, event.source_start, e.project().tempo_map())
+            .unwrap(),
+        event.source_start
+    );
+    assert_eq!(
+        root.event_source_position_at(event.source, event.source_start, e.project().tempo_map())
+            .unwrap(),
+        event.source_start
+    );
+    assert!(
+        root.event_source_frame_at(event.source, 101, e.project().tempo_map())
+            .is_err()
+    );
+    assert!(root.event_source_clock(u64::MAX).is_err());
+
+    let fade = AudioEventFade::new(
+        event.source_start,
+        ClipFade::new(event.length(), 0, 3, 4).unwrap(),
+    )
+    .unwrap();
+    e.execute(Command::EditAudioEvents {
+        clip: group,
+        operation: AudioEventEdit::SetFade {
+            event: event.id,
+            fade: Some(fade),
+        },
+    })
+    .unwrap();
+    let accepted = e.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(accepted.clone()).unwrap(),
+        *e.project()
+    );
+    let invalid = AudioEventFade::new(
+        event.source_start,
+        ClipFade::new(event.length() + 1, 0, 3, 4).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        e.execute(Command::EditAudioEvents {
+            clip: group,
+            operation: AudioEventEdit::SetFade {
+                event: event.id,
+                fade: Some(invalid)
+            }
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), accepted);
+    assert!(e.undo());
+    assert!(
+        e.project().clip(group).unwrap().audio_events().events[0]
+            .fade
+            .is_none()
+    );
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), accepted);
 }

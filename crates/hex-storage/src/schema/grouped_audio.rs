@@ -1,9 +1,11 @@
-//! Schema42 adds retained audio roots over schema41 directed content views.
+//! Schema43 adds retained audio roots over schema42 event fades/directed views.
 //! Main41 and the evidenced draft grouped41 lineage use disjoint complete
 //! inventories; mixed layouts refuse. Draft grouped41 came from04d5ee56 and
-//! embeds strict40 roots. Current42 embeds strict41 content roots, preserving
+//! embeds strict40 roots. Current43 embeds strict42 faded content roots, preserving
 //! directed reads without recursively accepting grouped documents. Earlier
-//! formats migrate in memory; no original bytes/media are rewritten.
+//! formats migrate in memory; no original bytes/media are rewritten. Schema43
+//! has one explicit nullable group row per arranged audio clip so an omitted
+//! container cannot silently fall back to its stripped predecessor root.
 use crate::{Project, StorageError};
 use hex_project::{AudioEvent, AudioEvents, ClipSnapshot, Command, Editor, TrackContentSnapshot};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,8 @@ struct Event {
     start: u64,
     end: u64,
     source_start: u64,
+    #[serde(deserialize_with = "super::event_fades::required_fade")]
+    fade: Option<super::event_fades::Fade>,
 }
 impl From<&AudioEvent> for Event {
     fn from(e: &AudioEvent) -> Self {
@@ -29,6 +33,7 @@ impl From<&AudioEvent> for Event {
             start: e.start,
             end: e.end,
             source_start: e.source_start,
+            fade: e.fade.map(Into::into),
         }
     }
 }
@@ -41,17 +46,26 @@ struct Root {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
-    clip: u64,
     next_id: u64,
     #[serde(deserialize_with = "bounded")]
     events: Vec<Event>,
     #[serde(deserialize_with = "bounded")]
     sources: Vec<Root>,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Row {
+    clip: u64,
+    #[serde(deserialize_with = "required_group")]
+    group: Option<State>,
+}
+fn required_group<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<State>, D::Error> {
+    Option::deserialize(d)
+}
 #[derive(Deserialize)]
-struct Inventory(#[serde(deserialize_with = "bounded_inventory")] Vec<State>);
-fn bounded_inventory<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<State>, D::Error> {
-    items::<D, State, { hex_project::MAX_CLIPS }>(d)
+struct Inventory(#[serde(deserialize_with = "bounded_inventory")] Vec<Row>);
+fn bounded_inventory<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Row>, D::Error> {
+    items::<D, Row, { hex_project::MAX_CLIPS }>(d)
 }
 fn bounded<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -155,14 +169,22 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         let clips = track.audio_clips_mut().map_err(invalid)?;
         for clip in clips {
             let Some(edit) = clip.edit.as_mut() else {
+                inventory.push(Row {
+                    clip: clip.id,
+                    group: None,
+                });
                 continue;
             };
             let Some(events) = edit
                 .domain
                 .events
                 .as_ref()
-                .filter(|e| !e.sources.is_empty())
+                .filter(|events| !events.sources.is_empty())
             else {
+                inventory.push(Row {
+                    clip: clip.id,
+                    group: None,
+                });
                 continue;
             };
             let mut roots = Vec::new();
@@ -170,29 +192,31 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
                 let isolated = isolated_root(project, root.clip.retained_snapshot(), &root.tempo)?;
                 roots.push(Root {
                     id: root.id,
-                    document: super::content_views::encode(&isolated)?,
+                    document: super::event_fades::encode(&isolated)?,
                 });
             }
-            inventory.push(State {
+            inventory.push(Row {
                 clip: clip.id,
-                next_id: events.next_id,
-                events: events.events.iter().map(Event::from).collect(),
-                sources: roots,
+                group: Some(State {
+                    next_id: events.next_id,
+                    events: events.events.iter().map(Event::from).collect(),
+                    sources: roots,
+                }),
             });
             Arc::make_mut(&mut edit.domain).events = None;
         }
     }
     let legacy = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let mut value = super::content_views::encode(&legacy)?;
+    let mut value = super::event_fades::encode(&legacy)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid grouped audio envelope"))?;
-    object.insert("version".into(), 42.into());
+    object.insert("version".into(), 43.into());
     object.insert("grouped_audio".into(), serde_json::to_value(inventory)?);
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    decode_version(bytes, 42)
+    decode_version(bytes, 43)
 }
 /// Actual41 producers are selected by their distinct mandatory inventory.
 /// The underlying frozen reader still validates every field and rejects extras.
@@ -200,7 +224,7 @@ pub(crate) fn decode41(bytes: &[u8]) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     if value.get("grouped_audio").is_some() {
-        if value.get("content_views").is_some() {
+        if value.get("content_views").is_some() || value.get("audio_event_fades").is_some() {
             return Err(StorageError::Invalid(
                 "ambiguous schema41 branch inventories; original unchanged",
             ));
@@ -219,6 +243,36 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
         return Err(StorageError::Invalid("invalid grouped audio version"));
     }
+    if version == 41 {
+        if let Some(states) = object
+            .get_mut("grouped_audio")
+            .and_then(|v| v.as_array_mut())
+        {
+            for state in states {
+                let row = state
+                    .as_object_mut()
+                    .ok_or(StorageError::Invalid("invalid draft grouped41 row"))?;
+                let clip = row.remove("clip").ok_or(StorageError::Invalid(
+                    "draft grouped41 clip identity missing",
+                ))?;
+                if let Some(events) = row.get_mut("events").and_then(|v| v.as_array_mut()) {
+                    for event in events {
+                        if let Some(event) = event.as_object_mut() {
+                            if event.contains_key("fade") {
+                                return Err(StorageError::Invalid(
+                                    "draft grouped41 cannot contain event fade fields",
+                                ));
+                            }
+                            event.insert("fade".into(), serde_json::Value::Null);
+                        }
+                    }
+                }
+                let group = std::mem::take(row);
+                row.insert("clip".into(), clip);
+                row.insert("group".into(), serde_json::Value::Object(group));
+            }
+        }
+    }
     let Inventory(states) = serde_json::from_value(
         object
             .remove("grouped_audio")
@@ -226,24 +280,29 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     )?;
     object.insert(
         "version".into(),
-        if version == 42 { 41.into() } else { 40.into() },
+        if version == 43 { 42.into() } else { 40.into() },
     );
     let base = serde_json::to_vec(&value)?;
-    let project = if version == 42 {
-        super::content_views::decode(&base)?
+    let project = if version == 43 {
+        super::event_fades::decode(&base)?
     } else {
         super::clip_activation::decode(&base)?
     };
     let mut inventory = BTreeMap::new();
     let mut count = 0usize;
-    for state in states {
+    for row in states {
         count = count
-            .checked_add(state.sources.len())
+            .checked_add(row.group.as_ref().map_or(0, |state| state.sources.len()))
             .filter(|n| *n <= hex_project::MAX_CLIPS)
             .ok_or(StorageError::Invalid(
                 "project retained audio root limit reached",
             ))?;
-        if state.sources.is_empty() || inventory.insert(state.clip, state).is_some() {
+        if row
+            .group
+            .as_ref()
+            .is_some_and(|state| state.sources.is_empty())
+            || inventory.insert(row.clip, row.group).is_some()
+        {
             return Err(StorageError::Invalid(
                 "empty or duplicate grouped audio inventory",
             ));
@@ -252,7 +311,12 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let mut snapshot = project.snapshot();
     for track in &mut snapshot.tracks {
         for clip in track.audio_clips_mut().map_err(invalid)? {
-            let Some(state) = inventory.remove(&clip.id) else {
+            let group = match inventory.remove(&clip.id) {
+                Some(group) => group,
+                None if version == 41 => None,
+                None => return Err(StorageError::Invalid("grouped audio clip row is missing")),
+            };
+            let Some(state) = group else {
                 continue;
             };
             let edit = clip.edit.as_mut().ok_or(StorageError::Invalid(
@@ -267,14 +331,14 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
             for root in state.sources {
                 let encoded = serde_json::to_vec(&root.document)?;
                 let root_version = root.document.get("version").and_then(|v| v.as_u64());
-                let expected = if version == 42 { 41 } else { 40 };
+                let expected = if version == 43 { 42 } else { 40 };
                 if root_version != Some(expected) {
                     return Err(StorageError::Invalid(
                         "retained root schema differs from its owning envelope",
                     ));
                 }
-                let root_project = if version == 42 {
-                    super::content_views::decode(&encoded)?
+                let root_project = if version == 43 {
+                    super::event_fades::decode(&encoded)?
                 } else {
                     super::clip_activation::decode(&encoded)?
                 };
@@ -319,14 +383,17 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                 events: state
                     .events
                     .into_iter()
-                    .map(|e| AudioEvent {
-                        id: e.id,
-                        source: e.source,
-                        start: e.start,
-                        end: e.end,
-                        source_start: e.source_start,
+                    .map(|e| {
+                        Ok(AudioEvent {
+                            id: e.id,
+                            source: e.source,
+                            start: e.start,
+                            end: e.end,
+                            source_start: e.source_start,
+                            fade: e.fade.map(super::event_fades::Fade::checked).transpose()?,
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, StorageError>>()?,
             }));
         }
     }

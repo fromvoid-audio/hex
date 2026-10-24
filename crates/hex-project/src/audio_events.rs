@@ -1,7 +1,7 @@
 //! Non-destructive intervals within an ordinary processing root or a frame-fixed
 //! container of independently retained complete roots.
 //! IDs are local to this sequence; callers scope references to clip/revision.
-use crate::{AudioClipEdit, Clip, ClipId, Invalid, Project};
+use crate::{AudioClipEdit, AudioEventFade, Clip, ClipId, Invalid, Project};
 use std::sync::Arc;
 
 pub const MAX_AUDIO_EVENTS: usize = 1_024;
@@ -18,6 +18,8 @@ pub struct AudioEvent {
     /// Original root coordinate played at `start`; for a retained source this
     /// is its finite prepared output frame, never a mutable/media-file offset.
     pub source_start: u64,
+    /// Independent source-window envelope; absent is exact unity.
+    pub fade: Option<AudioEventFade>,
 }
 impl AudioEvent {
     pub fn length(self) -> u64 {
@@ -46,6 +48,10 @@ pub struct AudioEvents {
 /// source-window one-shots have no such root and refuse these edits explicitly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AudioEventEdit {
+    SetFade {
+        event: u64,
+        fade: Option<AudioEventFade>,
+    },
     Split {
         at: u64,
     },
@@ -114,6 +120,10 @@ impl AudioEvents {
                 start: position(event.start)?,
                 end: position(event.end)?,
                 source_start: position(event.source_start)?,
+                fade: event
+                    .fade
+                    .map(|fade| fade.reproject(&mut position))
+                    .transpose()?,
             };
             let source_end = position(
                 event
@@ -163,6 +173,7 @@ impl AudioEvents {
                 start: 0,
                 end: length,
                 source_start: 0,
+                fade: None,
             }],
         }
     }
@@ -210,17 +221,29 @@ impl AudioEvents {
                     "audio events must have unique identities and bounded nonoverlapping intervals",
                 ));
             }
+            if let Some(fade) = event.fade {
+                fade.validate(
+                    self.source_length(event.source, length).unwrap_or(0),
+                    event.source_start,
+                    event.length(),
+                )?;
+            }
             previous_end = event.end;
         }
         Ok(())
     }
-    fn source_length(&self, source: u64, own_length: u64) -> Option<u64> {
+    pub(crate) fn source_length(&self, source: u64, own_length: u64) -> Option<u64> {
         if source == 0 {
             self.sources.is_empty().then_some(own_length)
         } else {
-            self.sources
-                .iter()
-                .find(|root| root.id == source)
+            // Canonical writers assign contiguous IDs. Preserve the validated
+            // arbitrary-ID reader contract through a bounded fallback.
+            source
+                .checked_sub(1)
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| self.sources.get(index))
+                .filter(|root| root.id == source)
+                .or_else(|| self.sources.iter().find(|root| root.id == source))
                 .map(|root| root.clip.duration())
         }
     }
@@ -270,6 +293,27 @@ impl AudioEvents {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
+            AudioEventEdit::SetFade { event, fade } => {
+                let index = next
+                    .events
+                    .iter()
+                    .position(|e| e.id == event)
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let target = next
+                    .events
+                    .get(index)
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let source_length = next
+                    .source_length(target.source, length)
+                    .ok_or(Invalid("audio event source is missing"))?;
+                if let Some(fade) = fade {
+                    fade.validate(source_length, target.source_start, target.length())?;
+                }
+                next.events
+                    .get_mut(index)
+                    .ok_or(Invalid("audio event no longer exists"))?
+                    .fade = fade.filter(|fade| !fade.shape().is_neutral());
+            }
             AudioEventEdit::Split { at } => {
                 if let Some(index) = next.events.iter().position(|e| e.start < at && at < e.end) {
                     let event = next.events[index];
@@ -364,6 +408,10 @@ impl AudioEvents {
                     start,
                     end,
                     source_start,
+                    fade: original
+                        .fade
+                        .map(|fade| fade.reanchor(source_start, end - start))
+                        .transpose()?,
                     ..original
                 });
             }
@@ -821,6 +869,7 @@ mod range_tests {
                     start: i * 4,
                     end: i * 4 + 2,
                     source_start: i * 4,
+                    fade: None,
                 })
                 .collect(),
         };
@@ -864,6 +913,7 @@ mod cropped_capacity_regression {
                     start: i * 4,
                     end: i * 4 + 4,
                     source_start: i * 4,
+                    fade: None,
                 })
                 .collect(),
         }));

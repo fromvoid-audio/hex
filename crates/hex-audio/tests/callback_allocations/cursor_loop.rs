@@ -67,3 +67,73 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn event_fade_pcm_publication_seek_stop_and_shutdown_allocate_and_free_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    use hex_project::{AudioEventEdit, AudioEventFade, ClipFade};
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let Created::Imported { asset, clip, .. } = editor.execute(Command::ImportAudioTrack {
+        name: "event fade".into(),
+        path: "original.wav".into(),
+        sample_rate: RATE,
+        frames: 16,
+    })?
+    else {
+        return Err("expected audio import".into());
+    };
+    editor.execute(Command::EditAudioEvents {
+        clip,
+        operation: AudioEventEdit::SetFade {
+            event: 1,
+            fade: Some(AudioEventFade::new(0, ClipFade::new(16, 0, 4, 4)?)?),
+        },
+    })?;
+    let graph = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &BTreeMap::from([(asset, Audio::new(RATE, vec![[1.0; 2]; 16])?)]),
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(graph)?)
+        .map_err(|_| "fade publication failed")?;
+    control
+        .command(PlaybackCommand::PlayFrom(0))
+        .map_err(|_| "fade start failed")?;
+    let mut output = [[0.0; 2]; 8];
+    measured_block(&mut callback, &mut output);
+    for (frame, gain) in output
+        .iter()
+        .zip([0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    {
+        assert_eq!(*frame, [gain; 2]);
+    }
+    control
+        .command(PlaybackCommand::PlayFrom(12))
+        .map_err(|_| "fade seek failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(
+        output,
+        [
+            [1.0; 2],
+            [2.0 / 3.0; 2],
+            [1.0 / 3.0; 2],
+            [0.0; 2],
+            [0.0; 2],
+            [0.0; 2],
+            [0.0; 2],
+            [0.0; 2]
+        ]
+    );
+    control
+        .command(PlaybackCommand::Stop)
+        .map_err(|_| "fade stop failed")?;
+    measured_block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 8]);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
