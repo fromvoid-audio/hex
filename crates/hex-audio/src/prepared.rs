@@ -2637,11 +2637,15 @@ impl Callback {
                     .active
                     .as_ref()
                     .and_then(ActivePublication::legacy)
-                    .is_some_and(|old| old.source_context.is_none())
+                    .is_some_and(|old| {
+                        old.source_context.is_none_or(|context| {
+                            context.project_generation != next.control_context_generation
+                        })
+                    })
                 {
                     self.status.publish_rejected_revision(
                         next.revision,
-                        PlaybackHandoffRejection::StreamedPagesNotReady,
+                        PlaybackHandoffRejection::RuntimeFenceChanged,
                     );
                     self.return_graph(next);
                     self.status.publication_pending.store(false, Release);

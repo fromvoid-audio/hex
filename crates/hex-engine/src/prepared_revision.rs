@@ -1253,3 +1253,6 @@ fn keyboard_source_facts_match(source: &PreparedRevision, target: &PreparedRevis
             })
         && source.session.tuning_source_facts_match(&target.session)
 }
+
+#[cfg(test)]
+mod ordinary_streaming_tests;

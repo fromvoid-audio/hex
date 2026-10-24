@@ -518,7 +518,18 @@ impl ActiveView<'_> {
                 }
                 play_applied = true;
             }
-            if window.frames == 0 {
+            let rendered_frames = if window.frames == 0
+                && self
+                    .state
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.renders_when_paused())
+            {
+                output.len() - committed
+            } else {
+                window.frames
+            };
+            if rendered_frames == 0 {
                 output[committed..].fill([0.0; 2]);
             } else {
                 let (left, right) = promotions.split_at_mut(1);
@@ -561,7 +572,7 @@ impl ActiveView<'_> {
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
                         runtime.render_with_pages_and_signal_observers(
-                            &mut output[committed..committed + window.frames],
+                            &mut output[committed..committed + rendered_frames],
                             &mut pages,
                             observer,
                             project_tap.as_mut(),
@@ -580,7 +591,7 @@ impl ActiveView<'_> {
                         activated,
                     };
                 }
-                committed += window.frames;
+                committed += rendered_frames;
             }
             for promotion in promotions.into_iter().flatten() {
                 promotion.commit();

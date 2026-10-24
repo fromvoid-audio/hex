@@ -2907,7 +2907,8 @@ impl SessionPlayback {
                 previous.route_state_generation
             };
             demand.window = Some(
-                self.visit_stream_chunk_at(
+                self.visit_stream_chunk_in_scope(
+                    demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
                     previous.arrangement_frame,

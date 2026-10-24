@@ -9,6 +9,8 @@ impl PublicationControl {
     /// actual protected demand still gates callback installation and rendering.
     /// Every subsequent graph uses the captured-source ordinary worker entry,
     /// including source-free successors that inherit scheduled route observations.
+    /// Inherited publications require the same captured project generation;
+    /// document replacement uses an explicit fresh installation policy.
     pub fn configure_ordinary_streaming_on_control(
         &mut self,
         domains: crate::AudioCandidateDomainReservation,

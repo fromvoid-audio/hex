@@ -34,6 +34,13 @@ impl Playback {
     }
 }
 impl StreamPlayback<'_> {
+    /// Ordinary paused monitoring still runs its existing keyboard/DSP kernel,
+    /// with no clip-page demand or transport-clock advance. Constructor runtimes
+    /// keep their closed-class paused behavior and never gain ordinary custody.
+    pub fn renders_when_paused(&self) -> bool {
+        matches!(self.runtime, Runtime::Ordinary(..))
+    }
+
     pub fn source_context(&self) -> Option<AudioSourceContext> {
         match &self.runtime {
             Runtime::Constructor(r) => r.source_context(),
@@ -80,7 +87,7 @@ impl StreamPlayback<'_> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.prepare_stream_action(action),
             Runtime::Ordinary(r, context) => {
-                let mut prepared = r.prepare_stream_action(action)?;
+                let mut prepared = r.prepare_ordinary_stream_action(action)?;
                 prepared.bind_ordinary_context(*context);
                 Ok(prepared)
             }
@@ -137,7 +144,9 @@ impl StreamPlayback<'_> {
     ) -> Result<StreamChunkWindow, Invalid> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.visit_pending_stream_chunk(due, maximum_frames, visit),
-            Runtime::Ordinary(r, _) => r.visit_pending_stream_chunk(due, maximum_frames, visit),
+            Runtime::Ordinary(r, _) => {
+                r.visit_ordinary_pending_stream_chunk(due, maximum_frames, visit)
+            }
         }
     }
     pub fn visit_next_stream_chunk(
@@ -148,7 +157,9 @@ impl StreamPlayback<'_> {
     ) -> Result<StreamChunkWindow, Invalid> {
         match &self.runtime {
             Runtime::Constructor(r) => r.visit_next_stream_chunk(maximum_frames, playing, visit),
-            Runtime::Ordinary(r, _) => r.visit_next_stream_chunk(maximum_frames, playing, visit),
+            Runtime::Ordinary(r, _) => {
+                r.visit_ordinary_stream_chunk(maximum_frames, playing, visit)
+            }
         }
     }
     pub fn preview_stream_handoff(
@@ -188,12 +199,14 @@ impl StreamPlayback<'_> {
                 }
             }
         }
-        musical_runtime(&mut self.runtime)?.preview_stream_handoff(
-            musical_runtime(&mut previous.runtime)?,
-            maximum_frames,
-            playing,
-            visit,
-        )
+        let ordinary = matches!(self.runtime, Runtime::Ordinary(..));
+        let next = musical_runtime(&mut self.runtime)?;
+        let old = musical_runtime(&mut previous.runtime)?;
+        if ordinary {
+            next.preview_ordinary_stream_handoff(old, maximum_frames, playing, visit)
+        } else {
+            next.preview_stream_handoff(old, maximum_frames, playing, visit)
+        }
     }
     pub fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
         &mut self,
