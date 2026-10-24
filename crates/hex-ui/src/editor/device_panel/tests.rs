@@ -1307,15 +1307,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         let knob = Box::leak(
             format!("device-{}-parameter-{level_id}-knob", instrument_id.value()).into_boxed_str(),
         );
-        let bounds = visual.debug_bounds(knob).expect("shell MiniDial");
+        let bounds = visual.debug_bounds(knob).expect("shell MicroDial");
         assert!(
             bounds.size.width >= px(18.0),
-            "MiniDial ring width: {:?}",
+            "MicroDial ring width: {:?}",
             bounds.size
         );
         assert!(
             bounds.size.height >= px(18.0),
-            "MiniDial ring height: {:?}",
+            "MicroDial ring height: {:?}",
             bounds.size
         );
     }

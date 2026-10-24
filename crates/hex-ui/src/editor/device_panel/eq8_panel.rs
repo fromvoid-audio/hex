@@ -541,7 +541,7 @@ fn compact_control(
         device,
         identity,
         parameter,
-        ControlPresentation::MiniDial,
+        ControlPresentation::MicroDial,
         ControlText {
             label: Some(label),
             codec: None,
