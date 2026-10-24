@@ -59,6 +59,7 @@ impl Import {
         channel: u8,
         velocity: u8,
         honor_suppression: bool,
+        gain_override: Option<f64>,
     ) -> Result<(), SessionPlaybackError> {
         if start >= cut
             || end <= cut
@@ -116,6 +117,22 @@ impl Import {
             .performance_frame
             .checked_add(end - cut)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let index = previous
+            .routes
+            .iter()
+            .position(|r| r.id == route.id)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let (gain, gain_frozen) = match gain_override {
+            Some(gain) => (gain, true),
+            None => super::clip_gain::at_cut(
+                previous,
+                index,
+                route.owner,
+                clip,
+                previous.arrangement_frame,
+                previous.performance_frame,
+            )?,
+        };
         self.occurrences[self.len] = Some(MutableOccurrence {
             signature: MutableOccurrenceSignature::from_parts(
                 MutableOccurrenceKey::new(route.id, clip, note, iteration, loop_pass),
@@ -130,6 +147,8 @@ impl Import {
             gate_end_frame,
             quiet_deadline_frame,
             note_off_sent: gate <= cut,
+            gain_at_end_bits: gain.to_bits(),
+            gain_frozen,
         });
         self.len += 1;
         Ok(())
@@ -206,6 +225,7 @@ pub(super) fn at_cut(
                             span.channel,
                             span.velocity,
                             true,
+                            None,
                         )
                         .err();
                 })
@@ -263,6 +283,7 @@ pub(super) fn at_cut(
                     span.channel,
                     span.velocity,
                     true,
+                    None,
                 )?;
             }
         }
@@ -301,6 +322,7 @@ pub(super) fn at_cut(
             c.channel,
             c.velocity,
             false,
+            Some(entry.clip_gain),
         )?;
     }
     Ok(out)

@@ -1,6 +1,4 @@
-use hex_project::{
-    BeatTime, Command, Created, Editor, MidiClipGain, MidiClipVolume, MidiClipVolumePoint,
-};
+use hex_project::{BeatTime, Command, Created, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
 use hex_session::Session;
 use std::collections::BTreeMap;
 fn volume() -> MidiClipVolume {
@@ -14,7 +12,7 @@ fn volume() -> MidiClipVolume {
     .unwrap()
 }
 #[test]
-fn unsupported_volume_refuses_before_session_commit_and_each_public_compiler_path() {
+fn clip_volume_prepares_through_session_and_public_compilers_with_atomic_refusal_and_history() {
     for console in [false, true] {
         let mut session = Session::new(48_000, 16, 4096).unwrap();
         let Created::Track(track) = session
@@ -67,47 +65,54 @@ fn unsupported_volume_refuses_before_session_commit_and_each_public_compiler_pat
         assert!(session.undo());
         assert!(session.can_redo());
         let before = session.project().clone();
-        let error = session
+        let too_long = BeatTime::from_quarters(2).unwrap();
+        let invalid = MidiClipVolume::new(
+            vec![MidiClipVolumePoint::linear(too_long, MidiClipGain::UNITY)],
+            too_long,
+        )
+        .unwrap();
+        assert!(
+            session
+                .command(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: invalid
+                })
+                .is_err()
+        );
+        assert_eq!(session.project(), &before);
+        assert!(session.can_redo(), "refusal preserves redo");
+        session
             .command(Command::ReplaceMidiClipVolume {
                 clip,
                 volume: volume(),
             })
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("midi clip volume playback is not prepared"),
-            "{error}"
-        );
-        assert_eq!(session.project(), &before);
-        assert!(session.can_redo());
-        // The canonical/storage owner can retain the curve; every current
-        // playback ingress must refuse until its audible consumer exists.
-        let mut metadata = Editor::new(before, 4).unwrap();
-        metadata
-            .execute(Command::ReplaceMidiClipVolume {
-                clip,
-                volume: volume(),
-            })
             .unwrap();
-        assert!(hex_engine::compile::project(metadata.project(), &BTreeMap::new()).is_err());
+        let authored = session.project().clone();
+        assert!(
+            !session.can_redo(),
+            "one admitted edit replaces the redo branch"
+        );
+        assert!(hex_engine::compile::project(session.project(), &BTreeMap::new()).is_ok());
         assert!(
             hex_engine::PreparedSessionInventory::prepare(
-                metadata.project(),
+                session.project(),
                 session.sine_table(),
                 None
             )
-            .is_err()
+            .is_ok()
         );
         assert!(
             hex_engine::PreparedRevision::prepare(
-                metadata.project(),
+                session.project(),
                 &BTreeMap::new(),
                 session.sine_table(),
                 None
             )
-            .is_err()
+            .is_ok()
         );
+        assert!(session.undo());
+        assert_eq!(session.project(), &before);
         assert!(session.redo());
+        assert_eq!(session.project(), &authored);
     }
 }

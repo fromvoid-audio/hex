@@ -14,6 +14,7 @@ use hex_session::service::{Event, Request};
 pub(super) enum Frozen {
     Single(NoteGesture),
     Group(GroupGesture),
+    Volume(hex_project::MidiClipVolume),
 }
 
 pub(super) struct Pending {
@@ -76,6 +77,10 @@ impl Pending {
                     insert: i,
                 }),
             ) => (clip, remove, insert) == (c, r, i),
+            (
+                Command::ReplaceMidiClipVolume { clip, volume },
+                Request::Edit(Command::ReplaceMidiClipVolume { clip: c, volume: v }),
+            ) => (clip, volume) == (c, v),
             _ => false,
         }
     }
@@ -130,7 +135,7 @@ impl EditorView {
                 .filter(|p| p.displayed(self))
                 .and_then(|p| match &p.preview {
                     Frozen::Single(note) => Some(*note),
-                    Frozen::Group(_) => None,
+                    Frozen::Group(_) | Frozen::Volume(_) => None,
                 })
         })
     }
@@ -142,9 +147,19 @@ impl EditorView {
                 .filter(|p| p.displayed(self))
                 .and_then(|p| match &p.preview {
                     Frozen::Group(group) => Some(group),
-                    Frozen::Single(_) => None,
+                    Frozen::Single(_) | Frozen::Volume(_) => None,
                 })
         })
+    }
+
+    pub(super) fn pending_midi_volume(&self, clip: ClipId) -> Option<hex_project::MidiClipVolume> {
+        self.pending_midi_drag
+            .as_ref()
+            .filter(|p| p.clip == clip && p.displayed(self))
+            .and_then(|p| match &p.preview {
+                Frozen::Volume(volume) => Some(volume.clone()),
+                _ => None,
+            })
     }
 
     pub(super) fn pending_midi_drag_matches(&self, request: &Request) -> bool {

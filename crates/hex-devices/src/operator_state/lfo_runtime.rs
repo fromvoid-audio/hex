@@ -246,6 +246,12 @@ impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
     fn max_events_per_block(&self) -> usize {
         256
     }
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
     fn max_active_occurrences(&self) -> usize {
         if self.large() { 64 } else { VOICES }
     }
@@ -427,6 +433,26 @@ impl<const N: usize> Runtime<N> {
 }
 
 impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(
+        &self,
+        output: &mut [u64],
+    ) -> Result<usize, hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::active_ids(self.voices.iter().map(|v| v.id), output)
+    }
+    fn preflight_occurrence_gains(
+        &self,
+        events: &[NativeInstrumentEvent],
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::preflight(self.voices.iter().map(|v| v.id), events, gains)
+    }
+
     fn can_import_analytic(&self, notes: &[hex_lattice::NativeInstrumentAnalyticSeed]) -> bool {
         self.factory.large()
             && self.filter.is_some()
@@ -543,6 +569,16 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         clock: Option<&dyn NativeInstrumentClock>,
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
+        self.process_block_with_clock_and_occurrence_gains(events, frames, clock, &[], _resources);
+    }
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let law = self.factory.lfo;
         let mut event = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {
@@ -626,6 +662,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                         voice.previous,
                     )
                 };
+                let sample = super::occurrence_gain::sample(sample, voice.id, offset, gains);
                 frame[0] += sample;
                 frame[1] += sample;
                 voice.previous = previous;

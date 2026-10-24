@@ -1319,6 +1319,7 @@ impl SessionPlayback {
                             pages.as_deref_mut(),
                             &mut captured[..output.len()],
                             &self.analytic_continuations,
+                            Some(self.revision.session().timing()),
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(capture) = capture.as_mut() {
@@ -1868,7 +1869,7 @@ struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     timing: &'a T,
 }
 
-fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
+fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?Sized>(
     context: MutableInstrumentChunkContext<'_, T>,
     index: usize,
     output: &mut [Frame],
@@ -2021,23 +2022,194 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
         &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
         |s| s,
     );
-    runtime
-        .process_segment_with_resources(
-            routes[index].id,
-            performance_frame,
-            match midi_route.owner {
-                RouteOwner::Arrangement => arrangement_frame,
-                _ => performance_frame,
+    let source_start = match midi_route.owner {
+        RouteOwner::Arrangement => arrangement_frame,
+        _ => performance_frame,
+    };
+    let arrangement_volumes = track.instrument.as_ref().and_then(|i| i.volumes.as_ref());
+    let console = if let RouteOwner::Session { clip, origin } = midi_route.owner {
+        midi.midi_clip_for_track(clip, track_id)
+            .map(|prepared| (clip, origin, prepared))
+    } else {
+        None
+    };
+    let has_program = match midi_route.owner {
+        RouteOwner::Arrangement => arrangement_volumes.is_some(),
+        RouteOwner::Session { .. } => console
+            .as_ref()
+            .is_some_and(|(_, _, prepared)| prepared.volume_program().is_some()),
+        _ => false,
+    };
+    let clock = InstrumentClock {
+        timing,
+        start: performance_frame,
+    };
+    if !has_program && !runtime.has_volume_gain() {
+        return runtime
+            .process_segment_with_resources(
+                track_id,
+                performance_frame,
+                source_start,
+                output,
+                onsets,
+                suppressions,
+                events,
+                Some(&clock),
+                resources,
+            )
+            .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
+    }
+    let console_historical = console
+        .as_ref()
+        .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
+        .map(|(origin, program)| {
+            program.historical_end_gain(
+                timing,
+                crate::midi_clip_volume::VolumePlacement::Session { origin },
+            )
+        })
+        .transpose()
+        .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
+        .flatten()
+        .is_some();
+    let console_endpoint = if console_historical {
+        None
+    } else {
+        console
+            .as_ref()
+            .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
+            .map(|(origin, program)| {
+                program.finite_endpoint(
+                    timing,
+                    crate::midi_clip_volume::VolumePlacement::Session { origin },
+                )
+            })
+            .transpose()
+            .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
+            .flatten()
+    };
+    let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
+                      performance: u64,
+                      frames: usize| {
+        use crate::midi_clip_volume::{VolumePlacement, VolumeRamp};
+        use crate::mutable_instrument::{MutableInstrumentRuntimeError as Error, VolumeSlice};
+        let key = signature.key();
+        let unity = |at| VolumeSlice {
+            at,
+            terminal: None,
+            ramp: VolumeRamp {
+                start_frame: 0,
+                end_frame: u64::MAX,
+                start_gain: 1.0,
+                end_gain: 1.0,
+                next_boundary: None,
             },
+        };
+        match midi_route.owner {
+            RouteOwner::Arrangement => {
+                if key.track != track_id || key.loop_pass != arrangement_loop_pass {
+                    return Ok(None);
+                }
+                // CURRENT deliberately omits ordinary mutable source descriptor
+                // owners. Its existing admitted note interval index is the
+                // authority: query at this exact authored onset, bounded by the
+                // compiled voice-density law, never scan canonical clips/notes.
+                // A missing/edited source keeps the outgoing scalar; an exact
+                // source with an empty curve explicitly restores unity.
+                let (onset, gate, pitch, channel, velocity) = signature.details();
+                let first = revision
+                    .session()
+                    .timing()
+                    .beat_to_frame(onset)
+                    .map_err(|_| Error::InvalidSourceSpan)?;
+                let end = first.checked_add(1).ok_or(Error::Arithmetic)?;
+                let mut found = false;
+                track
+                    .for_each_mutable_midi_span(first, end, |span| {
+                        found |= span.clip == key.clip
+                            && span.note == key.note
+                            && span.iteration == key.iteration
+                            && span.onset_beat == onset
+                            && span.gate_end_beat == gate
+                            && span.pitch == pitch
+                            && span.channel == channel
+                            && span.velocity == velocity;
+                    })
+                    .map_err(|_| Error::InvalidSourceSpan)?;
+                if !found {
+                    return Ok(None);
+                }
+                let at = performance
+                    .checked_sub(performance_frame)
+                    .and_then(|offset| arrangement_frame.checked_add(offset))
+                    .ok_or(Error::Arithmetic)?;
+                arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
+                    Ok(Some(unity(at))),
+                    |row| {
+                        let Some(endpoint) = row.endpoint else {
+                            return Ok(None);
+                        };
+                        if at >= endpoint.frame {
+                            return Ok(None);
+                        }
+                        // Arrangement coordinates are content frames. The Console
+                        // clock may have an absolute rebase floor after a wrap.
+                        row.segment_or_hold(revision.session().timing(), at, frames)
+                            .map(|ramp| {
+                                Some(VolumeSlice {
+                                    at,
+                                    ramp,
+                                    terminal: Some(endpoint.frame),
+                                })
+                            })
+                            .map_err(|_| Error::InvalidSourceSpan)
+                    },
+                )
+            }
+            RouteOwner::Session { clip, origin } => {
+                if key.clip != clip || key.loop_pass != routes[index].current_incarnation {
+                    return Ok(None);
+                }
+                let Some(program) = console
+                    .as_ref()
+                    .and_then(|(_, _, prepared)| prepared.volume_program())
+                else {
+                    return Ok(Some(unity(performance)));
+                };
+                if console_historical || console_endpoint.is_some_and(|e| performance >= e.frame) {
+                    return Ok(None);
+                }
+                program
+                    .segment_at(
+                        timing,
+                        VolumePlacement::Session { origin },
+                        performance,
+                        frames,
+                    )
+                    .map_err(|_| Error::InvalidSourceSpan)?
+                    .map(|ramp| VolumeSlice {
+                        at: performance,
+                        ramp,
+                        terminal: console_endpoint.map(|e| e.frame),
+                    })
+                    .map(Some)
+                    .ok_or(Error::InvalidSourceSpan)
+            }
+            RouteOwner::SessionAudio { .. } | RouteOwner::Silence => Ok(None),
+        }
+    };
+    runtime
+        .process_segment_with_volume(
+            track_id,
+            performance_frame,
+            source_start,
             output,
             onsets,
             suppressions,
             events,
-            Some(&InstrumentClock {
-                timing,
-                start: performance_frame,
-            }),
+            Some(&clock),
             resources,
+            &mut lookup,
         )
         .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error)
 }
@@ -2062,7 +2234,7 @@ enum SourceStage {
     Instrument,
 }
 
-fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
+fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::MidiTempoBreaks>(
     context: RouteSourceContext<'_, T>,
     spans: &mut MidiSpanBuffer,
     performance_frame: u64,
@@ -2108,6 +2280,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         output,
                         suppressions,
                         continuations,
+                        Some(revision.session().timing()),
                     )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0));
             }
@@ -2124,14 +2297,25 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                             suppressions,
                             pages.as_deref_mut(),
                             continuations,
+                            Some(revision.session().timing()),
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
-                        track.render_additive_with_pages(arrangement_frame, output, page_provider)
-                    } else if track.has_gain_automation() {
-                        // This is the raw source stage; the buffered caller applies gain once.
-                        track.render_additive_with_midi_floor(arrangement_frame, output, None)
+                        track.render_additive_with_pages(
+                            arrangement_frame,
+                            output,
+                            page_provider,
+                            Some(revision.session().timing()),
+                        )
                     } else {
-                        track.render_additive(arrangement_frame, output)
+                        // Arrangement volume uses the canonical clip clock,
+                        // including the whole-track fast path. Buffered callers
+                        // still own applying any track gain automation once.
+                        track.render_additive_with_midi_floor(
+                            arrangement_frame,
+                            output,
+                            None,
+                            Some(revision.session().timing()),
+                        )
                     }
                 }
                 SourceStage::Audio => {
@@ -2151,6 +2335,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                     output,
                     suppressions,
                     continuations,
+                    Some(revision.session().timing()),
                 ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -2175,7 +2360,14 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                     .with_continuations(continuations);
                 prepared
                     .instrument_template()
-                    .render_additive(context, source_mix, performance_frame, output, spans)
+                    .render_additive_with_volume(
+                        context,
+                        source_mix,
+                        performance_frame,
+                        output,
+                        spans,
+                        prepared.volume_program(),
+                    )
                     .map_err(SessionPlaybackError::Midi)?;
             }
         }
@@ -2304,6 +2496,7 @@ fn render_release_captured(
             .sample_at_with_continuation(absolute, contexts, retained, continuations)
             .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
         {
+            let sample = sample.map(|v| (f64::from(v) * release.clip_gain) as f32);
             let contribution = release.mix.apply_frame(sample);
             frame[0] += contribution[0];
             frame[1] += contribution[1];
@@ -2340,8 +2533,8 @@ fn render_release_raw(
             .sample_at_with_continuation(absolute, contexts, retained, continuations)
             .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
         {
-            frame[0] += sample[0];
-            frame[1] += sample[1];
+            frame[0] += (f64::from(sample[0]) * release.clip_gain) as f32;
+            frame[1] += (f64::from(sample[1]) * release.clip_gain) as f32;
         }
     }
     Ok(())
