@@ -4,9 +4,10 @@
 //! complete note events; the sole runtime consumer snapshots at most 128 events
 //! and commits their token only after the corresponding runtime transaction
 //! succeeds. The ring never overwrites an uncommitted event. Invalid payloads,
-//! full capacity, counter exhaustion, concurrent producers, and stale consumer
-//! commits fail closed by setting the out-of-band cancellation flag. No operation allocates,
-//! waits, schedules playback, or owns project/audio identity.
+//! full capacity, counter exhaustion and concurrent producers fault the exact
+//! activation out of band. Stale publishers and consumer commits cannot fault a
+//! newer activation. No operation allocates, waits, schedules playback, or owns
+//! project/audio identity.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
