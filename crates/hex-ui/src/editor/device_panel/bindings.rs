@@ -381,12 +381,18 @@ pub(super) fn render_parameter(
                 });
             }
             let (width, height) = match presentation {
-                ControlPresentation::CompactDial => (64.0, 52.0),
+                ControlPresentation::CompactDial => (
+                    hex_widgets::COMPACT_DIAL_WIDTH,
+                    hex_widgets::COMPACT_DIAL_HEIGHT,
+                ),
                 ControlPresentation::MicroDial => (
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
-                ControlPresentation::InlineValue => (46.0, 14.0),
+                ControlPresentation::InlineValue => (
+                    hex_widgets::INLINE_VALUE_WIDTH,
+                    hex_widgets::INLINE_VALUE_HEIGHT,
+                ),
                 ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
                 _ => (136.0, 26.0),
             };
