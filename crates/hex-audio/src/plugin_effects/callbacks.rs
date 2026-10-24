@@ -2,9 +2,97 @@
 //! through the existing callback carrier, never cloned or admitted by its IDs.
 use super::*;
 
-struct Entry {
+/// One original endpoint with its lazy staging bit. Both callback carriers use
+/// this same processing/acceptance implementation; no worker custody is copied.
+pub(crate) struct NativeEffectEntry {
     callback: NativeEffectCallback,
     staged: bool,
+}
+impl NativeEffectEntry {
+    pub(crate) fn new(callback: NativeEffectCallback) -> Self {
+        Self {
+            callback,
+            staged: false,
+        }
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn committed_frames_for_test(&self) -> u64 {
+        self.callback.transport.committed_position_for_test()
+    }
+    pub(crate) fn callback(&self) -> &NativeEffectCallback {
+        &self.callback
+    }
+    pub(crate) fn into_callback(self) -> NativeEffectCallback {
+        self.callback
+    }
+    pub(crate) fn binding(&self) -> Binding {
+        self.callback.binding()
+    }
+    pub(crate) fn quantum_frames(&self) -> usize {
+        usize::from(self.callback.configuration.prepared.quantum_frames())
+    }
+    pub(crate) fn process(
+        &mut self,
+        extent: usize,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        if !self.staged {
+            self.callback
+                .begin_host_callback(extent)
+                .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
+            self.staged = true;
+        }
+        self.callback.process_segment(node, offset, frames, clock)
+    }
+    pub(crate) fn finish(&mut self) -> Result<(), Fault> {
+        if self.staged {
+            self.callback.finish_host_callback(true)?;
+            self.staged = false;
+        }
+        Ok(())
+    }
+    pub(crate) fn reject(&mut self) {
+        self.callback.reject_callback();
+        self.staged = false;
+    }
+}
+/// Scalar state for one complete physical callback. An endpoint set's permanent
+/// revocation is separate from which original entries were actually visited.
+#[derive(Default)]
+pub(crate) struct NativeEffectCycle {
+    frames: Option<usize>,
+    revoked: bool,
+}
+impl NativeEffectCycle {
+    pub(crate) fn begin(&mut self, frames: usize, quantum: usize) -> Result<(), Fault> {
+        if self.revoked || self.frames.is_some() || frames == 0 || frames > quantum {
+            return Err(Fault::Protocol);
+        }
+        self.frames = Some(frames);
+        Ok(())
+    }
+    pub(crate) fn extent(&self) -> Option<usize> {
+        self.frames.filter(|_| !self.revoked)
+    }
+    pub(crate) fn revoked(&self) -> bool {
+        self.revoked
+    }
+    pub(crate) fn active(&self) -> bool {
+        self.frames.is_some()
+    }
+    pub(crate) fn finish(&mut self, accepted: bool) -> Result<(), Fault> {
+        if !accepted || self.revoked || self.frames.take().is_none() {
+            return Err(Fault::Protocol);
+        }
+        Ok(())
+    }
+    pub(crate) fn reject(&mut self) {
+        self.revoked = true;
+        self.frames = None;
+    }
 }
 
 /// Current and retained-tail endpoints for one output. The sorted key includes
@@ -12,10 +100,9 @@ struct Entry {
 /// ID cannot select an older native stream. Joining workers stay on control.
 /// Construction does not admit resources to Root or authorize discontinuities.
 pub struct NativeEffectCallbacks {
-    entries: Vec<Entry>,
+    entries: Vec<NativeEffectEntry>,
     quantum: usize,
-    frames: Option<usize>,
-    revoked: bool,
+    cycle: NativeEffectCycle,
 }
 impl NativeEffectCallbacks {
     /// Split actual constructor-paired owners on control. Returned workers use
@@ -56,18 +143,14 @@ impl NativeEffectCallbacks {
         for effect in effects {
             let (worker, callback) = effect.into_parts();
             workers.push(worker);
-            entries.push(Entry {
-                callback,
-                staged: false,
-            });
+            entries.push(NativeEffectEntry::new(callback));
         }
         Ok((
             workers,
             Self {
                 entries,
                 quantum: usize::from(quantum),
-                frames: None,
-                revoked: false,
+                cycle: NativeEffectCycle::default(),
             },
         ))
     }
@@ -78,28 +161,24 @@ impl NativeEffectCallbacks {
     /// actual graph visits them, so stopped rendering or an unrelated retained
     /// source does not fabricate processing, silence input or advance its epoch.
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {
-        if self.revoked || self.frames.is_some() || frames == 0 || frames > self.quantum {
+        let result = self.cycle.begin(frames, self.quantum);
+        if result.is_err() {
             self.reject_callback();
-            return Err(Fault::Protocol);
         }
-        self.frames = Some(frames);
-        Ok(())
+        result
     }
     /// Final host-format acceptance, once for the complete callback. Each used
     /// endpoint must have staged the full extent. Any partial dispatch failure
     /// revokes every source; native work is irreversible and is never replayed.
     pub fn finish_host_callback(&mut self, accepted: bool) -> Result<(), Fault> {
-        if !accepted || self.revoked || self.frames.take().is_none() {
+        if let Err(error) = self.cycle.finish(accepted) {
             self.reject_callback();
-            return Err(Fault::Protocol);
+            return Err(error);
         }
         for entry in &mut self.entries {
-            if entry.staged {
-                if let Err(error) = entry.callback.finish_host_callback(true) {
-                    self.reject_callback();
-                    return Err(error);
-                }
-                entry.staged = false;
+            if let Err(error) = entry.finish() {
+                self.reject_callback();
+                return Err(error);
             }
         }
         Ok(())
@@ -115,18 +194,12 @@ impl ForeignProcessors for NativeEffectCallbacks {
     ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.entries
-                .binary_search_by_key(&binding, |entry| entry.callback.binding())
+                .binary_search_by_key(&binding, NativeEffectEntry::binding)
                 .ok()
         });
-        let result = match (self.frames, selected) {
-            (Some(extent), Some(index)) if !self.revoked => {
-                let entry = &mut self.entries[index];
-                if entry.staged || entry.callback.begin_host_callback(extent).is_ok() {
-                    entry.staged = true;
-                    entry.callback.process_segment(node, offset, frames, clock)
-                } else {
-                    Err(DeviceContractError::ForeignProcessingFailed)
-                }
+        let result = match (self.cycle.extent(), selected) {
+            (Some(extent), Some(index)) => {
+                self.entries[index].process(extent, node, offset, frames, clock)
             }
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };
@@ -137,10 +210,9 @@ impl ForeignProcessors for NativeEffectCallbacks {
         result
     }
     fn reject_callback(&mut self) {
-        self.revoked = true;
-        self.frames = None;
+        self.cycle.reject();
         for entry in &mut self.entries {
-            entry.callback.reject_callback();
+            entry.reject();
         }
     }
 }

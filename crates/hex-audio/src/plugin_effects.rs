@@ -23,6 +23,7 @@ mod control;
 pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod callbacks;
 pub use callbacks::NativeEffectCallbacks;
+pub(crate) use callbacks::{NativeEffectCycle, NativeEffectEntry};
 
 #[derive(Clone)]
 struct Configuration {

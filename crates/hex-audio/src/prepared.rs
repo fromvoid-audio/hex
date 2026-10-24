@@ -42,6 +42,8 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+mod native_effects;
+pub(crate) use native_effects::NativeEffectWindow;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native_sources;
 mod resident_forwarding;
@@ -1996,6 +1998,7 @@ impl Callback {
     }
 
     pub(crate) fn revoke_output_transport(&mut self) {
+        self.revoke_native_effects();
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -2075,9 +2078,13 @@ impl Callback {
     }
     pub(crate) fn output_transport_error(&self) -> Option<Invalid> {
         self.output_transport
-            .as_ref()?
-            .fault()
+            .as_ref()
+            .and_then(|transport| transport.fault())
             .map(|fault| Invalid(fault.message()))
+            .or_else(|| {
+                self.native_effects_revoked()
+                    .then_some(Invalid("native effect callback refused"))
+            })
     }
 
     pub(crate) fn native_spectrum_receipt(
@@ -3018,6 +3025,14 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.native_effects_revoked() {
+            output.fill([0.0; 2]);
+            return if self.status.playing.load(Relaxed) {
+                Err(Invalid("native effect callback is revoked"))
+            } else {
+                Ok(())
+            };
+        }
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.status.closing.load(Acquire) {
@@ -3100,16 +3115,24 @@ impl Callback {
         } else {
             None
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed_with_project(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 node,
                 project.as_mut(),
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3123,9 +3146,12 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active
-                .playback
-                .render_with_signal_observers(output, node, project.as_mut())?;
+            active.playback.render_with_signal_observers(
+                output,
+                node,
+                project.as_mut(),
+                foreign,
+            )?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -3139,15 +3165,24 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 None,
+                None,
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3190,7 +3225,9 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.render(output)?;
+            active
+                .playback
+                .render_with_signal_observers(output, None, None, foreign)?;
         } else {
             output.fill([0.0; 2]);
         }

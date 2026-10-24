@@ -204,21 +204,22 @@ impl RuntimeMut<'_> {
             }
         }
     }
-    pub(super) fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        match self {
-            Self::Legacy(p) => p.render(output),
-            Self::Eligible(p) => p.render(output),
-        }
-    }
     pub(super) fn render_with_signal_observers(
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> Result<(), Invalid> {
-        match self {
-            Self::Legacy(p) => p.render_with_signal_observers(output, observer, project),
-            Self::Eligible(p) => p.render_with_signal_observers(output, observer, project),
+        match (self, foreign) {
+            (Self::Legacy(p), Some(foreign)) => {
+                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            }
+            (Self::Eligible(p), Some(foreign)) => {
+                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            }
+            (Self::Legacy(p), None) => p.render_with_signal_observers(output, observer, project),
+            (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {

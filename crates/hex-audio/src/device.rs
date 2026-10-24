@@ -351,6 +351,11 @@ where
                     );
                     return;
                 }
+                if let Err(error) = callback.begin_native_effect_callback(complete / channels) {
+                    data.fill(T::from_sample(0.0));
+                    callback.report_render_fault(Some(&error), status.position.load(Relaxed));
+                    return;
+                }
                 for chunk in data[..complete].chunks_mut(channels * block.len()) {
                     let frames = chunk.len() / channels;
                     let block_start_frame = status.position.load(Relaxed);
@@ -389,13 +394,22 @@ where
     )
 }
 
-fn valid_transport_buffer(callback: &prepared::Callback, samples: usize, channels: usize) -> bool {
-    callback.output_transport_quantum().is_none_or(|quantum| {
-        channels != 0 && samples % channels == 0 && samples / channels <= quantum
-    })
+pub(crate) fn valid_transport_buffer(
+    callback: &prepared::Callback,
+    samples: usize,
+    channels: usize,
+) -> bool {
+    callback
+        .output_transport_quantum()
+        .into_iter()
+        .chain(callback.native_effect_quantum())
+        .min()
+        .is_none_or(|quantum| {
+            channels != 0 && samples % channels == 0 && samples / channels <= quantum
+        })
 }
 
-fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
+pub(crate) fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
     callback: &mut prepared::Callback,
     output: &mut [T],
     source: &mut [Frame],
@@ -423,6 +437,8 @@ where
         // Keep ordinary output on its existing direct conversion path.
         rendered.is_ok() && copy_host_chunk(output, source, channels)
     };
+    let delivery = callback.finish_native_effect_callback(valid);
+    let valid = finish_transport_copy(delivery, valid, rendered.is_ok(), output, source, channels);
     let _ = callback.finish_spectrum_block(capture_start, valid);
     if !valid {
         output.fill(T::from_sample(0.0));

@@ -24,6 +24,10 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_published_blocks(&self) -> u64 {
+        self.worker.published_blocks_on_control()
+    }
     pub(crate) fn binding(&self) -> Binding {
         self.configuration.binding
     }

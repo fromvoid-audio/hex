@@ -291,6 +291,12 @@ impl Callback {
     pub fn binding(&self) -> Binding {
         self.binding
     }
+    /// Diagnostic observation of actual committed transport progress. Staging
+    /// alone does not advance it; this grants no worker/readiness authority.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn committed_position_for_test(&self) -> u64 {
+        self.state.position
+    }
     pub fn quantum_frames(&self) -> usize {
         usize::from(self.quantum)
     }

@@ -1,13 +1,14 @@
 //! Unique native endpoints use the existing output publication/return carrier.
 //! Root keeps the original worker; a request/signal is never endpoint return.
 use super::*;
-use crate::plugin_effects::NativeEffectCallback;
+use crate::plugin_effects::{NativeEffectCycle, NativeEffectEntry};
+mod rendering;
 
 pub(crate) struct NativeEndpointEnvelope(Box<Endpoint>);
 struct Endpoint {
     slot: usize,
     binding: Binding,
-    callback: Option<NativeEffectCallback>,
+    callback: Option<NativeEffectEntry>,
     signal: Arc<AtomicBool>,
 }
 impl NativeEndpointEnvelope {
@@ -23,6 +24,10 @@ impl NativeEndpointEnvelope {
 /// or returning an endpoint moves only its Box; no callback destructor occurs.
 pub(crate) struct NativeEndpointBank {
     entries: Vec<Option<NativeEndpointEnvelope>>,
+    // Sorted scalar indexes into the same fixed owner cells, not another bank.
+    routing: [usize; MAX_SOURCES],
+    routing_len: usize,
+    cycle: NativeEffectCycle,
 }
 impl NativeEndpointBank {
     pub(crate) fn new() -> Result<Self, &'static str> {
@@ -34,7 +39,12 @@ impl NativeEndpointBank {
             return Err("native endpoint bank capacity differs");
         }
         entries.resize_with(MAX_SOURCES, || None);
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            routing: [0; MAX_SOURCES],
+            routing_len: 0,
+            cycle: NativeEffectCycle::default(),
+        })
     }
     pub(crate) fn data_quote() -> Option<usize> {
         MAX_SOURCES.checked_mul(std::mem::size_of::<Option<NativeEndpointEnvelope>>())
@@ -52,28 +62,48 @@ impl NativeEndpointBank {
         let Some(index) = endpoint.index_for(root) else {
             return Err(endpoint);
         };
-        let Some(destination) = self.entries.get_mut(index) else {
-            return Err(endpoint);
-        };
-        if destination.is_some() {
+        if self.cycle.active()
+            || self.entries.get(index).is_none_or(Option::is_some)
+            || self.routing_len == MAX_SOURCES
+        {
             return Err(endpoint);
         }
-        *destination = Some(endpoint);
+        let position = match self.routing[..self.routing_len]
+            .binary_search_by_key(&Some(endpoint.0.binding), |slot| {
+                self.entries[*slot].as_ref().map(|e| e.0.binding)
+            }) {
+            Ok(_) => return Err(endpoint),
+            Err(position) => position,
+        };
+        self.routing
+            .copy_within(position..self.routing_len, position + 1);
+        self.routing[position] = index;
+        self.routing_len += 1;
+        self.entries[index] = Some(endpoint);
         Ok(())
     }
     pub(crate) fn take_requested(&mut self, index: usize) -> Option<NativeEndpointEnvelope> {
+        if self.cycle.active() {
+            return None;
+        }
         let entry = self.entries.get_mut(index)?;
         if entry
             .as_ref()
             .is_some_and(NativeEndpointEnvelope::return_requested)
         {
+            let position = self.routing[..self.routing_len]
+                .iter()
+                .position(|slot| *slot == index)?;
+            self.routing
+                .copy_within(position + 1..self.routing_len, position);
+            self.routing_len -= 1;
             entry.take()
         } else {
             None
         }
     }
     pub(crate) fn has_endpoints(&self) -> bool {
-        self.entries.iter().any(Option::is_some)
+        self.routing_len != 0
     }
     pub(crate) fn extract(
         &mut self,
@@ -89,9 +119,15 @@ impl NativeEndpointBank {
         {
             return false;
         }
+        // Terminal extraction occurs only after callback/backend quiescence.
+        // A lost host completion must revoke staged work before endpoint return.
+        if self.cycle.active() {
+            self.reject_rendering();
+        }
         for (source, target) in self.entries.iter_mut().zip(destination) {
             *target = source.take();
         }
+        self.routing_len = 0;
         true
     }
 }
@@ -161,7 +197,7 @@ impl Custody {
             Some(Owner::Effect(effect)) => match effect.loan_on_control() {
                 Ok((control, callback)) => {
                     cell.owner = Some(Owner::Loaned(control));
-                    envelope.0.callback = Some(callback);
+                    envelope.0.callback = Some(NativeEffectEntry::new(callback));
                     true
                 }
                 Err(effect) => {
@@ -237,7 +273,7 @@ impl Custody {
                 .0
                 .callback
                 .as_ref()
-                .is_some_and(|callback| control.matches_callback(callback))
+                .is_some_and(|callback| control.matches_callback(callback.callback()))
         {
             return Err(endpoint);
         }
@@ -247,11 +283,11 @@ impl Custody {
             return Err(endpoint);
         };
         match cell.owner.take() {
-            Some(Owner::Loaned(control)) => match control.reunite(callback) {
+            Some(Owner::Loaned(control)) => match control.reunite(callback.into_callback()) {
                 Ok(effect) => cell.owner = Some(Owner::Effect(effect)),
                 Err((control, callback)) => {
                     cell.owner = Some(Owner::Loaned(control));
-                    endpoint.0.callback = Some(callback);
+                    endpoint.0.callback = Some(NativeEffectEntry::new(callback));
                     return Err(endpoint);
                 }
             },

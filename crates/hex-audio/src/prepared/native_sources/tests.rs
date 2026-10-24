@@ -14,6 +14,17 @@ fn setup() -> (
     NativeRetirement,
     Binding,
 ) {
+    setup_for_identity(identity())
+}
+fn setup_for_identity(
+    source_identity: hex_lattice::ProcessorInstanceIdentity,
+) -> (
+    Control,
+    Guard<NativeCallbackOwner>,
+    Guard<ErrorCallbackOwner>,
+    NativeRetirement,
+    Binding,
+) {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
         .configure_physical_callback_request(&mut callback, 8)
@@ -38,7 +49,7 @@ fn setup() -> (
     control
         .configure_native_source_preparation(2, source_reservation())
         .unwrap();
-    let binding = source(&mut control, identity());
+    let binding = source(&mut control, source_identity);
     (control, data, errors, retirement, binding)
 }
 fn source(control: &mut Control, identity: hex_lattice::ProcessorInstanceIdentity) -> Binding {
@@ -303,3 +314,6 @@ fn native_endpoint_return_visits_sources_after_a_vacant_cell() {
     drop(errors);
     finish(&mut retirement);
 }
+
+#[cfg(feature = "allocation-probe")]
+mod rendering;

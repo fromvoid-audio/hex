@@ -1020,3 +1020,17 @@ pub(crate) fn original_worker_awaits_endpoint(root: &CandidateRoot, binding: Bin
     bank.sources.slots[index].endpoint_loaned
         && matches!(work.sources.cells[index].owner, Some(Owner::Loaned(_)))
 }
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn original_worker_published_blocks(
+    root: &CandidateRoot,
+    binding: Binding,
+) -> Option<u64> {
+    let work = lock(&root.0.eligible.work);
+    let bank = lock(&root.0.eligible.bank);
+    let index = bank.sources.index(binding)?;
+    match work.sources.cells[index].owner.as_ref()? {
+        Owner::Loaned(control) => Some(control.test_published_blocks()),
+        _ => None,
+    }
+}
