@@ -481,7 +481,7 @@ fn actual_root_close_during_reserved_construction_keeps_custody_without_starting
             returned
                 .error
                 .as_ref()
-                .is_some_and(|e| e.contains("cancelled"))
+                .is_some_and(|e| matches!(e, hex_plugin_host::Error::Cancelled))
         );
         assert!(returned.cleanup_error.is_none());
         assert!(root.complete());
@@ -515,10 +515,26 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
         root.native_source_error(binding)
             .is_some_and(|error| error.contains("configuration"))
     );
+    {
+        let work = root.work.try_lock().unwrap();
+        let cell = &work.sources.cells[0];
+        assert!(
+            cell.error.is_none(),
+            "original owner holds the only diagnostic"
+        );
+        assert!(matches!(
+            cell.cause(),
+            Some(hex_plugin_host::Error::Protocol(_))
+        ));
+    }
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
-    assert!(returned.error.is_some() && returned.cleanup_error.is_none());
+    assert!(matches!(
+        returned.error,
+        Some(hex_plugin_host::Error::Protocol(_))
+    ));
+    assert!(returned.cleanup_error.is_none());
     assert!(root.native_source_error(binding).is_none());
     assert!(root.complete());
 }
@@ -558,18 +574,19 @@ fn actual_root_preserves_host_asset_state_refusal_after_input_accounting() {
         root.native_source_progress(binding),
         Some(NativeSourcePreparationProgress::Retiring)
     );
-    assert!(
-        root.native_source_error(binding)
-            .is_some_and(|error| error.contains("startup state must be asset free"))
-    );
+    assert!(root.native_source_error(binding).is_some_and(|error| {
+        error
+            .to_string()
+            .contains("startup state must be asset free")
+    }));
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
-    assert!(
-        returned
-            .error
-            .is_some_and(|error| error.contains("startup state must be asset free"))
-    );
+    assert!(returned.error.is_some_and(|error| {
+        error
+            .to_string()
+            .contains("startup state must be asset free")
+    }));
     assert!(returned.cleanup_error.is_none());
     assert!(root.complete());
 }
@@ -686,7 +703,7 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
     let returned = retained
         .recover_native_source_preparation(abandoned)
         .unwrap();
-    assert!(returned.error.unwrap().contains("presentation"));
+    assert!(returned.error.unwrap().to_string().contains("presentation"));
     assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
     let (build, source, preparation) = input();
     let abandoned = retained
@@ -758,6 +775,24 @@ fn root_cancellation_creation_refusal_is_original_pre_spawn_failure() {
     root.configure_native_sources(1, source_reservation())
         .unwrap();
     let (build, source, preparation) = input();
+    #[derive(Debug)]
+    struct OriginalRefusal(String);
+    impl std::fmt::Display for OriginalRefusal {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+    impl std::error::Error for OriginalRefusal {}
+    let original = std::io::Error::other(OriginalRefusal(String::from(
+        "original cancellation pair refusal",
+    )));
+    let original_bytes = original
+        .get_ref()
+        .unwrap()
+        .downcast_ref::<OriginalRefusal>()
+        .unwrap()
+        .0
+        .as_ptr();
     let binding = root
         .begin_native_source_between(
             identity(),
@@ -767,11 +802,7 @@ fn root_cancellation_creation_refusal_is_original_pre_spawn_failure() {
             preparation,
             None,
             native::TrustUserCode::Acknowledged,
-            || {
-                Err(hex_plugin_host::Error::Io(std::io::Error::other(
-                    "original cancellation pair refusal",
-                )))
-            },
+            || Err(hex_plugin_host::Error::Io(original)),
             || panic!("native preparation must not start after cancellation creation refusal"),
         )
         .unwrap();
@@ -779,12 +810,37 @@ fn root_cancellation_creation_refusal_is_original_pre_spawn_failure() {
         root.native_source_progress(binding),
         Some(NativeSourcePreparationProgress::Complete)
     );
+    #[cfg(feature = "allocation-probe")]
+    let returned = {
+        let mut returned = None;
+        let measured = allocation_counter::measure(|| {
+            returned = root.recover_native_source(binding);
+        });
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+        assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+        returned.unwrap()
+    };
+    #[cfg(not(feature = "allocation-probe"))]
     let returned = root.recover_native_source(binding).unwrap();
+    let Some(hex_plugin_host::Error::Io(error)) = returned.error.as_ref() else {
+        panic!("original typed factory error");
+    };
+    assert_eq!(
+        error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<OriginalRefusal>()
+            .unwrap()
+            .0
+            .as_ptr(),
+        original_bytes
+    );
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
     assert!(
         returned
             .error
             .unwrap()
+            .to_string()
             .contains("original cancellation pair refusal")
     );
     assert!(returned.cleanup_error.is_none());

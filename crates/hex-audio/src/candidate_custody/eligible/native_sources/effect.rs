@@ -50,7 +50,7 @@ impl Custody {
                 ) {
                     Ok(owner) => cell.owner = Some(Owner::Effect(owner)),
                     Err(owner) => {
-                        cell.error = Some(owner.to_string());
+                        cell.constructor_refused = true;
                         cell.owner = Some(Owner::WorkerRefused(owner));
                     }
                 }

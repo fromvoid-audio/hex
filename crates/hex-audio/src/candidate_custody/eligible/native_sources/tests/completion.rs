@@ -96,7 +96,7 @@ fn actual_root_final_ack_retains_prepared_source_and_original_state_until_dispos
     assert!(root.native_source_prepared_state(restored).is_none());
     dispose(&root, restored);
     let returned = root.recover_native_source(restored).unwrap();
-    assert!(returned.error.unwrap().contains("component"));
+    assert!(returned.error.unwrap().to_string().contains("component"));
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));
     assert_eq!(state, original);
     assert!(root.complete());
@@ -124,7 +124,7 @@ fn actual_root_missing_required_presentation_retains_refusal_instead_of_prepared
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
-    assert!(returned.error.unwrap().contains("presentation"));
+    assert!(returned.error.unwrap().to_string().contains("presentation"));
     assert!(root.complete());
 }
 
@@ -174,7 +174,7 @@ fn actual_root_close_during_completion_cancels_exact_source_without_prepared_acc
                 "late final ACK is retained for cleanup, never accepted"
             );
         } else {
-            assert!(returned.error.unwrap().contains("cancelled"));
+            assert!(returned.error.unwrap().to_string().contains("cancelled"));
         }
         assert!(root.complete());
     }

@@ -67,12 +67,13 @@ pub enum NativeSourcePreparationProgress {
 }
 /// Original construction outcome after actual native disposal AND normal
 /// control-side source-owner destruction. Report metadata remains until
-/// recovery. No endpoint was ever loaned by this path.
+/// recovery. Original typed diagnostics move with their backing; presentation
+/// is caller-owned. No endpoint was ever loaned by this path.
 pub struct NativeSourcePreparationReturn {
     pub binding: Binding,
     pub disposal: PreparationDisposal,
-    pub error: Option<String>,
-    pub cleanup_error: Option<String>,
+    pub error: Option<hex_plugin_host::Error>,
+    pub cleanup_error: Option<hex_plugin_host::Error>,
 }
 struct Slot {
     binding: Option<Binding>,
@@ -151,11 +152,41 @@ enum Owner {
 #[derive(Default)]
 struct Execution {
     owner: Option<Owner>,
-    error: Option<String>,
-    cleanup_error: Option<String>,
+    error: Option<hex_plugin_host::Error>,
+    cleanup_error: Option<hex_plugin_host::Error>,
+    // Constructor refusals retain their original cause in the actual owner
+    // until disposal. Explicit cancellation of a valid source is not a failure.
+    constructor_refused: bool,
     disposal: Option<PreparationDisposal>,
     pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
+}
+impl Execution {
+    fn cause(&self) -> Option<&hex_plugin_host::Error> {
+        self.error.as_ref().or_else(|| {
+            if !self.constructor_refused {
+                return None;
+            }
+            match self.owner.as_ref()? {
+                Owner::Refused(owner) => Some(owner.cause()),
+                Owner::WorkerRefused(owner) => Some(owner.cause()),
+                _ => None,
+            }
+        })
+    }
+    fn take_constructor_cause(&mut self) {
+        if self.constructor_refused {
+            let cause = match self.owner.as_mut() {
+                Some(Owner::Refused(owner)) => Some(owner.take_cause_on_control()),
+                Some(Owner::WorkerRefused(owner)) => Some(owner.take_cause_on_control()),
+                _ => None,
+            };
+            if cause.is_some() {
+                self.error = cause;
+                self.constructor_refused = false;
+            }
+        }
+    }
 }
 #[derive(Default)]
 pub(super) struct Work {
@@ -336,7 +367,7 @@ impl Custody {
                 // This exact production factory failed before the native
                 // constructor was invoked. No instance was ever started.
                 let cell = &mut work.sources.cells[index];
-                cell.error = Some(error.to_string());
+                cell.error = Some(error);
                 drop(source);
                 drop(restore);
                 cell.disposal = Some(PreparationDisposal::NoInstance);
@@ -387,7 +418,7 @@ impl Custody {
                 Some(facts)
             }
             Ok(Err(owner)) => {
-                cell.error = Some(owner.to_string());
+                cell.constructor_refused = true;
                 cell.owner = Some(Owner::Refused(owner));
                 None
             }
@@ -464,9 +495,9 @@ impl Custody {
         let bank = self.bank.try_lock().ok()?;
         let index = bank.sources.index(binding)?;
         let cell = work.sources.cells.get(index)?;
-        match (&cell.error, &cell.cleanup_error) {
+        match (cell.cause(), &cell.cleanup_error) {
             (Some(error), Some(cleanup)) => Some(format!("{error} · cleanup: {cleanup}")),
-            (Some(error), None) | (None, Some(error)) => Some(error.clone()),
+            (Some(error), None) | (None, Some(error)) => Some(error.to_string()),
             (None, None) => None,
         }
     }
@@ -501,7 +532,7 @@ impl Custody {
                         Some(Owner::Effect(owner)) => {
                             let retired = owner.retire_on_control()?;
                             if let Some(error) = retired.failure {
-                                cell.error = Some(error.to_string());
+                                cell.error = Some(error);
                             }
                             Some(PreparationDisposal::Reaped(retired.native))
                         }
@@ -514,6 +545,10 @@ impl Custody {
                     if disposed.is_some() {
                         let cancellation =
                             lock(&self.bank).sources.slots[index].cancellation.take();
+                        // Preserve the actual diagnostic before any owner or
+                        // cancellation destruction can unwind. No new backing
+                        // is allocated and disposal custody stays in the owner.
+                        cell.take_constructor_cause();
                         drop(cell.owner.take());
                         drop(cancellation);
                     }
@@ -527,10 +562,11 @@ impl Custody {
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
+                        let timed_out = matches!(error, hex_plugin_host::Error::Timeout);
                         if cell.cleanup_error.is_none() {
-                            cell.cleanup_error = Some(error.to_string());
+                            cell.cleanup_error = Some(error);
                         }
-                        if !matches!(error, hex_plugin_host::Error::Timeout) {
+                        if !timed_out {
                             self.fail_native_source(index);
                         }
                     }
@@ -556,6 +592,7 @@ impl Custody {
                 match result {
                     Ok(()) => {
                         cell.disposal = None;
+                        cell.constructor_refused = false;
                         cell.pending = false;
                         lock(&self.bank).sources.slots[index] = Slot::vacant();
                     }
@@ -589,6 +626,7 @@ impl Custody {
         if cell.pending || cell.owner.is_some() || cell.first_panic.is_some() {
             return None;
         }
+        cell.constructor_refused = false;
         let result = NativeSourcePreparationReturn {
             binding,
             disposal: cell.disposal.take()?,

@@ -901,6 +901,18 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
             ..
         })
     ));
+    let original = failed.take_cause_on_control();
+    assert!(matches!(original, Error::Protocol(_)));
+    assert!(
+        matches!(
+            &failed.custody,
+            preparation_failure::Custody::Native(Lease {
+                child: ChildCustody::Owned(_),
+                ..
+            })
+        ),
+        "moving the diagnostic does not dispose its actual child"
+    );
     let deadline = Instant::now() + Duration::from_secs(3);
     let disposed = loop {
         if let Some(disposed) = failed.poll_disposal_on_control().unwrap() {
@@ -1488,3 +1500,31 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
 
 #[path = "native_tests/epoch.rs"]
 mod epoch;
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn original_failure_diagnostic_transfers_without_copying_or_destroying_backing() {
+    let original = String::from("original selected-source diagnostic");
+    let address = original.as_ptr();
+    let mut failure = PreparationFailure::before_native(Error::Source(original));
+    let mut returned = None;
+    let measured = allocation_counter::measure(|| {
+        returned = Some(failure.take_cause_on_control());
+    });
+    assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+    let Error::Source(original) = returned.unwrap() else {
+        panic!("original typed source error");
+    };
+    assert_eq!(original.as_ptr(), address);
+    assert!(matches!(
+        failure.cause(),
+        Error::Protocol("native preparation cause transferred")
+    ));
+    assert!(matches!(
+        failure.poll_disposal_on_control().unwrap(),
+        Some(PreparationDisposal::NoInstance)
+    ));
+    drop(failure);
+    assert_eq!(original, "original selected-source diagnostic");
+}

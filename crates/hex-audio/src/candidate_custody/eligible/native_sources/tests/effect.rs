@@ -64,6 +64,7 @@ fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
         returned
             .error
             .unwrap()
+            .to_string()
             .contains("data reservation exceeded")
     );
     assert!(returned.cleanup_error.is_none());
@@ -162,7 +163,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
         };
         if close_during_construction {
             assert!(native.terminal.is_none());
-            assert!(returned.error.unwrap().contains("cancelled"));
+            assert!(returned.error.unwrap().to_string().contains("cancelled"));
         } else {
             assert!(native.status.success());
             assert_eq!(native.terminal.unwrap().blocks, 0);
@@ -217,6 +218,6 @@ fn actual_root_effect_constructor_refusal_retains_the_source_until_observed_disp
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
-    assert!(returned.error.unwrap().contains("component"));
+    assert!(returned.error.unwrap().to_string().contains("component"));
     assert!(root.complete());
 }

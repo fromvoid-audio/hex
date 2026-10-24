@@ -57,6 +57,16 @@ impl NativeWorkerStartFailure {
     pub fn cause(&self) -> &Error {
         &self.cause
     }
+    /// Move the original diagnostic into enclosing control custody without
+    /// formatting or copying its backing. The failure retains all native and
+    /// endpoint owners; taking a cause proves no disposal or callback return.
+    /// A repeated take returns only the static transferred-cause marker.
+    pub fn take_cause_on_control(&mut self) -> Error {
+        std::mem::replace(
+            &mut self.cause,
+            Error::Protocol("native preparation cause transferred"),
+        )
+    }
     pub fn binding(&self) -> Binding {
         self.binding
     }

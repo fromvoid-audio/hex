@@ -49,7 +49,7 @@ impl Custody {
             Some(Owner::Pending(owner)) => match owner.complete_retained_on_control(presentation) {
                 Ok(owner) => cell.owner = Some(Owner::Prepared(owner)),
                 Err(owner) => {
-                    cell.error = Some(owner.to_string());
+                    cell.constructor_refused = true;
                     cell.owner = Some(Owner::Refused(owner));
                 }
             },

@@ -82,6 +82,24 @@ fn native_start_refusal_retains_original_source_and_any_queue_pair_until_observe
             assert!(native.is_some());
             assert!(reaper.worker.as_ref().unwrap().processor.is_none());
         }
+        let original = failure.take_cause_on_control();
+        if refuse_spawn {
+            assert!(matches!(
+                original,
+                Error::IoAt("native transport worker", _)
+            ));
+        } else {
+            assert!(matches!(original, Error::Cancelled));
+        }
+        // Taking the cause did not extract or destroy either endpoint.
+        if let Custody::Pair {
+            reaper,
+            _callback: callback,
+            ..
+        } = &failure.custody
+        {
+            assert!(callback.matches_control(&reaper.control));
+        }
         // Receipt did not destroy queues; final enclosing control disposal does.
         drop(failure);
     }
