@@ -11,7 +11,9 @@ pub enum MidiViewResizeOperation {
     /// an authored loop, then enable Repeat and change only outer duration.
     RepeatOuterEnd { beat: BeatTime },
     /// Move the first visible repeat boundary, retaining outer occupancy and
-    /// current source phase. Notes/hidden source content are never rewritten.
+    /// current source phase. In a directed view this authors the forward base
+    /// boundary, then reapplies direction; it is not an inverse reflected-seam
+    /// gesture. Notes/hidden source content are never rewritten.
     CycleEnd { beat: BeatTime },
 }
 
@@ -19,6 +21,7 @@ pub enum MidiViewResizeOperation {
 /// current canonical clip; this value grants no mutation or validation authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiClipLoopResize {
+    content_view: Option<crate::ContentWindow>,
     start: BeatTime,
     length: BeatTime,
     source_length: BeatTime,
@@ -50,13 +53,15 @@ impl MidiClipLoopResize {
         self.playback_offset
     }
     pub fn source_playback(self) -> Result<MidiSourcePlayback, Invalid> {
-        MidiSourcePlayback::new(
+        let playback = MidiSourcePlayback::new(
             self.source_length,
             self.source_start,
             Some((self.loop_start, self.loop_end)),
             self.length,
         )?
-        .with_playback_offset(self.playback_offset)
+        .with_playback_offset(self.playback_offset)?;
+        self.content_view
+            .map_or(Ok(playback), |view| playback.with_content_window(view))
     }
     /// Logical first boundary after this elapsed window's start. Consumers
     /// must range-check against outer occupancy before painting a handle.
@@ -76,6 +81,13 @@ impl MidiSourcePlayback {
     /// Elapsed beats until the first repeat boundary after this window's start.
     /// This is not an absolute Arrangement beat. One-shots have no repeat marker.
     pub fn first_repeat_boundary(self) -> Option<BeatTime> {
+        if self.unreversed().is_some() {
+            return self
+                .repeat_boundaries()
+                .ok()?
+                .and_then(|plan| plan.boundary(0))
+                .map(BeatTime::from_raw);
+        }
         let (_, end) = self.loop_range()?;
         let phase = self.source_phase_at_elapsed(BeatTime::ZERO)?;
         end.raw()
@@ -101,7 +113,11 @@ impl MidiClip {
         &self,
         operation: MidiViewResizeOperation,
     ) -> Result<MidiClipLoopResize, Invalid> {
-        let playback = self.source_playback()?;
+        // An explicit loop gesture authors a forward cycle, then reapplies
+        // the finite direction, matching audio's rebase_content contract.
+        let directed = self.source_playback()?;
+        let playback = directed.unreversed().unwrap_or(directed);
+        let offset = playback.playback_offset();
         let beat = match operation {
             MidiViewResizeOperation::RepeatOuterEnd { beat }
             | MidiViewResizeOperation::CycleEnd { beat } => beat,
@@ -112,13 +128,14 @@ impl MidiClip {
             .filter(|n| *n > 0)
             .ok_or(Invalid("loop boundary must follow clip start"))?;
         let mut next = MidiClipLoopResize {
+            content_view: self.content_view,
             start: self.start(),
             length: self.length(),
             source_length: self.source_length(),
             source_start: self.source_start(),
             loop_start: self.loop_start(),
             loop_end: self.loop_end(),
-            playback_offset: self.playback_offset(),
+            playback_offset: offset,
         };
         match operation {
             MidiViewResizeOperation::RepeatOuterEnd { .. } => {
@@ -126,7 +143,7 @@ impl MidiClip {
                     let start = self
                         .source_start()
                         .raw()
-                        .checked_add(self.playback_offset().raw())
+                        .checked_add(offset.raw())
                         .ok_or(Invalid("loop source window start overflow"))?;
                     let end = start
                         .checked_add(self.length().raw())
@@ -160,14 +177,14 @@ impl MidiClip {
                     .checked_sub(self.source_start().raw())
                     .filter(|n| *n > 0)
                     .ok_or(Invalid("midi first pass is empty"))?;
-                if self.playback_offset().raw() >= old_first {
+                if offset.raw() >= old_first {
                     let old_cycle = self
                         .loop_end()
                         .raw()
                         .checked_sub(self.loop_start().raw())
                         .filter(|n| *n > 0)
                         .ok_or(Invalid("midi loop is empty"))?;
-                    let ordinal = (self.playback_offset().raw() - old_first) / old_cycle;
+                    let ordinal = (offset.raw() - old_first) / old_cycle;
                     let new_first = next
                         .loop_end
                         .raw()
@@ -193,6 +210,16 @@ impl MidiClip {
                     );
                 }
             }
+        }
+        if let Some(view) = next.content_view {
+            next.content_view = Some(crate::ContentWindow::new(
+                next.playback_offset.raw(),
+                next.playback_offset
+                    .raw()
+                    .checked_add(next.length.raw())
+                    .ok_or(Invalid("midi loop read window overflow"))?,
+                view.reversed,
+            )?);
         }
         crate::midi::validate_clip(next.start, next.length)?;
         crate::midi::validate_source_boundary(
@@ -220,6 +247,7 @@ pub(crate) fn apply(
         .ok_or(Invalid("midi clip no longer exists"))?;
     let next = original.preview_loop_resize(operation)?;
     let mut candidate = original.clone();
+    candidate.content_view = next.content_view;
     candidate.length = next.length;
     candidate.playback_offset = next.playback_offset;
     let source = std::sync::Arc::make_mut(&mut candidate.source);

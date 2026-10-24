@@ -60,6 +60,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
                 });
             }
             midi_clips.push(MidiClipSnapshot {
+                content_view: None,
                 active: true,
                 playback_offset_raw: 0,
                 one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
