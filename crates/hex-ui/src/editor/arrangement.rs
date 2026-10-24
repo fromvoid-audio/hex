@@ -146,7 +146,7 @@ impl EditorView {
                     &self.overview_cache,
                     self.project_generation,
                     &state,
-                    self.arrangement_focus_range(),
+                    self.arrangement_focus_ranges(),
                 ),
                 empty_viewport,
                 self.track_header_width(),
@@ -190,7 +190,7 @@ impl EditorView {
                                 .text_xs()
                                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                                 .child(theme::text(if self.arrangement_focus.enabled {
-                                    "no clips in loop range · q restores all tracks"
+                                    "no clips in selected sections · q restores all tracks"
                                 } else {
                                     "no tracks · import audio or add a track"
                                 })),
@@ -216,7 +216,7 @@ impl EditorView {
                 &self.overview_cache,
                 self.project_generation,
                 &state,
-                self.arrangement_focus_range(),
+                self.arrangement_focus_ranges(),
             ),
             viewport,
             self.track_header_width(),
@@ -722,7 +722,7 @@ impl EditorView {
     }
 
     fn main_track_row(
-        &self,
+        &mut self,
         viewport: Viewport,
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
@@ -789,6 +789,7 @@ impl EditorView {
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
                     .child(theme::text("main"))
+                    .child(self.section_focus_toggle(cx))
                     .child(div().flex_1())
                     .children([self.main_track_controls(cx)]),
             )

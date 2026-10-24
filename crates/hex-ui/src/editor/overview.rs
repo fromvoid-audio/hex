@@ -24,22 +24,22 @@ pub(super) struct OverviewCache {
     horizon: u64,
     track_count: usize,
     cells: Vec<u8>,
-    focus_range: Option<(u64, u64)>,
+    focus_ranges: Rc<[(u64, u64)]>,
 }
 
 impl OverviewCache {
     pub(super) fn for_state(
         generation: u64,
         state: &ViewState,
-        focus_range: Option<(u64, u64)>,
+        focus_ranges: Rc<[(u64, u64)]>,
     ) -> Self {
         Self {
             generation,
             revision: state.revision,
             horizon: state.timeline_frames.max(1),
             track_count: state.project.tracks().len(),
-            cells: filtered_cells(&state.project, state.timeline_frames.max(1), focus_range),
-            focus_range,
+            cells: filtered_cells(&state.project, state.timeline_frames.max(1), &focus_ranges),
+            focus_ranges,
         }
     }
 
@@ -47,9 +47,9 @@ impl OverviewCache {
         &self,
         generation: u64,
         state: &ViewState,
-        focus_range: Option<(u64, u64)>,
+        focus_ranges: &[(u64, u64)],
     ) -> bool {
-        self.focus_range == focus_range
+        self.focus_ranges.as_ref() == focus_ranges
             && self.generation == generation
             && self.revision == state.revision
             && self.horizon == state.timeline_frames.max(1)
@@ -70,9 +70,9 @@ impl OverviewCache {
 
 #[cfg(test)]
 fn overview_cells(project: &Project, horizon: u64) -> Vec<u8> {
-    filtered_cells(project, horizon, None)
+    filtered_cells(project, horizon, &[])
 }
-fn filtered_cells(project: &Project, horizon: u64, focus_range: Option<(u64, u64)>) -> Vec<u8> {
+fn filtered_cells(project: &Project, horizon: u64, focus_ranges: &[(u64, u64)]) -> Vec<u8> {
     let mut cells = vec![0; OVERVIEW_CELLS];
     let track_count = project.tracks().len();
     if track_count == 0 || horizon == 0 {
@@ -86,7 +86,7 @@ fn filtered_cells(project: &Project, horizon: u64, focus_range: Option<(u64, u64
             .min(OVERVIEW_ROWS - 1);
         for clip in track.clips() {
             if let Some(end) = clip.start().checked_add(clip.duration()) {
-                if focus_range.is_none_or(|r| clip.start() < r.1 && end > r.0) {
+                if super::arrangement_focus::interval_visible(clip.start(), end, focus_ranges) {
                     mark_interval(&mut cells, row, horizon, clip.start(), end, AUDIO_CELL);
                 }
             }
@@ -103,7 +103,7 @@ fn filtered_cells(project: &Project, horizon: u64, focus_range: Option<(u64, u64
             ) else {
                 continue;
             };
-            if focus_range.is_none_or(|r| start < r.1 && end > r.0) {
+            if super::arrangement_focus::interval_visible(start, end, focus_ranges) {
                 mark_interval(&mut cells, row, horizon, start, end, MIDI_CELL);
             }
         }
@@ -282,16 +282,16 @@ pub(super) fn cached(
     cache: &RefCell<Option<Rc<OverviewCache>>>,
     generation: u64,
     state: &ViewState,
-    focus_range: Option<(u64, u64)>,
+    focus_ranges: Rc<[(u64, u64)]>,
 ) -> Rc<OverviewCache> {
     let mut cache = cache.borrow_mut();
     if let Some(current) = cache
         .as_ref()
-        .filter(|current| current.matches(generation, state, focus_range))
+        .filter(|current| current.matches(generation, state, &focus_ranges))
     {
         return Rc::clone(current);
     }
-    let next = Rc::new(OverviewCache::for_state(generation, state, focus_range));
+    let next = Rc::new(OverviewCache::for_state(generation, state, focus_ranges));
     *cache = Some(Rc::clone(&next));
     next
 }
@@ -352,22 +352,21 @@ mod tests {
     fn focused_overview_hides_nonintersecting_clips_and_rebuilds_for_the_interval() {
         let project = overview_project();
         assert!(
-            super::filtered_cells(&project, 300_000, Some((1, 100)))
+            super::filtered_cells(&project, 300_000, &[(1, 100)])
                 .iter()
                 .all(|c| *c == 0)
         );
         assert!(
-            super::filtered_cells(&project, 300_000, Some((130_000, 140_000)))
-                .contains(&AUDIO_CELL)
+            super::filtered_cells(&project, 300_000, &[(130_000, 140_000)]).contains(&AUDIO_CELL)
         );
         let state = view_state(project, 1, 300_000);
         let cache = std::cell::RefCell::new(None);
-        let all = super::cached(&cache, 1, &state, None);
-        let focused = super::cached(&cache, 1, &state, Some((1, 100)));
+        let all = super::cached(&cache, 1, &state, Rc::from([]));
+        let focused = super::cached(&cache, 1, &state, Rc::from([(1, 100)]));
         assert!(!Rc::ptr_eq(&all, &focused));
         assert!(Rc::ptr_eq(
             &focused,
-            &super::cached(&cache, 1, &state, Some((1, 100)))
+            &super::cached(&cache, 1, &state, Rc::from([(1, 100)]))
         ));
     }
 
@@ -422,24 +421,27 @@ mod tests {
     fn overview_cache_ignores_viewport_pan_but_tracks_revision_and_project_generation() {
         let project = overview_project();
         let first = view_state(project.clone(), 7, 192_000);
-        let cache =
-            std::cell::RefCell::new(Some(Rc::new(OverviewCache::for_state(3, &first, None))));
+        let cache = std::cell::RefCell::new(Some(Rc::new(OverviewCache::for_state(
+            3,
+            &first,
+            Rc::from([]),
+        ))));
         assert!(
             cache
                 .borrow()
                 .as_ref()
-                .is_some_and(|cache| cache.matches(3, &first, None))
+                .is_some_and(|cache| cache.matches(3, &first, &[]))
         );
         // Viewport state is deliberately not part of the cache key.
         let unchanged = view_state(project.clone(), 7, 192_000);
-        let first_read = super::cached(&cache, 3, &first, None);
-        let after_pan = super::cached(&cache, 3, &unchanged, None);
+        let first_read = super::cached(&cache, 3, &first, Rc::from([]));
+        let after_pan = super::cached(&cache, 3, &unchanged, Rc::from([]));
         assert!(Rc::ptr_eq(&first_read, &after_pan));
         let changed_revision = view_state(project.clone(), 8, 192_000);
-        let next_revision = super::cached(&cache, 3, &changed_revision, None);
+        let next_revision = super::cached(&cache, 3, &changed_revision, Rc::from([]));
         assert!(!Rc::ptr_eq(&first_read, &next_revision));
         let changed_generation = view_state(project, 7, 192_000);
-        let next_generation = super::cached(&cache, 4, &changed_generation, None);
+        let next_generation = super::cached(&cache, 4, &changed_generation, Rc::from([]));
         assert!(!Rc::ptr_eq(&next_revision, &next_generation));
     }
 }

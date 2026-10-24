@@ -372,7 +372,6 @@ impl Render for EditorView {
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
-        self.reconcile_arrangement_focus();
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -381,6 +380,7 @@ impl Render for EditorView {
         }
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
+        self.reconcile_arrangement_focus();
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();

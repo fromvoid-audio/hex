@@ -116,6 +116,16 @@ pub(super) struct Sections {
     name: Option<Name>,
 }
 impl Sections {
+    pub(super) fn selected_ids(&self) -> &[SectionId] {
+        if self.selected.is_some_and(|id| self.selection.contains(&id)) {
+            &self.selection
+        } else {
+            self.selected
+                .as_ref()
+                .map(std::slice::from_ref)
+                .unwrap_or(&[])
+        }
+    }
     pub(super) fn held(&self) -> bool {
         self.gesture.is_some()
     }
@@ -988,11 +998,14 @@ impl EditorView {
                 || self.focused_return.is_some()
                 || self.device_panel.main_selected != Some(self.project_generation)
                 || (!self.focus.is_focused(window)
+                    && !self.section_focus_toggle_focused(window, cx)
                     && !self.sections.naming()
                     && self.context_menu.is_none()))
         {
-            self.sections.selected = None;
-            self.sections.selection.clear();
+            if !self.arrangement_focus.enabled {
+                self.sections.selected = None;
+                self.sections.selection.clear();
+            }
             self.sections.cursor = None;
         }
         if self.sections.selected.is_some_and(|id| {
