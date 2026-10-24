@@ -32,7 +32,7 @@
 //! independent disposal polling. Synchronous convenience APIs join before
 //! returning an error; neither path grants graph/callback retirement authority.
 
-#[cfg(unix)]
+#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
 mod channel;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod native;

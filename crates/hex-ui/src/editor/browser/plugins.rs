@@ -25,6 +25,8 @@ pub(super) struct Plugins {
     pub(super) status: String,
     pub(super) loading: bool,
     pub(super) busy: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) diagnostics: Option<hex_plugin_catalog::worker::ScanDiagnostics>,
     picking: bool,
     writable: bool,
     app: Option<PathBuf>,
@@ -39,6 +41,15 @@ pub(super) struct Plugins {
     test_roots: Option<Vec<PathBuf>>,
 }
 impl Plugins {
+    #[cfg(all(
+        test,
+        feature = "ui-test-support",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub(super) fn scan_evidence(&self) -> impl std::fmt::Debug + '_ {
+        (&self.status, &self.diagnostics, &self.catalog)
+    }
     fn replace(&mut self, catalog: Catalog) {
         self.catalog = catalog;
         self.projection.borrow_mut().take();
@@ -82,6 +93,10 @@ impl EditorView {
             return;
         }
         self.browser.plugins.loading = true;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.browser.plugins.diagnostics = None;
+        }
         let path = self.plugin_catalog_path();
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
@@ -323,6 +338,7 @@ impl EditorView {
             let token = cancellation.token();
             self.browser.plugins.cancellation = Some(cancellation);
             self.browser.plugins.busy = true;
+            self.browser.plugins.diagnostics = None;
             self.browser.plugins.status = match &request {
                 PluginScan::Selected(_) => "scanning selected trusted plugin…",
                 _ => "scanning trusted standard folders…",
@@ -347,6 +363,7 @@ impl EditorView {
                 let _ = this.update(cx, |view, cx| {
                     view.browser.plugins.busy = false;
                     view.browser.plugins.cancellation = None;
+                    view.browser.plugins.diagnostics = result.diagnostics;
                     if let Some(catalog) = result.catalog {
                         view.apply_plugin_catalog(catalog, cx);
                     }
