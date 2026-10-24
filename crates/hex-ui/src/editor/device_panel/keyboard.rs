@@ -165,7 +165,7 @@ pub(super) fn card(
         owned_device(&state.project, owner?, device).map(|item| item.state().type_id())
     });
     card.key_context("hex_device_selection")
-        // A character binding in the ancestor key context would swallow a/0 in
+        // A character binding in the ancestor key context would swallow c/0 in
         // nested text editors. Handle only the card's own exact focus instead.
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
