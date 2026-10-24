@@ -517,3 +517,63 @@ fn frozen_input_quantization_preserves_lengths_edge_notes_and_one_persisted_edit
     assert_eq!(editor.project().snapshot(), after);
     assert_eq!(captured[0], note(8_900, 9_300, 60));
 }
+
+#[test]
+fn input_quantization_across_faster_tempo_keeps_one_rendered_frame() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: beat(1),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "seam".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat(2),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    let grid =
+        hex_project::ResolvedInputGrid::fixed(editor.project().meter_map(), BeatTime::ONE).unwrap();
+    let binding = MidiTakeBinding::capture_with_grid(editor.project(), track, clip, grid).unwrap();
+    let command = finish_take(editor.project(), &binding, &[note(7_999, 8_000, 60)], 8_000)
+        .unwrap()
+        .unwrap();
+    editor.execute(command).unwrap();
+    let inserted = &editor.project().midi_clip(clip).unwrap().notes()[0];
+    assert_eq!(inserted.start(), beat(1));
+    let prepared = hex_engine::PreparedRevision::prepare(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        std::sync::Arc::new(hex_engine::SineTable::new()),
+        None,
+    );
+    assert!(
+        prepared.is_ok(),
+        "quantized take must remain renderable: {:?}",
+        prepared.err()
+    );
+}

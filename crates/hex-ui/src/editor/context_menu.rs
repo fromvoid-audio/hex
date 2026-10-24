@@ -653,7 +653,8 @@ impl EditorView {
                     *generation != self.project_generation
                 }
                 EditorContextAction::AdaptiveGrid { generation, .. }
-                | EditorContextAction::LaunchQuantization { generation, .. } => {
+                | EditorContextAction::LaunchQuantization { generation, .. }
+                | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
                 }
                 EditorContextAction::InsertScene {

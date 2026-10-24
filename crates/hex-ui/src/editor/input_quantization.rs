@@ -1,6 +1,8 @@
 //! One transient input policy for browser insertion and MIDI takes. Grid geometry
 //! is captured before worker preparation; canonical note authoring stays in Session.
-use super::*;
+use super::{EditorView, header, transport::MiniTooltip};
+use crate::theme;
+use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{InputQuantization, ResolvedInputGrid};
 impl EditorView {
     pub(super) fn resolve_input_grid(&self) -> Result<ResolvedInputGrid, String> {
