@@ -6,6 +6,9 @@
 //! The original copied-stream fixture retains one SDK instance across bounded PCM packets;
 //! MIDI bytes there are transport metadata, not SDK event translation. The realtime endpoint
 //! and joining transport worker belong to hex-audio.
+//! A distinct minimal ordinary-instance executable selects an exact bundle/class/hash,
+//! captures bounded stopped state and processes copied Float32 main-bus packets. Its
+//! artifact/package role is verified here; graph admission and supervision remain consumers.
 //!
 //! # Dependencies
 //! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported

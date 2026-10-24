@@ -1,11 +1,12 @@
 //! Selection-driven, in-place clip label editing. Drafts never mutate the project.
-use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, browser_input::*};
+use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, browser_input};
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
 };
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
+use hex_widgets::TextInput;
 
 pub(super) const CLIP_NAME_HEIGHT: f32 =
     super::tracks::TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION;
@@ -15,7 +16,7 @@ pub(super) struct NameEdit {
     generation: u64,
     revision: u64,
     original: String,
-    input: Entity<BrowserSearch>,
+    input: Entity<TextInput>,
     _blur: Subscription,
 }
 
@@ -24,24 +25,13 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-r", RenameClip, Some("hex_editor && !hex_text_editing")),
         KeyBinding::new("enter", CommitClipName, Some("hex_clip_name")),
         KeyBinding::new("escape", CancelClipName, Some("hex_clip_name")),
-        KeyBinding::new("backspace", BrowserBackspace, Some("hex_clip_name")),
-        KeyBinding::new("delete", BrowserDelete, Some("hex_clip_name")),
-        KeyBinding::new("left", BrowserLeft, Some("hex_clip_name")),
-        KeyBinding::new("right", BrowserRight, Some("hex_clip_name")),
-        KeyBinding::new("shift-left", BrowserSelectLeft, Some("hex_clip_name")),
-        KeyBinding::new("shift-right", BrowserSelectRight, Some("hex_clip_name")),
-        KeyBinding::new("cmd-a", BrowserSelectAll, Some("hex_clip_name")),
-        KeyBinding::new("home", BrowserHome, Some("hex_clip_name")),
-        KeyBinding::new("cmd-left", BrowserHome, Some("hex_clip_name")),
-        KeyBinding::new("end", BrowserEnd, Some("hex_clip_name")),
-        KeyBinding::new("cmd-right", BrowserEnd, Some("hex_clip_name")),
-        KeyBinding::new("cmd-v", BrowserPaste, Some("hex_clip_name")),
-        KeyBinding::new("cmd-c", BrowserCopy, Some("hex_clip_name")),
-        KeyBinding::new("cmd-x", BrowserCut, Some("hex_clip_name")),
     ]);
 }
 impl EditorView {
     pub(super) fn reconcile_clip_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = &self.clip_name_edit {
+            super::browser_input::restyle(&edit.input, cx);
+        }
         if let Some(edit) = &self.clip_name_edit
             && (edit.generation != self.project_generation
                 || self.clip_name_target() != Some(edit.clip)
@@ -93,7 +83,7 @@ impl EditorView {
         };
         let original = name.to_owned();
         let revision = state.revision;
-        let input = cx.new(|cx| BrowserSearch::for_clip_name(original.clone(), cx));
+        let input = cx.new(|cx| browser_input::name(original.clone(), cx));
         let focus = input.read(cx).focus_handle().clone();
         let blur = cx.on_blur(&focus, window, |view, _, cx| {
             // Preserve the newly clicked control's focus.
@@ -114,7 +104,7 @@ impl EditorView {
         let Some(edit) = self.clip_name_edit.take() else {
             return;
         };
-        let name = edit.input.read(cx).content.clone();
+        let name = edit.input.read(cx).text().to_owned();
         if edit.generation == self.project_generation
             && self.state.as_ref().is_some_and(|s| {
                 s.revision == edit.revision
@@ -144,7 +134,7 @@ impl EditorView {
         let Some(edit) = &self.clip_name_edit else {
             return true;
         };
-        let name = &edit.input.read(cx).content;
+        let name = edit.input.read(cx).text();
         if self.edit_pending()
             || self.project_open.busy()
             || self.pending_open_path.is_some()
@@ -322,7 +312,7 @@ mod tests {
         visual.simulate_keystrokes("space l backspace");
         editor.read_with(cx, |v, cx| {
             assert_eq!(
-                v.clip_name_edit.as_ref().unwrap().input.read(cx).content,
+                v.clip_name_edit.as_ref().unwrap().input.read(cx).text(),
                 "Verse S 🎹 "
             );
             assert!(

@@ -20,8 +20,10 @@ pub fn bind_response_graph_keys(cx: &mut App) {
 }
 
 mod axes;
+mod creation_hint;
 mod scroll;
 pub use axes::ResponseGraphAxes;
+pub use creation_hint::ResponseGraphCreationHint;
 pub use scroll::{ResponseGraphScrollEvent, ResponseGraphScrollPhase};
 
 const MAX_CURVE_POINTS: usize = 256;
@@ -138,6 +140,9 @@ pub struct ResponseGraph {
     editable: bool,
     creation_enabled: bool,
     creation_drag_enabled: bool,
+    creation_hint_resolver: Option<fn([f32; 2]) -> ResponseGraphCreationHint>,
+    creation_hover: Option<creation_hint::Hover>,
+    creation_hint_was_focused: bool,
     tab_navigation: bool,
     backspace_removal: bool,
     focus: FocusHandle,
@@ -185,6 +190,9 @@ impl ResponseGraph {
             editable: false,
             creation_enabled: false,
             creation_drag_enabled: false,
+            creation_hint_resolver: None,
+            creation_hover: None,
+            creation_hint_was_focused: false,
             tab_navigation: false,
             backspace_removal: false,
             focus: cx.focus_handle(),
@@ -204,6 +212,7 @@ impl ResponseGraph {
         }
         if self.axes != axes {
             self.axes = axes;
+            self.refresh_creation_hint(cx);
             cx.notify();
         }
         Ok(())
@@ -219,6 +228,9 @@ impl ResponseGraph {
     /// keep select/drag semantics; double-click's second press is suppressed.
     pub fn set_creation_enabled(&mut self, enabled: bool) {
         self.creation_enabled = enabled;
+        if !enabled {
+            self.creation_hover = None;
+        }
     }
 
     /// Continue a blank press as Begin/Change/Commit/Release (or Cancel), using
@@ -294,6 +306,7 @@ impl ResponseGraph {
             self.model = model;
             self.retire_missing_scroll_node(cx);
             self.style = style;
+            self.refresh_creation_hint(cx);
             cx.notify();
         }
         Ok(())
@@ -333,6 +346,7 @@ impl ResponseGraph {
     pub fn set_editable(&mut self, editable: bool, cx: &mut Context<Self>) {
         if !editable {
             self.finish_scroll(true, cx);
+            self.clear_creation_hint(cx);
         }
         if self.editable != editable {
             self.editable = editable;
@@ -345,6 +359,7 @@ impl ResponseGraph {
     }
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.clear_creation_hint(cx);
         self.finish_scroll(true, cx);
         if let Some(drag) = self.drag.take() {
             let position = self
@@ -388,34 +403,20 @@ impl ResponseGraph {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_creation_hint(cx);
         if event.button != MouseButton::Left || self.drag.is_some() || self.press.is_some() {
             return;
         }
         self.finish_scroll(false, cx);
-        let Some(raw_position) = self.unclamped_position(event.position) else {
+        let Some((position, hit)) = self.pointer_hit(event.position) else {
             return;
         };
-        let position = raw_position.map(|value| value.clamp(0.0, 1.0));
-        let Some(bounds) = self.plot_bounds() else {
-            return;
-        };
-        let width = f32::from(bounds.size.width);
-        let height = f32::from(bounds.size.height);
-        let hit = self
-            .model
-            .nodes
-            .iter()
-            .filter_map(|node| {
-                let dx = (node.position[0] - raw_position[0]) * width;
-                let dy = (node.position[1] - raw_position[1]) * height;
-                let distance = dx.mul_add(dx, dy * dy);
-                (distance <= NODE_RADIUS * NODE_RADIUS).then_some((distance, node.id))
-            })
-            .min_by(|left, right| left.0.total_cmp(&right.0));
-        let Some((_, node_id)) = hit else {
+        let creation_hint::Hit::Node(node_id) = hit else {
             // Visible boundary markers retain their full bounded hit radius.
             // Only blank axis margins are excluded from node creation.
-            if self.axes.is_some() && !bounds.contains(&event.position) {
+            if self.axes.is_some()
+                && !matches!(hit, creation_hint::Hit::Blank { inside_plot: true })
+            {
                 return;
             }
             if self.creation_enabled && event.click_count == 1 {
@@ -497,6 +498,15 @@ impl ResponseGraph {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Capture sees leave/button events even when another surface owns hover.
+        // Only ordinary hit-tested bubbling below may create a fresh hint.
+        if event.pressed_button.is_some()
+            || self
+                .plot_bounds()
+                .is_none_or(|plot| !plot.contains(&event.position))
+        {
+            self.clear_creation_hint(cx);
+        }
         if self.cancel_unfocused_creation(window, cx) {
             return true;
         }
@@ -678,6 +688,9 @@ impl ResponseGraph {
             }
             return;
         }
+        if event.keystroke.key == "escape" && self.creation_hover.is_some() {
+            self.clear_creation_hint(cx);
+        }
         if event.keystroke.key == "escape"
             && (self.drag.is_some() || self.press.is_some() || self.scroll.active())
         {
@@ -835,6 +848,14 @@ impl Focusable for ResponseGraph {
 
 impl gpui::Render for ResponseGraph {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // GPUI's blur subscription runs after installing the newly painted
+        // focus path. Retire before paint too, so the first blurred frame does
+        // not replay an icon belonging to the formerly focused graph.
+        let focused = self.focus.is_focused(window);
+        if self.creation_hint_was_focused && !focused {
+            self.clear_creation_hint(cx);
+        }
+        self.creation_hint_was_focused = focused;
         self.cancel_unfocused_creation(window, cx);
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
@@ -872,18 +893,35 @@ impl gpui::Render for ResponseGraph {
             .on_key_down(cx.listener(Self::key_down))
             .cursor(if self.drag.is_some() {
                 CursorStyle::ResizeColumn
+            } else if self.creation_hover.is_some() {
+                CursorStyle::Crosshair
             } else {
                 CursorStyle::PointingHand
             })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-            .on_scroll_wheel(cx.listener(Self::scroll_wheel))
+            .on_mouse_move(cx.listener(|graph, event: &MouseMoveEvent, _, cx| {
+                graph.hover_creation_hint(event, cx);
+            }))
+            .on_hover(cx.listener(|graph, hovered: &bool, _, cx| {
+                if !hovered {
+                    graph.clear_creation_hint(cx);
+                }
+            }))
+            .on_scroll_wheel(cx.listener(|graph, event, window, cx| {
+                graph.clear_creation_hint(cx);
+                graph.scroll_wheel(event, window, cx);
+            }))
             .child(
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, app| {
                         bounds_entity.update(app, |graph, cx| {
                             let changed = graph.bounds.is_none_or(|old| old.size != bounds.size);
+                            let moved = graph.bounds != Some(bounds);
                             graph.bounds = Some(bounds);
+                            if moved {
+                                graph.refresh_creation_hint(cx);
+                            }
                             if changed && graph.axes.is_some() {
                                 cx.notify();
                             }
@@ -907,6 +945,7 @@ impl gpui::Render for ResponseGraph {
                 .size_full(),
             )
             .children(labels)
+            .children(self.creation_hint_element())
             .when(
                 self.focus.tab_stop && self.focus.is_focused(window),
                 |root| root.child(corner_markers(&self.id, style.focus_marker)),
@@ -1100,6 +1139,12 @@ impl Element for ResponseGraphCaptureElement {
         window: &mut Window,
         _: &mut App,
     ) {
+        let entity = self.entity.clone();
+        window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+            if phase.capture() {
+                entity.update(cx, |graph, cx| graph.clear_creation_hint(cx));
+            }
+        });
         let entity = self.entity.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if !phase.capture() {

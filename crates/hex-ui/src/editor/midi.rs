@@ -103,8 +103,9 @@ impl EditorView {
             return;
         }
         let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
-        self.enqueue(Request::Edit(Command::AddMidiTrack {
+        self.enqueue(Request::Edit(Command::InsertTrack {
             name: format!("track {}", count + 1),
+            before_track: self.new_track_insertion_anchor(),
         }));
     }
 
@@ -199,13 +200,6 @@ impl EditorView {
         }));
     }
 
-    pub(super) fn duplicate_midi_clip(&mut self, clip: ClipId) {
-        if self.edit_pending() {
-            return;
-        }
-        self.enqueue(Request::Edit(Command::DuplicateMidiClip(clip)));
-    }
-
     pub(super) fn remove_selected_note(&mut self) {
         if self.edit_pending() {
             return;
@@ -217,6 +211,7 @@ impl EditorView {
         if notes.is_empty() {
             return;
         }
+        self.finish_live_midi_marquees();
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
         let accepted = if notes.len() == 1 {
@@ -233,6 +228,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
+        self.finish_live_midi_marquees();
         let Some(clip) = self.midi_clip() else {
             return;
         };
@@ -418,6 +414,7 @@ impl EditorView {
             self.error = Some("selected midi notes changed · nudge canceled".into());
             return;
         }
+        self.finish_live_midi_marquees();
         self.cancel_midi_note_gesture();
         let updates = match super::midi_group_drag::nudge_updates(
             &originals,
@@ -507,6 +504,7 @@ impl EditorView {
             return;
         }
         let grid_step = self.midi_snap_grid.movement_step();
+        self.finish_live_midi_marquees();
         self.cancel_midi_note_gesture();
         let updates = match super::midi_group_drag::parameter_updates(
             &originals,
@@ -632,6 +630,7 @@ impl EditorView {
             self.error = Some("edit would move the note outside its clip".into());
             return;
         }
+        self.finish_live_midi_marquees();
         self.enqueue(Request::Edit(Command::UpdateMidiNote {
             note: note_id,
             start: BeatTime::from_raw(start),

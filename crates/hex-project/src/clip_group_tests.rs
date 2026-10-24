@@ -1358,6 +1358,7 @@ fn group_bounds_occurrence_enumeration_separately_from_tiny_retained_tail() {
             .find(|c| c.id() == id)
             .unwrap();
         victim.source = std::sync::Arc::new(crate::MidiSource {
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,

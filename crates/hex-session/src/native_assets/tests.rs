@@ -588,12 +588,14 @@ fn peak_budget_and_late_precommit_cancellation_preserve_source_editor_history_an
         .unwrap()
         .usage();
     let mut s = session();
+    // This fixture has four original frames: four signed stereo peak leaves
+    // occupy 64 bytes. Short sources no longer reserve a full overview array.
     s.overview_budget =
-        crate::source_overview::OverviewBudget::with_limits(2047, standard.max_metadata_bytes)
+        crate::source_overview::OverviewBudget::with_limits(63, standard.max_metadata_bytes)
             .unwrap();
     assert_refused_unchanged(&mut s, &fixture, &cancel);
     s.overview_budget =
-        crate::source_overview::OverviewBudget::with_limits(4096, standard.max_metadata_bytes)
+        crate::source_overview::OverviewBudget::with_limits(128, standard.max_metadata_bytes)
             .unwrap();
     s.import_device_asset(fixture.decoded(), &cancel, None)
         .unwrap();
@@ -601,6 +603,7 @@ fn peak_budget_and_late_precommit_cancellation_preserve_source_editor_history_an
     let history = (s.can_undo(), s.can_redo());
     let cache = s.source_overviews();
     let usage = s.source_overview_usage();
+    assert_eq!(usage.bin_capacity_bytes, 64);
     assert!(
         s.import_device_asset_with_admission(fixture.decoded(), &cancel, None, || {
             cancel.store(true, Ordering::Release);

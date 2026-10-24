@@ -956,6 +956,7 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1067,6 +1068,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
             volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
@@ -1099,6 +1101,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
             id: 10,
             name: "empty midi".into(),
             source: MidiSourceSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 source_length_raw: 4 << 32,
                 source_start_raw: 0,
                 loop_start_raw: 0,
@@ -1177,6 +1180,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
@@ -1201,6 +1205,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
@@ -1237,6 +1242,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
                     id: 5,
                     name: "clip".into(),
                     source: MidiSourceSnapshot {
+                        one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                         source_length_raw: 32 << 32,
                         source_start_raw: 0,
                         loop_start_raw: 0,
@@ -6742,6 +6748,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
@@ -6773,6 +6780,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
                 id: session_clip,
                 name: "new mutable clip".into(),
                 source: MidiSourceSnapshot {
+                    one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                     source_length_raw: 32 << 32,
                     source_start_raw: 0,
                     loop_start_raw: 0,
@@ -8731,6 +8739,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),

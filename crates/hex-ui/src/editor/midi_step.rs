@@ -25,6 +25,87 @@ impl StepEntry {
     }
 }
 impl EditorView {
+    /// Fixed-size, pitch-ordered chord shared by preview and canonical entry.
+    /// Computer keys win duplicate pitches, retaining the existing velocity/channel policy.
+    pub(super) fn midi_step_chord(
+        &self,
+        cursor: u64,
+        duration: u64,
+    ) -> Result<[Option<MidiNoteInsert>; 128], &'static str> {
+        let hardware = self.hardware_step_notes()?;
+        Ok(self.midi_held_chord(
+            cursor,
+            duration,
+            hardware,
+            self.computer_keyboard.physical_notes(),
+        ))
+    }
+
+    fn midi_held_chord(
+        &self,
+        cursor: u64,
+        duration: u64,
+        hardware: Option<(hex_midi::HeldNotes, u64, u8)>,
+        computer: impl Iterator<Item = super::computer_keyboard::HeldKey>,
+    ) -> [Option<MidiNoteInsert>; 128] {
+        let mut chord = [None; 128];
+        for note in computer {
+            chord[usize::from(note.pitch)].get_or_insert(MidiNoteInsert {
+                start: BeatTime::from_raw(cursor),
+                duration: BeatTime::from_raw(duration),
+                pitch: note.pitch,
+                channel: 0,
+                velocity: note.velocity,
+            });
+        }
+        if let Some((notes, floor, channel)) = hardware {
+            for note in notes.after(floor) {
+                chord[usize::from(note.pitch)].get_or_insert(MidiNoteInsert {
+                    start: BeatTime::from_raw(cursor),
+                    duration: BeatTime::from_raw(duration),
+                    pitch: note.pitch,
+                    channel,
+                    velocity: note.velocity,
+                });
+            }
+        }
+        chord
+    }
+
+    pub(super) fn midi_live_pitches(&self) -> [bool; 128] {
+        if !self.live_midi_context() {
+            return [false; 128];
+        }
+        self.midi_held_chord(
+            0,
+            1,
+            self.hardware_live_notes(),
+            self.computer_keyboard
+                .physical_notes_after(self.live_computer_floor()),
+        )
+        .map(|note| note.is_some())
+    }
+
+    pub(super) fn midi_step_preview(&self) -> [Option<MidiNoteInsert>; 128] {
+        let cursor = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
+        let duration = self.midi_snap_grid.movement_step();
+        if !self.live_midi_context()
+            || !self.midi_step.enabled
+            || self.edit_pending()
+            || self.midi_step.pending.is_some()
+            || self.tuning.client.snapshot().is_some()
+            || self.tuning.client.has_pending_requests()
+            || self.tuning.client.is_recovery_pending()
+            || cursor
+                .checked_add(duration)
+                .is_none_or(|next| next == u64::MAX)
+        {
+            return [None; 128];
+        }
+        self.midi_step_chord(cursor, duration)
+            .unwrap_or([None; 128])
+    }
+
     pub(super) fn enter_midi_step(&mut self) {
         if !self.midi_step.enabled
             || self.edit_pending()
@@ -47,7 +128,7 @@ impl EditorView {
             self.error = Some("step entry exceeds the musical time range".into());
             return;
         };
-        let hardware = match self.hardware_step_notes() {
+        let held = match self.midi_step_chord(cursor, duration) {
             Ok(notes) => notes,
             Err(error) => {
                 self.error = Some(error.into());
@@ -59,35 +140,7 @@ impl EditorView {
             self.error = Some("could not reserve step-entry notes".into());
             return;
         }
-        insert.extend(
-            self.computer_keyboard
-                .physical_notes()
-                .map(|note| MidiNoteInsert {
-                    start: BeatTime::from_raw(cursor),
-                    duration: BeatTime::from_raw(duration),
-                    pitch: note.pitch,
-                    channel: 0,
-                    velocity: note.velocity,
-                }),
-        );
-        insert.sort_by_key(|note| note.pitch);
-        insert.dedup_by_key(|note| note.pitch);
-        // Computer keys have priority for duplicate pitches. Capture remains
-        // separate from monitoring; exact hardware velocities/channel are edits.
-        if let Some((notes, floor, channel)) = hardware {
-            for note in notes.after(floor) {
-                if !insert.iter().any(|existing| existing.pitch == note.pitch) {
-                    insert.push(MidiNoteInsert {
-                        start: BeatTime::from_raw(cursor),
-                        duration: BeatTime::from_raw(duration),
-                        pitch: note.pitch,
-                        channel,
-                        velocity: note.velocity,
-                    });
-                }
-            }
-        }
-        insert.sort_by_key(|note| note.pitch);
+        insert.extend(held.into_iter().flatten());
         if insert.is_empty() {
             self.midi_marker = Some(next);
             self.reveal_piano_cursor(next);

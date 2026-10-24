@@ -68,16 +68,19 @@ fn fixture(
     if automation {
         s.tracks[0].gain_envelope = vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.5,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::from_raw(1),
                 gain: 0.75,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::from_quarters(2).unwrap(),
                 gain: 1.25,
                 outgoing: GainInterpolation::Step,

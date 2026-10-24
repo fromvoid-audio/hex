@@ -456,6 +456,7 @@ fn paste_rows_with_source(
             });
         }
         let source = MidiSource {
+            one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_length: length,
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,

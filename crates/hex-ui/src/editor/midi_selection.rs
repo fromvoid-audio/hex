@@ -10,7 +10,7 @@ pub(super) struct MarqueeContext {
     pub(super) selection_epoch: u64,
 }
 
-/// Cancellable visual selection. The actual selection stays unchanged until release.
+/// Cancellable live selection, retaining an immutable baseline for additive hits and rollback.
 /// Context identity includes geometry and selection, so a stale preview cannot win.
 #[derive(Clone)]
 pub(super) struct Marquee {
@@ -18,6 +18,7 @@ pub(super) struct Marquee {
     last: [f32; 2],
     context: MarqueeContext,
     additive: bool,
+    baseline: MidiSelection,
     hits: Arc<[NoteId]>,
     highlighted: Arc<[NoteId]>,
 }
@@ -51,6 +52,7 @@ impl Marquee {
             last: first,
             context,
             additive,
+            baseline: selection.clone(),
             hits: Arc::from([]),
             highlighted: if additive {
                 selection.shared_ids()
@@ -79,8 +81,36 @@ impl Marquee {
         scene: &midi_scene::MidiScene,
         last: [f32; 2],
     ) -> Result<bool, &'static str> {
+        if scene.key() != context.scene {
+            return Err("midi marquee changed · selection canceled");
+        }
+        self.update_with_hits(context, selection, last, |first, last| {
+            marquee_hits(
+                scene.notes(),
+                first,
+                last,
+                context.bounds.width,
+                context.bounds.height,
+                context.scene.pitch_rows,
+            )
+        })
+    }
+
+    pub(super) fn context(&self) -> MarqueeContext {
+        self.context
+    }
+
+    /// Surfaces supply their own bounded hit geometry; selection, additive preview,
+    /// epoch validation and release stay with this single selection owner.
+    /// The supplier returns sorted, unique canonical note IDs.
+    pub(super) fn update_with_hits(
+        &mut self,
+        context: MarqueeContext,
+        selection: &MidiSelection,
+        last: [f32; 2],
+        hits: impl FnOnce([f32; 2], [f32; 2]) -> Result<Vec<NoteId>, &'static str>,
+    ) -> Result<bool, &'static str> {
         if !self.is_current(context)
-            || scene.key() != context.scene
             || selection.epoch() != context.selection_epoch
             || !last.into_iter().all(f32::is_finite)
         {
@@ -89,14 +119,7 @@ impl Marquee {
         let changed = self.last != last;
         self.last = last;
         let hits = if self.has_range() {
-            marquee_hits(
-                scene.notes(),
-                self.first,
-                last,
-                context.bounds.width,
-                context.bounds.height,
-                context.scene.pitch_rows,
-            )?
+            hits(self.first, last)?
         } else {
             Vec::new()
         };
@@ -104,7 +127,7 @@ impl Marquee {
             // Reuse immutable paint data while motion stays over the same hit set.
             let hits: Arc<[NoteId]> = Arc::from(hits);
             let highlighted = if self.additive {
-                let mut preview = selection.clone();
+                let mut preview = self.baseline.clone();
                 preview.add_many(&hits)?;
                 preview.shared_ids()
             } else {
@@ -116,26 +139,38 @@ impl Marquee {
         Ok(changed)
     }
 
-    fn has_range(&self) -> bool {
-        (self.first[0] - self.last[0]).abs() >= 3.0 || (self.first[1] - self.last[1]).abs() >= 3.0
+    pub(super) fn hits(&self) -> Arc<[NoteId]> {
+        Arc::clone(&self.hits)
     }
 
-    pub(super) fn finish(
-        self,
-        context: MarqueeContext,
+    pub(super) fn apply_live(
+        &mut self,
         selection: &mut MidiSelection,
     ) -> Result<bool, &'static str> {
-        if !self.is_current(context) || selection.epoch() != context.selection_epoch {
-            return Ok(false);
+        if selection.epoch() != self.context.selection_epoch {
+            return Err("midi marquee selection changed · capture canceled");
         }
-        if !self.has_range() {
-            return Ok(!self.additive && selection.clear());
-        }
-        if self.additive {
-            selection.add_many(&self.hits)
+        let primary = if self.additive {
+            self.baseline
+                .primary
+                .or_else(|| self.highlighted.last().copied())
         } else {
-            selection.select_all(self.hits.iter().copied())
+            self.highlighted.first().copied()
+        };
+        let changed = selection.replace_shared(Arc::clone(&self.highlighted), primary);
+        self.context.selection_epoch = selection.epoch();
+        Ok(changed)
+    }
+
+    pub(super) fn restore_baseline(self, selection: &mut MidiSelection) -> bool {
+        if selection.epoch() != self.context.selection_epoch {
+            return false;
         }
+        selection.replace_shared(self.baseline.ids, self.baseline.primary)
+    }
+
+    fn has_range(&self) -> bool {
+        (self.first[0] - self.last[0]).abs() >= 3.0 || (self.first[1] - self.last[1]).abs() >= 3.0
     }
 }
 
@@ -321,6 +356,17 @@ impl MidiSelection {
         self.primary = primary;
         self.bump_epoch();
         Ok(true)
+    }
+
+    // Both callers supply an already validated, sorted immutable selection bank.
+    fn replace_shared(&mut self, ids: Arc<[NoteId]>, primary: Option<NoteId>) -> bool {
+        if (Arc::ptr_eq(&self.ids, &ids) || self.ids == ids) && self.primary == primary {
+            return false;
+        }
+        self.ids = ids;
+        self.primary = primary;
+        self.bump_epoch();
+        true
     }
 
     fn bump_epoch(&mut self) {

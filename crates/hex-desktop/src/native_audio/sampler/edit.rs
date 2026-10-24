@@ -1,12 +1,12 @@
 //! One pending stopped sampler setting update. Old CURRENT remains installed through all
 //! preparation refusal paths; a committed edit drains/adopts this exact cell.
 use super::*;
-use hex_audio::prepared::{SamplerEditFence, SamplerEditFenceState};
+use hex_audio::prepared::{StoppedEditFence, StoppedEditFenceState};
 use std::time::{Duration, Instant};
 
 pub(in crate::native_audio) struct EditPending {
     old: AudioSourceContext,
-    fence: SamplerEditFence,
+    fence: StoppedEditFence,
     deadline: Instant,
     candidate: Option<Sampler>,
     cleanup_failed: bool,
@@ -21,7 +21,7 @@ impl NativeAudioSink {
             // Native polling continues even behind canonical Event backpressure.
             // Keep the intent for its eventual error response, but do not strand
             // transport exclusion while no UI reader can consume that response.
-            control.release_sampler_edit_fence(pending.fence);
+            control.release_stopped_edit_fence(pending.fence);
         }
     }
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -109,10 +109,10 @@ impl NativeAudioSink {
         let Some(control) = self.output.as_mut().and_then(|o| o.publication.control()) else {
             return Some(Err("sampler edit output closed".into()));
         };
-        match control.sampler_edit_fence_state(pending.fence) {
-            SamplerEditFenceState::Pending => None,
-            SamplerEditFenceState::Ready => Some(Ok(())),
-            SamplerEditFenceState::Refused => {
+        match control.stopped_edit_fence_state(pending.fence) {
+            StoppedEditFenceState::Pending => None,
+            StoppedEditFenceState::Ready => Some(Ok(())),
+            StoppedEditFenceState::Refused => {
                 Some(Err("stop playback before editing sampler edit".into()))
             }
         }
@@ -275,7 +275,7 @@ impl NativeAudioSink {
             return;
         }
         if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control()) {
-            control.release_sampler_edit_fence(pending.fence);
+            control.release_stopped_edit_fence(pending.fence);
         }
         if let Some(candidate) = pending.candidate.as_mut() {
             if candidate
