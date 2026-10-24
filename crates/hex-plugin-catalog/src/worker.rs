@@ -1,6 +1,10 @@
 //! Background control work. The standalone scanner alone owns native children.
 use crate::{Catalog, validate_report};
-use hex_plugin_scan::macos::{identity::Bundle, package::Package, report::Report};
+use hex_plugin_scan::macos::{
+    identity::Bundle,
+    package::Package,
+    report::{Cleanup, Report},
+};
 use std::{
     io::{Read, Write},
     os::{fd::OwnedFd, unix::net::UnixStream},
@@ -8,7 +12,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -20,11 +24,18 @@ const CANCELLED: u8 = 1;
 const COMMITTING: u8 = 2;
 const FINISHED: u8 = 3;
 
+struct Operation {
+    phase: AtomicU8,
+    scanner_started: AtomicBool,
+}
 /// UI/control owner. Dropping a view requests cancellation without waiting.
-pub struct Cancellation(Arc<AtomicU8>);
+pub struct Cancellation(Arc<Operation>);
 impl Default for Cancellation {
     fn default() -> Self {
-        Self(Arc::new(AtomicU8::new(RUNNING)))
+        Self(Arc::new(Operation {
+            phase: AtomicU8::new(RUNNING),
+            scanner_started: AtomicBool::new(false),
+        }))
     }
 }
 impl Cancellation {
@@ -35,9 +46,15 @@ impl Cancellation {
     pub fn cancel(&self) -> bool {
         matches!(
             self.0
+                .phase
                 .compare_exchange(RUNNING, CANCELLED, Ordering::AcqRel, Ordering::Acquire),
             Ok(_) | Err(CANCELLED)
         )
+    }
+    /// Historical observation of this operation's actual outer scanner spawn.
+    /// This proves neither current liveness nor native child entry/retirement.
+    pub fn has_started_scanner(&self) -> bool {
+        self.0.scanner_started.load(Ordering::Acquire)
     }
 }
 impl Drop for Cancellation {
@@ -45,19 +62,21 @@ impl Drop for Cancellation {
         let _ = self.cancel();
     }
 }
-pub struct Token(Arc<AtomicU8>);
+pub struct Token(Arc<Operation>);
 impl Token {
     fn cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire) == CANCELLED
+        self.0.phase.load(Ordering::Acquire) == CANCELLED
     }
     fn begin_publication(&self) -> Result<bool, String> {
-        match self
-            .0
-            .compare_exchange(RUNNING, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
-        {
+        match self.0.phase.compare_exchange(
+            RUNNING,
+            COMMITTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
             Ok(_) => Ok(true),
             Err(CANCELLED) => {
-                self.0.store(COMMITTING, Ordering::Release);
+                self.0.phase.store(COMMITTING, Ordering::Release);
                 Ok(false)
             }
             Err(_) => Err("scan publication state invalid".into()),
@@ -66,13 +85,42 @@ impl Token {
 }
 impl Drop for Token {
     fn drop(&mut self) {
-        self.0.store(FINISHED, Ordering::Release);
+        self.0.phase.store(FINISHED, Ordering::Release);
+    }
+}
+
+/// Copied observations, never child custody or permission to publish metadata.
+/// Keeps the original scanner output buffer (at most OUTPUT_LIMIT logical bytes),
+/// rather than cloning decoded metadata. Outer exit and reported native cleanup
+/// stay distinct; malformed output remains available without implying cleanup.
+#[derive(Default)]
+pub struct ScanDiagnostics {
+    pub module: PathBuf,
+    pub elapsed: Duration,
+    pub scanner_started: bool,
+    pub scanner_exit: Option<std::process::ExitStatus>,
+    pub native_cleanup: Option<Cleanup>,
+    pub report: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+impl std::fmt::Debug for ScanDiagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScanDiagnostics")
+            .field("module", &self.module)
+            .field("elapsed", &self.elapsed)
+            .field("scanner_started", &self.scanner_started)
+            .field("scanner_exit", &self.scanner_exit)
+            .field("native_cleanup", &self.native_cleanup)
+            .field("report", &String::from_utf8_lossy(&self.report))
+            .field("stderr", &String::from_utf8_lossy(&self.stderr))
+            .finish()
     }
 }
 
 pub struct Update {
     pub catalog: Option<Catalog>,
     pub status: String,
+    pub diagnostics: Option<ScanDiagnostics>,
 }
 
 /// Capture only on the worker; raw executables do not receive a checkout fallback.
@@ -147,13 +195,21 @@ fn poll_and_drain<T>(
 struct DiscoveryOutcome {
     result: Result<(Report, String), String>,
     chain_retired: bool,
+    diagnostics: ScanDiagnostics,
 }
 fn discover(app: &Path, path: &Path, token: &Token) -> DiscoveryOutcome {
+    let started = Instant::now();
     let mut chain_retired = true; // No child has been started yet.
-    let result = discover_inner(app, path, token, &mut chain_retired);
+    let mut diagnostics = ScanDiagnostics {
+        module: path.to_path_buf(),
+        ..ScanDiagnostics::default()
+    };
+    let result = discover_inner(app, path, token, &mut chain_retired, &mut diagnostics);
+    diagnostics.elapsed = started.elapsed();
     DiscoveryOutcome {
         result,
         chain_retired,
+        diagnostics,
     }
 }
 fn discover_inner(
@@ -161,6 +217,7 @@ fn discover_inner(
     path: &Path,
     token: &Token,
     chain_retired: &mut bool,
+    diagnostics: &mut ScanDiagnostics,
 ) -> Result<(Report, String), String> {
     if token.cancelled() {
         return Err("scan cancelled".into());
@@ -188,6 +245,8 @@ fn discover_inner(
         .spawn()
         .map_err(|e| format!("scanner start failed: {e}"))?;
     *chain_retired = false;
+    diagnostics.scanner_started = true;
+    token.0.scanner_started.store(true, Ordering::Release);
     let started = Instant::now();
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -197,14 +256,23 @@ fn discover_inner(
     // No numeric PID/group operation other than this direct Child's try_wait.
     // A retained scanner may exceed its deadline while it retires a native child.
     loop {
-        let (received, error) = poll_and_drain(
+        let polled = poll_and_drain(
             &mut exit,
             || child.try_wait(),
             [
                 (&mut output, &mut out, OUTPUT_LIMIT),
                 (&mut diagnostic, &mut err, ERROR_LIMIT),
             ],
-        )?;
+        );
+        diagnostics.scanner_exit = exit;
+        let (received, error) = match polled {
+            Ok(value) => value,
+            Err(error) => {
+                diagnostics.report = out;
+                diagnostics.stderr = err;
+                return Err(error);
+            }
+        };
         if let Some(error) = error {
             cause.get_or_insert(error);
         }
@@ -233,6 +301,9 @@ fn discover_inner(
         std::thread::sleep(Duration::from_millis(10));
     }
     let decoded = serde_json::from_slice::<Report>(&out);
+    diagnostics.report = out;
+    diagnostics.stderr = err;
+    diagnostics.native_cleanup = decoded.as_ref().ok().map(|r| r.cleanup.clone());
     *chain_retired = decoded.as_ref().is_ok_and(|report| {
         report.cleanup.direct_reaped
             && !report.cleanup.pending
@@ -247,9 +318,11 @@ fn discover_inner(
     }
     if !exit.is_some_and(|s| s.success()) {
         let detail = decoded
+            .as_ref()
             .ok()
-            .and_then(|r| r.error)
-            .unwrap_or_else(|| String::from_utf8_lossy(&err).into_owned());
+            .and_then(|r| r.error.as_deref())
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| String::from_utf8_lossy(&diagnostics.stderr));
         let detail = detail
             .chars()
             .filter(|c| !c.is_control())
@@ -291,6 +364,7 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
     if !crate::path_valid(&path) || path.extension().and_then(|s| s.to_str()) != Some("vst3") {
         return Update {
             catalog: None,
+            diagnostics: None,
             status: "select one absolute bounded .vst3 bundle path".into(),
         };
     }
@@ -301,6 +375,7 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
         {
             return Update {
                 catalog: None,
+                diagnostics: None,
                 status: "plugin catalog module capacity reached".into(),
             };
         }
@@ -308,11 +383,16 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
         Err(error) => {
             return Update {
                 catalog: None,
+                diagnostics: None,
                 status: error,
             };
         }
     }
-    let result = discover(app, &path, &token).result;
+    let DiscoveryOutcome {
+        result,
+        diagnostics,
+        ..
+    } = discover(app, &path, &token);
     // The atomic transition is the cancellation/publication linearization point.
     let result = match token.begin_publication() {
         Ok(true) => result,
@@ -320,6 +400,7 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
         Err(status) => {
             return Update {
                 catalog: None,
+                diagnostics: Some(diagnostics),
                 status,
             };
         }
@@ -331,10 +412,12 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
     match crate::storage::update(catalog_path, |catalog| catalog.record(path, result)) {
         Ok(publication) => Update {
             catalog: Some(publication.catalog),
+            diagnostics: Some(diagnostics),
             status: publication.warning.unwrap_or(status),
         },
         Err(error) => Update {
             catalog: None,
+            diagnostics: Some(diagnostics),
             status: format!("{status} · catalog update failed: {error}"),
         },
     }
@@ -346,6 +429,7 @@ pub fn scan_standard(catalog_path: &Path, app: &Path, token: Token) -> Update {
         Ok(roots) => scan_folders(catalog_path, app, &roots, token),
         Err(status) => Update {
             catalog: None,
+            diagnostics: None,
             status,
         },
     }
@@ -355,7 +439,8 @@ pub fn scan_standard(catalog_path: &Path, app: &Path, token: Token) -> Update {
 /// Cancelled batches never promote their pending metadata. The short final
 /// writer transaction merges fresh state, preserving other windows' records.
 pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: Token) -> Update {
-    let run = || -> Result<(Vec<_>, String), String> {
+    let mut diagnostics = None;
+    let mut run = || -> Result<(Vec<_>, String), String> {
         let mut staged = Catalog::load(catalog_path)?;
         let enumeration = crate::roots::enumerate(roots, || token.cancelled())?;
         let mut paths: std::collections::BTreeSet<_> = staged
@@ -376,6 +461,9 @@ pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: T
                 return Err("folder scan cancelled · catalog unchanged".into());
             }
             let outcome = discover(app, &path, &token);
+            if outcome.result.is_err() || diagnostics.is_none() {
+                diagnostics = Some(outcome.diagnostics);
+            }
             if !outcome.chain_retired {
                 return Err(format!(
                     "folder scan stopped · native cleanup unconfirmed · {}",
@@ -424,6 +512,7 @@ pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: T
         Err(status) => {
             return Update {
                 catalog: None,
+                diagnostics,
                 status,
             };
         }
@@ -433,12 +522,14 @@ pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: T
         Ok(false) => {
             return Update {
                 catalog: None,
+                diagnostics,
                 status: "folder scan cancelled · catalog unchanged".into(),
             };
         }
         Err(status) => {
             return Update {
                 catalog: None,
+                diagnostics,
                 status,
             };
         }
@@ -451,10 +542,12 @@ pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: T
     }) {
         Ok(publication) => Update {
             catalog: Some(publication.catalog),
+            diagnostics,
             status: publication.warning.unwrap_or(status),
         },
         Err(error) => Update {
             catalog: None,
+            diagnostics,
             status: format!("folder scan catalog update failed: {error}"),
         },
     }
@@ -469,6 +562,20 @@ pub fn available_app() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pre_spawn_refusal_reports_no_invented_native_cleanup() {
+        let owner = Cancellation::default();
+        let module = Path::new("/original-fixture.vst3");
+        let outcome = discover(Path::new(""), module, &owner.token());
+        assert!(outcome.result.is_err());
+        assert!(outcome.chain_retired, "no scanner was started");
+        let observed = outcome.diagnostics;
+        assert_eq!(observed.module, module);
+        assert!(!observed.scanner_started);
+        assert!(observed.scanner_exit.is_none());
+        assert!(observed.native_cleanup.is_none());
+        assert!(observed.report.is_empty() && observed.stderr.is_empty());
+    }
     #[test]
     fn final_report_published_at_reap_is_drained_without_waiting_for_eof() {
         let (mut output, mut writer) = UnixStream::pair().unwrap();
