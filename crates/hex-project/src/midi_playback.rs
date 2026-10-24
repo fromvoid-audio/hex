@@ -520,6 +520,18 @@ mod tests {
     }
 
     #[test]
+    fn ongoing_loop_phase_retains_large_playback_windows_without_sum_overflow() {
+        let b = BeatTime::from_raw;
+        let playback = MidiSourcePlayback::new(b(10), b(0), Some((b(2), b(5))), b(1))
+            .unwrap()
+            .with_playback_offset(b(u64::MAX - 1))
+            .unwrap();
+        assert_eq!(playback.source_phase_at_elapsed(b(0)), Some(b(2)));
+        assert_eq!(playback.source_phase_at_elapsed(b(5)), Some(b(4)));
+        assert_eq!(playback.source_phase_at_elapsed(b(u64::MAX)), Some(b(2)));
+    }
+
+    #[test]
     fn one_shot_projection_preserves_offsets_and_truncates_finite_end() {
         assert_eq!(tuples(plan(10, 2, None, 5, 4, 4)), [(0, 2, 3)]);
         assert_eq!(tuples(plan(10, 2, None, 5, 1, 2)), []);
