@@ -28,6 +28,11 @@ impl State {
         self.fit_back = None;
     }
 }
+pub(super) struct AudioFitBaseline {
+    owner: (ClipId, u64),
+    viewport: Option<Viewport>,
+    back: Option<Option<Viewport>>,
+}
 struct Clipboard {
     owner: (ClipId, u64),
     root: AudioClipEdit,
@@ -191,7 +196,7 @@ impl EditorView {
             self.event_commit(AudioEventEdit::Split { at });
         }
     }
-    fn event_viewport(&self, root: &AudioClipEdit) -> Viewport {
+    pub(super) fn event_viewport(&self, root: &AudioClipEdit) -> Viewport {
         let Some(state) = self.state.as_ref() else {
             return Viewport::fit(0);
         };
@@ -492,6 +497,69 @@ impl EditorView {
         self.event_update_pointer(pointer, platform);
         true
     }
+    pub(super) fn begin_audio_range_fit(&mut self) -> Option<AudioFitBaseline> {
+        if !self.event_context_current() {
+            return None;
+        }
+        let baseline = AudioFitBaseline {
+            owner: self.audio_event_editor.owner?,
+            viewport: self.audio_event_editor.viewport,
+            back: self.audio_event_editor.fit_back,
+        };
+        self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
+        Some(baseline)
+    }
+    pub(super) fn restore_audio_range_fit(&mut self, baseline: AudioFitBaseline) {
+        if self.audio_event_editor.owner == Some(baseline.owner)
+            && self.project_generation == baseline.owner.1
+            && self.detail_clip_id() == Some(baseline.owner.0)
+        {
+            self.audio_event_editor.viewport = baseline.viewport;
+            self.audio_event_editor.fit_back = baseline.back;
+        }
+    }
+    /// Shared manual/Arrange fit calculation in the retained root's output clock.
+    pub(super) fn fit_audio_interval(&mut self, range: (u64, u64), remember: bool) -> bool {
+        if !self.event_context_current() {
+            return false;
+        }
+        let Some((_, root, _)) = self.event_context() else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let frame = |position| root.root_frame_at(position, state.project.tempo_map()).ok();
+        let Some(first) = frame(root.view_start) else {
+            return false;
+        };
+        let Some(end) = frame(root.view_end) else {
+            return false;
+        };
+        let Some(a) = frame(range.0.clamp(root.view_start, root.view_end)) else {
+            return false;
+        };
+        let Some(b) = frame(range.1.clamp(root.view_start, root.view_end)) else {
+            return false;
+        };
+        let Some(next) = super::zoom_fit::interval(
+            a.saturating_sub(first),
+            b.saturating_sub(first),
+            end.saturating_sub(first),
+            1,
+        ) else {
+            return false;
+        };
+        if next == self.event_viewport(&root) {
+            return false;
+        }
+        if remember {
+            let _ = self.begin_audio_range_fit();
+        }
+        self.audio_event_editor.gesture = None;
+        self.audio_event_editor.viewport = Some(next);
+        true
+    }
     pub(super) fn event_zoom_back_available(&self) -> bool {
         self.event_context_current() && self.audio_event_editor.fit_back.is_some()
     }
@@ -515,7 +583,6 @@ impl EditorView {
         if horizon == 0 {
             return false;
         }
-        let current = self.event_viewport(&root);
         let next = if back {
             let Some(prior) = self.audio_event_editor.fit_back.take() else {
                 return false;
@@ -527,23 +594,8 @@ impl EditorView {
                 let last = a.max(b).clamp(root.view_start, root.view_end);
                 (first < last).then_some((first, last))
             });
-            let (a, b) = range.unwrap_or((root.view_start, root.view_end));
-            let Ok(a) = root.root_frame_at(a, state.project.tempo_map()) else {
-                return false;
-            };
-            let Ok(b) = root.root_frame_at(b, state.project.tempo_map()) else {
-                return false;
-            };
-            let next = Viewport {
-                start: a.saturating_sub(first),
-                length: b.saturating_sub(a).max(1),
-            }
-            .clamp(horizon);
-            if next == current {
-                return false;
-            }
-            self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
-            Some(next)
+            return self
+                .fit_audio_interval(range.unwrap_or((root.view_start, root.view_end)), true);
         };
         self.audio_event_editor.gesture = None;
         self.audio_event_editor.viewport = next;

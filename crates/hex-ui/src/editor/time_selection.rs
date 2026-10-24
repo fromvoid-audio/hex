@@ -956,6 +956,7 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
+        self.finish_arrange_range_fit();
         true
     }
 
@@ -977,6 +978,7 @@ impl EditorView {
     pub(super) fn cancel_time_selection_gesture(&mut self) -> bool {
         let had_move = self.cancel_time_range_move_gesture();
         let had_gesture = self.time_selection_gesture.take().is_some();
+        self.cancel_arrange_range_fit();
         if had_move {
             self.advance_selection_intent();
             self.suppress_cursor_click = false;
