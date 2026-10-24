@@ -133,7 +133,7 @@ pub(super) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool
 fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &mut TestAppContext) {
     for key in ["l", "w", "cmd-l"] {
         let cx = &mut cx.new_app();
-        let (handle, editor, audio, _, _files) = fixture(cx);
+        let (handle, editor, audio, _, files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let region = |visual: &VisualTestContext| {
@@ -255,6 +255,32 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
                     v.selected_clip.is_none(),
                     "loop ACK preserves empty selection: {key}"
                 )
+            });
+        }
+        let path = files.root().join("remembered-loop.hex");
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::SaveNew(path.clone())))
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(path))));
+        pump(&editor, &mut visual);
+        visual.update(|window, cx| editor.read(cx).focus.focus(window));
+        for enabled in [false, true] {
+            editor.read_with(&visual, |v, _| {
+                assert!(v.selected_track.is_none() && v.selected_clip.is_none());
+            });
+            visual.simulate_keystrokes(key);
+            pump(&editor, &mut visual);
+            assert_eq!(
+                region(&visual),
+                Some((1, 48_000, enabled)),
+                "saved range: {key}"
+            );
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.selected_track.is_none() && v.selected_clip.is_none(),
+                    "saved unselected context survives loop ACK: {key}"
+                );
             });
         }
     }
