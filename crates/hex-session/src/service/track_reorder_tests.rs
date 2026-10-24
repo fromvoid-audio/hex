@@ -17,7 +17,7 @@ fn reorder(state: &ViewState, track: TrackId, before: Option<TrackId>) -> Reques
     Request::ReorderTracks {
         project_generation: 0,
         revision: state.revision,
-        tracks: hex_project::TrackReorderSelection::new(&[track]).unwrap(),
+        tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
         before,
     }
 }
@@ -162,7 +162,7 @@ fn reorder_track_worker_preserves_cached_pcm_devices_and_one_history_edge() {
             project_generation: 0,
             revision: third.state.revision,
             // Input order differs from the current canonical MIDI/audio order.
-            tracks: hex_project::TrackReorderSelection::new(&[audio_track, midi_track]).unwrap(),
+            tracks: hex_project::TrackSelectionIds::new(&[audio_track, midi_track]).unwrap(),
             before: None,
         },
     );
@@ -193,7 +193,7 @@ fn reorder_track_worker_preserves_cached_pcm_devices_and_one_history_edge() {
         Request::ReorderTracks {
             project_generation: 0,
             revision: undo.state.revision,
-            tracks: hex_project::TrackReorderSelection::new(&[audio_track, midi_track]).unwrap(),
+            tracks: hex_project::TrackSelectionIds::new(&[audio_track, midi_track]).unwrap(),
             before: Some(audio_track),
         },
     );
@@ -242,7 +242,7 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
             .submit(Request::ReorderTracks {
                 project_generation: generation,
                 revision,
-                tracks: hex_project::TrackReorderSelection::new(&members).unwrap(),
+                tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
                 before,
             })
             .unwrap();
@@ -293,6 +293,30 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
     assert_eq!(refused.state.project, stable.project);
     assert_eq!(refused.state.revision, stable.revision);
     assert!(refused.playback.is_none());
+    let tracks = hex_project::TrackSelectionIds::new(&[first_id, second_id]).unwrap();
+    for action in [
+        TrackClipboardAction::Copy(tracks.clone()),
+        TrackClipboardAction::Cut(tracks.clone()),
+        TrackClipboardAction::Duplicate {
+            tracks,
+            without_clips: true,
+        },
+        TrackClipboardAction::Paste { before: None },
+    ] {
+        service
+            .submit(Request::TrackClipboard {
+                project_generation: 0,
+                revision: stable.revision,
+                action,
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.as_deref().unwrap().contains("active gesture"));
+        assert!(refused.active_device_gesture.is_some());
+        assert_eq!(refused.state.project, stable.project);
+        assert_eq!(refused.state.revision, stable.revision);
+        assert!(refused.playback.is_none());
+    }
     let canceled = run(
         &service,
         Request::DeviceGesture(GestureRequest::Cancel { key }),
