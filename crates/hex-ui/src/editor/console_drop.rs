@@ -64,16 +64,10 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let (track, before) = match target {
-            ConsoleDestination::Cell { track, scene } => (track, Some(scene)),
-            ConsoleDestination::InsertScene { track, before } => (track, before),
-        };
-        state.project.track(track).is_some()
-            && before
-                .is_none_or(|scene| state.project.scenes().iter().any(|item| item.id() == scene))
+        target.validate(&state.project).is_ok()
     }
 
-    fn drop_console_browser_audio(
+    pub(super) fn drop_console_browser_audio(
         &mut self,
         drag: &BrowserAudioDrag,
         target: ConsoleDestination,
@@ -129,7 +123,7 @@ impl EditorView {
         cx.notify();
     }
 
-    fn drop_console_arrangement_clip(
+    pub(super) fn drop_console_arrangement_clip(
         &mut self,
         drag: &ClipDrag,
         target: ConsoleDestination,
@@ -144,6 +138,38 @@ impl EditorView {
         if multiple {
             self.clear_clip_drag(drag.project_generation, drag.clip);
             self.error = Some("selected clips require an arrangement target".into());
+            cx.notify();
+            return;
+        }
+        if let ConsoleDestination::NewTrack {
+            before_track,
+            scene,
+        } = target
+        {
+            let valid = current
+                && self.console_target_exists(target)
+                && self.console_column_clip_valid(drag)
+                && !self.save_dialog_open
+                && !self.export_dialog_open
+                && !self.export_pending
+                && self.audio_batch.is_none()
+                && !self.tuning.open
+                && !self.theme_settings.open
+                && !self.changelog.is_open()
+                && !self.device_panel.has_pending_draft(cx)
+                && self.tuning.client.snapshot().is_none();
+            self.clear_clip_drag(drag.project_generation, drag.clip);
+            if valid {
+                self.enqueue(Request::CopyArrangementClipToConsoleTrack {
+                    project_generation: drag.project_generation,
+                    revision: drag.revision,
+                    source: drag.clip,
+                    before_track,
+                    scene,
+                });
+            } else {
+                self.error = Some("clip drop canceled · console target or project changed".into());
+            }
             cx.notify();
             return;
         }
