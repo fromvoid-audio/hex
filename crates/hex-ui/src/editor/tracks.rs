@@ -110,6 +110,10 @@ fn midi_note_body(
     // without asking layout and interactivity to traverse one Div per rectangle.
     let shapes: Vec<_> = shapes.into_iter().collect();
     let count = shapes.len();
+    if count == 0 {
+        // Empty clips and exhausted row budgets have no rectangles to submit.
+        return (div().absolute().inset_0(), 0);
+    }
     let notes = div().absolute().inset_0().child(
         div()
             .debug_selector(move || {
