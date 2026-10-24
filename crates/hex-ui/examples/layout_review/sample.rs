@@ -515,6 +515,20 @@ impl Sample {
             ),
             _ => panel_tab(label, self.actions % 2 == 1, s),
         };
+        let child = if matches!(name, "action" | "device action") {
+            child
+                .id("chrome-action")
+                .debug_selector({
+                    let id = self.id("chrome-action");
+                    move || id.clone()
+                })
+                .when(self.enabled, |button| {
+                    pressed_action_surface(button, theme::action_press_style(theme::action_style()))
+                })
+                .into_any_element()
+        } else {
+            child.into_any_element()
+        };
         div().child(
             div()
                 .id("chrome-hit")

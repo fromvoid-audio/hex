@@ -26,7 +26,9 @@ pub struct AudioEvents {
     pub events: Vec<AudioEvent>,
 }
 
-#[derive(Clone, Debug)]
+/// Inner edits of an Arrangement clip's retained processing root. Console
+/// source-window one-shots have no such root and refuse these edits explicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AudioEventEdit {
     Split {
         at: u64,
@@ -386,7 +388,13 @@ pub(crate) fn apply(
     clip: ClipId,
     operation: AudioEventEdit,
 ) -> Result<(), Invalid> {
-    let original = project.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+    let original = project.clip(clip).ok_or_else(|| {
+        if project.session_audio_clip(clip).is_some() {
+            Invalid("audio event editing is unavailable for console source windows")
+        } else {
+            Invalid("clip no longer exists")
+        }
+    })?;
     let mut edit = original
         .audio_edit()
         .cloned()
@@ -500,6 +508,65 @@ mod tests {
             .is_err()
         );
         assert_eq!(identity.events[0].end, 100);
+    }
+    #[test]
+    fn console_source_windows_refuse_inner_edits_without_changing_project_or_history() {
+        use crate::{Command, Created, Editor};
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "audio".into(),
+                path: "original.wav".into(),
+                sample_rate: 48000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let before_copy = editor.project().clone();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let before_cell = editor.project().clone();
+        let Created::SessionClip(console) = editor
+            .execute(Command::CopyArrangementAudioClipToSession {
+                source: clip,
+                scene,
+            })
+            .unwrap()
+        else {
+            panic!("cell")
+        };
+        let before = editor.project().clone();
+        assert_eq!(
+            editor.execute(Command::EditAudioEvents {
+                clip: console,
+                operation: AudioEventEdit::Delete { start: 10, end: 20 }
+            }),
+            Err(Invalid(
+                "audio event editing is unavailable for console source windows"
+            ))
+        );
+        assert_eq!(*editor.project(), before);
+        assert!(editor.undo());
+        let mut expected = before_cell.snapshot();
+        // Global IDs remain monotonic across undo; musical state is restored.
+        expected.next_id = editor.project().snapshot().next_id;
+        assert_eq!(
+            editor.project().snapshot(),
+            expected,
+            "refusal adds no history edge"
+        );
+        assert!(editor.undo());
+        let mut expected = before_copy.snapshot();
+        expected.next_id = editor.project().snapshot().next_id;
+        assert_eq!(editor.project().snapshot(), expected);
     }
     #[test]
     fn canonical_events_undo_and_outer_splits_keep_the_full_retained_sequence() {
