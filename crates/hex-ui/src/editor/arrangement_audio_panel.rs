@@ -64,6 +64,11 @@ pub(super) fn view(
     let (track, clip_id, position, length, source_start, source_length) =
         view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
+    let retained_source_count = clip
+        .audio_edit()
+        .and_then(|edit| edit.domain.events.as_ref())
+        .map_or(0, |events| events.sources.len());
+    let grouped_audio = retained_source_count > 0;
     let asset = state.project.asset(clip.asset())?;
     let source_end = source_start.checked_add(source_length)?;
     let window = ClipWindow {
@@ -87,8 +92,14 @@ pub(super) fn view(
         revision: state.revision,
         generation: view.project_generation,
     };
-    let waveform = state.waveforms.get(&window.asset).cloned();
-    let title = lowercase_path_tail(asset.path());
+    let waveform = (!grouped_audio)
+        .then(|| state.waveforms.get(&window.asset).cloned())
+        .flatten();
+    let title = if grouped_audio {
+        format!("grouped audio · {retained_source_count} sources")
+    } else {
+        lowercase_path_tail(asset.path())
+    };
     let mut details = div()
         .h(px(view.clip_detail_body_height))
         .w_full()
@@ -123,9 +134,11 @@ pub(super) fn view(
             .child(theme::text(title)),
     );
     controls = controls.child(controls::toggle(view, window, true, cx));
-    controls = controls.child(super::musical_audio_controls::warp_header(
-        view, clip_id, cx,
-    ));
+    if !grouped_audio {
+        controls = controls.child(super::musical_audio_controls::warp_header(
+            view, clip_id, cx,
+        ));
+    }
     for (field, label) in [
         (Field::Position, "pos"),
         (Field::Length, "len"),
@@ -134,10 +147,14 @@ pub(super) fn view(
         (Field::SourceEnd, "src end"),
         (Field::Gain, "gain"),
     ] {
-        controls = controls.child(controls::number(view, window, field, label, cx));
+        if !grouped_audio || matches!(field, Field::Position | Field::Length | Field::Gain) {
+            controls = controls.child(controls::number(view, window, field, label, cx));
+        }
     }
-    controls = controls.child(controls::toggle(view, window, false, cx));
-    controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
+    if !grouped_audio {
+        controls = controls.child(controls::toggle(view, window, false, cx));
+        controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
+    }
     details = details.child(controls);
 
     let mut waveform_panel = div()
@@ -150,6 +167,9 @@ pub(super) fn view(
         .p(px(4.0))
         .gap(px(2.0))
         .debug_selector(|| "arrangement-audio-waveform-panel".into());
+    if grouped_audio && view.audio_event_editor.source_view {
+        view.audio_event_editor.source_view = false;
+    }
     let source_view = view.audio_event_editor.source_view;
     waveform_panel = waveform_panel.child(
         div()
@@ -167,7 +187,22 @@ pub(super) fn view(
                         cx.notify();
                     })),
             )
-            .child(
+            .child(if grouped_audio {
+                div()
+                    .id("audio-source-tab")
+                    .w(px(56.0))
+                    .h(px(20.0))
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::waveform::ClipTooltip {
+                            name: "source view unavailable for grouped audio".into(),
+                        })
+                        .into()
+                    })
+                    .child(theme::text("n/a"))
+                    .debug_selector(|| "audio-source-tab-unavailable".into())
+            } else {
                 super::waveform::button(
                     "source",
                     "inspect original source and warp markers",
@@ -180,8 +215,8 @@ pub(super) fn view(
                     view.audio_event_editor.source_view = true;
                     view.focus.focus(window);
                     cx.notify();
-                })),
-            ),
+                }))
+            }),
     );
     if !source_view {
         waveform_panel =

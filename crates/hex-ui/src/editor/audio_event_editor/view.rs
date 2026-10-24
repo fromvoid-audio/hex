@@ -233,7 +233,9 @@ pub(in crate::editor) fn view(
                     )
                     .debug_selector(move || format!("audio-event-waveform-{event_id}")),
                 );
-            } else if let Some(wave) = state.waveforms.get(&clip.asset()) {
+            } else if events.sources.is_empty()
+                && let Some(wave) = state.waveforms.get(&clip.asset())
+            {
                 element = element.child(
                     waveform::waveform_view_cached(
                         wave,

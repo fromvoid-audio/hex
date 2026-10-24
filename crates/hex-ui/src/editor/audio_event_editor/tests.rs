@@ -121,6 +121,88 @@ fn g_extracts_a_selected_audio_event_span_as_one_clip(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn grouped_audio_hides_single_source_view_and_anchor_waveform_fallback(cx: &mut TestAppContext) {
+    use super::super::clip_drag_ui_test::upper_rail_owned_fixture;
+    use super::super::drag::group_drag_ui_test::pump;
+    use hex_session::service::Request;
+
+    cx.update(super::super::bind_editor_keys);
+    let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+
+    let (clip, generation) = editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.tracks()[0].clips()[0].id(),
+            view.project_generation,
+        )
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::DuplicateClip(clip))));
+    });
+    pump(&editor, &mut visual);
+    let clips = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0]
+            .clips()
+            .iter()
+            .map(|clip| clip.id())
+            .collect::<Vec<_>>()
+    });
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::GroupClips {
+            project_generation: generation,
+            revision,
+            clips,
+        }));
+    });
+    pump(&editor, &mut visual);
+
+    editor.update(&mut visual, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let grouped = state.project.clip(view.selected_clip.unwrap()).unwrap();
+        assert!(!grouped.audio_events().sources.is_empty());
+        assert!(state.waveforms.contains_key(&grouped.asset()));
+        view.audio_event_editor.source_view = true;
+        // Exercise the no-prepared-composite case while retaining the original
+        // anchor waveform that used to be incorrectly shown for every event.
+        let mut audio_clip_waveforms = state.audio_clip_waveforms.clone();
+        audio_clip_waveforms.remove(&grouped.id());
+        let changed = hex_session::service::ViewState {
+            canonical_audio_source: state.canonical_audio_source.clone(),
+            comparison_audio: state.comparison_audio.clone(),
+            project: std::sync::Arc::clone(&state.project),
+            waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
+            audio_clip_waveforms,
+            midi_preview: std::sync::Arc::clone(&state.midi_preview),
+            gain_preview: state.gain_preview.clone(),
+            timeline_frames: state.timeline_frames,
+            can_undo: state.can_undo,
+            can_redo: state.can_redo,
+            revision: state.revision,
+            unsaved: state.unsaved,
+            document_path: state.document_path.clone(),
+        };
+        view.state = Some(std::sync::Arc::new(changed));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("audio-source-tab-unavailable")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("audio-events-waveform").is_some());
+    assert!(visual.debug_bounds("audio-event-waveform-1").is_none());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.audio_event_editor.source_view)
+    });
+}
+
+#[gpui::test]
 fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
