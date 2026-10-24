@@ -318,6 +318,7 @@ impl EditorView {
         self.sections.selection = id.into_iter().collect();
         self.retain_clip_detail_for_time_selection();
         self.selected_track = None;
+        self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
         self.focused_return = None;
         // Use Main's existing view owner so ordinary worker snapshots cannot
