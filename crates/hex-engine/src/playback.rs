@@ -300,6 +300,8 @@ pub struct Playback {
     tuning_audition: Option<Box<crate::tuning_audition::Runtime>>,
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
+    // Control-minted publication identity; no callback owner or allocation.
+    pub(crate) resident_pcm_publication: Option<u64>,
     session_runtime: Option<Box<SessionPlayback>>,
     linear_runtime: Option<Box<RendererRuntime>>,
     session_unavailable: Option<crate::SessionPlaybackError>,
@@ -393,27 +395,34 @@ impl Playback {
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }
-    /// Conservative control-side PCM capacity of this actual immutable graph.
-    /// Shared clip leaves are counted once within the graph; no owner escapes.
+    /// Borrow actual legacy PCM leaves on control. The iterator grants no callback
+    /// or reclamation authority, and does not expose native device source banks.
+    pub(crate) fn resident_pcm_sources(&self) -> impl Iterator<Item = &crate::Audio> + Clone {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
+            .chain(self.prepared_revision.iter().flat_map(|r| {
+                r.session()
+                    .audio_clips()
+                    .iter()
+                    .filter_map(|c| c.resident_audio())
+            }))
+    }
+    /// Control-side PCM capacity of this graph, deduplicated by actual backing.
     pub fn resident_pcm_capacity_frames(&self) -> Option<u64> {
-        let sources = || {
-            self.project
-                .tracks()
-                .iter()
-                .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
-                .chain(self.prepared_revision.iter().flat_map(|r| {
-                    r.session()
-                        .audio_clips()
-                        .iter()
-                        .filter_map(|c| c.resident_audio())
-                }))
-        };
-        sources().enumerate().try_fold(0u64, |n, (i, source)| {
-            if sources().take(i).any(|old| old.shares_pcm_with(source)) {
-                return Some(n);
-            }
-            n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
-        })
+        self.resident_pcm_sources()
+            .enumerate()
+            .try_fold(0_u64, |n, (i, source)| {
+                if self
+                    .resident_pcm_sources()
+                    .take(i)
+                    .any(|old| old.shares_pcm_with(source))
+                {
+                    return Some(n);
+                }
+                n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
+            })
     }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn live_expression_supported_on_control(&self, track: hex_project::TrackId) -> bool {
@@ -731,6 +740,7 @@ impl Playback {
             tuning_audition,
             project: _,
             prepared_revision,
+            resident_pcm_publication,
             session_runtime,
             linear_runtime,
             session_unavailable: _,
@@ -739,7 +749,7 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
-        if tuning_audition.is_some() {
+        if tuning_audition.is_some() || resident_pcm_publication.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         visit(9, 0, true)?; // actual Project handle
@@ -766,6 +776,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: None,
+            resident_pcm_publication: None,
             session_runtime: None,
             linear_runtime,
             session_unavailable: None,
@@ -859,6 +870,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
+            resident_pcm_publication: None,
             session_runtime: Some(Box::new(runtime)),
             linear_runtime: None,
             session_unavailable: None,
@@ -900,6 +912,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
+            resident_pcm_publication: None,
             session_runtime,
             linear_runtime,
             session_unavailable,

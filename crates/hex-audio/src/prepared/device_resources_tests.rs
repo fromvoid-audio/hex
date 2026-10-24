@@ -338,6 +338,7 @@ fn impossible_resource_row_budget_refuses_before_allocating() {
         assert!(
             hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
                 reservation,
+                usize::MAX,
                 usize::MAX
             )
             .is_err()

@@ -1311,22 +1311,21 @@ impl PublicationControl {
         }
         // One queue, active, deferred, callback-held, control-held and construction owner, plus
         // the existing retirement queue. Each Playback's track/tail/keyboard bound is unchanged.
-        let max_obligations = self
+        let max_graphs = self
             .publications
             .buffer()
             .capacity()
             .checked_add(RETIRED)
             .and_then(|n| n.checked_add(5))
-            .and_then(|n| {
-                n.checked_mul(
-                    hex_engine::native_device_resources::MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
-                )
-            })
+            .ok_or("device resource publication capacity overflow")?;
+        let max_obligations = max_graphs
+            .checked_mul(hex_engine::native_device_resources::MAX_PLAYBACK_DEVICE_RESOURCE_LEASES)
             .ok_or("device resource publication capacity overflow")?;
         let resources =
             hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
                 reservation,
                 max_obligations,
+                max_graphs,
             )
             .map_err(|_| "device resource publication reservation refused")?;
         let bridge = self
@@ -1347,7 +1346,7 @@ impl PublicationControl {
     ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
         self.device_resources
             .as_ref()
-            .map(|book| book.admission_on_control(self.legacy_pcm_frames))
+            .map(|book| book.admission_on_control())
     }
 
     /// Freeze all graph publication and move the actual resource book into the caller's one
@@ -1414,8 +1413,8 @@ impl PublicationControl {
         let legacy_pcm = playback
             .resident_pcm_capacity_frames()
             .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
-        let result = if let Some(legacy_pcm) = legacy_pcm {
-            resources.publish_admitted_on_control(playback, legacy_pcm, |playback, view| {
+        let result = if legacy_pcm.is_some() {
+            resources.publish_admitted_on_control(playback, |playback, view| {
                 if let Err(reason) = admit(view) {
                     return Err(AdmittedPublishError::Admission { reason, playback });
                 }
@@ -1506,8 +1505,8 @@ impl PublicationControl {
         let legacy_pcm = playback
             .resident_pcm_capacity_frames()
             .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
-        let result = if let Some(legacy_pcm) = legacy_pcm {
-            resources.publish_on_control(playback, legacy_pcm, |playback| {
+        let result = if legacy_pcm.is_some() {
+            resources.publish_on_control(playback, |playback| {
                 self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm, None)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
@@ -1659,17 +1658,18 @@ impl PublicationControl {
                         break;
                     }
                 }
-                ReturnedPublication::Legacy(publication) => {
-                    let Publication {
-                        pcm_frames: frames,
-                        forwarded_pcm: forwarded,
-                        playback,
-                        ..
-                    } = publication;
+                ReturnedPublication::Legacy(mut publication) => {
+                    let frames = publication.pcm_frames;
+                    let forwarded = publication.forwarded_pcm;
                     if let Some(resources) = self.device_resources.as_mut() {
-                        resources.retire_on_control(playback);
+                        if let Err(playback) = resources.retire_on_control(publication.playback) {
+                            publication.playback = playback;
+                            self.held_control_return =
+                                Some(ReturnedPublication::Legacy(publication));
+                            break;
+                        }
                     } else {
-                        drop(playback);
+                        drop(publication.playback);
                     } // actual owner destruction precedes obligation release
                     if forwarded {
                         if let Some(bridge) = &self.resident_forwarding {
