@@ -23,6 +23,8 @@ mod audio_batch_tests;
 mod audio_sink;
 mod canonical_audio_source;
 mod comparison_audio;
+#[cfg(test)]
+mod console_track_tests;
 mod export_lane;
 mod resident_audio;
 mod resident_preview;
@@ -482,6 +484,15 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
+    },
+    /// Copy one captured Arrangement source to a new normal Console column.
+    /// Resolve stamps before any gesture barrier, source preparation or history.
+    CopyArrangementClipToConsoleTrack {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::ClipId,
+        before_track: Option<hex_project::TrackId>,
+        scene: hex_project::SessionSceneTarget,
     },
     /// Retains the take through preparation; every path echoes request_id.
     CommitMidiTake {
@@ -2171,6 +2182,39 @@ fn run_worker(
                     Ok(command.clone())
                 },
             ),
+            Request::CopyArrangementClipToConsoleTrack {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                before_track,
+                scene,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console clip insertion canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err(
+                        "finish or cancel the active gesture before inserting a console clip"
+                            .into(),
+                    )
+                } else if session.project().clip(*source).is_some() {
+                    Ok(Command::CopyArrangementAudioClipToNewSessionTrack {
+                        source: *source,
+                        before_track: *before_track,
+                        scene: *scene,
+                    })
+                } else if session.project().midi_clip(*source).is_some() {
+                    Ok(Command::CopyArrangementMidiToNewSessionTrack {
+                        source: *source,
+                        before_track: *before_track,
+                        scene: *scene,
+                    })
+                } else {
+                    Err("arrangement source no longer exists".into())
+                },
+            ),
             Request::DuplicateClips {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -2913,6 +2957,9 @@ fn run_worker(
                 }
                 Request::MoveExistingClips { .. } => {
                     error = Some("clip move target was not resolved".into());
+                }
+                Request::CopyArrangementClipToConsoleTrack { .. } => {
+                    error = Some("console clip target was not resolved".into());
                 }
                 Request::DuplicateClips { .. } => {
                     error = Some("clip duplication target was not resolved".into());
