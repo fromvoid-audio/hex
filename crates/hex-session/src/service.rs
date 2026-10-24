@@ -224,6 +224,9 @@ pub struct Event {
     pub save_complete: bool,
     /// Replacing the current file changes its reader compatibility. Opening never writes.
     pub document_format_upgrade_required: bool,
+    /// This save was refused pending reader-compatibility consent. The UI may
+    /// present its existing Save As/cancel/overwrite flow for this document.
+    pub save_confirmation_required: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
     /// Completion of explicit Stop recovery, including refusal. A returned graph
@@ -699,8 +702,9 @@ pub enum Request {
     Redo,
     SaveNew(PathBuf),
     SaveCurrent,
-    /// Explicit user consent to replace an older saved format. Bound to the
-    /// selected document and project generation; normal token checks still apply.
+    /// Explicit user consent to lose older-reader compatibility through a schema
+    /// upgrade or document growth. Bound to the selected document and project
+    /// generation; normal exact-byte file-token checks still apply.
     SaveCurrentWithFormatUpgrade {
         project_generation: u64,
         path: PathBuf,
@@ -1836,6 +1840,7 @@ fn run_worker(
                 audio_batch_complete: None,
                 save_complete: false,
                 document_format_upgrade_required: false,
+                save_confirmation_required: false,
                 open_complete: false,
                 project_replaced: false,
                 stopped_playback_restore_complete: false,
@@ -1872,6 +1877,7 @@ fn run_worker(
             audio_batch_complete: None,
             save_complete: false,
             document_format_upgrade_required: false,
+            save_confirmation_required: false,
             open_complete: false,
             project_replaced: false,
             stopped_playback_restore_complete: false,
@@ -2060,6 +2066,7 @@ fn run_worker(
         let mut audio_batch_failure = None;
         let mut open_complete = false;
         let mut save_complete = false;
+        let mut save_confirmation_required = false;
         let mut project_replaced = false;
         let mut replacement_revision = None;
         let mut replacement_sources: Option<
@@ -5313,35 +5320,43 @@ fn run_worker(
                         (Some(_), Ok(_)) if stale_consent => {
                             error = Some("project changed · format upgrade cancelled".into());
                         }
-                        (Some(handle), Ok(_))
-                            if handle.token.requires_format_upgrade() && !consent =>
-                        {
-                            error = Some("saving replaces this project's older format; use save as to preserve it, or explicitly confirm format overwrite".into());
-                        }
                         (Some(handle), Ok(project)) => {
-                            match hex_storage::replace_existing(
-                                &handle.path,
-                                &handle.token,
-                                &project,
-                            ) {
-                                Ok(outcome) => {
-                                    let commit = apply_current_save_outcome(handle, outcome);
-                                    unsaved = commit.dirty;
-                                    status = Some(commit.status.into());
-                                    error = commit.error;
-                                    state = view_state_bound(
-                                        &session,
-                                        Arc::clone(&midi_preview),
-                                        revision,
-                                        project_generation,
-                                        unsaved,
-                                        document.as_ref().map(|current| current.path.as_path()),
-                                        state.canonical_audio_source.as_ref().map(|source| {
-                                            (Arc::clone(source), state.comparison_audio.clone())
-                                        }),
-                                    );
+                            if !consent {
+                                match handle.token.requires_save_confirmation(&project) {
+                                    Ok(true) => {
+                                        save_confirmation_required = true;
+                                        error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
+                                    }
+                                    Ok(false) => {}
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
                                 }
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                            // Preflight has not touched the original, recovery or token.
+                            if error.is_none() {
+                                match hex_storage::replace_existing(
+                                    &handle.path,
+                                    &handle.token,
+                                    &project,
+                                ) {
+                                    Ok(outcome) => {
+                                        let commit = apply_current_save_outcome(handle, outcome);
+                                        unsaved = commit.dirty;
+                                        status = Some(commit.status.into());
+                                        error = commit.error;
+                                        state = view_state_bound(
+                                            &session,
+                                            Arc::clone(&midi_preview),
+                                            revision,
+                                            project_generation,
+                                            unsaved,
+                                            document.as_ref().map(|current| current.path.as_path()),
+                                            state.canonical_audio_source.as_ref().map(|source| {
+                                                (Arc::clone(source), state.comparison_audio.clone())
+                                            }),
+                                        );
+                                    }
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                }
                             }
                         }
                     }
@@ -6391,6 +6406,7 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                save_confirmation_required,
                 document_format_upgrade_required: document
                     .as_ref()
                     .is_some_and(|handle| handle.token.requires_format_upgrade()),

@@ -1017,10 +1017,11 @@ impl EditorView {
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
-                    let open_save = event.save_complete.then_some((
-                        event.error.is_none() && !event.state.unsaved,
-                        event.state.revision,
-                    ));
+                    let open_save = (event.save_complete && !event.save_confirmation_required)
+                        .then_some((
+                            event.error.is_none() && !event.state.unsaved,
+                            event.state.revision,
+                        ));
                     let saved_project_path =
                         (event.save_complete && event.error.is_none() && !event.state.unsaved)
                             .then(|| event.state.document_path.clone())
@@ -2306,7 +2307,12 @@ impl EditorView {
             .as_ref()
             .is_none_or(|state| state.project.tracks().is_empty())
             && !event.state.project.tracks().is_empty();
+        let save_confirmation_required =
+            event.save_confirmation_required && !event.project_replaced;
         self.state = Some(event.state);
+        if save_confirmation_required {
+            self.queue_save_confirmation();
+        }
         self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
             self.pending_loop = None;

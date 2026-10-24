@@ -1,5 +1,5 @@
 //! # Purpose
-//! Own strict bounded serialization and recoverable publication of canonical project metadata.
+//! Own strict validated serialization and recoverable publication of canonical project metadata.
 //!
 //! # Dependencies
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
@@ -29,7 +29,9 @@ use std::{fmt, io, path::PathBuf};
 /// Current saved-project schema; independent of the application version.
 pub const CURRENT_SCHEMA_VERSION: u32 = 44;
 
-pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+/// Older readers rejected documents above this size. This is compatibility
+/// metadata for overwrite consent, never an admission limit for this reader.
+pub const LEGACY_READER_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalChange {
@@ -144,8 +146,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema43 with retained audio roots and event fades/directed content views, preserving
-/// complete activation, MIDI source/window/volume, fade, tuning and device state.
+/// Encode the current schema with complete hierarchy, audio roots, event fades,
+/// directed views, activation, MIDI, tuning and device state. There is no blanket
+/// byte ceiling; typed model limits still apply. Owned output growth is fallible,
+/// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     encode_document(&schema::track_groups::encode(project)?)
 }
@@ -221,33 +225,20 @@ fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
 }
 
 fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {
-    struct BoundedOutput {
-        bytes: Vec<u8>,
-        exceeded: bool,
-    }
-    impl io::Write for BoundedOutput {
+    struct Output(Vec<u8>);
+    impl io::Write for Output {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if bytes.len() > MAX_DOCUMENT_BYTES.saturating_sub(self.bytes.len()) {
-                self.exceeded = true;
-                return Err(io::Error::other("project document exceeds byte limit"));
-            }
-            self.bytes.extend_from_slice(bytes);
+            self.0.try_reserve(bytes.len()).map_err(io::Error::other)?;
+            self.0.extend_from_slice(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
     }
-    let mut output = BoundedOutput {
-        bytes: Vec::new(),
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut output, document);
-    if output.exceeded {
-        return Err(StorageError::Invalid("project document exceeds byte limit"));
-    }
-    result?;
-    Ok(output.bytes)
+    let mut output = Output(Vec::new());
+    serde_json::to_writer(&mut output, document)?;
+    Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
@@ -271,9 +262,6 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(StorageError::Invalid("project document exceeds byte limit"));
-    }
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
