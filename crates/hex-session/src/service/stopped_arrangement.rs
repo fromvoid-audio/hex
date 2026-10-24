@@ -8,7 +8,17 @@ pub(super) fn acquire(
     shutdown: &AtomicBool,
     cancel: Option<&hex_export::ExportControl>,
 ) -> Result<u64, SessionError> {
-    sink.begin_section_edit(context)
+    acquire_position(sink, context, shutdown, cancel, false).map(|position| position.frame)
+}
+/// One callback-observed lease; only section move/copy/history may allow playing.
+pub(super) fn acquire_position(
+    sink: &mut dyn WorkerAudioSink,
+    context: hex_engine::AudioSourceContext,
+    shutdown: &AtomicBool,
+    cancel: Option<&hex_export::ExportControl>,
+    allow_playing: bool,
+) -> Result<ArrangementEditPosition, SessionError> {
+    sink.begin_section_edit(context, allow_playing)
         .map_err(SessionError::NativeAudio)?;
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
@@ -18,7 +28,7 @@ pub(super) fn acquire(
         {
             sink.cancel_section_edit();
             return Err(SessionError::Invalid(
-                "stopped arrangement edit cancelled or timed out",
+                "arrangement edit cancelled or timed out",
             ));
         }
         if let Some(result) = sink.section_edit_ready() {
