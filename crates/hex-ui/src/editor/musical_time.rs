@@ -852,7 +852,6 @@ fn snap_to_meter_landmark(
     let mut best: Option<(u64, u64)> = None;
     for index in first..=last {
         let point = points.get(index)?;
-        let origin = point.beat().raw();
         let section_end = points.get(index + 1).map(|next| next.beat().raw());
         let meter_beat_length =
             (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
@@ -865,14 +864,15 @@ fn snap_to_meter_landmark(
             fixed => fixed.step_raw()?,
         }
         .max(1);
-        let lower_index = beat.raw().saturating_sub(origin) / step;
-        for landmark_index in [lower_index, lower_index.saturating_add(1)] {
-            let Some(raw) = origin.checked_add(landmark_index.checked_mul(step)?) else {
-                continue;
-            };
-            if section_end.is_some_and(|end| raw >= end) {
-                continue;
-            }
+        let candidate = hex_project::MusicalGridSegment::new(
+            point.beat(),
+            section_end.map(BeatTime::from_raw),
+            BeatTime::from_raw(step),
+        )
+        .ok()?
+        .nearest(beat);
+        if let Some(candidate) = candidate {
+            let raw = candidate.raw();
             let distance = raw.abs_diff(beat.raw());
             if best.is_none_or(|(best_distance, best_raw)| {
                 distance < best_distance || (distance == best_distance && raw > best_raw)
@@ -1111,6 +1111,64 @@ impl SnapGrid {
         project.tempo_map().beat_to_frame(next).ok()
     }
 
+    /// Freeze the same resolved steps and dense-meter painted fallback used by
+    /// snapping. This bounded control-side copy does not change ordinary drags.
+    pub(super) fn freeze_input_grid(
+        self,
+        project: &Project,
+        viewport: Viewport,
+        width: f32,
+    ) -> Result<hex_project::ResolvedInputGrid, &'static str> {
+        if self.is_off() || !width.is_finite() || width <= 0.0 || viewport.length == 0 {
+            return Err("enable the arrangement grid and wait for its layout");
+        }
+        let resolution = AdaptiveGridResolution::for_grid(project, viewport, width, self);
+        let points = project.meter_map().points();
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(points.len())
+            .map_err(|_| "could not reserve input grid")?;
+        for (index, point) in points.iter().enumerate() {
+            let beat_length =
+                (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
+            let step = match self {
+                Self::Adaptive | Self::AdaptiveDensity(_) => {
+                    resolution.step(point.beat(), beat_length)
+                }
+                Self::Off | Self::OffDensity(_) => return Err("enable the arrangement grid"),
+                #[cfg(test)]
+                fixed => fixed.step_raw().ok_or("invalid fixed input grid")?,
+            };
+            segments.push(
+                hex_project::MusicalGridSegment::new(
+                    point.beat(),
+                    points.get(index + 1).map(|next| next.beat()),
+                    BeatTime::from_raw(step),
+                )
+                .map_err(|_| "cannot resolve input grid segment")?,
+            );
+        }
+        let mut frozen = hex_project::ResolvedInputGrid::new(segments)
+            .map_err(|_| "cannot freeze input grid")?;
+        if self.is_adaptive()
+            && visible_meter_sections(project, viewport)
+                .is_some_and(|count| count > MAX_GRID_LINES / 2)
+        {
+            let beats = grid_lines_resolved(project, viewport, width, self, &resolution)
+                .into_iter()
+                .map(|line| line.beat)
+                .collect();
+            frozen = frozen
+                .with_visible_landmarks(
+                    viewport.start,
+                    viewport.end().ok_or("input viewport overflow")?,
+                    beats,
+                )
+                .map_err(|_| "cannot freeze visible input grid")?;
+        }
+        Ok(frozen)
+    }
+
     pub(super) fn snap_frame(
         self,
         project: &Project,
@@ -1289,6 +1347,61 @@ mod tests {
     };
     use crate::editor::viewport::Viewport;
     use hex_project::{BeatTime, Command, Editor, Meter, Project, Tempo};
+
+    #[test]
+    fn frozen_adaptive_input_matches_arranger_including_dense_meter_fallback() {
+        for count in [3, 160] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::from_quarters(3).unwrap(),
+                    tempo: Tempo::new(90_000_000).unwrap(),
+                })
+                .unwrap();
+            for index in 1..count {
+                editor
+                    .execute(Command::SetMeterPoint {
+                        beat: BeatTime::from_ratio(index, 16).unwrap(),
+                        meter: Meter::new(3, 8).unwrap(),
+                    })
+                    .unwrap();
+            }
+            let project = editor.project();
+            let viewport = Viewport::fit(384_000);
+            for density in super::AdaptiveGridDensity::ALL {
+                let grid = SnapGrid::AdaptiveDensity(density);
+                let frozen = grid.freeze_input_grid(project, viewport, 480.0).unwrap();
+                for frame in [
+                    0, 1, 6_000, 11_999, 25_000, 37_000, 120_000, 383_999, 400_000,
+                ] {
+                    assert_eq!(
+                        frozen.snap_frame(project.tempo_map(), frame).ok(),
+                        grid.snap_frame(project, frame, viewport, 480.0),
+                        "count={count} density={density:?} frame={frame}"
+                    );
+                }
+                let expected = frozen.snap_frame(project.tempo_map(), 37_000).unwrap();
+                // Resolving a different zoom/density cannot mutate a retained grid.
+                let _ = SnapGrid::Adaptive
+                    .freeze_input_grid(project, Viewport::fit(48_000), 1_440.0)
+                    .unwrap();
+                assert_eq!(
+                    frozen.snap_frame(project.tempo_map(), 37_000).unwrap(),
+                    expected
+                );
+            }
+            assert!(
+                SnapGrid::Off
+                    .freeze_input_grid(project, viewport, 480.0)
+                    .is_err()
+            );
+            assert!(
+                SnapGrid::Adaptive
+                    .freeze_input_grid(project, viewport, f32::NAN)
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn directional_nudge_landmarks_are_distinct_off_grid_and_across_meter_tempo_seams() {

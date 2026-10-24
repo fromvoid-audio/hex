@@ -4,7 +4,8 @@
 //! content-frame clock. These scalars do not prove delivery or mint native audio
 //! ownership. The captured canonical binding refuses source/timing substitution;
 //! the ordinary service still owns prepare-before-commit and one history edit.
-//! Input journals, live monitoring, transport and quantization have other owners.
+//! Input journals, live monitoring and transport have other owners. A frozen
+//! input grid quantizes take onsets here, preserving musical lengths at commit.
 mod take;
 pub use take::MidiTake;
 
@@ -47,6 +48,7 @@ pub struct MidiTakeBinding {
     audible_end: BeatTime,
     first_frame: u64,
     end_frame: u64,
+    input_grid: hex_project::ResolvedInputGrid,
 }
 impl MidiTakeBinding {
     pub fn capture(project: &Project, track: TrackId, clip: ClipId) -> Result<Self, &'static str> {
@@ -108,7 +110,20 @@ impl MidiTakeBinding {
             audible_end: clip.source().effective_end(),
             first_frame,
             end_frame,
+            input_grid: hex_project::ResolvedInputGrid::off(),
         })
+    }
+    /// Capture the policy resolved at Record invocation, before input preparation.
+    /// This transient snapshot never changes monitoring or the saved schema.
+    pub fn capture_with_grid(
+        project: &Project,
+        track: TrackId,
+        clip: ClipId,
+        input_grid: hex_project::ResolvedInputGrid,
+    ) -> Result<Self, &'static str> {
+        let mut binding = Self::capture(project, track, clip)?;
+        binding.input_grid = input_grid;
+        Ok(binding)
     }
     pub fn track(&self) -> TrackId {
         self.track
@@ -127,6 +142,73 @@ impl MidiTakeBinding {
     }
     pub fn end_frame(&self) -> u64 {
         self.end_frame
+    }
+
+    fn quantize_span(
+        &self,
+        first: BeatTime,
+        last: BeatTime,
+        clip_end: u64,
+    ) -> Result<(BeatTime, BeatTime), &'static str> {
+        if self.input_grid.is_off() {
+            return Ok((first, last));
+        }
+        let first = first.raw().clamp(self.start.raw(), clip_end);
+        let last = last.raw().clamp(self.start.raw(), clip_end);
+        let duration = last
+            .checked_sub(first)
+            .filter(|duration| *duration > 0)
+            .ok_or("recorded midi note has no positive audible duration")?;
+        let snapped = self
+            .input_grid
+            .snap_beat(&self.tempo, BeatTime::from_raw(first))
+            .map_err(|_| "midi input grid cannot project this note")?;
+        // A nearest landmark at the exclusive edge must leave a valid final
+        // output frame. The clip's validated extent guarantees nonzero bounds.
+        let latest = self
+            .tempo
+            .frame_to_beat(self.end_frame - 1)
+            .map_err(|_| "midi input grid cannot project the clip edge")?
+            .raw()
+            .max(self.start.raw())
+            .min(clip_end - 1);
+        let start = snapped.raw().clamp(self.start.raw(), latest);
+        let mut end = start
+            .checked_add(duration)
+            .map_or(clip_end, |end| end.min(clip_end));
+        let start_frame = self
+            .tempo
+            .beat_to_frame(BeatTime::from_raw(start))
+            .map_err(|_| "quantized midi onset exceeds frame range")?;
+        if self
+            .tempo
+            .beat_to_frame(BeatTime::from_raw(end))
+            .map_err(|_| "quantized midi end exceeds frame range")?
+            <= start_frame
+        {
+            // Moving across a faster tempo seam can shrink a positive musical
+            // duration below one frame. Extend only that otherwise invalid gate.
+            let next = start_frame
+                .checked_add(1)
+                .filter(|frame| *frame <= self.end_frame)
+                .ok_or("quantized midi note has no output frame inside the clip")?;
+            end = self
+                .tempo
+                .frame_to_beat(next)
+                .map_err(|_| "quantized midi duration cannot be projected")?
+                .raw()
+                .min(clip_end);
+        }
+        if end <= start
+            || self
+                .tempo
+                .beat_to_frame(BeatTime::from_raw(end))
+                .map_err(|_| "quantized midi end exceeds frame range")?
+                <= start_frame
+        {
+            return Err("quantized midi note has no positive output duration");
+        }
+        Ok((BeatTime::from_raw(start), BeatTime::from_raw(end)))
     }
 
     fn validate(&self, project: &Project) -> Result<(), &'static str> {
@@ -215,6 +297,7 @@ pub fn finish_take(
             .raw()
             .checked_add(binding.length.raw())
             .ok_or("midi recording clip end overflow")?;
+        let (first, last) = binding.quantize_span(first, last, clip_end)?;
         let source_position = |beat: BeatTime| {
             beat.raw()
                 .clamp(binding.start.raw(), clip_end)

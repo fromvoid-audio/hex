@@ -240,6 +240,26 @@ selection audition waits while hardware input is selected. pressure, pitch bend,
 modulation and held-note piano-roll step entry remain available. live input timing
 is currently resolved at audio-block boundaries; sustain and mpe are not included.
 
+## input quantization
+
+use **in off ▾** in the transport to choose off, quarter notes (1/4), eighth notes
+(1/8), sixteenth notes (1/16), or adaptive. the same setting controls recorded midi
+note starts and browser sample insertion with enter. the browser's grid button
+switches between off and adaptive; choose a fixed subdivision in the transport.
+
+fixed subdivisions work independently of the arrangement snap toggle. adaptive
+uses the arrangement's visible grid and density, so enable that grid first.
+placement uses the nearest grid point, including backwards; exact ties move later.
+
+recording captures the grid when you click record, before preparation. zoom,
+density and later input changes cannot alter the retained take. finish or discard
+the take before changing its input setting. monitoring remains immediate at the
+recorder's stated next-block timing; quantization moves authored note starts when
+the take commits. played musical note lengths are preserved, with cropping at the
+clip end and a one-output-frame minimum for notes moved across tempo changes.
+a final-frame note retains a valid output interval. off preserves original timing.
+the take is still one undo/redo edit.
+
 ## record midi notes
 
 select an active midi clip in arrange with an enabled instrument. enable the
