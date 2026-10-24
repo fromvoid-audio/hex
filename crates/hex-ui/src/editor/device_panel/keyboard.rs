@@ -1,5 +1,5 @@
 //! Device-selection keys own only the directly focused card, never its editors.
-//! Zero reads live canonical bypass and uses the same terminal barrier as pointer
+//! A/zero read live canonical bypass and use the same terminal barrier as pointer
 //! bypass; rendered generation/owner/type identity refuses retired card handlers.
 use super::*;
 use gpui::{FocusHandle, KeyBinding};
@@ -165,12 +165,11 @@ pub(super) fn card(
         owned_device(&state.project, owner?, device).map(|item| item.state().type_id())
     });
     card.key_context("hex_device_selection")
-        // A character binding in the ancestor key context would swallow 0 in
+        // A character binding in the ancestor key context would swallow a/0 in
         // nested text editors. Handle only the card's own exact focus instead.
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key != "0"
-                    || event.keystroke.modifiers != gpui::Modifiers::default()
+                if !super::super::activation::is_activation_key(event)
                     || !toggle_focus.is_focused(window)
                 {
                     return;

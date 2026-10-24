@@ -41,7 +41,7 @@ impl TimeRange {
     pub fn duration(&self) -> u64 {
         self.end - self.start
     }
-    fn validate(&self, project: &Project) -> Result<usize, Invalid> {
+    pub(crate) fn validate(&self, project: &Project) -> Result<usize, Invalid> {
         let first = project
             .tracks()
             .iter()
@@ -87,6 +87,7 @@ impl RangeClipboard {
 }
 #[derive(Debug, Clone)]
 struct MidiFragment {
+    active: bool,
     volume: midi_volume::FrameVolume,
     name: String,
     flavor: crate::ClipFlavor,
@@ -228,6 +229,7 @@ impl Project {
                 }
                 reserve(&mut result.midi, 1)?;
                 result.midi.push(MidiFragment {
+                    active: clip.active,
                     volume: midi_volume::FrameVolume::capture(clip, self.tempo_map(), start, end)?,
                     name: clip.name().into(),
                     flavor: clip.flavor,
@@ -465,6 +467,8 @@ fn paste_rows_with_source(
             notes,
         };
         let clip = MidiClip {
+            active: fragment.active,
+            playback_offset: crate::BeatTime::ZERO,
             volume: fragment
                 .volume
                 .paste(project.tempo_map(), start_frame, end_frame)?,

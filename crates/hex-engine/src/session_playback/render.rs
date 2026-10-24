@@ -2047,6 +2047,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             if prepared.track != route.id {
                 return Err(SessionPlaybackError::ClipTrackMismatch);
             }
+            if !prepared.active {
+                return Ok(());
+            }
             match prepared.source() {
                 PreparedAudioSource::Resident(audio) => {
                     let frames = audio.frames();

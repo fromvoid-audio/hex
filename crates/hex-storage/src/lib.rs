@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 39;
+pub const CURRENT_SCHEMA_VERSION: u32 = 40;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -144,10 +144,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema39 with required MIDI one-shot policies, fade positions, tuning and device asset
+/// Encode schema40 with clip activation/windows, MIDI one-shot policies, fade positions, tuning and device asset
 /// and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::midi_one_shot::encode(project)?)
+    encode_document(&schema::clip_activation::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -163,6 +163,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::clip_activation::require_legacy_compatible(project)?;
     if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)
         || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)) {
         return Err(StorageError::Invalid("older schema cannot save midi one-shot boundaries"));
@@ -248,6 +249,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
+/// Pre40 schemas default clip activation to true and elapsed MIDI windows to
+/// zero. Schema40 inventories every Arrangement/Session clip exactly once.
 /// Pre38 schemas default horizontal fade positions to center, preserving their
 /// original sample-exact rational laws.
 /// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
@@ -273,7 +276,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     match header.version {
-        CURRENT_SCHEMA_VERSION => schema::midi_one_shot::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::clip_activation::decode(bytes),
+        39 => schema::midi_one_shot::decode(bytes),
         38 => schema::fade_curve_positions::decode(bytes),
         37 => schema::DocumentV11::decode(bytes),
         1..=33 => schema::legacy::decode(bytes, header.version),

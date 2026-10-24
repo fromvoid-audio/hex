@@ -46,6 +46,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         }
                     };
                     Ok(ClipSnapshot {
+                        active: true,
                         name: "clip".into(),
                         flavor: hex_project::ClipFlavor::default(),
                         edit: None,

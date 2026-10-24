@@ -420,6 +420,8 @@ fn materialize_shifted_midi(
         destination_end_frame,
     )?;
     Ok(MidiClip {
+        active: original.active,
+        playback_offset: crate::BeatTime::ZERO,
         volume,
         name: original.name.clone(),
         flavor: original.flavor,
