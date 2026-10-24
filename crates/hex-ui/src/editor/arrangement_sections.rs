@@ -8,7 +8,6 @@
 //! both. Paint and input use the same widths and existing native bracket cursors.
 use super::{
     EditorMode, EditorView,
-    browser_input::BrowserSearch,
     musical_time::SnapGrid,
     pending_edit::{Disposition, Receipt},
     viewport::Viewport,
@@ -23,6 +22,7 @@ use gpui::{
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
 use hex_session::service::{Event, Request};
+use hex_widgets::TextInput;
 
 const INNER_EDGE_WIDTH: f32 = 5.0;
 const SHARED_EDGE_RADIUS: f32 = 1.0;
@@ -96,7 +96,7 @@ struct Name {
     id: SectionId,
     generation: u64,
     revision: u64,
-    input: Entity<BrowserSearch>,
+    input: Entity<TextInput>,
     _blur: Subscription,
 }
 /// View-only beat position; a revision change requires a fresh lane click.
@@ -165,7 +165,7 @@ impl EditorView {
                     }
                     let captured = down.update(cx, |view, cx| {
                         if view.gain_numeric_editing(cx)
-                            || view.sample_bpm_editing(cx)
+                            || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
                         {
                             return false;
@@ -482,7 +482,7 @@ impl EditorView {
         }
         if self.sections.naming()
             || self.gain_numeric_editing(cx)
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.project_tempo_editing(cx)
         {
             return false;
@@ -964,6 +964,9 @@ impl EditorView {
         }
     }
     pub(super) fn reconcile_sections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = &self.sections.name {
+            super::browser_input::restyle(&edit.input, cx);
+        }
         self.sections.selection.retain(|id| {
             self.state
                 .as_ref()
@@ -1045,7 +1048,7 @@ impl EditorView {
             return true;
         };
         let revision = state.revision;
-        let input = cx.new(|cx| BrowserSearch::for_clip_name(section.name().into(), cx));
+        let input = cx.new(|cx| super::browser_input::name(section.name().into(), cx));
         let focus = input.read(cx).focus_handle().clone();
         let blur = cx.on_blur(&focus, window, |view, _, cx| {
             view.section_name_commit(cx);
@@ -1065,7 +1068,7 @@ impl EditorView {
         let Some(n) = self.sections.name.take() else {
             return;
         };
-        let name = n.input.read(cx).content.clone();
+        let name = n.input.read(cx).text().to_owned();
         if self.section_stamp_current(n.generation, n.revision, n.id) && !self.edit_pending() {
             self.section_metadata(Command::RenameArrangementSection {
                 section: n.id,
@@ -1082,7 +1085,7 @@ impl EditorView {
         let Some(name) = self.sections.name.as_ref() else {
             return true;
         };
-        let draft = &name.input.read(cx).content;
+        let draft = name.input.read(cx).text();
         if self.edit_pending()
             || self.project_open.busy()
             || self.pending_open_path.is_some()
@@ -2214,10 +2217,7 @@ mod tests {
         visual.simulate_input("g");
         editor.read_with(cx, |v, cx| {
             assert!(v.sections.naming());
-            assert_eq!(
-                v.sections.name.as_ref().unwrap().input.read(cx).content,
-                "g"
-            );
+            assert_eq!(v.sections.name.as_ref().unwrap().input.read(cx).text(), "g");
             assert!(v.sections.pending.is_none());
         });
     }
@@ -2512,7 +2512,7 @@ mod tests {
                     .unwrap()
                     .input
                     .read(cx)
-                    .content
+                    .text()
                     .is_empty()
             );
             assert!(
@@ -2564,8 +2564,8 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |v, cx| {
             let input = v.sections.name.as_ref().unwrap().input.read(cx);
-            assert_eq!(input.content, "Bridge X");
-            assert_eq!(input.painted_text_for_test(), Some("bridge x"));
+            assert_eq!(input.text(), "Bridge X");
+            assert_eq!(input.painted_text(), Some("bridge x"));
         });
         visual.simulate_keystrokes("enter");
         let terminal = editor.update(cx, |v, _| next(&v.service));

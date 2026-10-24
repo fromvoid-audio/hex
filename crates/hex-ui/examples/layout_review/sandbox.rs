@@ -6,6 +6,8 @@ mod sample;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "sandbox_tests.rs"]
 mod tests;
+#[path = "workspace.rs"]
+mod workspace;
 use crate::{gallery, theme};
 use catalog::{CATEGORIES, Demo, Item, inventory};
 use gpui::{Context, Entity, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px, rgb};

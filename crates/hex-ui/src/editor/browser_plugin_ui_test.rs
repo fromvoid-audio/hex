@@ -72,7 +72,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_never_queues_native_ins
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("vendor", cx))
+            .update(cx, |input, cx| input.set_text("vendor", cx))
     });
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
@@ -81,7 +81,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_never_queues_native_ins
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("absent", cx))
+            .update(cx, |input, cx| input.set_text("absent", cx))
     });
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
@@ -90,7 +90,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_never_queues_native_ins
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("", cx));
+            .update(cx, |input, cx| input.set_text("", cx));
         view.select_browser_source(BrowserSection::All, cx);
     });
     visual.run_until_parked();
@@ -178,7 +178,7 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("instrument", cx))
+            .update(cx, |input, cx| input.set_text("instrument", cx))
     });
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
@@ -293,7 +293,7 @@ fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_searc
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
-            .update(cx, |input, cx| input.restore_query("instrument", cx))
+            .update(cx, |input, cx| input.set_text("instrument", cx))
     });
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
@@ -384,7 +384,7 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
     click(&mut visual, "browser-history-back");
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.browser.section, BrowserSection::Plugins);
-        assert_eq!(view.browser.search.read(cx).content, "vendor");
+        assert_eq!(view.browser.search.read(cx).text(), "vendor");
         assert_eq!(view.browser_visible_plugins(cx).len(), 1);
         assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::Plugin(ref path, Some(id))) if path == &module && id == [1; 16]));
     });
@@ -396,7 +396,7 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
             BrowserSection::Samples,
             "hiding active vst3 selects the existing visible fallback"
         );
-        assert_eq!(view.browser.search.read(cx).content, "vendor");
+        assert_eq!(view.browser.search.read(cx).text(), "vendor");
     });
     click(&mut visual, "browser-history-back");
     editor.read_with(&visual, |view, _| {

@@ -390,7 +390,7 @@ pub(super) fn view(
                                     let started = down_entity.update(cx, |view, cx| {
                                         if view.track_name.is_editing() || view.clip_name_edit.is_some()
                                             || view.project_tempo_editing(cx) || view.gain_numeric_editing(cx)
-                                            || view.sample_bpm_editing(cx) { return false; }
+                                            || view.clip_numeric_editing(cx) { return false; }
                                         let started = view.begin_loop_rail_gesture(
                                             bounds,
                                             event.position,

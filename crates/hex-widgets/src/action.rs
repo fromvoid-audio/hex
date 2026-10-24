@@ -6,6 +6,12 @@ use gpui::{Div, SharedString, div, prelude::*, px, rgb};
 /// focus and event handlers; this primitive never changes canonical state.
 /// No fixed width is imposed, so compact glyphs and text actions use one control.
 pub fn action(label: SharedString, style: ActionStyle) -> Div {
+    action_surface(style).child(label)
+}
+
+/// The same action surface with caller-composed content, such as a swatch,
+/// label and current-item marker. Owners retain input and command dispatch.
+pub fn action_surface(style: ActionStyle) -> Div {
     div()
         .flex_shrink_0()
         .flex()
@@ -23,5 +29,4 @@ pub fn action(label: SharedString, style: ActionStyle) -> Div {
                 hover
             }
         })
-        .child(label)
 }

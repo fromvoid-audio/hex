@@ -146,7 +146,7 @@ impl EditorView {
             || self.gain_numeric_editing(cx)
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_lane.pointer_is_active()
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.project_open.busy()
             || self.pending_open_path.is_some()
             || self.export_dialog_open

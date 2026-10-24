@@ -8,6 +8,7 @@ impl Drop for RestoreTheme {
 }
 fn open(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Sandbox>) {
     cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(hex_widgets::bind_text_input_keys);
     cx.update(hex_widgets::bind_response_graph_keys);
     theme::apply_preferences(hex_preferences::ThemePreferences::default());
     let handle = cx.add_window(|_, cx| Sandbox::new(cx));
@@ -43,6 +44,17 @@ fn every_named_entry_renders_in_bounded_native_viewports(cx: &mut TestAppContext
         visual.simulate_resize(size(px(width), px(720.0)));
         for name in &names {
             choose(&mut visual, &view, name);
+            if light {
+                view.update(cx, |s, cx| {
+                    if let Some(sample) = s.samples.get(&s.selected) {
+                        sample.update(cx, |sample, cx| {
+                            sample.narrow = true;
+                            cx.notify();
+                        });
+                    }
+                });
+                visual.run_until_parked();
+            }
             view.read_with(cx, |s, cx| {
                 assert!(s.error.is_none(), "{name}: {:?}", s.error);
                 if let Some(sample) = s.samples.get(&s.selected) {

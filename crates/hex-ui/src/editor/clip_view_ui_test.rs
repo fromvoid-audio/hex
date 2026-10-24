@@ -733,15 +733,17 @@ fn status_slots_keep_layout_stable_while_edits_and_work_switch_pending(cx: &mut 
 fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
     cx: &mut TestAppContext,
 ) {
+    cx.update(super::bind_editor_keys);
     let (handle, editor, track, clip) = audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let bounds = visual
-        .debug_bounds("audio-clip-position-1")
+        .debug_bounds("audio-clip-position")
         .expect("move clip control");
     let point = point(bounds.center().x, bounds.center().y);
     visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("up enter");
     editor.read_with(cx, |view, _| {
         assert!(matches!(
             view.last_enqueued_edit,
@@ -774,6 +776,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
     });
     visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("up enter");
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
 
     editor.update(cx, |view, _| {
@@ -798,20 +801,23 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
     });
     visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("up enter");
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
 }
 
 #[gpui::test]
 fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
     let (handle, editor, _, clip) = audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let bounds = visual
-        .debug_bounds("audio-clip-gain-1")
+        .debug_bounds("audio-clip-gain")
         .expect("gain control");
     let click = point(bounds.center().x, bounds.center().y);
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("up enter");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SetAudioClipGain { clip: id, millidb: 1_000 }) if id == clip));
     });
@@ -837,6 +843,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
     });
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("up enter");
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
 }
 
@@ -1170,10 +1177,13 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
                     .debug_bounds(if midi {
                         "toggle source looping · disabled loop markers are retained"
                     } else {
-                        "audio-clip-gain-1"
+                        "audio-clip-gain"
                     })
                     .unwrap();
                 visual.simulate_click(button.center(), Modifiers::default());
+                if !midi {
+                    visual.simulate_keystrokes("up enter");
+                }
                 pump(&editor, &mut visual);
                 editor.read_with(&visual, |v, _| {
                     let p = &v.state.as_ref().unwrap().project;
