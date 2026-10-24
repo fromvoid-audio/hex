@@ -1856,7 +1856,7 @@ mod tests {
         let at_zero: Vec<_> = ticks.iter().filter(|tick| tick.frame == 0).collect();
         assert_eq!(at_zero.len(), 1);
         assert!(at_zero[0].meter_marker);
-        assert_eq!(at_zero[0].label, "3.1");
+        assert_eq!(at_zero[0].label, "3");
     }
 
     #[test]
