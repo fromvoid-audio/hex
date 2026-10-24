@@ -103,6 +103,13 @@ selection, these keys toggle the existing loop. **command+l** uses the same acti
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 
+drag a section header to move its musical content. hold **option** before or
+during the drag to adjust only its marker; the music stays in place. option-resize
+an edge to trim or remove overlapping section markers. grid snapping remains
+active when enabled; **command** temporarily inverts it. after entering option
+adjustment, releasing option keeps that drag marker-only. release outside the
+section lane to accept the last valid preview, or press **escape** to cancel.
+
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
