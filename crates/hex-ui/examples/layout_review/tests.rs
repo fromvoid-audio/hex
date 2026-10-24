@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Focusable, Modifiers, TestAppContext, VisualTestContext, size};
+use gpui::{Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext, size};
 
 struct RestoreTheme(hex_preferences::ThemePreferences);
 impl Drop for RestoreTheme {
