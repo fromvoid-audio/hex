@@ -36,8 +36,13 @@ pub fn action_surface(style: ActionStyle) -> Div {
 /// supplies content, identity, focus, accessible meaning and its one-shot callback.
 /// This surface has no checked/selected state: pressed paint is transient and
 /// clears on release. Use it for commands, never for a latched boolean setting.
-pub fn round_action_surface(style: ActionStyle, border: u32) -> Div {
+pub fn round_action_surface(
+    id: impl Into<gpui::ElementId>,
+    style: ActionStyle,
+    border: u32,
+) -> gpui::Stateful<Div> {
     action_surface(style)
+        .id(id)
         .rounded_full()
         .border_1()
         .border_color(rgb(border))

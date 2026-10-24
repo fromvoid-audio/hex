@@ -368,8 +368,7 @@ impl Workspace {
         };
         let entity = cx.entity();
         let owner = entity.downgrade();
-        let button = round_action_surface(style, colors.border)
-            .id("workspace-round-action")
+        let button = round_action_surface("workspace-round-action", style, colors.border)
             .debug_selector({
                 let id = self.id("workspace-round-action");
                 move || id.clone()

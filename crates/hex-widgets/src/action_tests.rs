@@ -24,8 +24,7 @@ impl Render for Fixture {
                     .into_iter()
                     .enumerate()
                     .map(|(index, (id, label, width))| {
-                        round_action_surface(STYLE, 0x111111)
-                            .id(id)
+                        round_action_surface(id, STYLE, 0x111111)
                             .debug_selector(move || id.into())
                             .w(px(width))
                             .h(px(20.0))
