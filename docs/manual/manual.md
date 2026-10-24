@@ -96,10 +96,12 @@ warp off keeps its natural playback speed. if a faster bpm makes an audio tail
 reach the next clip on that track, hex crops that tail at the next start. original
 media remains available, and undo restores the previous tempo and clip extents.
 
-with the computer midi keyboard off, **l** sets a loop around selected clips, a
-time selection, or the selected main sections. **command+l** also sets this loop.
+with the computer midi keyboard off, **l** or **w** sets and enables a loop around
+selected clips, a time selection, or the selected main sections. pressing again
+with the same bounds toggles looping off or on, retaining the range. with no
+selection, these keys toggle the existing loop. **command+l** uses the same action.
 for multiple sections, the loop spans the earliest start to the latest end,
-including gaps. while the computer midi keyboard is on, plain **l** plays a note.
+including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
