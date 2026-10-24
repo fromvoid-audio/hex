@@ -476,6 +476,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new(
             "+",

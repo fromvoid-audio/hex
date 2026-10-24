@@ -12,7 +12,7 @@ impl EditorView {
         }
     }
 
-    /// Plain L remains a musical note while typing is enabled, and retains its
+    /// Plain L/W remain musical notes while typing is enabled and retain the
     /// existing Session toggle. Command-L is the explicit modified shortcut.
     pub(super) fn loop_selection_key(&mut self, window: &Window) {
         if self.computer_keyboard.enabled || !self.loop_shortcut_context(window) {
