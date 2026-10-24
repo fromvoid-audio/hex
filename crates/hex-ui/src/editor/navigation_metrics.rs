@@ -13,7 +13,8 @@ pub(super) enum Stage {
     ClipModel,
     WaveformLookup,
     WaveformBuild,
-    WaveformSubmit,
+    // Host lookup/preparation only; shared widget submission is in Paint.
+    WaveformProvider,
     PaintObservation,
     RequestLayout,
     Prepaint,
