@@ -102,7 +102,8 @@ impl NativeCandidateBoundary {
             .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
             .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
             .checked_add(data.status.candidate_boundary_data_bytes()?)?
-            .checked_add(channels.data_bytes)?;
+            .checked_add(channels.data_bytes)?
+            .checked_add(data.callback.native_endpoint_bank_data_bytes()?)?;
         Some(Self {
             root: root.root_id(),
             data_cell,
@@ -229,5 +230,6 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
         .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
         .checked_add(crate::prepared::worker_boundary_storage_quote()?)?
+        .checked_add(crate::prepared::native_endpoint_bank_storage_quote()?)?
         .checked_add(crate::spectrum_worker::constructor_storage_quote()?)
 }

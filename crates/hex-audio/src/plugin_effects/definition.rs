@@ -7,12 +7,13 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, ParameterDescriptor, ParameterId, ParameterValue,
 };
 
-/// Borrow actual unsplit source/worker/endpoint owners during pure graph
-/// preparation. Copied IDs or equal state cannot construct this definition's
-/// instances. A later Root/publication owner must retain those same resources.
+/// Borrow actual constructor-paired owners, or Root's original worker while
+/// its endpoint is loaned, during pure graph preparation. Copied IDs or equal
+/// state cannot construct these instances. Root/publication retains the same
+/// resources through the endpoint's actual return.
 pub struct NativeEffectDefinition<'a> {
     // Borrow only immutable configuration across pure compiler threads. The
-    // lifetime still retains each unsplit owner; joining workers are not Sync.
+    // lifetime retains each original owner; joining workers are not Sync.
     effects: Vec<&'a Configuration>,
 }
 impl<'a> NativeEffectDefinition<'a> {
@@ -27,19 +28,30 @@ impl<'a> NativeEffectDefinition<'a> {
     pub(crate) fn from_effects(
         effects: impl IntoIterator<Item = &'a NativeEffect>,
     ) -> Result<Self, DeviceContractError> {
+        Self::from_selected(effects.into_iter().map(|effect| {
+            (
+                &effect.callback.configuration,
+                effect.callback.matches_worker(&effect.worker),
+            )
+        }))
+    }
+    pub(super) fn from_selected(
+        effects: impl IntoIterator<Item = (&'a Configuration, bool)>,
+    ) -> Result<Self, DeviceContractError> {
         let mut selected: Vec<&'a Configuration> = Vec::new();
-        for effect in effects {
+        for (configuration, paired) in effects {
             if selected.len() == hex_lattice::MAX_STATEFUL_PROCESSORS {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
-            if !effect.callback.matches_worker(&effect.worker)
+            if !paired
                 || selected
                     .iter()
-                    .any(|old| old.identity.device_id() == effect.identity().device_id())
+                    .any(|old| old.identity.device_id() == configuration.identity.device_id())
                 || selected.first().is_some_and(|first| {
-                    first.binding.root != effect.binding().root
-                        || first.sample_rate != effect.callback.configuration.sample_rate
-                        || first.prepared.quantum_frames() != effect.prepared().quantum_frames()
+                    first.binding.root != configuration.binding.root
+                        || first.sample_rate != configuration.sample_rate
+                        || first.prepared.quantum_frames()
+                            != configuration.prepared.quantum_frames()
                 })
             {
                 return Err(DeviceContractError::InvalidId);
@@ -47,7 +59,7 @@ impl<'a> NativeEffectDefinition<'a> {
             selected
                 .try_reserve(1)
                 .map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
-            selected.push(&effect.callback.configuration);
+            selected.push(configuration);
         }
         Ok(Self { effects: selected })
     }

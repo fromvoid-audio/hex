@@ -19,9 +19,12 @@ use hex_plugin_host::{
 
 mod definition;
 pub use definition::NativeEffectDefinition;
+mod control;
+pub(crate) use control::{NativeEffectControl, NativeEffectReference};
 mod callbacks;
 pub use callbacks::NativeEffectCallbacks;
 
+#[derive(Clone)]
 struct Configuration {
     identity: ProcessorInstanceIdentity,
     binding: Binding,

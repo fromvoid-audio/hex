@@ -41,8 +41,14 @@ impl Custody {
             {
                 return Err("native effect source is not constructed".into());
             }
-            let Some(Owner::Effect(effect)) = work.sources.cells[index].owner.as_ref() else {
-                return Err("native effect source owner differs".into());
+            let effect = match work.sources.cells[index].owner.as_ref() {
+                Some(Owner::Effect(effect)) => {
+                    crate::plugin_effects::NativeEffectReference::Unsplit(effect)
+                }
+                Some(Owner::Loaned(control)) => {
+                    crate::plugin_effects::NativeEffectReference::Loaned(control)
+                }
+                _ => return Err("native effect source owner differs".into()),
             };
             if effect.binding() != *binding || slot.identity != Some(effect.identity()) {
                 return Err("native effect source binding differs".into());
@@ -50,7 +56,7 @@ impl Custody {
             selected.push(effect);
         }
         drop(bank);
-        let definition = NativeEffectDefinition::from_effects(selected)
+        let definition = NativeEffectDefinition::from_root_sources(selected)
             .map_err(|error| format!("native effect definition refused: {error}"))?;
         prepare(&definition)
     }

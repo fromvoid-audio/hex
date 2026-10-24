@@ -16,9 +16,12 @@ impl PoolResources {
         let mut per_source = NativeWorker::resource_bound_on_control()?;
         // Two retained Root cancellation aliases, two temporary startup aliases,
         // the one in-flight Root cancellation request (two handles), and the
-        // callback's direct state alias. Payloads/groups already belong
-        // to the original source. No process-wide Arc count is consulted.
-        per_source.shared_handle_bound = per_source.shared_handle_bound.checked_add(7)?;
+        // callback's direct state alias, two endpoint-return signal handles,
+        // and the retained control configuration alias. State payloads already belong
+        // to the original source; the return signal adds one shared group.
+        // No process-wide Arc count is consulted.
+        per_source.shared_handle_bound = per_source.shared_handle_bound.checked_add(10)?;
+        per_source.shared_groups = per_source.shared_groups.checked_add(1)?;
         Some(Self {
             per_source,
             capacity,

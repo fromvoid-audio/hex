@@ -15,7 +15,9 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 mod completion;
 mod definition;
 mod effect;
+mod endpoints;
 mod resources;
+pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
@@ -88,6 +90,8 @@ struct Slot {
     processor: Option<hex_lattice::PreparedForeignProcessor>,
     cancellation: Option<Cancellation>,
     cancellation_requested: bool,
+    endpoint_loaned: bool,
+    endpoint_return: Option<Arc<AtomicBool>>,
 }
 impl Slot {
     fn vacant() -> Self {
@@ -102,6 +106,8 @@ impl Slot {
             processor: None,
             cancellation: None,
             cancellation_requested: false,
+            endpoint_loaned: false,
+            endpoint_return: None,
         }
     }
     // One Root-owned in-flight request per source. Mark only after the actual
@@ -140,6 +146,9 @@ impl Bank {
         for (slot, target) in self.slots.iter_mut().zip(cancellations) {
             if slot.phase != Phase::Vacant {
                 slot.retiring = true;
+                if let Some(signal) = &slot.endpoint_return {
+                    signal.store(true, Ordering::Release);
+                }
                 // A fully constructed effect retires through its existing
                 // joining worker/SDK stop. In-flight preparation cancels now.
                 if slot.processor.is_none() || slot.phase == Phase::Failed {
@@ -163,6 +172,7 @@ enum Owner {
     Pending(Pending),
     Prepared(native::Prepared),
     Effect(crate::plugin_effects::NativeEffect),
+    Loaned(crate::plugin_effects::NativeEffectControl),
     WorkerRefused(crate::plugin_worker::NativeWorkerStartFailure),
     Refused(PreparationFailure),
 }
@@ -502,6 +512,9 @@ impl Custody {
                 return false;
             }
             slot.retiring = true;
+            if let Some(signal) = &slot.endpoint_return {
+                signal.store(true, Ordering::Release);
+            }
             if slot.processor.is_none() {
                 slot.request_cancellation()
             } else {
@@ -534,6 +547,7 @@ impl Custody {
                 let bank = lock(&self.bank);
                 let slot = &bank.sources.slots[index];
                 !slot.starting
+                    && !slot.endpoint_loaned
                     && slot.retiring
                     && slot.phase != Phase::Vacant
                     && slot.phase != Phase::Complete
@@ -668,7 +682,7 @@ impl Custody {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 fn native_pool_preflight(
     bank: &NativeBank,

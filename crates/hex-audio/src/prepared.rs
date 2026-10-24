@@ -241,12 +241,16 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
@@ -960,6 +964,8 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: crate::candidate_custody::NativeEndpointBank,
     requested_physical_callback_frames: Option<u16>,
     output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
@@ -1004,6 +1010,17 @@ pub struct Callback {
     test_after_fresh_runtime_apply_decision: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
     test_after_spectrum_target_boundary: Option<std::sync::Arc<std::sync::Barrier>>,
+}
+
+pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::candidate_custody::NativeEndpointBank::data_quote()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Some(0)
+    }
 }
 
 /// Allocate channels/telemetry on the control side. Initial graph must be
@@ -1067,6 +1084,8 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
             requested_physical_callback_frames: None,
             output_transport: None,
             output_transport_cancelled: false,
@@ -1602,6 +1621,13 @@ impl PublicationControl {
                 break;
             };
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.candidate_root.ingest_native_endpoint(endpoint) {
+                        self.held_control_return = Some(ReturnedPublication::Native(endpoint));
+                        break;
+                    }
+                }
                 ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.candidate_root.ingest_pages(pages) {
                         self.held_control_return = Some(ReturnedPublication::Domain(pages));
@@ -2098,6 +2124,16 @@ impl Callback {
         self.status.publication_pending.store(false, Release);
         Ok(())
     }
+    pub(crate) fn native_endpoint_bank_data_bytes(&self) -> Option<usize> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.native_sources.data_bytes()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            Some(0)
+        }
+    }
     pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
     }
@@ -2207,6 +2243,10 @@ impl Callback {
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
                         self.publications.pop().ok().map(|queued| match queued {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            QueuedPublication::Native(endpoint) => {
+                                ReturnedPublication::Native(endpoint)
+                            }
                             QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
                             QueuedPublication::Eligible(value) => {
                                 ReturnedPublication::Eligible(value.reject_before_install())
@@ -2227,6 +2267,12 @@ impl Callback {
                 self.terminal_disposal_pending = false;
             } else if let Some(value) = self.held_retirement.take() {
                 let refused = match value {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    ReturnedPublication::Native(endpoint) => self
+                        .candidate_root
+                        .ingest_native_endpoint(endpoint)
+                        .err()
+                        .map(ReturnedPublication::Native),
                     ReturnedPublication::Domain(pages) => {
                         if let Some(index) = pages.index_for(self.candidate_root.root_id())
                             && self.domain_pages[index].is_none()
@@ -2300,6 +2346,8 @@ impl Callback {
             }
         }
         self.return_requested_domain_pages();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.return_requested_native_sources();
         if self.status.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
@@ -2343,6 +2391,11 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::Native(endpoint) => {
+                            self.return_publication(ReturnedPublication::Native(endpoint));
+                            return;
+                        }
                         QueuedPublication::Domain(pages) => {
                             self.return_publication(ReturnedPublication::Domain(pages));
                             return;
@@ -2401,6 +2454,17 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                QueuedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self
+                        .native_sources
+                        .install(self.candidate_root.root_id(), endpoint)
+                    {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                    }
+                    self.consume_commands();
+                    return;
+                }
                 QueuedPublication::Domain(pages) => {
                     if let Some(index) = pages.index_for(self.candidate_root.root_id())
                         && self.domain_pages[index].is_none()

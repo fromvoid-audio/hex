@@ -7,10 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn root() -> Custody {
+pub(super) fn root() -> Custody {
     super::super::tests::configured(64 * 1024 * 1024)
 }
-fn source_reservation() -> NativeSourceDataReservation {
+pub(crate) fn source_reservation() -> NativeSourceDataReservation {
     NativeSourceDataReservation {
         max_retained_data_bytes: 4 * 1024 * 1024,
         max_construction_peak_data_bytes: 24 * 1024 * 1024,
@@ -20,7 +20,7 @@ mod completion;
 mod definition;
 mod effect;
 
-fn input() -> (InstanceBuild, native::Source, native::Preparation) {
+pub(crate) fn input() -> (InstanceBuild, native::Source, native::Preparation) {
     input_for(
         "processing",
         [
@@ -68,10 +68,10 @@ fn input_for(
         },
     )
 }
-fn identity() -> ProcessorInstanceIdentity {
+pub(crate) fn identity() -> ProcessorInstanceIdentity {
     ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap()
 }
-fn start(root: &Custody) -> Binding {
+pub(super) fn start(root: &Custody) -> Binding {
     let (build, source, preparation) = input();
     root.begin_native_source(
         identity(),
@@ -84,7 +84,7 @@ fn start(root: &Custody) -> Binding {
     )
     .unwrap()
 }
-fn dispose(root: &Custody, binding: Binding) {
+pub(super) fn dispose(root: &Custody, binding: Binding) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while root.native_source_progress(binding) != Some(NativeSourcePreparationProgress::Complete) {
         root.advance_on_control(false);
@@ -892,8 +892,8 @@ fn native_source_controls_refuse_the_retiring_original_root() {
 #[test]
 fn native_pool_reserves_handles_before_allocating_and_keeps_them_while_vacant() {
     let per_source = resources::PoolResources::new(1).unwrap();
-    assert_eq!(per_source.per_source.shared_groups, 10);
-    assert_eq!(per_source.per_source.shared_handle_bound, 27);
+    assert_eq!(per_source.per_source.shared_groups, 11);
+    assert_eq!(per_source.per_source.shared_handle_bound, 30);
     assert_eq!(
         per_source.per_source.source.inventory_node_lifetime_bound,
         4
@@ -1008,4 +1008,15 @@ fn failed_effect_requests_original_cancellation_without_claiming_disposal() {
     ));
     // This isolated fixture finally destroys its original owners on control;
     // no graph/native-output disposal or reusable source was manufactured.
+}
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn original_worker_awaits_endpoint(root: &CandidateRoot, binding: Binding) -> bool {
+    let work = lock(&root.0.eligible.work);
+    let bank = lock(&root.0.eligible.bank);
+    let Some(index) = bank.sources.index(binding) else {
+        return false;
+    };
+    bank.sources.slots[index].endpoint_loaned
+        && matches!(work.sources.cells[index].owner, Some(Owner::Loaned(_)))
 }

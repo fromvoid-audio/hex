@@ -127,3 +127,48 @@ impl PublicationControl {
             .recover_native_source_preparation(binding)
     }
 }
+
+impl PublicationControl {
+    /// Queue the unique actual endpoint; the existing Root keeps its worker.
+    /// Queue acceptance grants no graph, canonical edit or disposal authority.
+    /// A full queue refuses before extracting the original constructor pair.
+    pub fn publish_native_source_endpoint(&mut self, binding: Binding) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native preparation output is closing");
+        }
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "native endpoint publication is busy")?;
+        let endpoint = self.candidate_root.loan_native_endpoint(binding)?;
+        chunk.fill_from_iter(std::iter::once(QueuedPublication::Native(endpoint)));
+        Ok(())
+    }
+}
+impl Callback {
+    pub(super) fn return_requested_native_sources(&mut self) {
+        for _ in 0..hex_lattice::MAX_STATEFUL_PROCESSORS {
+            if self.held_retirement.is_some() || self.retired.is_full() {
+                return;
+            }
+            let Some(endpoint) = self.native_sources.take_requested() else {
+                return;
+            };
+            self.return_publication(ReturnedPublication::Native(endpoint));
+        }
+    }
+    pub(crate) fn has_native_source_endpoints(&self) -> bool {
+        self.native_sources.has_endpoints()
+    }
+    pub(crate) fn extract_native_source_endpoints_on_control(
+        &mut self,
+        destination: &mut [Option<crate::candidate_custody::NativeEndpointEnvelope>;
+                 hex_lattice::MAX_STATEFUL_PROCESSORS],
+    ) -> bool {
+        self.native_sources
+            .extract(self.candidate_root.root_id(), destination)
+    }
+}
+
+#[cfg(test)]
+mod tests;
