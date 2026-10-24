@@ -12,7 +12,7 @@ use std::{
     rc::Rc,
 };
 
-const STYLE: ControlStyle = ControlStyle {
+pub(super) const STYLE: ControlStyle = ControlStyle {
     background: 0x202020,
     surface: 0x303030,
     raised: 0x383838,
@@ -21,6 +21,9 @@ const STYLE: ControlStyle = ControlStyle {
     text: 0xe0e0e0,
     muted: 0xaaaaaa,
     accent: 0x55ddee,
+    accent_text: 0x202020,
+    numeric_fill: 0x31515a,
+    hover_text: 0xe0e0e0,
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,

@@ -72,7 +72,13 @@ impl EditorView {
             .map_or(0, |s| s.project.return_tracks().len());
         // Title22, transport26, status22, overview24, arrangement header42,
         // main track44, mixer26 and detail tabs22. Routing owns its own height.
-        228.0 + super::return_tracks::section_height(returns)
+        228.0
+            + if self.clip_view_open && !self.device_panel_active {
+                4.0
+            } else {
+                0.0
+            }
+            + super::return_tracks::section_height(returns)
     }
     fn project_spectrum_compact(&self, window: &Window) -> bool {
         self.project_spectrum.expanded
