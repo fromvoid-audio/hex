@@ -164,10 +164,10 @@ fn audio_group_retains_all_dependencies_and_can_regroup_neutral_containers() {
         vec![(0, 100), (200, 300)]
     );
     assert_eq!(e.project().clip(clips[2]).unwrap(), &last);
+    let source_length = group.source_length();
     for asset in group.referenced_assets().collect::<Vec<_>>() {
         assert!(e.execute(Command::RemoveAsset(asset)).is_err());
     }
-    let source_length = group.source_length();
     let unchanged = e.project().snapshot();
     assert!(
         e.execute(Command::TrimClip {
