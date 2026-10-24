@@ -204,10 +204,19 @@ after loading, enter a few notes, play the clip and confirm that it triggers the
 intended sample. test undo/redo and save/reopen on a copy before relying on a new
 sampler edit in an important project.
 
-controller input can support pressure, pitch bend, modulation and held-note
-piano-roll step entry. the current controller-input path does not provide live
-note monitoring, sustain, recording or mpe. do not treat the presence of an input
-or keyboard control as a complete live-performance workflow.
+in settings, choose a midi input device and channel, then select a track with an
+enabled instrument. the midi control in the status bar opens the same device and
+channel choices. use refresh to discover or reconnect devices. hex remembers the
+chosen device; an unavailable saved port never selects another device automatically.
+choose off to disconnect. midi changes apply immediately; a save error means the
+change has not been retained for the next launch.
+
+hardware notes play the selected instrument with their original note-on velocity.
+computer-keyboard notes use the same selected track and keep separate ownership.
+selection audition waits while hardware input is selected. pressure, pitch bend,
+modulation and held-note piano-roll step entry remain available. live input timing
+is currently resolved at audio-block boundaries; sustain, recording and mpe are
+not included in this input workflow.
 
 # instruments and effects
 

@@ -5,11 +5,13 @@ use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
+    render_window: &gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
     let (clip_id, root, revision) = view.event_context()?;
     let owner = (clip_id, view.project_generation);
     if view.audio_event_editor.owner != Some(owner) {
+        view.retire_arrange_range_owner();
         let clipboard = view.audio_event_editor.clipboard.take();
         let pending = view.audio_event_editor.pending.take();
         view.audio_event_editor = State {
@@ -34,6 +36,7 @@ pub(in crate::editor) fn view(
         });
         view.audio_event_editor.revision = revision;
     }
+    view.reflect_arrange_clip_range(render_window, cx);
     let state = view.state.as_ref()?;
     let clip = state.project.clip(clip_id)?.clone();
     let events = match clip.editable_audio_events() {
@@ -287,6 +290,7 @@ pub(in crate::editor) fn view(
             );
         }
     }
+    body = body.children(view.arrange_audio_highlights(local.start, local.length));
     let cursor = frame_at(
         view.audio_event_editor
             .cursor
