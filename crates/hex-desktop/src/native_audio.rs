@@ -783,6 +783,10 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        Some(crate::streamed_export::render)
+    }
+
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
     }

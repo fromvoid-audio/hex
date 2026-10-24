@@ -26,6 +26,8 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+mod streamed_export;
+pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
@@ -837,6 +839,7 @@ type Exporter = Arc<
 
 struct ExportJob {
     job_id: u64,
+    streamed: Option<streamed_export::StreamedExportJob>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
@@ -5243,28 +5246,37 @@ fn run_worker(
                         .as_ref()
                         .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
                         .unwrap_or(0);
-                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-                        Err("offline export is unavailable for verified streaming".to_owned())
-                    } else {
-                        match (compiled.as_ref(), clip_end) {
-                            (_, 0) => Err("nothing to export".to_owned()),
-                            (Some((compiled_revision, prepared)), frames)
-                                if *compiled_revision == revision =>
-                            {
-                                Ok(ExportJob {
-                                    job_id: 0,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: None,
-                                })
-                            }
-                            _ => Err("latest project revision has not compiled".to_owned()),
+                    let job = match (compiled.as_ref(), clip_end) {
+                        (_, 0) => Err("nothing to export".to_owned()),
+                        (Some((compiled_revision, prepared)), frames)
+                            if *compiled_revision == revision =>
+                        {
+                            Ok(ExportJob {
+                                job_id: 0,
+                                streamed: None,
+                                sources: None,
+                                resources: None,
+                                revision,
+                                path: path.clone(),
+                                prepared: Arc::clone(prepared),
+                                frames,
+                                controlled: None,
+                            })
                         }
-                    };
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    }
+                    .and_then(|mut job| {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                &session,
+                                &state.project,
+                                project_generation,
+                                revision,
+                                events.streamed_exporter(),
+                            )?);
+                        }
+                        Ok(job)
+                    });
                     match job {
                         Ok(job) => export_job = Some(job),
                         Err(reason) => {
@@ -5284,34 +5296,41 @@ fn run_worker(
                     control,
                     overwrite,
                 } => {
-                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-                        Err("offline export is unavailable for verified streaming".to_owned())
-                    } else {
-                        match compiled.as_ref() {
-                            Some((compiled_revision, prepared))
-                                if *compiled_revision == revision =>
-                            {
-                                hex_export::controlled_frame_count(
-                                    prepared.arrangement(),
-                                    start,
-                                    frames,
-                                    &signal,
-                                )
-                                .map_err(|error| error.to_string())
-                                .map(|frames| ExportJob {
-                                    job_id: 0,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some((start, signal, control, overwrite)),
-                                })
-                            }
-                            _ => Err("latest project revision has not compiled".to_owned()),
+                    let job = match compiled.as_ref() {
+                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
+                            hex_export::controlled_frame_count(
+                                prepared.arrangement(),
+                                start,
+                                frames,
+                                &signal,
+                            )
+                            .map_err(|error| error.to_string())
+                            .map(|frames| ExportJob {
+                                job_id: 0,
+                                streamed: None,
+                                sources: None,
+                                resources: None,
+                                revision,
+                                path: path.clone(),
+                                prepared: Arc::clone(prepared),
+                                frames,
+                                controlled: Some((start, signal, control, overwrite)),
+                            })
                         }
-                    };
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    }
+                    .and_then(|mut job| {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                &session,
+                                &state.project,
+                                project_generation,
+                                revision,
+                                events.streamed_exporter(),
+                            )?);
+                        }
+                        Ok(job)
+                    });
                     match job {
                         Ok(job) => {
                             status = Some("export queued".into());
@@ -6220,11 +6239,12 @@ fn run_worker(
             }
         }
         if let Some(job) = export_job.as_mut() {
+            let streamed = job.streamed.is_some();
             if let Err(reason) = export_lane.prepare_job(
                 job,
                 &session,
-                current_sources.as_ref(),
-                resident_snapshot.as_ref().zip(
+                current_sources.as_ref().filter(|_| !streamed),
+                resident_snapshot.as_ref().filter(|_| !streamed).zip(
                     events
                         .resident_audio()
                         .map(|sink| &*sink as &dyn WorkerAudioSink),
@@ -6397,7 +6417,39 @@ fn run_export_worker(
         }
         let (id, mut event) = {
             let ExportWork::Render(mut job) = work;
-            let result = if job.sources.is_some() && job.resources.is_some() {
+            let result = if let Some(streamed) = job.streamed.take() {
+                if job.sources.is_some() || job.resources.is_some() {
+                    Err("export cannot combine streamed and resident source scopes".into())
+                } else {
+                    let (start, signal, control, overwrite) =
+                        job.controlled.take().unwrap_or_else(|| {
+                            (
+                                0,
+                                hex_export::ExportSignal::Main,
+                                hex_export::ExportControl::default(),
+                                false,
+                            )
+                        });
+                    let policy = if overwrite {
+                        hex_export::Publication::confirmed_save(&job.path)
+                    } else {
+                        Ok(hex_export::Publication::CreateNew)
+                    };
+                    match policy {
+                        Ok(publication) => (streamed.render)(&StreamedExportRequest {
+                            source: &streamed.source,
+                            prepared: &job.prepared,
+                            path: &job.path,
+                            start,
+                            frames: job.frames,
+                            signal: &signal,
+                            control: &control,
+                            publication: &publication,
+                        }),
+                        Err(error) => Err(error.to_string()),
+                    }
+                }
+            } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {
                 if let Some((start, signal, control, overwrite)) = job.controlled.take() {

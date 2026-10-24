@@ -99,6 +99,14 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Optional stateless offline renderer. Query only on the Session worker;
+    /// the returned function runs on the existing export worker with an exact
+    /// canonical snapshot. It must use independent bounded pages/verification,
+    /// never borrow native output/catalog/readiness or private source custody.
+    fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
+        None
+    }
+
     /// Output ownership policy, independent of device presence or availability. A native consumer
     /// opts in only after routing every resident graph through this worker-private boundary.
     /// This capability survives document mode changes: protocol dispatch must also require
@@ -272,6 +280,11 @@ impl WorkerEvents {
             }
             self.last_context = Some(source.context());
         }
+    }
+    pub(super) fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.streamed_exporter())
     }
     pub(super) fn resident_publication_enabled(&self) -> bool {
         self.audio

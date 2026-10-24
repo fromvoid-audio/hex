@@ -19,6 +19,10 @@ struct ResidentSink {
     pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        self.inner.streamed_exporter()
+    }
+
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
