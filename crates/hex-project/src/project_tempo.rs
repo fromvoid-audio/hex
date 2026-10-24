@@ -1,4 +1,8 @@
 //! One atomic global tempo edit; processing roots retain their own timing law.
+//! Keep musical onsets, then crop only audio tails that would cross the next
+//! positive placement on their track. Original media/processing roots and clip
+//! identities survive; crop and map replacement share one history transaction.
+//! Bounds are sorted once per track, not rescanned for every pair of clips.
 use crate::{AudioClipTiming, BeatTime, Invalid, Project, Tempo, TempoMap};
 use std::sync::Arc;
 
@@ -60,10 +64,71 @@ impl Project {
                 crate::audio_edit::project_clip(clip, &candidate.tempo_map)?;
             }
         }
+        for track in &mut candidate.tracks {
+            crop_colliding_tails(track, &candidate.tempo_map)?;
+        }
         // Includes combined audio/MIDI occupancy and every current-format
         // invariant. Refusal leaves source, IDs, history and the old map intact.
         Project::from_snapshot(candidate.snapshot())?;
         *self = candidate;
         Ok(())
     }
+}
+
+fn crop_colliding_tails(track: &mut crate::Track, tempo: &TempoMap) -> Result<(), Invalid> {
+    let count = track
+        .clips()
+        .len()
+        .checked_add(track.midi_clips().len())
+        .filter(|count| *count <= crate::MAX_CLIPS)
+        .ok_or(Invalid("clip limit reached while retiming"))?;
+    if track.clips().is_empty() || count < 2 {
+        return Ok(());
+    }
+    let mut starts = Vec::new();
+    starts
+        .try_reserve_exact(count)
+        .map_err(|_| Invalid("could not reserve tempo placement bounds"))?;
+    starts.extend(track.clips().iter().map(|clip| clip.start()));
+    for clip in track.midi_clips() {
+        let end = clip
+            .start()
+            .raw()
+            .checked_add(clip.length().raw())
+            .ok_or(Invalid("midi tempo placement end overflow"))?;
+        let start = tempo.beat_to_frame(clip.start())?;
+        let end = tempo.beat_to_frame(BeatTime::from_raw(end))?;
+        // Match occupancy: a positive musical interval may project to no frames.
+        if start < end {
+            starts.push(start);
+        }
+    }
+    starts.sort_unstable();
+    if starts.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(Invalid(
+            "tempo quantizes multiple clips onto the same audio frame; use a lower bpm",
+        ));
+    }
+    for clip in &mut track.content.audio_clips {
+        let next = starts.partition_point(|start| *start <= clip.start());
+        let Some(&fence) = starts.get(next) else {
+            continue;
+        };
+        let end = clip
+            .start()
+            .checked_add(clip.duration())
+            .ok_or(Invalid("retimed audio end overflow"))?;
+        if end > fence {
+            let prefix = crate::clip_fragment::preview_prefix_crop_with_tempo(clip, fence, tempo)?;
+            if prefix.start() != clip.start()
+                || prefix.start().checked_add(prefix.duration()) != Some(fence)
+            {
+                return Err(Invalid(
+                    "tempo crop cannot represent the neighboring clip boundary",
+                ));
+            }
+            *clip = prefix;
+        }
+    }
+    Ok(())
 }

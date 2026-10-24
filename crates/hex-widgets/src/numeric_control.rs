@@ -83,20 +83,12 @@ pub fn bind_numeric_control_keys(cx: &mut App) {
     ]);
 }
 
+/// Pointer scrubbing increases values upward for every control kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericControlKind {
     Knob,
     HorizontalSlider,
     VerticalSlider,
-}
-
-/// Pointer direction for dials and value-only fields; slider bars always scrub upward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NumericDragAxis {
-    /// Moving right increases the value.
-    Horizontal,
-    /// Moving upward increases the value.
-    Vertical,
 }
 
 /// Presentation-only geometry that keeps the same shared edit entity and events.
@@ -105,7 +97,6 @@ pub enum NumericControlAppearance {
     #[default]
     Standard,
     CompactDial,
-    MiniDial,
     MicroDial,
     WideMicroDial,
     InlineValue,
@@ -155,7 +146,6 @@ pub struct NumericControlConfig {
     style: ControlStyle,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
-    drag_axis: Option<NumericDragAxis>,
     command_fine_steps: bool,
     value_drag_steps: bool,
 }
@@ -182,7 +172,6 @@ impl NumericControlConfig {
             style,
             appearance: NumericControlAppearance::Standard,
             dial_layout: DialLayout::ReadoutGap,
-            drag_axis: None,
             command_fine_steps: false,
             value_drag_steps: false,
         })
@@ -214,13 +203,6 @@ impl NumericControlConfig {
 
     pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
         self.appearance = appearance;
-        self
-    }
-
-    /// Override pointer scrubbing only; keyboard, capture and geometry stay shared.
-    /// Applies to dials/value-only fields; slider bars always scrub upward.
-    pub fn with_drag_axis(mut self, axis: NumericDragAxis) -> Self {
-        self.drag_axis = Some(axis);
         self
     }
 }
@@ -282,7 +264,6 @@ pub struct NumericControl {
     inline_value_width: Option<f32>,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
-    drag_axis: Option<NumericDragAxis>,
     tab_navigation: bool,
     command_fine_steps: bool,
     value_drag_steps: bool,
@@ -350,7 +331,6 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
-            drag_axis,
             command_fine_steps,
             value_drag_steps,
         } = config;
@@ -382,7 +362,6 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
-            drag_axis,
             meter_readout: Default::default(),
             inline_value_width: None,
             tab_navigation: false,
@@ -796,21 +775,11 @@ impl NumericControl {
         if !press.dragging {
             return (true, false);
         }
-        let delta_x = f32::from(event.position.x - press.last_position.x);
         let delta_y = f32::from(event.position.y - press.last_position.y);
         press.last_position = event.position;
         self.press = Some(press);
         let shift = event.modifiers.shift;
-        let primary_delta = if self.kind != NumericControlKind::Knob
-            && self.appearance != NumericControlAppearance::InlineValue
-        {
-            -delta_y
-        } else {
-            match self.drag_axis {
-                Some(NumericDragAxis::Horizontal) => delta_x,
-                _ => -delta_y,
-            }
-        };
+        let primary_delta = -delta_y;
         if primary_delta == 0.0 {
             return (true, false);
         }
@@ -1513,9 +1482,7 @@ impl gpui::Render for NumericControl {
                 ),
             (
                 NumericControlKind::Knob,
-                NumericControlAppearance::MicroDial
-                | NumericControlAppearance::MiniDial
-                | NumericControlAppearance::WideMicroDial,
+                NumericControlAppearance::MicroDial | NumericControlAppearance::WideMicroDial,
             ) => div()
                 .id(self.id.clone())
                 .relative()

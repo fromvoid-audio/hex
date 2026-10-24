@@ -1,8 +1,9 @@
 //! Global tempo changes preserve beat onsets and complete retained audio timing.
 use hex_project::{
-    AudioClipTiming, BeatTime, ClipId, Command, Created, Editor, Project, Tempo, TrimEdge,
-    WarpMode, default_audio_warp,
+    AudioClipTiming, AudioViewResizeOperation, BeatTime, ClipFade, ClipId, Command, Created,
+    Editor, Project, SourceGainPoint, Tempo, TrimEdge, WarpMode, default_audio_warp,
 };
+use std::sync::Arc;
 
 fn bpm(n: u32) -> Tempo {
     Tempo::new(n * 1_000_000).unwrap()
@@ -102,17 +103,20 @@ fn global_map_onsets_durations_and_complete_history_are_one_edit() {
 }
 
 #[test]
-fn colliding_global_tempo_refuses_before_prepare_and_preserves_redo() {
+fn colliding_global_tempo_crops_audio_tail_before_prepare_and_preserves_complete_history() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let clip = audio(&mut editor, 0, None);
     let track = editor.project().tracks()[0].id();
-    editor
+    let Created::Clip(midi) = editor
         .execute(Command::PlaceMidiClip {
             track,
             start: beat(3),
             length: BeatTime::ONE,
         })
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("midi clip")
+    };
     editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
     assert!(editor.undo());
     let before = editor.project().clone();
@@ -124,11 +128,263 @@ fn colliding_global_tempo_refuses_before_prepare_and_preserves_redo() {
             Ok(())
         },
     );
-    assert!(result.unwrap_err().0.contains("overlap"));
+    result.unwrap();
+    assert!(prepared);
+    let changed = editor.project().clone();
+    let cropped = changed.clip(clip).unwrap();
+    assert_eq!((cropped.start(), cropped.duration()), (0, 36_000));
+    assert_eq!(cropped.asset(), before.clip(clip).unwrap().asset());
+    assert_eq!(changed.midi_clip(midi).unwrap().start(), beat(3));
+    assert_eq!(changed.tempo_map().beat_to_frame(beat(3)).unwrap(), 36_000);
+    assert_eq!(changed.tracks()[0].clips().len(), 1);
+    assert_eq!(changed.tracks()[0].midi_clips().len(), 1);
+    assert_eq!(Project::from_snapshot(changed.snapshot()).unwrap(), changed);
+    assert!(!editor.can_redo());
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &changed);
+}
+
+#[test]
+fn faster_global_tempo_crops_only_colliding_prefixes_without_replacing_roots_or_onsets() {
+    for tempo in [bpm(240), Tempo::new(333_333_333).unwrap()] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 64).unwrap();
+        let plain = audio(&mut editor, 0, None);
+        let track = editor.project().tracks()[0].id();
+        let off = audio(&mut editor, 48_000, Some(false));
+        let repeated = audio(&mut editor, 96_000, None);
+        editor
+            .execute(Command::SetClipLooping {
+                clip: repeated,
+                looping: true,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetClipSourcePhase {
+                clip: repeated,
+                phase: 137,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch {
+                clip: repeated,
+                cents: 123,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipSourceGain {
+                clip: repeated,
+                points: vec![
+                    SourceGainPoint {
+                        frame: 0,
+                        gain_q16: 65_536,
+                    },
+                    SourceGainPoint {
+                        frame: 24_000,
+                        gain_q16: 32_768,
+                    },
+                    SourceGainPoint {
+                        frame: 48_000,
+                        gain_q16: 65_536,
+                    },
+                ],
+            })
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip: repeated,
+                edge: TrimEdge::Right,
+                frame: 120_000,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: repeated,
+                operation: AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 144_000,
+                },
+            })
+            .unwrap();
+        let warped = audio(&mut editor, 144_000, Some(true));
+        let last = audio(&mut editor, 240_000, None);
+        for (clip, start) in [
+            (off, 48_000),
+            (repeated, 96_000),
+            (warped, 144_000),
+            (last, 240_000),
+        ] {
+            editor
+                .execute(Command::MoveClip { clip, track, start })
+                .unwrap();
+        }
+        let Created::Clip(midi) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beat(8),
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("midi")
+        };
+        for clip in [plain, off, repeated] {
+            let fade = ClipFade::new(48_000, 0, 997, 1_601)
+                .unwrap()
+                .with_shape(31, 47, 300, -400)
+                .unwrap();
+            editor
+                .execute(Command::SetClipFadeEnvelope { clip, fade })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        editor.execute(Command::SetProjectTempo { tempo }).unwrap();
+        let changed = editor.project();
+        let map = changed.tempo_map();
+        let ids = [plain, off, repeated, warped, last];
+        assert_eq!(
+            changed.tracks()[0]
+                .clips()
+                .iter()
+                .map(|c| c.id())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(changed.tracks()[0].midi_clips()[0].id(), midi);
+        assert_eq!(
+            changed.assets().collect::<Vec<_>>(),
+            before.assets().collect::<Vec<_>>()
+        );
+        assert_eq!(changed.snapshot().next_id, before.snapshot().next_id);
+        assert_eq!(changed.midi_clip(midi), before.midi_clip(midi));
+        for (id, onset, next) in [(plain, 0, 2), (off, 2, 4), (repeated, 4, 6)] {
+            let old = before.clip(id).unwrap();
+            let clip = changed.clip(id).unwrap();
+            let start = map.beat_to_frame(beat(onset)).unwrap();
+            let end = map.beat_to_frame(beat(next)).unwrap();
+            assert_eq!(
+                (clip.start(), clip.duration()),
+                (start, end - start),
+                "{id:?} at {tempo:?}"
+            );
+            assert_eq!(
+                (
+                    clip.asset(),
+                    clip.source_offset(),
+                    clip.source_phase(),
+                    clip.gain()
+                ),
+                (
+                    old.asset(),
+                    old.source_offset(),
+                    old.source_phase(),
+                    old.gain()
+                )
+            );
+            assert_eq!(clip.retained_fade(), old.retained_fade());
+            if let Some(root) = old.audio_edit() {
+                let edit = clip.audio_edit().unwrap();
+                assert!(
+                    Arc::ptr_eq(&edit.domain, &root.domain),
+                    "cropping must retain the full processing root"
+                );
+                assert_eq!(edit.view_start, root.view_start);
+                if let AudioClipTiming::Musical(start) = &root.timing {
+                    assert!(matches!(&edit.timing,
+                        AudioClipTiming::Frozen { reference_start_raw, tempo }
+                        if *reference_start_raw == i128::from(start.raw())
+                            && tempo.as_ref() == before.tempo_map()));
+                } else {
+                    assert_eq!(edit.timing, root.timing);
+                }
+                if let Some(placement) = root.placement {
+                    assert_eq!(edit.view_end, root.view_end);
+                    let shortened = edit.placement.unwrap();
+                    assert_eq!(
+                        (shortened.mode, shortened.cycle_phase),
+                        (placement.mode, placement.cycle_phase)
+                    );
+                }
+            }
+        }
+        let clip = changed.clip(warped).unwrap();
+        let start = map.beat_to_frame(beat(6)).unwrap();
+        assert_eq!(
+            (clip.start(), clip.duration()),
+            (start, map.beat_to_frame(beat(8)).unwrap() - start)
+        );
+        assert_eq!(clip.audio_edit(), before.clip(warped).unwrap().audio_edit());
+        assert_eq!(
+            (
+                changed.clip(last).unwrap().start(),
+                changed.clip(last).unwrap().duration()
+            ),
+            (map.beat_to_frame(beat(10)).unwrap(), 48_000)
+        );
+        assert_eq!(
+            Project::from_snapshot(changed.snapshot()).unwrap(),
+            *changed
+        );
+    }
+}
+
+#[test]
+fn global_tempo_quantized_identical_positive_starts_refuse_without_prepare_or_history_loss() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let first = audio(&mut editor, 0, None);
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: first,
+            edge: TrimEdge::Right,
+            frame: 1,
+        })
+        .unwrap();
+    let source = editor.project().clip(first).unwrap();
+    let Created::Clip(second) = editor
+        .execute(Command::PlaceClip {
+            track: editor.project().tracks()[0].id(),
+            asset: source.asset(),
+            start: 1,
+            duration: 1,
+            source_offset: 1,
+            source_length: 1,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("second")
+    };
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let projected = hex_project::TempoMap::constant(48_000, bpm(333)).unwrap();
+    assert_eq!(
+        projected
+            .beat_to_frame(before.tempo_map().frame_to_beat(1).unwrap())
+            .unwrap(),
+        0
+    );
+    let mut prepared = false;
+    let error = editor
+        .execute_prepared::<_, hex_project::Invalid>(
+            Command::SetProjectTempo { tempo: bpm(333) },
+            |_| {
+                prepared = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error.0.contains("same frame")
+            || error.0.contains("same start")
+            || error.0.contains("quantiz"),
+        "{error}"
+    );
     assert!(!prepared);
     assert_eq!(editor.project(), &before);
+    assert!(editor.project().clip(first).is_some());
+    assert!(editor.project().clip(second).is_some());
     assert!(editor.can_redo());
-    assert_eq!(editor.project().clip(clip).unwrap().duration(), 48_000);
 }
 
 #[test]

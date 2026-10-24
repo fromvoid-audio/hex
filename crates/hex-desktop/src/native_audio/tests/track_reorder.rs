@@ -5,10 +5,10 @@ use hex_engine::{DeviceTypeId, NativeDeviceClass};
 use hex_project::{BeatTime, Command, TrackId};
 
 fn reorder(event: &Event, track: TrackId, before: Option<TrackId>) -> Request {
-    Request::ReorderTrack {
+    Request::ReorderTracks {
         project_generation: 0,
         revision: event.state.revision,
-        track,
+        tracks: hex_project::TrackReorderSelection::new(&[track]).unwrap(),
         before,
     }
 }
@@ -53,6 +53,11 @@ fn resident_pcm(event: &Event) -> hex_engine::Audio {
 #[test]
 fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
+    native_reorder_case(false);
+    native_reorder_case(true);
+}
+
+fn native_reorder_case(group: bool) {
     let files = Files::new();
     let path = files.wav(48_000, 8192);
     let mut h = ResidentHarness::with_frame_limit(32_768);
@@ -86,6 +91,14 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
             velocity: 80,
         }),
     );
+    let third = run_applied(
+        &mut h,
+        &mut applied,
+        Request::Edit(Command::AddTrack {
+            name: "empty".into(),
+        }),
+    );
+    let empty = third.state.project.tracks()[2].id();
     let original = run_applied(
         &mut h,
         &mut applied,
@@ -135,8 +148,25 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
         .unwrap()
         .position
         .load(Acquire);
-    let moved = run_applied(&mut h, &mut applied, reorder(&original, midi, Some(audio)));
-    assert_eq!(order(&moved), [midi, audio]);
+    let request = if group {
+        Request::ReorderTracks {
+            project_generation: 0,
+            revision: original.state.revision,
+            tracks: hex_project::TrackReorderSelection::new(&[midi, audio]).unwrap(),
+            before: None,
+        }
+    } else {
+        reorder(&original, midi, Some(audio))
+    };
+    let moved = run_applied(&mut h, &mut applied, request);
+    assert_eq!(
+        order(&moved),
+        if group {
+            vec![empty, audio, midi]
+        } else {
+            vec![midi, audio, empty]
+        }
+    );
     assert_eq!(h.audio.as_ref().unwrap().control.output_identity(), output);
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(status.playing.load(Acquire));
@@ -155,9 +185,17 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
         assert_eq!(moved.state.project.track(track.id()), Some(track));
     }
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
-    h.service
-        .submit(reorder(&moved, audio, Some(midi)))
-        .unwrap();
+    let request = if group {
+        Request::ReorderTracks {
+            project_generation: 0,
+            revision: moved.state.revision,
+            tracks: hex_project::TrackReorderSelection::new(&[midi, audio]).unwrap(),
+            before: Some(empty),
+        }
+    } else {
+        reorder(&moved, audio, Some(midi))
+    };
+    h.service.submit(request).unwrap();
     let refused = h.next();
     assert!(
         refused

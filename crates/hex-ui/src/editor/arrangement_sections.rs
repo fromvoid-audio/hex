@@ -165,7 +165,7 @@ impl EditorView {
                     }
                     let captured = down.update(cx, |view, cx| {
                         if view.gain_numeric_editing(cx)
-                            || view.sample_bpm_editing(cx)
+                            || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
                         {
                             return false;
@@ -236,6 +236,53 @@ impl EditorView {
         .absolute()
         .inset_0()
     }
+    /// Read the active Main-section selection through the current tempo map.
+    /// The outer interval includes gaps. Unknown IDs or an empty frame projection
+    /// refuse, so L cannot silently fall back to stale clip/time selection.
+    pub(super) fn section_loop_bounds(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        if self.mode != EditorMode::Arrangement
+            || self.selected_clip.is_some()
+            || self.selected_track.is_some()
+            || self.focused_return.is_some()
+            || self.device_panel.main_selected != Some(self.project_generation)
+        {
+            return Ok(None);
+        }
+        let Some(primary) = self.sections.selected else {
+            return Ok(None);
+        };
+        let state = self
+            .state
+            .as_ref()
+            .ok_or("section selection has no current project")?;
+        let ids = if self.sections.selection.contains(&primary) {
+            self.sections.selection.as_slice()
+        } else {
+            std::slice::from_ref(&primary)
+        };
+        let mut start = BeatTime::from_raw(u64::MAX);
+        let mut end = BeatTime::ZERO;
+        for id in ids {
+            let section = state
+                .project
+                .arrangement_section(*id)
+                .ok_or("selected section no longer belongs to the arrangement")?;
+            start = start.min(section.start());
+            end = end.max(section.end());
+        }
+        let map = state.project.tempo_map();
+        let start = map
+            .beat_to_frame(start)
+            .map_err(|_| "selected section exceeds the timeline")?;
+        let end = map
+            .beat_to_frame(end)
+            .map_err(|_| "selected section exceeds the timeline")?;
+        if start >= end {
+            return Err("selected sections have an empty loop range");
+        }
+        Ok(Some((start, end)))
+    }
+
     pub(super) fn section_install_pending(&self) -> bool {
         self.sections.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -435,7 +482,7 @@ impl EditorView {
         }
         if self.sections.naming()
             || self.gain_numeric_editing(cx)
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.project_tempo_editing(cx)
         {
             return false;
@@ -1946,6 +1993,166 @@ mod tests {
             "the moved section seam remains an ordinary grid line, not a red meter marker"
         );
     }
+    #[gpui::test]
+    fn selected_sections_l_uses_outer_bounds_and_one_history_edit(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        // Use the real marker click, including the gap between these sections.
+        let chorus = editor.read_with(cx, |v, _| position(v, 10));
+        visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        for (key, start, end) in [("l", 192_000, 288_000), ("cmd-l", 0, 288_000)] {
+            if start == 0 {
+                let intro = editor.read_with(cx, |v, _| position(v, 2));
+                let shift = Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                };
+                visual.simulate_mouse_down(intro, MouseButton::Left, shift);
+                visual.simulate_mouse_up(intro, MouseButton::Left, shift);
+                visual.run_until_parked();
+            }
+            let before = editor.read_with(cx, |v, _| {
+                assert_eq!(v.sections.selection.len(), if start == 0 { 2 } else { 1 });
+                v.state.as_ref().unwrap().project.clone()
+            });
+            visual.simulate_keystrokes(key);
+            editor.read_with(cx, |v, _| assert!(matches!(v.last_enqueued_edit,
+                Some(Command::SetLoopRegion { start: a, end: b, enabled: true }) if (a,b)==(start,end)),
+                "selected sections must dispatch a loop request"));
+            let event = editor.update(cx, |v, _| next(&v.service));
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let after = event.state.project.clone();
+            let region = after.loop_region().unwrap();
+            assert_eq!(
+                (region.start(), region.end(), region.enabled()),
+                (start, end, true)
+            );
+            assert_eq!(after.tracks(), before.tracks());
+            assert_eq!(after.arrangement_sections(), before.arrangement_sections());
+            editor.update(cx, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            for (key, expected) in [("cmd-z", &before), ("cmd-shift-z", &after)] {
+                visual.simulate_keystrokes(key);
+                let event = editor.update(cx, |v, _| next(&v.service));
+                assert!(event.error.is_none(), "{:?}", event.error);
+                assert_eq!(&event.state.project, expected);
+                editor.update(cx, |v, cx| {
+                    v.receive(event);
+                    cx.notify();
+                });
+                visual.run_until_parked();
+            }
+            editor.read_with(cx, |v, _| {
+                assert!(v.sections.selection.iter().all(|id| ids.contains(id)))
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(cx, |v, cx| {
+            v.service
+                .submit(Request::Edit(Command::SetTempoPoint {
+                    beat: BeatTime::from_quarters(4).unwrap(),
+                    tempo: hex_project::Tempo::new(60_000_000).unwrap(),
+                }))
+                .unwrap();
+            let event = next(&v.service);
+            assert!(event.error.is_none());
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let chorus = editor.read_with(cx, |v, _| position(v, 10));
+        visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.update(cx, |v, _| {
+            assert_eq!(v.section_loop_bounds(), Ok(Some((288_000, 480_000))));
+            v.last_enqueued_edit = None;
+            v.computer_keyboard.enabled = true;
+        });
+        visual.simulate_keystrokes("l");
+        editor.update(cx, |v, _| {
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "L retains computer MIDI priority"
+            );
+            v.computer_keyboard.enabled = false;
+        });
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| assert!(v.sections.naming()));
+        visual.simulate_keystrokes("l cmd-l");
+        editor.read_with(cx, |v, _| assert!(v.last_enqueued_edit.is_none()));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        let chorus = editor.read_with(cx, |v, _| position(v, 10));
+        visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("l");
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.held());
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "held section capture cannot set a loop"
+            );
+        });
+        visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
+        editor.update(cx, |v, _| {
+            // Simulate an unreconciled stale selection at the read-only boundary.
+            v.service
+                .submit(Request::EditArrangementSection {
+                    project_generation: v.project_generation,
+                    revision: v.state.as_ref().unwrap().revision,
+                    command: Command::RemoveArrangementSection(ids[0]),
+                })
+                .unwrap();
+            let event = next(&v.service);
+            assert!(event.error.is_none());
+            v.receive(event);
+            v.sections.selection = ids.to_vec();
+            v.sections.selected = Some(ids[1]);
+            assert_eq!(
+                v.section_loop_bounds(),
+                Err("selected section no longer belongs to the arrangement")
+            );
+            v.sections.selection = vec![ids[1]];
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            // A retained range from another context must not win over Main sections.
+            v.time_selection = Some(super::super::time_selection::TimeSelection {
+                anchor_track: track,
+                end_track: track,
+                anchor_frame: 1,
+                end_frame: 2,
+            });
+        });
+        visual.simulate_keystrokes("l");
+        editor.read_with(cx, |v, _| {
+            assert!(matches!(
+                v.last_enqueued_edit,
+                Some(Command::SetLoopRegion {
+                    start: 288_000,
+                    end: 480_000,
+                    enabled: true
+                })
+            ))
+        });
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none());
+        let region = event.state.project.loop_region().unwrap();
+        assert_eq!((region.start(), region.end()), (288_000, 480_000));
+    }
+
     #[gpui::test]
     fn multiselection_hover_and_g_merge_keep_music_and_focus_guards(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);

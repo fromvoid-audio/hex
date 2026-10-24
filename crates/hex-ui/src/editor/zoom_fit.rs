@@ -61,7 +61,7 @@ impl EditorView {
             || self.clip_name_edit.is_some()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.tuning.open
             || self.theme_settings.open
             || self.context_menu.is_some()

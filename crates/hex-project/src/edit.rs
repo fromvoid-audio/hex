@@ -400,6 +400,13 @@ pub enum Command {
         track: TrackId,
         before: Option<TrackId>,
     },
+    /// Move complete selected ordinary tracks as one block in canonical order.
+    /// A selected anchor or an already-adjacent block is a no-op. Identity-owned
+    /// content, routing and automation remain attached; one history edit owns it.
+    MoveTracksBefore {
+        tracks: crate::TrackReorderSelection,
+        before: Option<TrackId>,
+    },
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
@@ -420,7 +427,8 @@ pub enum Command {
         gain: f32,
     },
     /// Replace all project tempo points and retain musical clip onsets.
-    /// Unwarped audio keeps its source processing and natural frame duration.
+    /// Audio keeps its source processing; colliding tails are non-destructively
+    /// cropped at the next placed clip's onset, preserving all clip identities.
     SetProjectTempo {
         tempo: crate::Tempo,
     },
@@ -2088,6 +2096,9 @@ impl Project {
                 })
             }
             Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
+            Command::MoveTracksBefore { tracks, before } => {
+                self.move_tracks_before(&tracks, before)
+            }
             Command::RemoveTracks(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
                     return Err(Invalid("track removal needs a bounded selection"));

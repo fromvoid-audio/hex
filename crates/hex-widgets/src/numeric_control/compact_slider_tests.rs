@@ -29,13 +29,11 @@ impl Render for Root {
                 .debug_selector(|| "compact-slot".into())
                 .flex()
                 .w(px(self.width))
-                .h(px(
-                    if self.control.read(cx).kind == NumericControlKind::VerticalSlider {
-                        90.0
-                    } else {
-                        21.0
-                    },
-                ))
+                .h(px(match self.control.read(cx).kind {
+                    NumericControlKind::VerticalSlider => 90.0,
+                    NumericControlKind::Knob => 72.0,
+                    NumericControlKind::HorizontalSlider => 21.0,
+                }))
                 .child(self.control.clone()),
         )
     }
@@ -398,23 +396,31 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
 }
 
 #[gpui::test]
-fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
-    cx: &mut TestAppContext,
-) {
+fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut TestAppContext) {
     cx.update(bind_numeric_control_keys);
-    for (kind, axis) in [
-        NumericControlKind::HorizontalSlider,
-        NumericControlKind::VerticalSlider,
-    ]
-    .into_iter()
-    .flat_map(|kind| {
-        [
-            None,
-            Some(NumericDragAxis::Horizontal),
-            Some(NumericDragAxis::Vertical),
-        ]
-        .map(|axis| (kind, axis))
-    }) {
+    for (kind, appearance) in [
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlAppearance::Standard,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlAppearance::CompactSlider,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlAppearance::FilledSlider,
+        ),
+        (
+            NumericControlKind::VerticalSlider,
+            NumericControlAppearance::Standard,
+        ),
+        (NumericControlKind::Knob, NumericControlAppearance::Standard),
+        (
+            NumericControlKind::Knob,
+            NumericControlAppearance::MicroDial,
+        ),
+    ] {
         let handle = *cx.add_window(|_, _| Empty);
         let control = cx
             .update_window(handle, |_, window, cx| {
@@ -435,15 +441,11 @@ fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
                     STYLE,
                 )
                 .unwrap()
-                .with_appearance(NumericControlAppearance::FilledSlider);
-                let config = match axis {
-                    Some(axis) => config.with_drag_axis(axis),
-                    None => config,
-                };
+                .with_appearance(appearance);
                 let control = cx.new(|cx| NumericControl::from_config(cx, config));
                 window.replace_root(cx, |_, _| Root {
                     control: control.clone(),
-                    width: 86.0,
+                    width: 132.0,
                 });
                 control
             })
@@ -459,10 +461,6 @@ fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
         visual.simulate_resize(size(px(400.0), px(140.0)));
         visual.run_until_parked();
         let field = visual.debug_bounds("axis-pan-value").unwrap();
-        assert_eq!(
-            field.center(),
-            visual.debug_bounds("axis-pan-slider").unwrap().center()
-        );
         let start = field.center();
         for (dx, dy) in [(24.0, 0.0), (0.0, -24.0)] {
             control.update(cx, |control, cx| {
@@ -478,7 +476,7 @@ fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
             assert!(
                 (control.read_with(cx, |control, _| control.value()) - f64::from(expected)).abs()
                     < 1e-6,
-                "kind={kind:?} axis={axis:?} dx={dx} dy={dy}"
+                "kind={kind:?} appearance={appearance:?} dx={dx} dy={dy}"
             );
             let events = events.borrow();
             assert_eq!(

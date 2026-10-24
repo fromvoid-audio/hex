@@ -186,14 +186,31 @@ fn reordered_track_inventory_roundtrips_complete_content_automation_and_stable_r
         })
         .unwrap();
     let original = editor.project().clone();
-    for (track, before, order) in [
-        (ids[2], Some(ids[0]), vec![ids[2], ids[0], ids[1]]),
-        (ids[0], None, vec![ids[1], ids[2], ids[0]]),
+    for (command, order) in [
+        (
+            Command::MoveTrackBefore {
+                track: ids[2],
+                before: Some(ids[0]),
+            },
+            vec![ids[2], ids[0], ids[1]],
+        ),
+        (
+            Command::MoveTrackBefore {
+                track: ids[0],
+                before: None,
+            },
+            vec![ids[1], ids[2], ids[0]],
+        ),
+        (
+            Command::MoveTracksBefore {
+                tracks: hex_project::TrackReorderSelection::new(&[ids[2], ids[0]]).unwrap(),
+                before: None,
+            },
+            vec![ids[1], ids[0], ids[2]],
+        ),
     ] {
         let mut editor = Editor::new(original.clone(), 16).unwrap();
-        editor
-            .execute(Command::MoveTrackBefore { track, before })
-            .unwrap();
+        editor.execute(command).unwrap();
         let restored = decode(&encode(editor.project()).unwrap()).unwrap();
         assert_eq!(restored, *editor.project());
         assert_eq!(

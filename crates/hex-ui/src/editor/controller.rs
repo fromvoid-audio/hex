@@ -994,6 +994,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1017,6 +1018,7 @@ impl EditorView {
                 let resize_request = self.pending_trim_matches(&request);
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
+                let clip_detail_request = self.audio_clip_controls.matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -1040,6 +1042,10 @@ impl EditorView {
                         }
                         if group_copy_request {
                             self.group_copy_submitted();
+                        }
+                        if clip_detail_request {
+                            self.audio_clip_controls
+                                .submitted(self.worker_requests_pending);
                         }
                         if clip_move_request {
                             self.clip_move_submitted();
@@ -1174,6 +1180,7 @@ impl EditorView {
         visible_change |= self.pump_device_gesture();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
@@ -1907,6 +1914,12 @@ impl EditorView {
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
+        if self
+            .audio_clip_controls
+            .observe(self.project_generation, &event)
+        {
+            self.retire_sample_bpm_control();
+        }
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -2973,7 +2986,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
-                | Request::ReorderTrack { .. }
+                | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
@@ -3036,6 +3049,7 @@ impl EditorView {
         let resize_request = self.pending_trim_matches(&request);
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
+        let clip_detail_request = self.audio_clip_controls.matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -3054,6 +3068,10 @@ impl EditorView {
                 }
                 if group_copy_request {
                     self.group_copy_submitted();
+                }
+                if clip_detail_request {
+                    self.audio_clip_controls
+                        .submitted(self.worker_requests_pending);
                 }
                 if clip_move_request {
                     self.clip_move_submitted();
