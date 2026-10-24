@@ -706,3 +706,135 @@ fn reverse_musical_repeat_filter_uses_neighbor_occurrences_at_internal_joins() {
         }
     }
 }
+
+#[test]
+fn reversed_edited_repeat_keeps_pcm_when_musical_placement_is_disabled() {
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split {
+                at: BeatTime::ONE.raw() / 2,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_ratio(1, 2).unwrap(),
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let duration = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_ratio(2, 1).unwrap())
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    let c = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    c.edit.as_mut().unwrap().placement = Some(AudioViewPlacement {
+        mode: AudioViewMode::Repeat,
+        outer_length: AudioDomainClock::Beats(BeatTime::from_ratio(2, 1).unwrap()),
+        cycle_phase: BeatTime::ONE.raw() / 4,
+    });
+    c.duration = duration;
+    c.fade = ClipFade::neutral(duration).unwrap();
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 2_000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: None,
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let c = editor.project().clip(clip).unwrap();
+    let bounds = (c.start(), c.duration());
+    let edit = c.audio_edit().unwrap();
+    let origin = edit.processing_origin().unwrap();
+    let content = edit.content_view;
+    let context = AudioTransformPreparation::default();
+    let pcm = render(
+        &prepare(&editor, &media, &context),
+        bounds.0,
+        bounds.1 as usize,
+        127,
+    );
+    assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.01));
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: false,
+        })
+        .unwrap();
+    let frozen = editor.project().snapshot();
+    let c = editor.project().clip(clip).unwrap();
+    assert_eq!((c.start(), c.duration()), bounds);
+    assert_eq!(c.audio_edit().unwrap().content_view, content);
+    assert_eq!(c.audio_edit().unwrap().processing_origin().unwrap(), origin);
+    assert_eq!(
+        render(
+            &prepare(&editor, &media, &context),
+            bounds.0,
+            bounds.1 as usize,
+            257
+        ),
+        pcm
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), frozen);
+    // Global tempo changes retain musical starts even for unwarped audio,
+    // while the frozen processing clock preserves duration and relative PCM.
+    let onset = editor
+        .project()
+        .tempo_map()
+        .frame_to_beat(bounds.0)
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(143_000_000).unwrap(),
+        })
+        .unwrap();
+    let c = editor.project().clip(clip).unwrap();
+    assert_eq!(
+        c.start(),
+        editor.project().tempo_map().beat_to_frame(onset).unwrap()
+    );
+    assert_eq!(c.duration(), bounds.1);
+    assert_eq!(
+        render(
+            &prepare(&editor, &media, &context),
+            c.start(),
+            bounds.1 as usize,
+            31
+        ),
+        pcm
+    );
+}

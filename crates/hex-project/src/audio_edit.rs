@@ -349,6 +349,31 @@ impl AudioClipEdit {
             |projection| Ok(projection.origin_beat_raw),
         )
     }
+    /// Recover the carrier reference from a processing origin without changing
+    /// the retained crop, repeat phase or directed read base.
+    pub(crate) fn reference_for_processing_origin(&self, origin: i128) -> Result<i128, Invalid> {
+        let (delta, start, phase) = self.content_view.map_or_else(
+            || {
+                (
+                    0,
+                    self.view_start,
+                    self.placement.map_or(0, |p| p.cycle_phase),
+                )
+            },
+            |view| {
+                (
+                    view.base_start_delta,
+                    view.base_view_start,
+                    view.base_placement.map_or(0, |p| p.cycle_phase),
+                )
+            },
+        );
+        origin
+            .checked_sub(delta)
+            .and_then(|origin| origin.checked_add(i128::from(start)))
+            .and_then(|origin| origin.checked_add(i128::from(phase)))
+            .ok_or(Invalid("audio frozen reference overflow"))
+    }
     pub(crate) fn retain_frame_bounds(
         &mut self,
         start: u64,
@@ -822,10 +847,8 @@ impl AudioClipEdit {
             // Frame placement need not flatten a beat-domain event program.
             // Freeze its complete processing clock just as global tempo edits
             // do for unwarped clips, preserving moved sources and retained fades.
-            let reference_start_raw = self
-                .processing_origin()?
-                .checked_add(i128::from(self.view_start))
-                .ok_or(Invalid("audio event frozen reference overflow"))?;
+            let reference_start_raw =
+                self.reference_for_processing_origin(self.processing_origin()?)?;
             let frozen = self
                 .processing_projection
                 .as_ref()
