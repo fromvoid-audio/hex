@@ -560,6 +560,10 @@ impl Command {
             | Self::SetReturnSend { .. }
             | Self::InsertReturnDevice { .. }
             | Self::MoveReturnDevice { .. }
+            | Self::GroupTracks { .. }
+            | Self::UngroupTrack(..)
+            | Self::ReparentTracks { .. }
+            | Self::DuplicateTracks { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
             | Self::MoveTrackBefore { .. }

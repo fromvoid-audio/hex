@@ -60,6 +60,18 @@ fn fixture() -> (Editor, Vec<ClipId>) {
 fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
+fn strip_flat_hierarchy(value: &mut Value) {
+    let expected: Vec<_> = value["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|track| json!({"track":track["id"],"group":false,"parent":null}))
+        .collect();
+    assert_eq!(
+        value.as_object_mut().unwrap().remove("track_hierarchy"),
+        Some(json!(expected))
+    );
+}
 #[test]
 fn grouped_sources_roundtrip_complete_original_state_and_missing_media_paths() {
     let (mut e, ids) = fixture();
@@ -98,6 +110,7 @@ fn grouped_sources_roundtrip_complete_original_state_and_missing_media_paths() {
 fn schema40_migrates_in_memory_with_single_root_defaults() {
     let (e, _) = fixture();
     let mut value: Value = serde_json::from_slice(&encode(e.project()).unwrap()).unwrap();
+    strip_flat_hierarchy(&mut value);
     value["version"] = 40.into();
     value.as_object_mut().unwrap().remove("grouped_audio");
     value.as_object_mut().unwrap().remove("content_views");
@@ -168,6 +181,7 @@ fn both_evidenced_schema41_producers_migrate_without_losing_inventory() {
         let current = encode(&project).unwrap();
         assert_eq!(decode(&current).unwrap(), project);
         let mut upgraded: Value = serde_json::from_slice(&current).unwrap();
+        strip_flat_hierarchy(&mut upgraded);
         upgraded["version"] = 41.into();
         upgraded
             .as_object_mut()
@@ -249,6 +263,7 @@ fn embedded_root_schema_matches_the_actual_outer_writer_lineage() {
     let old_document = &old["grouped_audio"][0]["sources"][0]["document"];
     let root = decode(&bytes(old_document)).unwrap();
     let mut newer_document: Value = serde_json::from_slice(&encode(&root).unwrap()).unwrap();
+    strip_flat_hierarchy(&mut newer_document);
     newer_document["version"] = 42.into();
     newer_document
         .as_object_mut()
@@ -324,7 +339,7 @@ fn grouped_and_retained_child_fades_roundtrip_with_independent_captured_tempo() 
     .unwrap();
     let data = encode(e.project()).unwrap();
     let value: Value = serde_json::from_slice(&data).unwrap();
-    assert_eq!(value["version"], 43);
+    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
         value["grouped_audio"][0]["group"]["sources"][0]["document"]["version"],
         42
@@ -364,6 +379,7 @@ fn published_schema42_event_fades_migrate_with_every_predecessor_field_intact() 
             .iter()
             .all(|row| row["group"].is_null())
     );
+    strip_flat_hierarchy(&mut current);
     current["version"] = 42.into();
     assert_eq!(current, old);
     assert_eq!(decode(&encoded).unwrap(), project);

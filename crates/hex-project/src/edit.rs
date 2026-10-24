@@ -15,6 +15,23 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Create one effects-only group around normalized sibling subtrees.
+    GroupTracks {
+        tracks: crate::TrackSelectionIds,
+        name: String,
+    },
+    /// Remove the group bus, retaining ordered children under its former parent.
+    UngroupTrack(TrackId),
+    /// Move complete subtrees to an explicitly captured parent/child boundary.
+    ReparentTracks {
+        tracks: crate::TrackSelectionIds,
+        destination: crate::TrackDestination,
+    },
+    /// Duplicate the complete selected subtrees after their last source root.
+    DuplicateTracks {
+        tracks: crate::TrackSelectionIds,
+        without_clips: bool,
+    },
     /// Adopt all prepared track bounces as one reversible edit. No file I/O.
     CommitArrangementBounce {
         target: crate::BounceTarget,
@@ -321,7 +338,7 @@ pub enum Command {
     /// Insert complete captured tracks in canonical order with fresh identities.
     PasteTracks {
         clipboard: std::sync::Arc<crate::TrackClipboard>,
-        before: Option<TrackId>,
+        destination: crate::TrackDestination,
     },
     /// Paste complete clips, retaining relative timing and stable multi-track owners.
     PasteClips {
@@ -1048,27 +1065,45 @@ pub(crate) fn insert_track_before(
             .ok_or(Invalid("track insertion anchor no longer exists"))?,
         None => project.tracks.len(),
     };
+    let parent_group = project.tracks.get(index).and_then(Track::parent_group);
+    let track = new_track(project, name, crate::TrackKind::Ordinary, parent_group)?;
+    let id = track.id();
+    project.tracks.insert(index, track);
+    Ok(id)
+}
+
+pub(crate) fn new_track(
+    project: &mut Project,
+    name: String,
+    kind: crate::TrackKind,
+    parent_group: Option<TrackId>,
+) -> Result<Track, Invalid> {
+    name_valid(&name)?;
+    if project.tracks.len() >= MAX_TRACKS {
+        return Err(Invalid("track limit reached"));
+    }
+    if parent_group.is_some_and(|id| !project.track(id).is_some_and(Track::is_group)) {
+        return Err(Invalid("track parent must be an existing group"));
+    }
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
-    project.tracks.insert(
-        index,
-        Track {
-            color,
-            gain_lane: crate::GainLane::default(),
-            id,
-            name,
-            gain: 1.0,
-            balance: 0.0,
-            muted: false,
-            soloed: false,
-            devices: Vec::new(),
-            instrument: None,
-            instrument_position: None,
-            content: TrackContent::default(),
-            sends: Vec::new(),
-        },
-    );
-    Ok(id)
+    Ok(Track {
+        kind,
+        parent_group,
+        color,
+        gain_lane: crate::GainLane::default(),
+        id,
+        name,
+        gain: 1.0,
+        balance: 0.0,
+        muted: false,
+        soloed: false,
+        devices: Vec::new(),
+        instrument: None,
+        instrument_position: None,
+        content: TrackContent::default(),
+        sends: Vec::new(),
+    })
 }
 pub(crate) fn interval_valid(
     start: u64,
@@ -2192,35 +2227,22 @@ impl Project {
             Command::MoveTracksBefore { tracks, before } => {
                 self.move_tracks_before(&tracks, before)
             }
-            Command::RemoveTracks(ids) => {
-                if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
-                    return Err(Invalid("track removal needs a bounded selection"));
-                }
-                for (index, id) in ids.iter().enumerate() {
-                    if ids[..index].contains(id) || self.track(*id).is_none() {
-                        return Err(Invalid("track removal selection is stale or duplicated"));
-                    }
-                }
-                for id in ids {
-                    self.apply(Command::RemoveTrack(id))?;
-                }
-                Ok(Created::None)
+            Command::GroupTracks { tracks, name } => self.group_tracks(&tracks, name),
+            Command::UngroupTrack(group) => self.ungroup_track(group),
+            Command::ReparentTracks {
+                tracks,
+                destination,
+            } => self.reparent_tracks(&tracks, destination),
+            Command::DuplicateTracks {
+                tracks,
+                without_clips,
+            } => {
+                let destination = self.track_destination_after_selection(&tracks)?;
+                let clipboard = self.capture_tracks(&tracks, without_clips)?;
+                crate::track_clipboard::paste(self, &clipboard, destination)
             }
-            Command::RemoveTrack(id) => {
-                let index = self
-                    .tracks
-                    .iter()
-                    .position(|t| t.id == id)
-                    .ok_or(Invalid("track no longer exists"))?;
-                self.tracks.remove(index);
-                self.audio_feeds.retain(|r| {
-                    r.source() != crate::RoutingOwner::Track(id) && r.destination() != id
-                });
-                self.midi_routes
-                    .retain(|r| r.source() != id && r.destination() != id);
-                self.session.cells.retain(|cell| cell.track != id);
-                Ok(Created::None)
-            }
+            Command::RemoveTracks(ids) => self.remove_track_subtrees(&ids),
+            Command::RemoveTrack(id) => self.remove_track_subtrees(&[id]),
             Command::EditClips { clips, edit } => {
                 crate::clip_selection_edit::apply(self, clips, edit)
             }
@@ -2576,9 +2598,10 @@ impl Project {
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
-            Command::PasteTracks { clipboard, before } => {
-                crate::track_clipboard::paste(self, &clipboard, before)
-            }
+            Command::PasteTracks {
+                clipboard,
+                destination,
+            } => crate::track_clipboard::paste(self, &clipboard, destination),
             Command::PasteClips {
                 clipboard,
                 track,
