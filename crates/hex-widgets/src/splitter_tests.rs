@@ -84,7 +84,7 @@ fn open(cx: &mut TestAppContext, axis: SplitterAxis) -> (VisualTestContext, Enti
         cancelled: None,
     });
     let view = handle.root(cx).unwrap();
-    let mut visual = VisualTestContext::from_window(*handle, cx);
+    let visual = VisualTestContext::from_window(*handle, cx);
     visual.simulate_resize(size(px(320.0), px(240.0)));
     visual.run_until_parked();
     (visual, view)
