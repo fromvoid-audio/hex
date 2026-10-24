@@ -545,6 +545,12 @@ fn bind_editor_keys(cx: &mut App) {
             "cmd-x",
             "cmd-v",
             "cmd-shift-v",
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "cmd-r",
             "cmd-d",
             "cmd-e",
             "b",
@@ -553,6 +559,20 @@ fn bind_editor_keys(cx: &mut App) {
             "g",
         ]
         .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_arrangement_automation"))),
+    );
+    // Header commands retain track clipboard/rename semantics; these general
+    // Arrangement commands would otherwise edit the retained background clips.
+    cx.bind_keys(
+        [
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "b",
+            "cmd-b",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_automation_track_header"))),
     );
 }
 

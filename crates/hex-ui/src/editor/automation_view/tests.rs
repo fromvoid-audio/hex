@@ -13,8 +13,8 @@ fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edit
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    click(&mut visual, audio, false);
-    click(&mut visual, midi, true);
+    click(&mut visual, midi, false);
+    click(&mut visual, audio, true);
     editor.update(&mut visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
         v.time_selection = Some(crate::editor::time_selection::TimeSelection {
@@ -62,13 +62,43 @@ fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edit
         "cmd-x",
         "cmd-v",
         "cmd-shift-v",
+        "right",
+        "left",
+        "shift-right",
+        "shift-left",
+        "cmd-shift-m",
+        "cmd-r",
     ] {
         visual.simulate_keystrokes(key);
         pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before.0,
+                "{key}"
+            );
+            assert!(v.clip_name_edit.is_none(), "{key}");
+        });
     }
-    editor.read_with(&visual, |v, _| {
-        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.0)
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.track_header_focus(track, cx).focus(window);
+        });
     });
+    visual.run_until_parked();
+    for key in ["right", "shift-right", "cmd-shift-m"] {
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before.0,
+                "header {key}"
+            );
+        });
+    }
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     visual.simulate_keystrokes("a");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
@@ -81,6 +111,53 @@ fn a_roundtrip_fades_audio_and_midi_without_activation_selection_or_history_edit
             visual.rendered_background(selector("clip-name", clip.value())),
             Some(fills[i])
         );
+    }
+}
+
+#[gpui::test]
+fn foreground_mode_blocks_single_clip_nudge_and_trim_with_root_or_header_focus(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, audio, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for clip in [audio, midi] {
+        click(&mut visual, clip, false);
+        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes("a");
+        for header in [false, true] {
+            if header {
+                visual.update(|window, cx| {
+                    editor.update(cx, |v, cx| {
+                        v.track_header_focus(v.selected_track.unwrap(), cx)
+                            .focus(window);
+                    });
+                });
+            }
+            visual.run_until_parked();
+            for key in ["right", "left", "shift-right", "shift-left"] {
+                visual.simulate_keystrokes(key);
+                pump(&editor, &mut visual);
+                editor.read_with(&visual, |v, _| {
+                    assert_eq!(
+                        v.state.as_ref().unwrap().project.snapshot(),
+                        before,
+                        "{clip:?} header={header} {key}"
+                    );
+                });
+            }
+        }
+        visual.simulate_keystrokes("cmd-r");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
+        visual.simulate_keystrokes("a");
+        editor.read_with(&visual, |v, _| assert!(v.automation_view.enabled));
+        visual.simulate_keystrokes("escape");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+        visual.simulate_keystrokes("a");
     }
 }
 

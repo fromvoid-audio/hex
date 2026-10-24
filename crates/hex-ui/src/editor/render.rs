@@ -485,6 +485,11 @@ impl Render for EditorView {
                 && self.focus.is_focused(window)
             {
                 "hex_editor hex_arrangement_automation"
+            } else if self.mode == super::EditorMode::Arrangement
+                && self.automation_view.enabled
+                && self.track_header_focused(window)
+            {
+                "hex_editor hex_automation_track_header"
             } else {
                 self.browser_key_context(window, cx)
             })
