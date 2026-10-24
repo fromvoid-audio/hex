@@ -999,13 +999,15 @@ fn event_fade_drag_keeps_pending_paint_then_one_undo_and_reset(cx: &mut TestAppC
         assert!(v.enqueue(Request::SaveNew(saved.clone())))
     });
     pump(&editor, &mut visual);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&saved).unwrap()).unwrap()["version"],
-        42
-    );
+    let previous_generation = editor.read_with(&visual, |v, _| v.project_generation);
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Open(saved))));
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_ne!(
+            v.project_generation, previous_generation,
+            "open installs the saved document"
+        );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), accepted);
         assert_eq!(render_accepted_event(v, clip)[0], [0.0; 2]);
         v.selected_track = Some(v.state.as_ref().unwrap().project.tracks()[0].id());
