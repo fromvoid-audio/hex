@@ -40,6 +40,28 @@ pub(super) fn curve(project: &Project, clip: ClipId) -> Option<&MidiClipVolume> 
         .or_else(|| project.session_midi_clip(clip).map(|c| c.volume()))
 }
 
+// Read the graph's effective curve, including its held/released preview. Point
+// ids are one-based; cancellation, deletion or source replacement may leave no
+// corresponding point. This readout never supplies values back to an edit.
+fn point_values(volume: &MidiClipVolume, selected: u32) -> Option<String> {
+    let point = volume.points().get(selected.checked_sub(1)? as usize)?;
+    let number = |value: f64| {
+        if (value != 0.0 && value < 0.0001) || value >= 1_000_000.0 {
+            format!("{value:.3e}")
+        } else {
+            format!("{value:.4}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_owned()
+        }
+    };
+    Some(format!(
+        "beat {} · gain {}",
+        number(point.beat.raw() as f64 / BeatTime::ONE.raw() as f64),
+        number(point.value.linear()),
+    ))
+}
+
 fn point_at(
     position: [f32; 2],
     start: u64,
@@ -292,7 +314,17 @@ impl EditorView {
                     cx.notify();
                 }),
             )])
-            .child(theme::text(format!("{} points", volume.points().len())));
+            .child(theme::text(format!("{} points", volume.points().len())))
+            .children(
+                point_values(&volume, self.midi_volume.selected).map(|values| {
+                    div()
+                        .ml_auto()
+                        .min_w_0()
+                        .truncate()
+                        .debug_selector(|| "midi-volume-point-values".into())
+                        .child(theme::text(values))
+                }),
+            );
         Some(
             div()
                 .h(px(self.clip_detail_body_height))
