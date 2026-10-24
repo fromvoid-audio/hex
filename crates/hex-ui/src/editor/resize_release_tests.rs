@@ -18,7 +18,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -44,7 +44,7 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     super::super::external_audio_drop_ui_test::BatchFiles,
