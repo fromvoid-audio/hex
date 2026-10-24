@@ -2208,6 +2208,13 @@ impl EditorView {
             &event.state.project,
             event.project_replaced,
         );
+        // Initial population may choose the first clip. Subsequent control
+        // acknowledgements must not recreate a deliberately empty selection.
+        let initialize_clip_selection = self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.project.tracks().is_empty())
+            && !event.state.project.tracks().is_empty();
         self.state = Some(event.state);
         if loop_complete {
             self.pending_loop = None;
@@ -2350,6 +2357,13 @@ impl EditorView {
                             && self.normalized_time_selection().is_some()));
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+                if initialize_clip_selection
+                    && self.selected_clip.is_none()
+                    && let Some((_, track, clip)) = selection::neighbor(&state.project, None, true)
+                {
+                    self.selected_track = Some(track);
+                    self.selected_clip = clip;
+                }
                 if time_range_owns_selection {
                     self.selected_clip = None;
                 }
@@ -2476,15 +2490,7 @@ impl EditorView {
             self.midi_selection.clear();
             self.reconcile_arrangement_focus();
             self.arrangement_focus.reveal_created_track(track);
-        } else if let Some(clip) = event.created.as_ref().and_then(|created| match created {
-            hex_project::Created::Clip(clip) => Some(*clip),
-            // A canonical import birth supplies initial selection; ordinary
-            // acknowledgements preserve an explicitly empty clip selection.
-            hex_project::Created::Imported { clip, .. } if self.selected_clip.is_none() => {
-                Some(*clip)
-            }
-            _ => None,
-        }) {
+        } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state
                     .project
