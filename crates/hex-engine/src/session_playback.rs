@@ -760,7 +760,7 @@ impl SessionPlayback {
                 .all(|(actual, prepared)| actual.matches_prepared_runtime_storage(prepared));
         let main_present = main_chain.storage_view().entry_capacity_bytes() != Some(0);
         let moved_empty_main =
-            !self.candidate_admission_open && main_chain.len() == 0 && !main_present;
+            !self.candidate_admission_open && main_chain.is_empty() && !main_present;
         if (!main_matches && !moved_empty_main)
             || live_expression.is_some()
             || computer_keyboard.is_some()
