@@ -230,3 +230,41 @@ fn g_does_not_group_arrangement_selection_under_another_focus_owner(cx: &mut Tes
         assert_eq!(view.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, clips[2], false);
+    let before = editor.update(&mut visual, |v, _| {
+        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+        v.time_selection = Some(super::super::time_selection::TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: 60_000,
+            end_frame: 108_000,
+        });
+        v.state.as_ref().unwrap().project.clone()
+    });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let p = &v.state.as_ref().unwrap().project;
+        let group = p.clip(v.selected_clip.unwrap()).unwrap();
+        assert_eq!((group.start(), group.duration()), (60_000, 48_000));
+        assert_eq!(group.audio_events().events.len(), 2);
+        assert_eq!(p.clip(clips[2]).unwrap(), before.clip(clips[2]).unwrap());
+        assert_eq!(p.tracks()[0].clips().len(), 4);
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let mut restored = v.state.as_ref().unwrap().project.snapshot();
+        restored.next_id = before.snapshot().next_id;
+        assert_eq!(restored, before.snapshot());
+    });
+}

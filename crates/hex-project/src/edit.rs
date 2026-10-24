@@ -545,6 +545,10 @@ pub enum Command {
     DuplicateClips(Vec<ClipId>),
     /// Wrap one same-track, same-kind selection atomically; never replace nonselected material.
     GroupClips(Vec<ClipId>),
+    /// Split selection edges and group included material independently per track.
+    /// Empty tracks are skipped; returns the last populated track's resulting clip.
+    /// All fragments and groups form one atomic edit; mixed media on a row refuses.
+    GroupTimeRange(crate::TimeRange),
     /// Extract a selected root-local audio span into one clip, retaining outer fragments.
     GroupAudioEventRange {
         clip: ClipId,
@@ -1853,6 +1857,7 @@ impl Project {
             }
             Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
             Command::GroupClips(clips) => crate::clip_consolidate::apply(self, clips),
+            Command::GroupTimeRange(range) => crate::clip_consolidate::time_range(self, &range),
             Command::GroupAudioEventRange { clip, start, end } => {
                 crate::clip_consolidate::event_range(self, clip, start, end)
             }

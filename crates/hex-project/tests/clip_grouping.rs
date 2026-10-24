@@ -524,3 +524,139 @@ fn grouped_event_fade_bounds_follow_its_retained_source_not_container_length() {
     assert!(e.redo());
     assert_eq!(e.project().snapshot(), accepted);
 }
+
+#[test]
+fn time_group_cuts_audio_edges_preserves_gaps_sources_and_one_history_step() {
+    let (mut e, t, clips) = audio_fixture();
+    let original = e.project().clone();
+    let before = original.snapshot();
+    let Created::Clip(group) = e
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![t], 50, 450).unwrap(),
+        ))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let row = e.project().track(t).unwrap();
+    assert_eq!(row.clips().len(), 3);
+    let first = e.project().clip(clips[0]).unwrap();
+    assert_eq!(
+        (first.start(), first.duration(), first.source_offset()),
+        (0, 50, 17)
+    );
+    let tail = row.clips().iter().find(|c| c.start() == 450).unwrap();
+    assert_eq!((tail.duration(), tail.source_offset()), (50, 67));
+    let grouped = e.project().clip(group).unwrap();
+    assert_eq!((grouped.start(), grouped.duration()), (50, 400));
+    let events = grouped.audio_events();
+    assert_eq!(
+        events
+            .events
+            .iter()
+            .map(|e| (e.start, e.end))
+            .collect::<Vec<_>>(),
+        vec![(0, 50), (150, 250), (350, 400)]
+    );
+    assert_eq!(
+        events
+            .sources
+            .iter()
+            .map(|r| (r.clip.asset(), r.clip.source_offset(), r.clip.duration()))
+            .collect::<Vec<_>>(),
+        vec![
+            (original.clip(clips[0]).unwrap().asset(), 67, 50),
+            (original.clip(clips[1]).unwrap().asset(), 17, 100),
+            (original.clip(clips[2]).unwrap().asset(), 17, 50)
+        ]
+    );
+    let after = e.project().snapshot();
+    assert_eq!(Project::from_snapshot(after.clone()).unwrap(), *e.project());
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(!e.can_undo());
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
+fn time_group_merges_midi_per_track_and_can_extract_one_partial_clip() {
+    let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let tracks = [track(&mut e), track(&mut e)];
+    for t in tracks {
+        midi(&mut e, t, 0);
+        midi(&mut e, t, 4);
+    }
+    let before = e.project().snapshot();
+    let start = e.project().tempo_map().beat_to_frame(b(1)).unwrap();
+    let end = e.project().tempo_map().beat_to_frame(b(5)).unwrap();
+    e.execute(Command::GroupTimeRange(
+        hex_project::TimeRange::new(tracks.to_vec(), start, end).unwrap(),
+    ))
+    .unwrap();
+    for t in tracks {
+        let row = e.project().track(t).unwrap();
+        assert_eq!(row.midi_clips().len(), 3);
+        let group = row.midi_clips().iter().find(|c| c.start() == b(1)).unwrap();
+        assert_eq!(group.length(), b(4));
+        assert_eq!(group.notes().len(), 1);
+        assert_eq!(
+            (group.notes()[0].start(), group.notes()[0].duration()),
+            (b(3), b(1))
+        );
+    }
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    e.execute(Command::GroupTimeRange(
+        hex_project::TimeRange::new(vec![tracks[0]], start, start + 12_000).unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(e.project().track(tracks[0]).unwrap().midi_clips().len(), 4);
+}
+
+#[test]
+fn time_group_empty_stale_and_late_row_refusals_are_atomic() {
+    let (fixture, t, _) = audio_fixture();
+    let mut project = fixture.project().clone();
+    let Created::Track(other) = project
+        .apply(Command::AddTrack {
+            name: "mixed".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    // A later mixed row must refuse after the earlier row has already split/grouped.
+    let asset = project.tracks()[0].clips()[0].asset();
+    project
+        .apply(Command::PlaceClip {
+            track: other,
+            asset,
+            start: 0,
+            duration: 100,
+            source_offset: 0,
+            source_length: 100,
+            looping: false,
+        })
+        .unwrap();
+    project
+        .apply(Command::PlaceMidiClip {
+            track: other,
+            start: b(1),
+            length: b(1),
+        })
+        .unwrap();
+    let before = project.clone();
+    for range in [
+        hex_project::TimeRange::new(vec![t], 600, 700).unwrap(),
+        hex_project::TimeRange::new(vec![other, t], 50, 450).unwrap(),
+        hex_project::TimeRange::new(vec![t, other], 50, 48_000).unwrap(),
+    ] {
+        assert!(project.apply(Command::GroupTimeRange(range)).is_err());
+        assert_eq!(project, before);
+    }
+}
