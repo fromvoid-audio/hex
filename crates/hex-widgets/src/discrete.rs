@@ -1189,6 +1189,21 @@ pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -
         .child(label)
 }
 
+// A compact popup keeps the field width; full normalized option text remains
+// available on hover instead of widening the detached panel.
+struct SelectorOptionTooltip(SharedString, ControlStyle);
+impl gpui::Render for SelectorOptionTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(4.0))
+            .py(px(2.0))
+            .bg(rgb(self.1.raised))
+            .text_color(rgb(self.1.text))
+            .text_size(px(self.1.font_size))
+            .child(self.0.clone())
+    }
+}
+
 #[cfg(test)]
 mod selector_tests;
 
@@ -1212,20 +1227,5 @@ mod contrast_tests {
             });
             toggle.read_with(cx, |toggle, _| assert_eq!(toggle.foreground(), 0x202020));
         }
-    }
-}
-
-// A compact popup keeps the field width; full normalized option text remains
-// available on hover instead of widening the detached panel.
-struct SelectorOptionTooltip(SharedString, ControlStyle);
-impl gpui::Render for SelectorOptionTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(4.0))
-            .py(px(2.0))
-            .bg(rgb(self.1.raised))
-            .text_color(rgb(self.1.text))
-            .text_size(px(self.1.font_size))
-            .child(self.0.clone())
     }
 }
