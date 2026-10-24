@@ -1429,3 +1429,36 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
         settled(view) && read(view, device) == after
     });
 }
+
+#[gpui::test]
+fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.snapshot());
+    let start = plot(&mut visual, device, 0.78, 0.8);
+    let end = plot(&mut visual, device, 0.66, 0.75);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.resident_device_preview.as_ref().is_some_and(|preview| {
+            EqState::decode(preview.state.project.device(device).unwrap().state())
+                .is_ok_and(|state| state.nodes.len() == 2)
+        })
+    });
+    for _ in 0..3 {
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(view.resident_device_preview.is_some());
+        });
+    }
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
