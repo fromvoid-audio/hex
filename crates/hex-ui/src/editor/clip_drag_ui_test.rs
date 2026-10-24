@@ -2697,15 +2697,16 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 project.clone(),
             )
         });
-        let down = visual
+        let source = visual
             .debug_bounds(selector(format!("clip-drag-surface-{}", clip.value())))
-            .unwrap()
-            .center();
+            .unwrap();
+        let down = source.center();
         let end = point(down.x + px(36.0), down.y);
+        assert!(source.contains(&end), "release still hits the painted source header");
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         // One coalesced motion crosses the native drag threshold. There need
         // not be a second mouse-move before release over the original header.
-        visual.update(|window, app| {
+        let destination = visual.update(|window, app| {
             window.dispatch_input(
                 gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
                     position: end,
@@ -2715,6 +2716,12 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 app,
             );
             assert!(app.has_active_drag());
+            let destination = {
+                let drag = editor.read(app).active_clip_drag.as_ref().unwrap();
+                let destination = drag.preview.get().expect("valid destination preview").position;
+                assert_ne!(destination, drag.position);
+                destination
+            };
             // Dispatch against the same completed frame, as native events can
             // arrive between display refreshes.
             window.dispatch_input(
@@ -2726,6 +2733,7 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 }),
                 app,
             );
+            destination
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
@@ -2739,12 +2747,12 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
         editor.read_with(&visual, |v, _| {
             let project = &v.state.as_ref().unwrap().project;
             assert_ne!(project.snapshot(), before.snapshot());
-            if midi {
-                assert!(project.midi_clip(clip).unwrap().start() > BeatTime::ZERO);
-            } else {
-                assert!(project.clip(clip).unwrap().start() > 0);
+            match destination {
+                super::drag::ClipPosition::Midi { start, .. } => assert_eq!(project.midi_clip(clip).unwrap().start(), start),
+                super::drag::ClipPosition::Audio { start, .. } => assert_eq!(project.clip(clip).unwrap().start(), start),
             }
         });
+        let moved = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_keystrokes("cmd-z");
         pump_move(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -2753,6 +2761,9 @@ fn rendered_move_released_after_first_drag_motion_commits(cx: &mut TestAppContex
                 before.snapshot()
             )
         });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump_move(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| assert_eq!(v.state.as_ref().unwrap().project.snapshot(), moved));
     }
 }
 

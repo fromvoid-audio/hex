@@ -2554,6 +2554,12 @@ impl EditorView {
                     // Retiring here would cancel the move before admission.
                 });
             })
+            // A release can precede the repaint that replaces this header
+            // with the drag preview. Receive it here before sibling click
+            // handlers consume the mouse-up; admission stays lane-owned.
+            .on_drop(cx.listener(move |view, drag: &ClipDrag, window, cx| {
+                view.drop_clip(drag, source_track, window, cx);
+            }))
             .on_drag(payload, move |payload, _, window, cx| {
                 let original_down_x = drag_entity.update(cx, |view, _| {
                     if view.drag_start_is_current(payload) {
