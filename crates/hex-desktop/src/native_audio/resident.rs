@@ -23,8 +23,7 @@ pub(super) struct Pending {
 #[derive(Default)]
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
-    pub(super) current_submission: Option<(AudioSourceContext, u64)>,
-    pub(super) submitted_loop: Option<hex_project::LoopRegion>,
+    pub(super) current_submission: Option<ResidentRuntimeLoop>,
     pub(super) applied_loop: Option<ResidentRuntimeLoop>,
     pub(super) retired: Option<DeviceResourcePublication>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
@@ -73,16 +72,11 @@ impl NativeAudioSink {
             .status
             .rejected_revision()
             .map(|(revision, _)| revision);
-        if let Some((context, submitted)) = self.resident.current_submission
-            && self.output_identity == Some(output)
-            && submitted == revision
+        if let Some(submitted) = self.resident.current_submission
+            && submitted.output_identity == output
+            && submitted.audio_revision == revision
         {
-            self.resident.applied_loop = Some(ResidentRuntimeLoop {
-                output_identity: output,
-                audio_revision: revision,
-                source_context: Some(context),
-                section_loop: self.resident.submitted_loop,
-            });
+            self.resident.applied_loop = Some(submitted);
         }
         Some((output, revision, rejected))
     }
@@ -96,10 +90,10 @@ impl NativeAudioSink {
         // A queued successor could install between capture and final enqueue.
         // Only an exact terminal refusal proves that the previous tag is stable.
         // Applied revision is published before pending admission is released.
-        if let Some((_, submitted)) = self.resident.current_submission
-            && self.output_identity == Some(output)
-            && submitted != revision
-            && rejected != Some(submitted)
+        if let Some(submitted) = self.resident.current_submission
+            && submitted.output_identity == output
+            && submitted.audio_revision != revision
+            && rejected != Some(submitted.audio_revision)
         {
             return Err("playback publication already pending".into());
         }
@@ -422,8 +416,12 @@ impl NativeAudioSink {
                     if section_policy.is_some() {
                         self.section_submitted(audio_revision);
                     }
-                    self.resident.current_submission = Some((metadata.context, audio_revision));
-                    self.resident.submitted_loop = section_loop;
+                    self.resident.current_submission = Some(ResidentRuntimeLoop {
+                        output_identity,
+                        audio_revision,
+                        source_context: Some(metadata.context),
+                        section_loop,
+                    });
                     self.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.observe(
