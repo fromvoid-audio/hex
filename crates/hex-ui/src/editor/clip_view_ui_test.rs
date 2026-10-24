@@ -5,6 +5,108 @@ use hex_session::{CachedPeak, CachedWaveform, service::ViewState};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[gpui::test]
+fn audio_event_lower_body_paints_and_repaints_while_upper_rail_moves_range(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::bind_editor_keys);
+    let (handle, editor, _, clip) = audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let area = visual.debug_bounds("audio-events-waveform").unwrap();
+    let at = |x, y| {
+        point(
+            area.left() + area.size.width * x,
+            area.top() + px(22.0) + (area.size.height - px(22.0)) * y,
+        )
+    };
+    let drag = |visual: &mut VisualTestContext, from, to| {
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
+    drag(&mut visual, at(0.25, 0.8), at(0.75, 0.8));
+    assert!(
+        visual.debug_bounds("audio-event-time-selection").is_some(),
+        "event body must paint a range without relying on the ruler"
+    );
+    let rail = visual.debug_bounds("audio-event-range-handle").unwrap();
+    assert!(
+        (rail.size.height - (area.size.height - px(22.0)) * hex_widgets::RANGE_HANDLE_FRACTION)
+            .abs()
+            < px(1.0)
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "painting a range must not move audio"
+        )
+    });
+    visual.simulate_keystrokes("cmd-4"); // local snap off; main Arrangement grid is unchanged.
+    for (from, to) in [(0.35, 0.55), (0.65, 0.4)] {
+        drag(&mut visual, at(from, 0.8), at(to, 0.8));
+        let selection = visual.debug_bounds("audio-event-time-selection").unwrap();
+        assert!((selection.left() - at(from.min(to), 0.0).x).abs() < px(2.0));
+        assert!((selection.right() - at(from.max(to), 0.0).x).abs() < px(2.0));
+        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    }
+    drag(&mut visual, at(0.5, 0.1), at(0.6, 0.1));
+    editor.read_with(cx, |view, _| {
+        assert!(
+            matches!(view.last_enqueued_edit, Some(Command::EditAudioEvents {
+            clip: id, operation: hex_project::AudioEventEdit::MoveRange { start, end, destination },
+        }) if id == clip && start < end && destination > start)
+        );
+        assert_eq!(view.snap_grid, super::musical_time::SnapGrid::Adaptive);
+    });
+}
+
+#[gpui::test]
+fn audio_event_lower_body_preserves_reserved_leading_and_trailing_trims(cx: &mut TestAppContext) {
+    for leading in [true, false] {
+        let (handle, editor, _, clip) = audio_detail_fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("audio-events-waveform").unwrap();
+        let original = editor.read_with(cx, |view, _| {
+            *view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .clip(clip)
+                .unwrap()
+                .editable_audio_events()
+                .unwrap()
+                .events
+                .first()
+                .unwrap()
+        });
+        let y = area.top() + px(22.0) + (area.size.height - px(22.0)) * 0.8;
+        let down = point(
+            if leading {
+                area.left() + px(2.0)
+            } else {
+                area.right() - px(2.0)
+            },
+            y,
+        );
+        let up = point(
+            area.left() + area.size.width * if leading { 0.2 } else { 0.8 },
+            y,
+        );
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| assert!(matches!(view.last_enqueued_edit, Some(Command::EditAudioEvents {
+            clip: id, operation: hex_project::AudioEventEdit::Trim { event, start, end },
+        }) if id == clip && event == original.id && if leading { start > original.start && end == original.end } else { start == original.start && end < original.end })));
+    }
+}
+
+#[gpui::test]
 fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
     cx: &mut TestAppContext,
 ) {
