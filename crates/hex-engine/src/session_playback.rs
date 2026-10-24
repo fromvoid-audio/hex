@@ -327,6 +327,16 @@ pub(crate) fn candidate_group_reservation(
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
+
+/// Control-owned source conversion ceiling, separate from general WAV export.
+pub const MAX_FINITE_BOUNCE_FRAMES: u64 = 8_000_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenderConstruction {
+    Interactive,
+    LinearExport,
+    FiniteBounce,
+}
 pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
 
 /// Bounded result for targets canceled because their stable track or clip was
@@ -1186,20 +1196,64 @@ impl SessionPlayback {
         )
     }
 
+    /// Construct an offline finite source bounce. Source-loop occurrences use
+    /// the same bounded query/render path as Arrangement playback. Transport
+    /// wrapping and Session commands remain disabled, as in linear export.
+    /// The exporter owns the declared output window and finite publication;
+    /// this constructor admits its size before any runtime allocation.
+    pub fn new_finite_arrangement_bounce(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        frames: u64,
+    ) -> Result<Self, SessionPlaybackError> {
+        if frames == 0 || frames > MAX_FINITE_BOUNCE_FRAMES {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "source bounce exceeds its finite frame limit",
+            ));
+        }
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_render_policy(revision, RenderConstruction::FiniteBounce, resources, None)
+    }
+
     fn new_with_policy_scoped_and_loop(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         transient_loop: Option<hex_project::LoopRegion>,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy(
+            revision,
+            if linear_arrangement_export {
+                RenderConstruction::LinearExport
+            } else {
+                RenderConstruction::Interactive
+            },
+            resources,
+            transient_loop,
+        )
+    }
+
+    fn new_with_render_policy(
+        revision: Arc<PreparedRevision>,
+        policy: RenderConstruction,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, SessionPlaybackError> {
+        let linear_arrangement_export = policy != RenderConstruction::Interactive;
         if revision.device_resource_scope != resources.map(|resources| resources.id()) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "device resource set differs from prepared revision",
             ));
         }
-        // Ordinary linear construction reserves before allocation, then checks the actual
-        // assembled runtime below. Other existing constructor policies retain their budgets.
-        let linear_resource_allowance = if linear_arrangement_export && resources.is_some() {
+        // Scoped linear export and every finite bounce reserve before allocation,
+        // then check the actual runtime below. Interactive budgets stay unchanged.
+        let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
+            || policy == RenderConstruction::FiniteBounce
+        {
             Some(Self::linear_export_runtime_allowance(&revision)?)
         } else {
             None
@@ -1253,7 +1307,7 @@ impl SessionPlayback {
             None
         };
 
-        let mutable_arrangement_source_loop = linear_arrangement_export
+        let mutable_arrangement_source_loop = policy == RenderConstruction::LinearExport
             && arrangement_tracks
                 .iter()
                 .any(|track| track.has_mutable_looping_source());
