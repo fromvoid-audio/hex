@@ -353,7 +353,17 @@ impl Inputs<'_> {
         {
             return Err(SessionError::Invalid("resident publication cancelled"));
         }
-        let quoted = runtime_allowance(&snapshot.prepared, additional_runtime_bytes)?;
+        let quoted = if let Some(region) = playback.section_loop() {
+            hex_engine::SessionPlayback::section_runtime_allowance(&snapshot.prepared, region)
+                .map_err(|error| SessionError::NativeAudio(error.to_string()))?
+                .checked_add(additional_runtime_bytes)
+                .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+                .ok_or(SessionError::Invalid(
+                    "section runtime input allowance overflow",
+                ))?
+        } else {
+            runtime_allowance(&snapshot.prepared, additional_runtime_bytes)?
+        };
         if playback
             .accounted_session_runtime_bytes_on_control()
             .is_none_or(|bytes| bytes > quoted)
@@ -367,10 +377,8 @@ impl Inputs<'_> {
             .construction_bytes
             .checked_add(quoted)
             .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
-        let observation_quote =
-            hex_engine::PreparedPlaybackObservation::preparation_storage_quote_on_control(
-                &snapshot.prepared,
-            )
+        let observation_quote = playback
+            .observation_storage_quote_on_control()
             .map_err(SessionError::Engine)?;
         self.admit(
             &snapshot.resources,
@@ -380,7 +388,8 @@ impl Inputs<'_> {
             observation_quote,
         )?;
         let observation = Arc::new(
-            hex_engine::PreparedPlaybackObservation::prepare_on_control(&snapshot.prepared)
+            playback
+                .prepare_observation_on_control()
                 .map_err(SessionError::Engine)?,
         );
         let runtime = runtime
@@ -1916,6 +1925,7 @@ mod tests {
             project_revision: loaded.state.revision,
             destination_frame: 129,
             start_playing: true,
+            section: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -2274,6 +2284,159 @@ mod tests {
     }
 
     #[test]
+    fn section_seek_publication_uses_actual_loop_metadata_allowance() {
+        thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                use hex_project::{BeatTime, Created, Editor, Tempo};
+                let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::ZERO,
+                        tempo: Tempo::new(123_000_000).unwrap(),
+                    })
+                    .unwrap();
+                let Created::Track(track) = editor
+                    .execute(Command::AddMidiTrack {
+                        name: "keys".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                let Created::Scene(scene) = editor
+                    .execute(Command::AddScene {
+                        name: "source".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("scene")
+                };
+                let Created::SessionClip(clip) = editor
+                    .execute(Command::CreateSessionMidiClip {
+                        track,
+                        scene,
+                        name: "notes".into(),
+                        source_length: BeatTime::from_quarters(1024).unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("clip")
+                };
+                // Enough independently authored metadata to exceed incidental slack
+                // in the old canonical-loop runtime quote, while density stays tiny.
+                for note in 0..512 {
+                    editor
+                        .execute(Command::AddMidiNote {
+                            clip,
+                            start: BeatTime::from_quarters(note * 2).unwrap(),
+                            duration: BeatTime::ONE,
+                            pitch: 60,
+                            channel: 0,
+                            velocity: 100,
+                        })
+                        .unwrap();
+                }
+                let bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES * 3;
+                let session = Session::from_prepared(editor.project().clone(), 8, 1024, Vec::new())
+                    .unwrap()
+                    .with_native_reservation(crate::ResidentNativeReservation {
+                        storage: hex_engine::AudioStorageLedgerReservation {
+                            data_rows: 512,
+                            handle_rows: 64,
+                            root_rows: 64,
+                            max_retained_bytes: bytes,
+                            max_construction_peak_bytes: bytes,
+                        },
+                        max_scan_frames: 1024,
+                    })
+                    .unwrap();
+                let observed = Arc::new(Observed::default());
+                let mut sink = OfflineSink {
+                    observed: Arc::clone(&observed),
+                    pending: None,
+                };
+                let context = hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 1,
+                };
+                let mut current = session
+                    .publish_resident_snapshot(
+                        context,
+                        &mut sink,
+                        sampler_export::Admission::default(),
+                        None,
+                    )
+                    .unwrap();
+                let captured = Snapshot {
+                    prepared: Arc::clone(&current.prepared),
+                    resources: current.resources.capture_on_control(bytes).unwrap(),
+                    inputs: current.inputs.clone(),
+                };
+                let region = hex_project::LoopRegion::new(0, 23_415, true).unwrap();
+                let runtime = hex_engine::SessionPlayback::prepare_section_arrangement_preroll(
+                    Arc::clone(&captured.prepared),
+                    Some(&captured.resources),
+                    region,
+                    0,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                let playback = Playback::from_interactive_arrangement_preroll(runtime).unwrap();
+                assert!(
+                    playback
+                        .accounted_session_runtime_bytes_on_control()
+                        .unwrap()
+                        > runtime_allowance(&captured.prepared, 0).unwrap(),
+                    "fixture must catch canonical quote reuse"
+                );
+                let accepted = session
+                    .publish_resident_seek(
+                        &captured,
+                        session.project(),
+                        &mut current,
+                        playback,
+                        &mut sink,
+                        sampler_export::Admission::default(),
+                        ResidentPublicationMetadata {
+                            context,
+                            device_preview: None,
+                            tuning_preview: None,
+                            seek_request: Some(1),
+                            stopped_restore: false,
+                            computer_keyboard_request: None,
+                            gain_recording_track: None,
+                            requires_preroll: false,
+                        },
+                        ResidentPublicationPolicy::SectionWhenReady {
+                            fence: ResidentFreshRuntimeFence {
+                                output_identity: 1,
+                                active_audio_revision: 1,
+                                route_generation: 0,
+                                admitted_command_ticket: 0,
+                            },
+                            quantization: hex_engine::LaunchQuantization::Quarter,
+                        },
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    accepted,
+                    ResidentPublicationAcceptance::OfflineRetained
+                ));
+                assert_eq!(
+                    sink.pending.as_ref().unwrap().0.section_loop(),
+                    Some(region)
+                );
+                assert!(session.project().loop_region().is_none());
+                assert_eq!(observed.accepted.lock().unwrap().len(), 2);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_revision() {
         let observed = Arc::new(Observed::default());
         let mut sink = OfflineSink {
@@ -2327,6 +2490,7 @@ mod tests {
             project_revision: 1,
             destination_frame: 129,
             start_playing: true,
+            section: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
@@ -2432,6 +2596,7 @@ mod tests {
             project_revision: 1,
             destination_frame: 129,
             start_playing: true,
+            section: None,
             fence: ResidentFreshRuntimeFence {
                 output_identity: 1,
                 active_audio_revision: 1,
