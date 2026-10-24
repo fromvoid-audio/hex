@@ -290,6 +290,9 @@ impl Workspace {
                         .w(px(140.0))
                         .h(px(22.0))
                         .track_focus(&self.focus)
+                        .border_1()
+                        .border_color(rgb(theme::control_style().surface))
+                        .focus(|style| style.border_color(rgb(theme::control_style().focus_marker)))
                         .opacity(if self.enabled { 1.0 } else { 0.4 })
                         .on_mouse_down(
                             gpui::MouseButton::Left,
@@ -394,6 +397,9 @@ impl Workspace {
                         .w(px(20.0))
                         .h(px(20.0))
                         .track_focus(&self.focus)
+                        .border_1()
+                        .border_color(rgb(theme::control_style().surface))
+                        .focus(|style| style.border_color(rgb(theme::control_style().focus_marker)))
                         .opacity(if self.enabled { 1.0 } else { 0.4 })
                         .tooltip(move |_, cx| {
                             cx.new(|_| {
@@ -401,7 +407,12 @@ impl Workspace {
                             })
                             .into()
                         })
-                        .on_click(cx.listener(|s, _, _, cx| s.press(cx)))
+                        .on_click(cx.listener(|s, _, window, cx| {
+                            if s.enabled {
+                                s.focus.focus(window);
+                                s.press(cx);
+                            }
+                        }))
                         .on_key_down(cx.listener(|s, e: &gpui::KeyDownEvent, _, cx| {
                             if matches!(e.keystroke.key.as_str(), "enter" | "space") {
                                 s.press(cx);
@@ -419,6 +430,9 @@ impl Workspace {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .track_focus(&self.focus)
+                    .border_1()
+                    .border_color(rgb(theme::control_style().surface))
+                    .focus(|style| style.border_color(rgb(theme::control_style().focus_marker)))
                     .on_key_down(cx.listener(|s, e: &gpui::KeyDownEvent, _, cx| {
                         if !s.enabled {
                             return;
@@ -623,7 +637,10 @@ mod tests {
         let button = visual.debug_bounds("workspace-button").unwrap();
         assert_eq!(button.size.width, px(20.0));
         assert_eq!(button.size.height, px(20.0));
+        // A click must restore this control's keyboard target after toolbar focus.
+        visual.update(|window, _| window.blur());
         visual.simulate_click(button.center(), Modifiers::default());
+        visual.update(|window, cx| view.read_with(cx, |s, _| assert!(s.focus.is_focused(window))));
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         view.read_with(&visual, |s, _| {
