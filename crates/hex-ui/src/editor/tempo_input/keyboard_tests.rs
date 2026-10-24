@@ -72,6 +72,20 @@ fn focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm(cx: &mu
         assert!(numeric.is_editing());
         assert!(view.last_enqueued_edit.is_none(), "arrow draft stays local");
     });
+    visual.simulate_keystrokes("shift-down");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.project_tempo_control
+                .as_ref()
+                .unwrap()
+                .entity
+                .read(cx)
+                .display_text(),
+            "120.9",
+            "Shift is fine even for a Command-fine opt-in field"
+        );
+    });
+    visual.simulate_keystrokes("shift-up");
     visual.simulate_keystrokes("cmd-down cmd-down cmd-up down");
     visual.simulate_keystrokes("enter");
     pump(&editor, &mut visual);

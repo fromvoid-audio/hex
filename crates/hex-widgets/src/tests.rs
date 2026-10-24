@@ -1029,6 +1029,134 @@ fn stationary_value_click_enters_text_edit_without_dragging(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn numeric_arrow_keys_step_idle_and_typed_values_across_presentations(cx: &mut TestAppContext) {
+    for presentation in [
+        NumericControlPresentation::Knob,
+        NumericControlPresentation::CompactDial,
+        NumericControlPresentation::MicroDial,
+        NumericControlPresentation::WideMicroDial,
+        NumericControlPresentation::HorizontalSlider,
+        NumericControlPresentation::CompactSlider,
+        NumericControlPresentation::LabeledSlider,
+        NumericControlPresentation::FilledSlider,
+        NumericControlPresentation::InlineValue,
+        NumericControlPresentation::VerticalSlider,
+        NumericControlPresentation::DeviceMeters,
+    ] {
+        let spec =
+            NumericSpec::new(-100.0, 100.0, 0.0, NumericScale::Linear, 2, None::<&str>).unwrap();
+        let (handle, control) =
+            open_numeric_control_appearance(cx, presentation.kind(), spec, 0.0, presentation);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let value = visual.debug_bounds("test-control-value");
+        let target = value.unwrap_or_else(|| {
+            visual
+                .debug_bounds("test-control")
+                .expect("numeric control")
+        });
+        visual.simulate_click(target.center(), Modifiers::default());
+        visual.simulate_keystrokes("escape up");
+        assert_eq!(
+            control.read_with(cx, |c, _| c.value()),
+            1.0,
+            "{presentation:?}: normal step"
+        );
+        visual.simulate_keystrokes("shift-down");
+        assert_eq!(
+            control.read_with(cx, |c, _| c.value()),
+            0.9,
+            "{presentation:?}: fine step"
+        );
+        let Some(value) = value else {
+            assert_eq!(
+                presentation,
+                NumericControlPresentation::DeviceMeters,
+                "only the bare meter lacks a text input"
+            );
+            continue;
+        };
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|app| {
+            app.subscribe(&control, move |_, event, _| {
+                observed.borrow_mut().push((event.phase, event.value))
+            })
+        });
+        visual.simulate_click(value.center(), Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("2.5");
+        visual.simulate_keystrokes("up shift-down");
+        control.read_with(cx, |c, _| {
+            assert!(c.is_editing());
+            assert_eq!(
+                c.display_text(),
+                "3.40",
+                "{presentation:?}: typed draft steps"
+            );
+            assert_eq!(c.value(), 0.9, "draft stays local");
+        });
+        assert!(
+            events.borrow().is_empty(),
+            "draft arrows do not create history"
+        );
+        visual.simulate_keystrokes("enter");
+        assert_eq!(control.read_with(cx, |c, _| c.value()), 3.4);
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[
+                (crate::NumericEventPhase::Begin, 0.9),
+                (crate::NumericEventPhase::Change, 3.4),
+                (crate::NumericEventPhase::Commit, 3.4),
+            ]
+        );
+    }
+}
+
+#[gpui::test]
+fn numeric_arrow_keys_preserve_invalid_composition_disabled_and_cancelled_drafts(
+    cx: &mut TestAppContext,
+) {
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let value = visual.debug_bounds("test-control-value").unwrap();
+    visual.simulate_click(value.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("invalid");
+    visual.simulate_keystrokes("up shift-down");
+    control.read_with(cx, |c, _| assert_eq!(c.display_text(), "invalid"));
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.25");
+    visual.simulate_keystrokes("shift-up");
+    control.read_with(cx, |c, _| assert_eq!(c.display_text(), "0.35"));
+    visual.update(|window, app| {
+        control.update(app, |c, cx| {
+            gpui::EntityInputHandler::replace_and_mark_text_in_range(
+                c,
+                Some(0..4),
+                "0.5",
+                None,
+                window,
+                cx,
+            );
+        })
+    });
+    visual.simulate_keystrokes("up shift-down");
+    control.read_with(cx, |c, _| {
+        assert_eq!(c.display_text(), "0.5");
+        assert!(c.marked.is_some(), "composition retains input custody");
+        assert_eq!(c.value(), 0.0);
+    });
+    visual.simulate_keystrokes("escape");
+    assert_eq!(control.read_with(cx, |c, _| c.value()), 0.0);
+    control.update(cx, |c, cx| c.set_enabled(false, cx));
+    visual.simulate_keystrokes("up shift-up");
+    assert_eq!(control.read_with(cx, |c, _| c.value()), 0.0);
+}
+
+#[gpui::test]
 fn owner_finish_edit_commits_valid_text_once_and_preserves_invalid_text(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     let phases = Rc::new(RefCell::new(Vec::new()));
