@@ -50,7 +50,7 @@ impl AudioTransformPreparation {
         let projection = AudioViewProjection::new(clip, project.tempo_map())?;
         let origin = projection.root_origin();
         let root = occurrence_edit(edit, origin, self, project.tempo_map())?;
-        let audio = self.prepare_audio(project, &root, asset, source)?;
+        let audio = self.prepare_audio_at_tempo(project.tempo_map(), &root, asset, source)?;
         if audio.frames().len() as u64 != root.projected_domain(project.tempo_map())?.1 {
             return Err(Invalid(
                 "audio preview root differs from canonical projection",

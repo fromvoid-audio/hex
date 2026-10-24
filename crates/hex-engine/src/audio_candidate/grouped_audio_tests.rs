@@ -127,8 +127,14 @@ fn candidate(
             max_construction_peak_bytes: limits.max_construction_data_bytes,
         })
         .unwrap();
-    let originals: u64 = media.values().map(|audio| audio.frames().len() as u64).sum();
-    assert_eq!(cell.resident_pcm_capacity_frames().unwrap(), originals + quote.prepared_pcm_frames);
+    let originals: u64 = media
+        .values()
+        .map(|audio| audio.frames().len() as u64)
+        .sum();
+    assert_eq!(
+        cell.resident_pcm_capacity_frames().unwrap(),
+        originals + quote.prepared_pcm_frames
+    );
     (cell, quote, limits)
 }
 #[test]
