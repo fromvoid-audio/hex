@@ -420,7 +420,8 @@ pub enum Command {
         gain: f32,
     },
     /// Replace all project tempo points and retain musical clip onsets.
-    /// Unwarped audio keeps its source processing and natural frame duration.
+    /// Audio keeps its source processing; colliding tails are non-destructively
+    /// cropped at the next placed clip's onset, preserving all clip identities.
     SetProjectTempo {
         tempo: crate::Tempo,
     },

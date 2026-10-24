@@ -83,6 +83,15 @@ Reviewed evidence reuse must identify the original tested inputs and assumptions
 The runner's `--reuse-report SUMMARY.json` is narrower: it accepts an original
 complete runtime report for a prose-only continuation with matching executable
 inputs and guarded dependencies. It does not compose arbitrary per-owner reports.
+Each report records `native_acceptance_opt_in` from the actual runner environment,
+without publishing fixture paths or signing credentials. Reuse requires an
+explicit `false` in the original report and its reuse receipt. Missing historical
+flags are unknown: retain the old report and run fresh checks. Any current
+`HEX_VST3_*` or `HEX_TEST_SIGNING_IDENTITY` opt-in refuses reuse before target
+preparation or stage execution, including when the environment changed after
+plan resolution. External fixture/receipt/SDK bytes and Keychain state can change
+at the same path; those checks require fresh observations. Ordinary fresh runs
+and direct qualification of complete full audits retain their existing workflow.
 Neither reviewed merge evidence nor a merge certificate replaces the full audit
 required by [qualified native delivery](test-builds.md).
 
@@ -92,9 +101,8 @@ build/configuration, mixed UI/core or unknown inputs, and new/missing/nested tes
 modules retain comprehensive discovery. Full/release profiles always discover all
 modules. The summary records selected and excluded groups and exact selectors.
 
-Explicit native acceptance inputs (`HEX_VST3_MACOS_RECEIPT`,
-`HEX_VST3_DISCOVERY_RECEIPT`, `HEX_VST3_PACKAGE_SCANNER`,
-`HEX_VST3_PACKAGE_FIXTURES`, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
+Explicit native acceptance inputs (any nonempty `HEX_VST3_*`, including partial
+SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
 

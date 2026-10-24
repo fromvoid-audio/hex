@@ -2,12 +2,11 @@
 //! Nonvisual numeric/text/color utilities are exercised through their controls.
 use hex_widgets::{
     DeviceLayout, DeviceSectionSurface, DialLayout, DiscreteControlAppearance as Discrete,
-    NumericControlAppearance as Appearance, NumericControlKind as Kind, NumericDragAxis as Axis,
-    NumericScale as Scale,
+    NumericControlAppearance as Appearance, NumericControlKind as Kind, NumericScale as Scale,
 };
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Demo {
-    Numeric(Kind, Appearance, DialLayout, Scale, Axis),
+    Numeric(Kind, Appearance, DialLayout, Scale),
     Toggle(Discrete),
     Selector(Discrete),
     Bars,
@@ -40,7 +39,6 @@ pub(super) fn inventory() -> Vec<Item> {
     for (name, appearance) in [
         ("standard knob", Appearance::Standard),
         ("compact dial", Appearance::CompactDial),
-        ("mini dial", Appearance::MiniDial),
         ("micro dial", Appearance::MicroDial),
         ("wide micro dial", Appearance::WideMicroDial),
         ("inline value", Appearance::InlineValue),
@@ -53,7 +51,6 @@ pub(super) fn inventory() -> Vec<Item> {
                 appearance,
                 DialLayout::ReadoutGap,
                 Scale::Linear,
-                Axis::Vertical,
             ),
         );
     }
@@ -118,30 +115,9 @@ pub(super) fn inventory() -> Vec<Item> {
         add(
             "numeric",
             name,
-            Demo::Numeric(
-                kind,
-                appearance,
-                layout,
-                scale,
-                if kind == Kind::HorizontalSlider {
-                    Axis::Horizontal
-                } else {
-                    Axis::Vertical
-                },
-            ),
+            Demo::Numeric(kind, appearance, layout, scale),
         );
     }
-    add(
-        "numeric",
-        "horizontal scrub dial",
-        Demo::Numeric(
-            Kind::Knob,
-            Appearance::CompactDial,
-            DialLayout::ReadoutGap,
-            Scale::Linear,
-            Axis::Horizontal,
-        ),
-    );
     for (name, appearance) in [
         ("standard toggle", Discrete::Standard),
         ("compact button", Discrete::CompactButton),
