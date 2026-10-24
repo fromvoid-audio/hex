@@ -329,7 +329,7 @@ fn valid_transport_buffer(callback: &prepared::Callback, samples: usize, channel
     })
 }
 
-fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
+pub(crate) fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
     callback: &mut prepared::Callback,
     output: &mut [T],
     source: &mut [Frame],
@@ -358,6 +358,7 @@ where
         rendered.is_ok() && copy_host_chunk(output, source, channels)
     };
     let _ = callback.finish_spectrum_block(capture_start, valid);
+    callback.finish_midi_recording_quantum(valid);
     if !valid {
         output.fill(T::from_sample(0.0));
         source.fill([0.0; 2]);
@@ -903,3 +904,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "device_midi_recording_tests.rs"]
+mod midi_recording_tests;

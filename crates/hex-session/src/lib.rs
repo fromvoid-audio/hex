@@ -11,6 +11,7 @@
 //! identity; successful canonical preparation is distinct from actual native publication and
 //! acknowledgment.
 pub mod gain_recording;
+pub mod midi_recording;
 
 use hex_engine::{Audio, Project as PlaybackProject};
 use hex_media::{

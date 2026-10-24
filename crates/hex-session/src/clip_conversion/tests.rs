@@ -64,7 +64,8 @@ fn fixture() -> (Session, hex_project::TrackId, ClipId) {
     (session, track, clip)
 }
 fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_engine::Frame> {
-    let mut playback = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+    // The independent ordinary Arrangement owner is the source-sound oracle.
+    let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut result = vec![[0.0; 2]; frames];
     for chunk in result.chunks_mut(137) {
@@ -356,19 +357,18 @@ fn looped_and_mutable_bounces_chase_history_and_isolate_other_clips() {
                     state,
                 })
                 .unwrap();
-        } else {
-            session
-                .command(Command::SetMidiClipSource {
-                    clip,
-                    source_length: beat(1),
-                    source_start: BeatTime::ZERO,
-                    loop_start: BeatTime::ZERO,
-                    loop_end: beat(1),
-                    looping: true,
-                    length: beat(3),
-                })
-                .unwrap();
         }
+        session
+            .command(Command::SetMidiClipSource {
+                clip,
+                source_length: beat(1),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: beat(1),
+                looping: true,
+                length: beat(3),
+            })
+            .unwrap();
         let before = session.compile_prepared_revision(None).unwrap();
         let (start, frames) = session.project().midi_bounce_range(clip).unwrap();
         let expected = pcm(before, (start + frames) as usize);
