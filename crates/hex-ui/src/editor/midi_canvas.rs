@@ -1712,7 +1712,7 @@ impl EditorView {
             )])
             .children([self.midi_button(
                 if self.midi_audition.enabled { "a+" } else { "a" },
-                "toggle note audition · selection plays up to 17 notes · physical keyboard takes priority",
+                "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
                 cx.listener(|v, _, window, cx| {
                     v.midi_audition.enabled = !v.midi_audition.enabled;
                     v.cancel_midi_audition();

@@ -166,7 +166,9 @@ impl EditorView {
             self.cancel_midi_audition();
             return Some(true);
         }
-        if self.computer_keyboard.physical_notes().next().is_some() {
+        if self.computer_keyboard.physical_notes().next().is_some()
+            || self.controller_wants_live_notes()
+        {
             return None;
         }
         if self.midi_audition.active.is_some() {

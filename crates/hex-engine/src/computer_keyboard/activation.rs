@@ -20,15 +20,15 @@ impl KeyboardActivationClock {
     pub fn revoke_reserved_prefix(&self) {
         self.revoked.fetch_max(self.reserved.load(Acquire), AcqRel);
     }
-    fn permits(&self, epoch: u64) -> bool {
+    pub(super) fn permits(&self, epoch: u64) -> bool {
         epoch != 0 && epoch > self.revoked.load(Acquire) && epoch <= self.reserved.load(Acquire)
     }
 }
 
 #[derive(Debug)]
 pub(super) struct OutputActivation {
-    clock: Arc<KeyboardActivationClock>,
-    epoch: AtomicU64,
+    pub(super) clock: Arc<KeyboardActivationClock>,
+    pub(super) epoch: AtomicU64,
 }
 impl ComputerKeyboardInput {
     /// Allocate the input on control, using only the output's scalar clock. This retains no
@@ -82,6 +82,25 @@ impl ComputerKeyboardInput {
             word.store(0, SeqCst);
         }
         self.sequence.store(after, SeqCst);
+    }
+    /// Share a still-permitted output epoch between physical and hardware input.
+    /// Only a revoked epoch requires a fresh reservation and cleared old words.
+    pub fn ensure_output_activation_on_control(&self) -> Result<(), Invalid> {
+        if self.is_note_audition() {
+            return Err(Invalid("note audition requires a fresh input"));
+        }
+        if self.is_cancelled() {
+            return Err(Invalid("computer keyboard input is cancelled"));
+        }
+        let activation = self
+            .output_activation
+            .as_ref()
+            .ok_or(Invalid("computer keyboard input is not output bound"))?;
+        if activation.clock.permits(activation.epoch.load(Acquire)) {
+            Ok(())
+        } else {
+            self.reactivate_on_control()
+        }
     }
     /// A fresh physical press after priority Stop reuses the admitted root. Terminal lifecycle
     /// cancellation is irreversible. Clear old words before publishing the new activation epoch.
