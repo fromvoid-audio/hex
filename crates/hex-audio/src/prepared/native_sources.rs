@@ -147,12 +147,12 @@ impl PublicationControl {
 }
 impl Callback {
     pub(super) fn return_requested_native_sources(&mut self) {
-        for _ in 0..hex_lattice::MAX_STATEFUL_PROCESSORS {
+        for index in 0..hex_lattice::MAX_STATEFUL_PROCESSORS {
             if self.held_retirement.is_some() || self.retired.is_full() {
                 return;
             }
-            let Some(endpoint) = self.native_sources.take_requested() else {
-                return;
+            let Some(endpoint) = self.native_sources.take_requested(index) else {
+                continue;
             };
             self.return_publication(ReturnedPublication::Native(endpoint));
         }

@@ -38,10 +38,14 @@ fn setup() -> (
     control
         .configure_native_source_preparation(2, source_reservation())
         .unwrap();
+    let binding = source(&mut control, identity());
+    (control, data, errors, retirement, binding)
+}
+fn source(control: &mut Control, identity: hex_lattice::ProcessorInstanceIdentity) -> Binding {
     let (build, source, preparation) = input();
     let binding = control
         .begin_native_source_preparation(
-            identity(),
+            identity,
             12,
             &build,
             source,
@@ -60,7 +64,7 @@ fn setup() -> (
         )
         .unwrap();
     control.start_native_effect(binding).unwrap();
-    (control, data, errors, retirement, binding)
+    binding
 }
 fn recover(control: &mut Control, binding: Binding) -> crate::NativeSourcePreparationReturn {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -255,4 +259,47 @@ fn actual_installed_native_endpoint_requires_both_carriers_and_completed_backend
                 .is_none()
         );
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn native_endpoint_return_visits_sources_after_a_vacant_cell() {
+    let _serial = serial();
+    let (mut control, mut data, errors, mut retirement, first) = setup();
+    let second = source(
+        &mut control,
+        hex_lattice::ProcessorInstanceIdentity::new(hex_lattice::ProcessorChainOwner::Main, 3)
+            .unwrap(),
+    );
+    for binding in [first, second] {
+        control.publish_native_source_endpoint(binding).unwrap();
+        allocation_free(|| {
+            data.owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+    }
+    for binding in [first, second] {
+        assert!(control.retire_native_source_preparation(binding));
+        allocation_free(|| {
+            data.owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        let returned = recover(&mut control, binding);
+        assert!(matches!(
+            returned.disposal,
+            native::PreparationDisposal::Reaped(_)
+        ));
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    }
+    allocation_free(|| {
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| assert!(!callback.has_native_source_endpoints()))
+    });
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
 }

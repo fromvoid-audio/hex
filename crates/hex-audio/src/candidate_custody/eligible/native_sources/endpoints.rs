@@ -61,15 +61,16 @@ impl NativeEndpointBank {
         *destination = Some(endpoint);
         Ok(())
     }
-    pub(crate) fn take_requested(&mut self) -> Option<NativeEndpointEnvelope> {
-        self.entries
-            .iter_mut()
-            .find(|entry| {
-                entry
-                    .as_ref()
-                    .is_some_and(NativeEndpointEnvelope::return_requested)
-            })?
-            .take()
+    pub(crate) fn take_requested(&mut self, index: usize) -> Option<NativeEndpointEnvelope> {
+        let entry = self.entries.get_mut(index)?;
+        if entry
+            .as_ref()
+            .is_some_and(NativeEndpointEnvelope::return_requested)
+        {
+            entry.take()
+        } else {
+            None
+        }
     }
     pub(crate) fn has_endpoints(&self) -> bool {
         self.entries.iter().any(Option::is_some)
