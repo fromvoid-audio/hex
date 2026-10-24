@@ -127,7 +127,7 @@ impl EditorView {
             - self.browser_content_width(window)
             - self.track_header_width())
         .max(0.0);
-        if state.project.tracks().is_empty() {
+        if self.arrangement_track_index(0).is_none() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
             let grid = super::musical_time::grid_lines(
                 &state.project,
@@ -142,7 +142,12 @@ impl EditorView {
                 self.snap_grid,
             );
             let overview = super::overview::widget(
-                super::overview::cached(&self.overview_cache, self.project_generation, &state),
+                super::overview::cached(
+                    &self.overview_cache,
+                    self.project_generation,
+                    &state,
+                    self.arrangement_focus_range(),
+                ),
                 empty_viewport,
                 self.track_header_width(),
                 cx.entity(),
@@ -184,7 +189,11 @@ impl EditorView {
                                 .justify_center()
                                 .text_xs()
                                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text("no tracks · import audio or add a track")),
+                                .child(theme::text(if self.arrangement_focus.enabled {
+                                    "no clips in loop range · q restores all tracks"
+                                } else {
+                                    "no tracks · import audio or add a track"
+                                })),
                         ),
                     cx,
                 )]);
@@ -203,7 +212,12 @@ impl EditorView {
             self.snap_grid,
         );
         let overview = super::overview::widget(
-            super::overview::cached(&self.overview_cache, self.project_generation, &state),
+            super::overview::cached(
+                &self.overview_cache,
+                self.project_generation,
+                &state,
+                self.arrangement_focus_range(),
+            ),
             viewport,
             self.track_header_width(),
             cx.entity(),
@@ -217,6 +231,9 @@ impl EditorView {
             rows_entity
                 .update(cx, |this, cx| {
                     let Some(state) = this.state.as_ref().cloned() else {
+                        return div();
+                    };
+                    let Some(index) = this.arrangement_track_index(index) else {
                         return div();
                     };
                     let Some(track) = state.project.tracks().get(index) else {

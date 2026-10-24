@@ -29,6 +29,7 @@ struct ContentKey {
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
+    focus_range: Option<(u64, u64)>,
 }
 
 #[derive(Default)]
@@ -194,6 +195,7 @@ impl EditorView {
             selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
+            focus_range: self.arrangement_focus_range(),
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
         };
         let parent = cx.weak_entity();

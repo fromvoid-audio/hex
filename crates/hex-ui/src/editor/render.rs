@@ -372,6 +372,7 @@ impl Render for EditorView {
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
+        self.reconcile_arrangement_focus();
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -626,7 +627,7 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
-                if view.track_overview_key(event, window, cx) {
+                if view.arrangement_view_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }

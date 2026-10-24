@@ -776,7 +776,8 @@ impl super::EditorView {
         self.drag_lanes
             .iter()
             .filter(|(track, _)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.arrangement_track_visible(**track)
+                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find_map(|(track, lane)| {
                 lane_contains_pointer(pointer_x, pointer_y, *lane).then_some((*track, *lane))
@@ -1037,7 +1038,10 @@ impl super::EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        let tracks = state.project.tracks();
+        let tracks = self
+            .arrangement_tracks(&state.project)
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>();
         if tracks.is_empty() {
             return Some((None, timeline, pointer_y));
         }

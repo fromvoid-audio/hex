@@ -175,7 +175,10 @@ impl EditorView {
         let top = self.track_scroll.list.logical_scroll_top();
         let mut row_y = bounds.top - f32::from(top.offset_in_item);
         let mut index = top.item_ix;
-        for track in tracks.iter().skip(index) {
+        for (_, track) in self
+            .arrangement_tracks(&self.state.as_ref()?.project)
+            .skip(index)
+        {
             let height = self.track_height(track.id());
             if y < row_y + height / 2.0 {
                 break;
@@ -183,6 +186,7 @@ impl EditorView {
             row_y += height;
             index += 1;
         }
+        let index = self.arrangement_track_index(index).unwrap_or(tracks.len());
         let members = source.ids();
         if tracks
             .get(index)
@@ -330,7 +334,11 @@ impl EditorView {
             .map(|p| p.destination)
             .or_else(|| self.track_reorder.gesture.as_ref()?.destination)?;
         let bounds = self.arrangement_bounds?;
-        let tracks = self.state.as_ref()?.project.tracks();
+        let state = self.state.as_ref()?;
+        let tracks = self
+            .arrangement_tracks(&state.project)
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>();
         let index = match destination.before {
             Some(id) => tracks.iter().position(|t| t.id() == id)?,
             None => tracks.len(),

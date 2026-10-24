@@ -1001,7 +1001,8 @@ impl EditorView {
             .drag_lanes
             .iter()
             .filter(|(track, _)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.arrangement_track_visible(**track)
+                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find(|(_, lane)| lane_contains(x, y, **lane))?;
         state.project.track(*track)?;
@@ -1076,12 +1077,18 @@ impl EditorView {
             .iter()
             .rev()
             .find_map(|clip| {
+                if !self.arrangement_clip_visible(clip.id()) {
+                    return None;
+                }
                 let preview = state.midi_preview.get(clip.id())?;
                 handle_hit(preview.frame_start, preview.frame_end, 4.0)
                     .map(|ordinary| (ordinary, false))
             })
             .or_else(|| {
                 track.clips().iter().rev().find_map(|clip| {
+                    if !self.arrangement_clip_visible(clip.id()) {
+                        return None;
+                    }
                     let end = clip.start().checked_add(clip.duration())?;
                     handle_hit(clip.start(), end, 3.0).map(|ordinary| {
                         (

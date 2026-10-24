@@ -1550,7 +1550,7 @@ impl EditorView {
             })
         };
         for clip in track.clips() {
-            if hides_group_member(clip.id()) {
+            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
                 continue;
             }
             let Some(end) = clip.start().checked_add(clip.duration()) else {
@@ -1608,7 +1608,7 @@ impl EditorView {
         }
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
-            if hides_group_member(clip.id()) {
+            if hides_group_member(clip.id()) || !self.arrangement_clip_visible(clip.id()) {
                 continue;
             }
             let Some(preview) = state.midi_preview.get(clip.id()) else {

@@ -31,6 +31,7 @@ pub(super) struct TrackLayout {
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
+    focus_range: Option<(u64, u64)>,
 }
 impl TrackLayout {
     fn active_heights(&self) -> &BTreeMap<TrackId, f32> {
@@ -114,14 +115,14 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
-    /// Bubble after child editors; never register a global H or Cmd-H binding.
-    pub(super) fn track_overview_key(
+    /// Arrangement-only H/Q after child input; modifiers, text and capture retain ownership.
+    pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if event.keystroke.key != "h"
+        if !matches!(event.keystroke.key.as_str(), "h" | "q")
             || event.keystroke.modifiers != Modifiers::default()
             || event.is_held
             || self.mode != super::EditorMode::Arrangement
@@ -172,6 +173,11 @@ impl EditorView {
         {
             return false;
         }
+        if event.keystroke.key == "q" {
+            self.toggle_arrangement_focus();
+            cx.notify();
+            return true;
+        }
         if self.track_layout.overview.take().is_none() {
             self.track_layout.overview = Some(BTreeMap::new());
         }
@@ -217,18 +223,26 @@ impl EditorView {
             self.track_layout.revision = None;
         }
         let revision = self.state.as_ref().map(|state| state.revision);
-        if self.track_layout.revision == revision {
+        let focus_range = self.arrangement_focus_range();
+        if self.track_layout.revision == revision && self.track_layout.focus_range == focus_range {
             return;
         }
         self.track_layout.revision = revision;
-        let ids = tracks.iter().map(|t| t.id()).collect::<Vec<_>>();
+        self.track_layout.focus_range = focus_range;
+        let ids = tracks
+            .iter()
+            .filter(|t| self.arrangement_track_visible(t.id()))
+            .map(|t| t.id())
+            .collect::<Vec<_>>();
         if self.track_layout.tracks != ids {
             if let Some(drag) = self.track_layout.drag.take() {
                 self.restore_track_resize(drag);
             }
-            self.track_layout.heights.retain(|id, _| ids.contains(id));
+            self.track_layout
+                .heights
+                .retain(|id, _| tracks.iter().any(|t| t.id() == *id));
             if let Some(heights) = self.track_layout.overview.as_mut() {
-                heights.retain(|id, _| ids.contains(id));
+                heights.retain(|id, _| tracks.iter().any(|t| t.id() == *id));
             }
             let mut top = self.track_scroll.list.logical_scroll_top();
             let anchor = self.track_layout.tracks.get(top.item_ix).copied();
@@ -251,6 +265,14 @@ impl EditorView {
             }
             self.track_scroll.list.scroll_to(top);
             self.track_layout.tracks = ids;
+        }
+        if let Some((id, offset)) = self.arrangement_focus.pending_restore.take()
+            && let Some(item_ix) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.list.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: offset,
+            });
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {

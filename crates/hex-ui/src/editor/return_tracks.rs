@@ -41,12 +41,23 @@ impl EditorView {
             cx.notify();
             return None;
         };
+        let Some(row_index) = self.arrangement_row_index(track_index) else {
+            // A canonical loop change can hide an open menu's track. Finalize
+            // through its existing owner before retiring that input surface.
+            if super::device_panel::finalize_send_controls_for_track(self, cx, track_id) {
+                self.send_menu_track = None;
+                self.focus.focus(window);
+            }
+            cx.notify();
+            return None;
+        };
         let body = self.arrangement_bounds?;
         let scroll_y = f32::from(self.track_scroll.offset().y);
         let expected_top = body.top
-            + state.project.tracks()[..track_index]
-                .iter()
-                .map(|track| self.track_height(track.id()))
+            + self
+                .arrangement_tracks(&state.project)
+                .take(row_index)
+                .map(|(_, track)| self.track_height(track.id()))
                 .sum::<f32>()
             + scroll_y;
         let expected_bottom = expected_top + self.track_height(track_id);
@@ -58,7 +69,7 @@ impl EditorView {
                 self.focus.focus(window);
             } else {
                 self.track_scroll
-                    .scroll_to_item(track_index, gpui::ScrollStrategy::Top);
+                    .scroll_to_item(row_index, gpui::ScrollStrategy::Top);
             }
             cx.notify();
             return None;

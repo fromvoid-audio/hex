@@ -364,7 +364,7 @@ pub(super) fn view(
                 .cursor(view.loop_rail_cursor)
                 .tooltip(|_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
-                        description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free".into(),
+                        description: "drag empty rail to set loop · drag bar to move · shift steps loop length · cmd-click toggles · cmd-drag is free · q focuses loop content".into(),
                     })
                     .into()
                 })
@@ -479,7 +479,9 @@ pub(super) fn view(
                     .inset_0(),
                 ),
         )
-        .child(div().w(px(view.track_header_width())).h_full());
+        .child(div().w(px(view.track_header_width())).h_full().text_xs().overflow_hidden()
+            .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+            .when(view.arrangement_focus.enabled, |row| row.child(theme::text("loop focus · q"))));
     #[cfg(feature = "ui-test-support")]
     let rail = rail.debug_selector(|| "arrangement-loop-rail-row".into());
     rail
