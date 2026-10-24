@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 41;
+pub const CURRENT_SCHEMA_VERSION: u32 = 42;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -144,10 +144,11 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema41 with finite directed clip content views, clip activation/windows, MIDI one-shot policies, fade positions, tuning and device asset
-/// and MIDI clip-volume inventories, preserving all active project capabilities.
+/// Encode schema42 with complete event fade domains over the directed-view,
+/// activation, musical, tuning and device inventories. Supported older files
+/// migrate in memory; saving uses the existing incompatible-format warning.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::content_views::encode(project)?)
+    encode_document(&schema::event_fades::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -280,7 +281,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     match header.version {
-        CURRENT_SCHEMA_VERSION => schema::content_views::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::event_fades::decode(bytes),
+        41 => schema::content_views::decode(bytes),
         40 => schema::clip_activation::decode(bytes),
         39 => schema::midi_one_shot::decode(bytes),
         38 => schema::fade_curve_positions::decode(bytes),

@@ -18,7 +18,7 @@ pub(super) struct FadeGesture {
     handle: Handle,
     original: ClipFade,
     source_frame_start: u64,
-    pointer_source_frame: u64,
+    pointer_source_frame: f64,
     origin_y: f32,
     pub(super) last_y: f32,
 }
@@ -59,6 +59,85 @@ fn destination_frame(
     }
     let at = u64::try_from(i128::from(event.start).checked_add(relative)?).ok()?;
     root.root_frame_at(at, tempo).ok()
+}
+// Continuous drawing/gesture coordinates, including virtual positions outside
+// the root. Only the final bounded ClipFade geometry is sent to the model. This
+// keeps curve motion sub-sample precise and permits a one-sample fade-out whose
+// two endpoint samples coincide. The canonical frame/beat queries remain the
+// authority inside each sample interval; no PCM mapping is changed here.
+fn clock_coordinate(root: &AudioClipEdit, frame: f64, tempo: &TempoMap) -> Option<f64> {
+    if !frame.is_finite() {
+        return None;
+    }
+    if matches!(root.domain.clock, hex_project::AudioDomainClock::Frames(_)) {
+        return Some(frame);
+    }
+    let total = root.root_frame_at(root.domain.clock.length(), tempo).ok()?;
+    if total == 0 {
+        return None;
+    }
+    let at = |sample: u64| -> Option<u64> {
+        if sample == 0 {
+            Some(0)
+        } else if sample == total {
+            Some(root.domain.clock.length())
+        } else {
+            root.root_position_at(sample, tempo).ok()
+        }
+    };
+    if frame <= 0.0 {
+        return Some(frame * at(1)? as f64).filter(|value| value.is_finite());
+    }
+    if frame >= total as f64 {
+        let step = root.domain.clock.length().checked_sub(at(total - 1)?)?;
+        return (step > 0)
+            .then_some(root.domain.clock.length() as f64 + (frame - total as f64) * step as f64);
+    }
+    let low = (frame.floor() as u64).min(total - 1);
+    let first = at(low)?;
+    Some(first as f64 + at(low + 1)?.checked_sub(first)? as f64 * (frame - low as f64))
+}
+fn frame_coordinate(root: &AudioClipEdit, raw: f64, tempo: &TempoMap) -> Option<f64> {
+    if !raw.is_finite() {
+        return None;
+    }
+    if matches!(root.domain.clock, hex_project::AudioDomainClock::Frames(_)) {
+        return Some(raw);
+    }
+    let total = root.root_frame_at(root.domain.clock.length(), tempo).ok()?;
+    if total == 0 {
+        return None;
+    }
+    let at = |sample: u64| -> Option<u64> {
+        if sample == 0 {
+            Some(0)
+        } else if sample == total {
+            Some(root.domain.clock.length())
+        } else {
+            root.root_position_at(sample, tempo).ok()
+        }
+    };
+    if raw <= 0.0 {
+        let step = at(1)?;
+        return (step > 0).then_some(raw / step as f64);
+    }
+    if raw >= root.domain.clock.length() as f64 {
+        let step = root.domain.clock.length().checked_sub(at(total - 1)?)?;
+        return (step > 0)
+            .then_some(total as f64 + (raw - root.domain.clock.length() as f64) / step as f64);
+    }
+    let guess = root
+        .root_frame_at(raw.round() as u64, tempo)
+        .ok()?
+        .min(total);
+    let low = if at(guess)? as f64 > raw {
+        guess.saturating_sub(1)
+    } else {
+        guess.min(total - 1)
+    };
+    let first = at(low)?;
+    let step = at(low + 1)?.checked_sub(first)?;
+    (step > 0).then_some(low as f64 + (raw - first as f64) / step as f64)
 }
 impl EditorView {
     pub(in crate::editor) fn event_fade_key_down(
@@ -106,12 +185,23 @@ impl EditorView {
         root: &AudioClipEdit,
         event: AudioEvent,
         x: f32,
-    ) -> Option<u64> {
-        let raw = self.event_pointer_position(x, self.audio_event_editor.grid != SnapGrid::Off)?;
-        let source = (i128::from(event.source_start) + i128::from(raw) - i128::from(event.start))
-            .clamp(0, i128::from(root.domain.clock.length()));
-        root.root_frame_at(source as u64, self.state.as_ref()?.project.tempo_map())
-            .ok()
+    ) -> Option<f64> {
+        let bounds = self.audio_event_editor.bounds?;
+        let width = f64::from(f32::from(bounds.size.width));
+        if !x.is_finite() || !width.is_finite() || width <= 0.0 {
+            return None;
+        }
+        let local = self.event_viewport(root);
+        let tempo = self.state.as_ref()?.project.tempo_map();
+        let first = root
+            .root_frame_at(root.view_start, tempo)
+            .ok()?
+            .checked_add(local.start)?;
+        let frame = first as f64
+            + (f64::from(x) - f64::from(f32::from(bounds.left()))) / width * local.length as f64;
+        let raw = clock_coordinate(root, frame, tempo)?
+            + (i128::from(event.source_start) - i128::from(event.start)) as f64;
+        frame_coordinate(root, raw, tempo).filter(|frame| frame.is_finite())
     }
     pub(super) fn event_update_fade_pointer(&mut self, x: f32, y: f32, platform: bool) {
         if !x.is_finite() || !y.is_finite() || !self.event_context_current() || self.edit_pending()
@@ -132,9 +222,10 @@ impl EditorView {
             return;
         };
         let Some(pointer) = self.fade_pointer_source_frame(&root, fade.event, x) else {
+            self.audio_event_editor.gesture = None;
             return;
         };
-        let delta = (i128::from(pointer) - i128::from(fade.pointer_source_frame)) as f64;
+        let delta = pointer - fade.pointer_source_frame;
         let dy = y - fade.origin_y;
         let height = self
             .audio_event_editor
@@ -384,7 +475,7 @@ impl EditorView {
                 * width)
                 .clamp(inset, width - inset)
                 / width;
-            let narrow = width < 16.0;
+            let narrow = width < 16.0 || controls.span() == 1;
             let y = match handle {
                 Handle::InTop => 20.0,
                 Handle::OutTop => {
