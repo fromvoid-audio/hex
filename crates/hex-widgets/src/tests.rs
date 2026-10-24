@@ -1887,6 +1887,93 @@ fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut Te
 }
 
 #[gpui::test]
+fn meter_gain_handle_protrudes_without_losing_endpoints_or_pointer_input(cx: &mut TestAppContext) {
+    for index in 0..2 {
+        let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
+        let (handle, control) = open_numeric_control_appearance(
+            cx,
+            NumericControlKind::VerticalSlider,
+            spec,
+            -12.0,
+            NumericControlPresentation::DeviceMeters,
+        );
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = cx.update(|app| {
+            app.subscribe(&control, move |_, event, _| {
+                captured.borrow_mut().push(*event)
+            })
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let well_selector = if index == 0 {
+            "test-control-input-meter"
+        } else {
+            "test-control-output-meter"
+        };
+        let handle_selector = if index == 0 {
+            "test-control-input-meter-gain-handle"
+        } else {
+            "test-control-output-meter-gain-handle"
+        };
+        for gain in [-60.0, 24.0, -12.0] {
+            control.update(cx, |control, cx| {
+                control.set_external_value(gain, cx).unwrap();
+                control.set_meter_readout(
+                    crate::DeviceMeterReadout {
+                        index,
+                        height: 184.0,
+                        gain_db: gain as f32,
+                        warning: STYLE.accent,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            let well = visual.debug_bounds(well_selector).unwrap();
+            let handle = visual
+                .debug_bounds(handle_selector)
+                .expect("visible gain handle");
+            assert_eq!(well.size.width, px(8.0));
+            assert_eq!(handle.size.width, px(10.0));
+            assert_eq!(handle.size.height, px(2.0));
+            assert_eq!(handle.left(), well.left());
+            assert_eq!(handle.right(), well.right() + px(2.0));
+            assert!(handle.top() >= well.top() && handle.bottom() <= well.bottom());
+            if gain == -60.0 {
+                assert_eq!(handle.bottom(), well.bottom());
+            }
+            if gain == 24.0 {
+                assert_eq!(handle.top(), well.top());
+            }
+        }
+        let well = visual.debug_bounds(well_selector).unwrap();
+        let handle = visual.debug_bounds(handle_selector).unwrap();
+        // Start on the protruding portion, outside the signal well.
+        let start = point(well.right() + px(1.0), handle.center().y);
+        let moved = point(start.x, start.y - px(24.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        control.read_with(cx, |control, _| {
+            assert!(control.value() > -12.0);
+            assert!(!control.is_interacting());
+        });
+        let phases: Vec<_> = events.borrow().iter().map(|event| event.phase).collect();
+        assert_eq!(phases.first(), Some(&crate::NumericEventPhase::Begin));
+        assert!(phases.contains(&crate::NumericEventPhase::Change));
+        assert_eq!(phases.last(), Some(&crate::NumericEventPhase::Commit));
+        let count = events.borrow().len();
+        control.update(cx, |control, cx| control.set_enabled(false, cx));
+        visual.run_until_parked();
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        assert_eq!(events.borrow().len(), count);
+    }
+}
+
+#[gpui::test]
 fn accessibility_numeric_uses_real_domain_and_one_event_transaction(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     let phases = Rc::new(RefCell::new(Vec::new()));
