@@ -4,6 +4,43 @@ use super::*;
 const Q: u64 = 1_u64 << 32;
 
 #[test]
+fn post_loop_session_launch_admits_the_faster_canonical_tempo() {
+    let mut snapshot = session_only_project(&project(1.0, 0, Q)).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+    snapshot.tempo_points.push(TempoPoint::new(
+        BeatTime::from_quarters(2).unwrap(),
+        Tempo::new(240_000_000).unwrap(),
+    ));
+    let looped = legacy_project_from_snapshot(snapshot.clone()).unwrap();
+    snapshot.loop_region = None;
+    let linear = legacy_project_from_snapshot(snapshot).unwrap();
+    let prepare = |p: &Project| {
+        Arc::new(
+            PreparedRevision::prepare(p, &BTreeMap::new(), Arc::new(crate::SineTable::new()), None)
+                .unwrap(),
+        )
+    };
+    let mut output = [[0.0; 2]; 513];
+    let mut expected = [[0.0; 2]; 513];
+    for (source, buffer) in [(&looped, &mut output), (&linear, &mut expected)] {
+        let revision = prepare(source);
+        let clip = revision.session().midi_clips()[0].id;
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(72_000)).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(buffer).unwrap();
+    }
+    assert_eq!(output, expected);
+    assert!(output.iter().any(|frame| frame[0] != 0.0));
+}
+
+#[test]
 fn interactive_cursor_after_loop_keeps_absolute_history_and_forward_pcm() {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
