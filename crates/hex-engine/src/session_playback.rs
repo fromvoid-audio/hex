@@ -711,7 +711,7 @@ impl SessionPlayback {
             route_scratch: _,
             device_chains,
             return_chains,
-            main_chain: _,
+            main_chain,
             return_scratch: _,
             return_effect_tails,
             mutable_instruments,
@@ -751,7 +751,16 @@ impl SessionPlayback {
         // Main remains inline Session storage; the exact fresh chain is
         // inventoried separately. Native handoff still refuses owning Main/
         // Return/compensation moves until their origin transfer is closed.
-        if live_expression.is_some() || computer_keyboard.is_some() {
+        let prepared_main = &self.revision.arrangement().main_device_chain;
+        if main_chain.len() != prepared_main.len()
+            || main_chain
+                .storage_view()
+                .entries()
+                .zip(prepared_main.iter())
+                .any(|(actual, prepared)| !actual.matches_prepared_runtime_storage(prepared))
+            || live_expression.is_some()
+            || computer_keyboard.is_some()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         for index in 0..device_chains.len() {

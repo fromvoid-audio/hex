@@ -11572,6 +11572,9 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
     // Both prepared and runtime Main are real populated chains, not placeholders.
     assert!(!main.revision.arrangement().main_device_chain.is_empty());
     assert!(main.main_chain.storage_view().entries().next().is_some());
+    // Fresh matched Main storage is now supported; owning handoff remains
+    // separately refused until its origin transfer is represented.
+    main.visit_candidate_groups(&mut |_, _, _| Ok(())).unwrap();
     let refuses_without_emitting = |runtime: &SessionPlayback| {
         let mut emitted = 0;
         assert_eq!(
@@ -11583,7 +11586,6 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
         );
         assert_eq!(emitted, 0);
     };
-    refuses_without_emitting(&main);
     std::mem::swap(&mut empty.main_chain, &mut main.main_chain);
     refuses_without_emitting(&empty); // runtime-only population
     refuses_without_emitting(&main); // prepared-only population
