@@ -16,6 +16,7 @@ impl PublicationControl {
         &self,
         expected: AppliedAudioSource,
     ) -> Result<StoppedEditFence, &'static str> {
+        self.status.retire_stopped_edit_on_control();
         if !self.native_custody
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)

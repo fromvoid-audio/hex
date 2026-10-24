@@ -1610,10 +1610,7 @@ impl PublicationControl {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
-        self.status.sampler_edit.retire_abort_on_control();
-        if !self.status.sampler_edit.active() {
-            self.status.publication_pending.release_native_epoch();
-        }
+        self.status.retire_stopped_edit_on_control();
         let mut count = 0;
         for _ in 0..RETIRED {
             let publication = self

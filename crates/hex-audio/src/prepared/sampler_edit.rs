@@ -216,6 +216,12 @@ impl Fence {
     }
 }
 impl Status {
+    pub(super) fn retire_stopped_edit_on_control(&self) {
+        self.sampler_edit.retire_abort_on_control();
+        if !self.sampler_edit.active() {
+            self.publication_pending.release_native_epoch();
+        }
+    }
     /// Scalar transport exclusion during a stopped edit, including accepted
     /// publication awaiting exact installation retirement. This grants no source custody.
     pub fn stopped_edit_pending(&self) -> bool {
@@ -247,6 +253,7 @@ impl PublicationControl {
         revision: u64,
         allow_playing: bool,
     ) -> Result<StoppedEditFence, &'static str> {
+        self.status.retire_stopped_edit_on_control();
         if self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
             || self.status.publication_pending.recording_active()
@@ -293,6 +300,7 @@ impl PublicationControl {
         &self,
         expected: AppliedAudioSource,
     ) -> Result<StoppedEditFence, &'static str> {
+        self.status.retire_stopped_edit_on_control();
         if self.status.closing.load(Acquire) || self.status.applied_audio_source() != Some(expected)
         {
             return Err("sampler edit output is not current");
@@ -312,9 +320,7 @@ impl PublicationControl {
     }
     pub fn release_stopped_edit_fence(&self, token: StoppedEditFence) {
         self.status.sampler_edit.release(token);
-        if !self.status.sampler_edit.active() {
-            self.status.publication_pending.release_native_epoch();
-        }
+        self.status.retire_stopped_edit_on_control();
     }
     /// Terminal cancellation after authored commit, before old output drain.
     pub fn commit_sampler_edit_fence(&self, token: StoppedEditFence) -> Result<(), &'static str> {
@@ -425,6 +431,27 @@ mod tests {
             sampler_edit_gate,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }
+    }
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn aborted_native_gate_releases_recording_and_publication_admission_on_control() {
+        let (_control, callback) = channel(48_000).unwrap();
+        let status = &callback.status;
+        assert!(status.publication_pending.reserve_native_epoch());
+        let fence = &status.sampler_edit;
+        let token = fence.begin_source(source(), 0, false, false, true).unwrap();
+        fence.release(token);
+        status.retire_stopped_edit_on_control();
+        assert!(!status.publication_pending.reserve_publication());
+        fence.acknowledge(token.operation, Some(source()), false, 0, false, 0);
+        status.retire_stopped_edit_on_control();
+        assert!(status.publication_pending.reserve_midi());
+        assert!(!status.publication_pending.reserve_native_epoch());
+        status.publication_pending.midi_finished();
+        let ordinary = fence.begin(source(), 0).unwrap();
+        assert!(status.publication_pending.reserve_publication());
+        status.publication_pending.store(false, Release);
+        fence.release(ordinary);
     }
     #[test]
     fn earlier_witness_cannot_acknowledge_a_later_gate_on_the_same_source() {
