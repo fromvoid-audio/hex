@@ -9,6 +9,10 @@ impl RendererRuntime {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
+        let volume_clock = project.midi_volume_timing();
+        let volume_timing = volume_clock
+            .as_ref()
+            .map(|clock| clock as &dyn crate::prepared_tempo::MidiTempoBreaks);
         for chain in self
             .device_chains
             .iter_mut()
@@ -63,7 +67,13 @@ impl RendererRuntime {
                             } else {
                                 track.render_audio_range(frame, end, &mut audio);
                             }
-                            track.render_instrument_range(frame, end, &mut generator, None);
+                            track.render_instrument_range(
+                                frame,
+                                end,
+                                &mut generator,
+                                None,
+                                volume_timing,
+                            )?;
                             let processed = compensation.process_track(
                                 index,
                                 track,

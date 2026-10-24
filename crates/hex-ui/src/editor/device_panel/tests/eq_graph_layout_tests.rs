@@ -119,6 +119,14 @@ fn eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map(
             format!("eq-response-{}-plot", device.value()).into_boxed_str(),
         ))
         .unwrap();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("eq-response-{}-axis-x-0", device.value()).into_boxed_str(),
+            ))
+            .is_some(),
+        "the 20 hz endpoint must not collide with a nonexistent previous label"
+    );
     let mut labels = Vec::new();
     for i in 0..32 {
         if let Some(bounds) = visual.debug_bounds(Box::leak(

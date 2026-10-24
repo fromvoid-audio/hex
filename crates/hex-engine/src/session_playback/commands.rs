@@ -707,6 +707,18 @@ impl SessionPlayback {
                                 failure = Some(SessionPlaybackError::UnknownTrack);
                                 return;
                             };
+                            let clip_gain = match super::clip_gain::arrangement(
+                                track,
+                                self.revision.session().timing(),
+                                span.clip,
+                                source_frame,
+                            ) {
+                                Ok((gain, _)) => gain,
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return;
+                                }
+                            };
                             if let Err(error) = append_release(
                                 &mut self.release_scratch,
                                 self.release_capacity,
@@ -729,6 +741,7 @@ impl SessionPlayback {
                                     ),
                                     continuation: None,
                                     inline_tuning_owned: false,
+                                    clip_gain,
                                     voice,
                                 },
                             ) {
@@ -825,6 +838,15 @@ impl SessionPlayback {
                             self.revision.gain_recording_track(),
                             self.gain_recording_override,
                         );
+                        let clip_gain = super::clip_gain::at_cut(
+                            self,
+                            index,
+                            owner,
+                            span.clip,
+                            source_frame,
+                            performance_frame,
+                        )?
+                        .0;
                         append_release(
                             &mut self.release_scratch,
                             self.release_capacity,
@@ -836,6 +858,7 @@ impl SessionPlayback {
                                 mix,
                                 continuation: None,
                                 inline_tuning_owned: false,
+                                clip_gain,
                                 voice,
                             },
                         )?;
