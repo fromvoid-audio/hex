@@ -5,7 +5,7 @@ use gpui::{
     Bounds, Div, MouseButton, MouseDownEvent, Window, canvas, div, fill, point, prelude::*, px,
     rgb, size,
 };
-use hex_project::Project;
+use hex_project::{Project, TrackId};
 use std::{cell::RefCell, rc::Rc};
 
 const OVERVIEW_COLUMNS: usize = 128;
@@ -25,6 +25,7 @@ pub(super) struct OverviewCache {
     track_count: usize,
     cells: Vec<u8>,
     focus_ranges: Rc<[(u64, u64)]>,
+    revealed_track: Option<TrackId>,
 }
 
 impl OverviewCache {
@@ -32,14 +33,21 @@ impl OverviewCache {
         generation: u64,
         state: &ViewState,
         focus_ranges: Rc<[(u64, u64)]>,
+        revealed_track: Option<TrackId>,
     ) -> Self {
         Self {
             generation,
             revision: state.revision,
             horizon: state.timeline_frames.max(1),
             track_count: state.project.tracks().len(),
-            cells: filtered_cells(&state.project, state.timeline_frames.max(1), &focus_ranges),
+            cells: filtered_cells(
+                &state.project,
+                state.timeline_frames.max(1),
+                &focus_ranges,
+                revealed_track,
+            ),
             focus_ranges,
+            revealed_track,
         }
     }
 
@@ -48,8 +56,10 @@ impl OverviewCache {
         generation: u64,
         state: &ViewState,
         focus_ranges: &[(u64, u64)],
+        revealed_track: Option<TrackId>,
     ) -> bool {
         self.focus_ranges.as_ref() == focus_ranges
+            && self.revealed_track == revealed_track
             && self.generation == generation
             && self.revision == state.revision
             && self.horizon == state.timeline_frames.max(1)
@@ -70,16 +80,23 @@ impl OverviewCache {
 
 #[cfg(test)]
 fn overview_cells(project: &Project, horizon: u64) -> Vec<u8> {
-    filtered_cells(project, horizon, &[])
+    filtered_cells(project, horizon, &[], None)
 }
-fn filtered_cells(project: &Project, horizon: u64, focus_ranges: &[(u64, u64)]) -> Vec<u8> {
+fn filtered_cells(
+    project: &Project,
+    horizon: u64,
+    focus_ranges: &[(u64, u64)],
+    revealed_track: Option<TrackId>,
+) -> Vec<u8> {
     let mut cells = vec![0; OVERVIEW_CELLS];
     let track_count = project.tracks().len();
     if track_count == 0 || horizon == 0 {
         return cells;
     }
     for (track_index, track) in project.tracks().iter().enumerate() {
-        if !super::arrangement_focus::track_intersects_sections(project, track, focus_ranges) {
+        if revealed_track != Some(track.id())
+            && !super::arrangement_focus::track_intersects_sections(project, track, focus_ranges)
+        {
             continue;
         }
         let row = track_index
@@ -282,15 +299,21 @@ pub(super) fn cached(
     generation: u64,
     state: &ViewState,
     focus_ranges: Rc<[(u64, u64)]>,
+    revealed_track: Option<TrackId>,
 ) -> Rc<OverviewCache> {
     let mut cache = cache.borrow_mut();
     if let Some(current) = cache
         .as_ref()
-        .filter(|current| current.matches(generation, state, &focus_ranges))
+        .filter(|current| current.matches(generation, state, &focus_ranges, revealed_track))
     {
         return Rc::clone(current);
     }
-    let next = Rc::new(OverviewCache::for_state(generation, state, focus_ranges));
+    let next = Rc::new(OverviewCache::for_state(
+        generation,
+        state,
+        focus_ranges,
+        revealed_track,
+    ));
     *cache = Some(Rc::clone(&next));
     next
 }
@@ -351,23 +374,35 @@ mod tests {
     fn focused_overview_keeps_all_clips_on_intersecting_tracks_and_rebuilds() {
         let project = overview_project();
         assert!(
-            super::filtered_cells(&project, 300_000, &[(1, 100)])
+            super::filtered_cells(&project, 300_000, &[(1, 100)], None)
                 .iter()
                 .all(|c| *c == 0)
         );
         assert_eq!(
-            super::filtered_cells(&project, 300_000, &[(130_000, 140_000)]),
+            super::filtered_cells(&project, 300_000, &[(130_000, 140_000)], None),
             overview_cells(&project, 300_000),
             "the retained track includes MIDI beyond the selected interval"
         );
+        let revealed = project.tracks().last().unwrap().id();
+        assert_eq!(
+            super::filtered_cells(&project, 300_000, &[(1, 100)], Some(revealed)),
+            overview_cells(&project, 300_000)
+        );
         let state = view_state(project, 1, 300_000);
         let cache = std::cell::RefCell::new(None);
-        let all = super::cached(&cache, 1, &state, Rc::from([]));
-        let focused = super::cached(&cache, 1, &state, Rc::from([(1, 100)]));
+        let all = super::cached(&cache, 1, &state, Rc::from([]), None);
+        let focused = super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None);
         assert!(!Rc::ptr_eq(&all, &focused));
+        let with_revealed = super::cached(&cache, 1, &state, Rc::from([(1, 100)]), Some(revealed));
+        assert!(!Rc::ptr_eq(&focused, &with_revealed));
+        assert!(!Rc::ptr_eq(
+            &with_revealed,
+            &super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None)
+        ));
+        let focused = super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None);
         assert!(Rc::ptr_eq(
             &focused,
-            &super::cached(&cache, 1, &state, Rc::from([(1, 100)]))
+            &super::cached(&cache, 1, &state, Rc::from([(1, 100)]), None)
         ));
     }
 
@@ -426,23 +461,24 @@ mod tests {
             3,
             &first,
             Rc::from([]),
+            None,
         ))));
         assert!(
             cache
                 .borrow()
                 .as_ref()
-                .is_some_and(|cache| cache.matches(3, &first, &[]))
+                .is_some_and(|cache| cache.matches(3, &first, &[], None))
         );
         // Viewport state is deliberately not part of the cache key.
         let unchanged = view_state(project.clone(), 7, 192_000);
-        let first_read = super::cached(&cache, 3, &first, Rc::from([]));
-        let after_pan = super::cached(&cache, 3, &unchanged, Rc::from([]));
+        let first_read = super::cached(&cache, 3, &first, Rc::from([]), None);
+        let after_pan = super::cached(&cache, 3, &unchanged, Rc::from([]), None);
         assert!(Rc::ptr_eq(&first_read, &after_pan));
         let changed_revision = view_state(project.clone(), 8, 192_000);
-        let next_revision = super::cached(&cache, 3, &changed_revision, Rc::from([]));
+        let next_revision = super::cached(&cache, 3, &changed_revision, Rc::from([]), None);
         assert!(!Rc::ptr_eq(&first_read, &next_revision));
         let changed_generation = view_state(project, 7, 192_000);
-        let next_generation = super::cached(&cache, 4, &changed_generation, Rc::from([]));
+        let next_generation = super::cached(&cache, 4, &changed_generation, Rc::from([]), None);
         assert!(!Rc::ptr_eq(&next_revision, &next_generation));
     }
 }
