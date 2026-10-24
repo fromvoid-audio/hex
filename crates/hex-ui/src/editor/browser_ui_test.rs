@@ -2241,7 +2241,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
                 length: clip.length(),
             },
             grab_offset: Rc::new(Cell::new(Some(0))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
             scroll: Default::default(),
