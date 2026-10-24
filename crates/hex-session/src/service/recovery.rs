@@ -150,7 +150,34 @@ pub(super) fn open_source_with_limits(
     {
         return Err("project sample rate differs from the active audio device".into());
     }
-    if mode == DocumentAudioMode::VerifiedStreaming {
+    let reservation = match mode {
+        DocumentAudioMode::Resident => reservation.or(current.source_plan_reservation()),
+        DocumentAudioMode::VerifiedStreaming => reservation,
+    };
+    let required_pcm = project.assets().try_fold(0u64, |total, asset| {
+        let frames = if asset.source_sample_rate() == project.sample_rate() {
+            asset.playback_frames()
+        } else {
+            asset
+                .source_frames()
+                .checked_add(asset.playback_frames())
+                .ok_or("project pcm frame count overflow")?
+        };
+        total
+            .checked_add(frames)
+            .ok_or("project pcm frame count overflow")
+    })?;
+    // This control-only source plan preserves the ordinary document policy. Native
+    // publication must additionally compose its actual resource/page owners before
+    // adopting such a replacement; no metadata scalar can promise that readiness.
+    let ordinary_file_backed = mode == DocumentAudioMode::Resident
+        && reservation.is_some()
+        && !has_originals
+        && required_pcm > frame_allowance;
+    if ordinary_file_backed && native.is_some() {
+        return Err("file-backed ordinary reopening requires native page publication".into());
+    }
+    if mode == DocumentAudioMode::VerifiedStreaming || ordinary_file_backed {
         let reservation = reservation
             .ok_or("verified source reservation is required")?
             .validate()
@@ -364,7 +391,7 @@ pub(super) fn open_source_with_limits(
     if current.shutdown.load(Ordering::Acquire) {
         return Err("project open cancelled".into());
     }
-    let session = if has_originals {
+    let mut session = if has_originals {
         Session::from_prepared_with_original_sources(
             project,
             history_capacity,
@@ -390,6 +417,14 @@ pub(super) fn open_source_with_limits(
         )
     }
     .map_err(|error| error.to_string().to_lowercase())?;
+    session.source_reservation = reservation
+        .map(SourcePlanReservation::validate)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    if session.source_reservation.is_some() {
+        session.semantic_source_epoch =
+            crate::audio_sources::fresh_source_epoch().map_err(|e| e.to_string())?;
+    }
     Ok((
         session.with_shutdown(Arc::clone(&current.shutdown)),
         project_dir,

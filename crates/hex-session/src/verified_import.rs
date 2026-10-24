@@ -131,6 +131,52 @@ impl Session {
         limits.max_manifest_bytes = limits.max_manifest_bytes.min(remaining);
         Ok(limits)
     }
+    /// Choose file backing before a whole-source allocation exceeds the working set.
+    /// Verification still owns no native reader/page endpoint or publication authority.
+    pub(crate) fn plan_file_import(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Option<VerifiedAudioFile>, SessionError> {
+        let Some(reservation) = self.source_reservation else {
+            return Ok(None);
+        };
+        if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(SessionError::Invalid("file source import cancelled"));
+        }
+        let remaining = self
+            .max_resident_frames
+            .saturating_sub(self.resident_frames);
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming || remaining == 0 {
+            return self.verify_import(path.to_path_buf()).map(Some);
+        }
+        let required = {
+            // The resident decoder supports additional encodings. Preserve that path when
+            // this fixed-frame header reader cannot inspect a source that may still fit.
+            let Ok(reader) = hex_media::WavFrameReader::open(path, reservation.reader.reader)
+            else {
+                return Ok(None);
+            };
+            let output = hex_project::converted_frame_count(
+                reader.source_frames(),
+                reader.sample_rate(),
+                self.project().sample_rate(),
+            )?;
+            if reader.sample_rate() == self.project().sample_rate() {
+                reader.source_frames()
+            } else {
+                reader
+                    .source_frames()
+                    .checked_add(output)
+                    .ok_or(SessionError::Invalid("import pcm frame count overflow"))?
+            }
+        };
+        if required > remaining {
+            self.verify_import(path.to_path_buf()).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn verify_import(&self, path: PathBuf) -> Result<VerifiedAudioFile, SessionError> {
         self.verify_import_with_pending(path, &[], || false)
     }
@@ -333,9 +379,8 @@ impl Session {
     }
 }
 
-// Only newly created Verified audio tracks shed the generated default
-// instrument. Project/history observes one transaction, and existing tracks or
-// Resident imports never pass through this helper.
+// File-backed sources use the same typed prepared-import commands and destination
+// laws as decoded sources. IDs/default track behavior remain owned by the project.
 fn verified_import_command(
     source: &VerifiedAudioFile,
     destination: VerifiedImportDestination,

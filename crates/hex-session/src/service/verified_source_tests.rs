@@ -622,3 +622,111 @@ fn ordinary_reserved_sources_verify_full_files_without_decoding_or_changing_mode
         "ordinary plans receive the same validation"
     );
 }
+
+#[test]
+fn ordinary_partial_working_set_places_full_sources_and_bad_files_preserve_history() {
+    let files = Files::new();
+    let a = files.wav("first.wav", 48_000, 4, 1000);
+    let b = files.wav("second.wav", 48_000, 4, 2000);
+    let service = Service::new(48_000, 16, 6).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(a));
+    let track = first.state.project.tracks()[0].id();
+    let added = run(
+        &service,
+        Request::ImportToTrack {
+            path: b,
+            track,
+            start: 4,
+        },
+    );
+    assert_eq!(added.state.project.track(track).unwrap().clips().len(), 2);
+    let snapshot = added.state.canonical_audio_source.as_ref().unwrap();
+    let pcm: usize = snapshot
+        .sources()
+        .values()
+        .map(|source| match source {
+            AudioSourceBinding::Resident(audio) => audio.frames().len(),
+            AudioSourceBinding::VerifiedFile(source) => {
+                assert_eq!(source.playback_frames(), 4);
+                0
+            }
+        })
+        .sum();
+    assert_eq!(
+        pcm, 4,
+        "the second complete source does not consume the partial PCM allowance"
+    );
+    let before = added.state.project.snapshot();
+    let malformed = files.0.join("malformed.wav");
+    fs::write(&malformed, b"not a wave file").unwrap();
+    service
+        .submit(Request::ImportToTrack {
+            path: malformed,
+            track,
+            start: 8,
+        })
+        .unwrap();
+    let refused = next(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.revision, added.state.revision);
+    assert_eq!(refused.state.project.snapshot(), before);
+    assert_eq!(
+        (refused.state.can_undo, refused.state.can_redo),
+        (added.state.can_undo, added.state.can_redo)
+    );
+}
+
+#[test]
+fn ordinary_small_reopen_retains_source_planning_for_the_next_complete_drop() {
+    let files = Files::new();
+    let a = files.wav("reopen-first.wav", 48_000, 4, 1000);
+    let b = files.wav("reopen-next.wav", 48_000, 4, 2000);
+    let service = Service::new(48_000, 16, 4).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(a));
+    let track = first.state.project.tracks()[0].id();
+    let saved = files.0.join("small.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let opened = run(&service, Request::Open(saved));
+    assert_eq!(opened.state.project.track(track).unwrap().clips().len(), 1);
+    let added = run(
+        &service,
+        Request::ImportToTrack {
+            path: b,
+            track,
+            start: 4,
+        },
+    );
+    assert_eq!(added.state.project.track(track).unwrap().clips().len(), 2);
+    assert_eq!(
+        added
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .audio_mode(),
+        DocumentAudioMode::Resident
+    );
+}

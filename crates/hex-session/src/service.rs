@@ -6340,9 +6340,8 @@ fn import(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6364,13 +6363,6 @@ fn import(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6400,9 +6392,8 @@ fn import_to_track(
     overwrite: bool,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6425,13 +6416,6 @@ fn import_to_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6464,9 +6448,8 @@ fn import_to_new_track(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6498,13 +6481,6 @@ fn import_to_new_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6533,9 +6509,8 @@ fn import_to_session(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6554,13 +6529,6 @@ fn import_to_session(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
