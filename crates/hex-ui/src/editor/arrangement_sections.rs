@@ -120,10 +120,7 @@ impl Sections {
         if self.selected.is_some_and(|id| self.selection.contains(&id)) {
             &self.selection
         } else {
-            self.selected
-                .as_ref()
-                .map(std::slice::from_ref)
-                .unwrap_or(&[])
+            self.selected.as_slice()
         }
     }
     pub(super) fn held(&self) -> bool {
