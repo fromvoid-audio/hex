@@ -1341,6 +1341,13 @@ mod tests {
         );
         visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
+        // Responsive toolbar geometry may place that occlusion probe over a
+        // real picker control. Its valid edit can reflow the modal's status;
+        // use the role's current painted position for the next independent click.
+        let center = visual
+            .debug_bounds("theme-role-secondary")
+            .unwrap()
+            .center();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         assert!(
             !editor.read_with(cx, |view, _| view.scrub_active()),

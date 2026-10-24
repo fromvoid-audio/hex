@@ -51,13 +51,16 @@ struct PlotCache {
 }
 struct Resize {
     y: f32,
+    preferred: f32,
     original: f32,
     generation: u64,
 }
-fn bounded_height(requested: f32, viewport: f32) -> f32 {
+fn bounded_height(requested: f32, viewport: gpui::Size<Pixels>) -> f32 {
     // Supported minimum editor is540px. Reserve toolbar/status, detail/mixer/
-    // routing rows and usable workspace; the graph itself retains46px or more.
-    let max = (viewport - 420.0).clamp(72.0, 300.0);
+    // routing rows and usable workspace; the graph itself retains72px or more.
+    let extra_toolbar =
+        super::header::toolbar_height(f32::from(viewport.width)) - super::header::TOOLBAR_HEIGHT;
+    let max = (f32::from(viewport.height) - 420.0 - extra_toolbar).clamp(72.0, 300.0);
     if requested.is_finite() {
         requested.clamp(72.0, max)
     } else {
@@ -65,14 +68,15 @@ fn bounded_height(requested: f32, viewport: f32) -> f32 {
     }
 }
 impl EditorView {
-    fn project_spectrum_chrome(&self) -> f32 {
+    fn project_spectrum_chrome(&self, window: &Window) -> f32 {
         let returns = self
             .state
             .as_ref()
             .map_or(0, |s| s.project.return_tracks().len());
-        // Title22, transport26, status22, overview24, arrangement header42,
+        // Title22, responsive transport, status22, overview24, arrangement header42,
         // main track44, mixer26 and detail tabs22. Routing owns its own height.
-        228.0
+        202.0
+            + super::header::toolbar_height(f32::from(window.viewport_size().width))
             + if self.clip_view_open && !self.device_panel_active {
                 4.0
             } else {
@@ -84,7 +88,7 @@ impl EditorView {
         self.project_spectrum.expanded
             && self.project_spectrum.detail_height.is_some_and(|detail| {
                 f32::from(window.viewport_size().height)
-                    - self.project_spectrum_chrome()
+                    - self.project_spectrum_chrome(window)
                     - detail
                     - 60.0
                     < 72.0
@@ -95,13 +99,15 @@ impl EditorView {
             return 22.0;
         }
         let viewport = f32::from(window.viewport_size().height);
-        let desired = bounded_height(self.project_spectrum.height, viewport);
+        let desired = bounded_height(self.project_spectrum.height, window.viewport_size());
         // Keep complete populated details whenever a useful graph fits. At the
         // minimum window, the detail viewport scrolls instead of crushing tracks.
         self.project_spectrum
             .detail_height
             .map_or(desired, |detail| {
-                desired.min((viewport - self.project_spectrum_chrome() - detail - 60.0).max(72.0))
+                desired.min(
+                    (viewport - self.project_spectrum_chrome(window) - detail - 60.0).max(72.0),
+                )
             })
     }
     /// Empty space yields to the timeline; real controls remain scrollable.
@@ -116,7 +122,7 @@ impl EditorView {
         };
         preferred.min(
             (viewport
-                - self.project_spectrum_chrome()
+                - self.project_spectrum_chrome(window)
                 - self.project_spectrum_height(window)
                 - workspace)
                 .max(48.0),
@@ -202,7 +208,7 @@ impl EditorView {
     }
     pub(super) fn cancel_project_spectrum_resize(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(resize) = self.project_spectrum.resize.take() {
-            self.project_spectrum.height = resize.original;
+            self.project_spectrum.height = resize.preferred;
             cx.notify();
             true
         } else {
@@ -223,7 +229,7 @@ impl EditorView {
         }
         self.project_spectrum.height = bounded_height(
             resize.original + f32::from(position.y) - resize.y,
-            f32::from(window.viewport_size().height),
+            window.viewport_size(),
         );
         cx.notify();
         true
@@ -492,9 +498,12 @@ impl EditorView {
                                 window.focus(&view.focus);
                                 view.project_spectrum.resize = Some(Resize {
                                     y: f32::from(event.position.y),
+                                    // Cancellation restores the preference, even when the
+                                    // responsive toolbar clamps its current painted height.
+                                    preferred: view.project_spectrum.height,
                                     original: bounded_height(
                                         view.project_spectrum.height,
-                                        f32::from(window.viewport_size().height),
+                                        window.viewport_size(),
                                     ),
                                     generation: view.project_generation,
                                 });
