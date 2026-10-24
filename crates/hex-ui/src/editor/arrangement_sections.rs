@@ -165,7 +165,7 @@ impl EditorView {
                     }
                     let captured = down.update(cx, |view, cx| {
                         if view.gain_numeric_editing(cx)
-                            || view.sample_bpm_editing(cx)
+                            || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
                         {
                             return false;
@@ -482,7 +482,7 @@ impl EditorView {
         }
         if self.sections.naming()
             || self.gain_numeric_editing(cx)
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.project_tempo_editing(cx)
         {
             return false;

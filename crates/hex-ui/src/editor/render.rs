@@ -432,6 +432,7 @@ impl Render for EditorView {
                     })),
             )
             .child(workspace_content.flex_1().min_w_0());
+        self.restore_clip_control_focus(window, cx);
         let modifier_entity = cx.entity();
         let console_drag_entity = cx.entity();
         let trim_pointer_entity = cx.entity();
@@ -463,7 +464,7 @@ impl Render for EditorView {
                 "hex_context_menu"
             } else if self.project_tempo_editing(cx) {
                 "hex_project_tempo_editor hex_text_editing"
-            } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
+            } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
