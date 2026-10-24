@@ -46,6 +46,8 @@ fn geometry(
     minimum: f32,
 ) -> Option<LoopControls> {
     if viewport.length == 0
+        || !lane.left.is_finite()
+        || !lane.top.is_finite()
         || !lane.width.is_finite()
         || lane.width <= 0.0
         || !lane.height.is_finite()
@@ -61,6 +63,9 @@ fn geometry(
     let left =
         lane.left + lane.width * ((a - viewport.start) as f64 / viewport.length as f64) as f32;
     let width = rendered_clip_width(lane.width, (b - a) as f64 / viewport.length as f64, minimum);
+    if !left.is_finite() || !width.is_finite() {
+        return None;
+    }
     let body_top = super::super::clip_name::CLIP_NAME_HEIGHT + 1.0;
     let mut handles = [None, None];
     if width >= 24.0 && lane.height >= 10.0 {
