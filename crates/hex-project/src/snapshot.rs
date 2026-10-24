@@ -57,6 +57,7 @@ pub enum SessionCellContentSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAudioClipSnapshot {
+    pub active: bool,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
@@ -67,6 +68,8 @@ pub struct SessionAudioClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
+    pub active: bool,
+    pub playback_offset_raw: u64,
     pub volume: crate::MidiClipVolume,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -174,6 +177,8 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    pub active: bool,
+    pub playback_offset_raw: u64,
     /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
     pub one_shot_boundary: crate::MidiOneShotBoundary,
     pub volume: crate::MidiClipVolume,
@@ -202,6 +207,7 @@ pub struct MidiNoteSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipSnapshot {
+    pub active: bool,
     pub name: String,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -309,6 +315,7 @@ impl Project {
                             .audio_clips
                             .iter()
                             .map(|clip| ClipSnapshot {
+                                active: clip.active,
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
@@ -329,6 +336,8 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                active: clip.active,
+                                playback_offset_raw: clip.playback_offset.raw(),
                                 one_shot_boundary: clip.source.one_shot_boundary,
                                 volume: clip.volume.clone(),
                                 name: clip.name.clone(),
@@ -408,6 +417,8 @@ impl Project {
                             crate::SessionCellContent::Stop => SessionCellContentSnapshot::Stop,
                             crate::SessionCellContent::Midi(clip) => {
                                 SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                    active: clip.active,
+                                    playback_offset_raw: clip.playback_offset.raw(),
                                     volume: clip.volume.clone(),
                                     flavor: clip.flavor,
                                     id: clip.id.value(),
@@ -437,6 +448,7 @@ impl Project {
                             }
                             crate::SessionCellContent::Audio(clip) => {
                                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                                    active: clip.active,
                                     flavor: clip.flavor,
                                     id: clip.id().value(),
                                     name: clip.name().to_owned(),
@@ -688,6 +700,7 @@ impl Project {
                     return Err(Invalid("clip source phase is outside its source interval"));
                 }
                 compiled_audio.push(Clip {
+                    active: clip.active,
                     name: clip.name.clone(),
                     flavor: clip.flavor,
                     id: ClipId(clip.id),
@@ -752,7 +765,11 @@ impl Project {
                 }
                 crate::midi_note_overwrite::validate_occupancy(&notes)?;
                 clip.volume.validate_source_length(source_length)?;
+                clip.playback_offset_raw.checked_add(length.raw())
+                    .ok_or(Invalid("midi playback window end overflow"))?;
                 compiled_midi.push(MidiClip {
+                    active: clip.active,
+                    playback_offset: crate::BeatTime::from_raw(clip.playback_offset_raw),
                     volume: clip.volume.clone(),
                     name: clip.name.clone(),
                     flavor: clip.flavor,
@@ -897,6 +914,8 @@ impl Project {
                     crate::midi_note_overwrite::validate_occupancy(&notes)?;
                     clip.volume.validate_source_length(source_length)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
+                        active: clip.active,
+                        playback_offset: crate::BeatTime::from_raw(clip.playback_offset_raw),
                         volume: clip.volume,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
@@ -933,6 +952,7 @@ impl Project {
                         return Err(Invalid("clip limit reached"));
                     }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
+                        active: clip.active,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,

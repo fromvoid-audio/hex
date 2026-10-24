@@ -70,6 +70,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 track,
                 scene,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    active: true,
+                    playback_offset_raw: 0,
                     volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: clip,

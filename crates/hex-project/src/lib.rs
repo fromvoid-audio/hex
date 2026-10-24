@@ -34,6 +34,7 @@ mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
+mod clip_activation;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioImportWarp, AudioProcessingProjection, AudioViewMode, AudioViewOccurrence,
@@ -325,6 +326,7 @@ impl ClipGain {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
+    pub(crate) active: bool,
     pub(crate) name: String,
     pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
@@ -340,6 +342,8 @@ pub struct Clip {
     pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
+    /// Authored clip activation, independent of track mute or selection.
+    pub fn active(&self) -> bool { self.active }
     pub fn name(&self) -> &str {
         &self.name
     }

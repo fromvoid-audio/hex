@@ -148,6 +148,8 @@ impl MidiSource {
 /// identity, and a separately shared clip-owned source-beat volume curve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
+    pub(crate) active: bool,
+    pub(crate) playback_offset: BeatTime,
     pub(crate) name: String,
     pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
@@ -182,6 +184,10 @@ impl MidiClipTrim {
 }
 
 impl MidiClip {
+    /// Authored clip activation, independent of track mute or selection.
+    pub fn active(&self) -> bool { self.active }
+    /// Elapsed source-playback window origin in quarter-note beats.
+    pub fn playback_offset(&self) -> BeatTime { self.playback_offset }
     pub fn volume(&self) -> &crate::MidiClipVolume {
         &self.volume
     }
@@ -329,7 +335,7 @@ impl MidiClip {
 
     /// Return the validated finite source mapping used by playback compilers.
     pub fn source_playback(&self) -> Result<MidiSourcePlayback, Invalid> {
-        self.source.playback_for_duration(self.length)
+        self.source.playback_for_duration(self.length)?.with_playback_offset(self.playback_offset)
     }
 }
 impl std::ops::Deref for MidiClip {
@@ -498,6 +504,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .track(track)
                 .ok_or(Invalid("track no longer exists"))?;
             let incoming = MidiClip {
+                active: true,
+                playback_offset: crate::BeatTime::ZERO,
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
                 id: ClipId(0),
@@ -681,6 +689,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
+                active: left.active,
+                playback_offset: crate::BeatTime::ZERO,
                 name: left.name.clone(),
                 flavor: left.flavor,
                 id: right_id,
@@ -1103,6 +1113,8 @@ pub(crate) fn materialize_overwrite_ranges(
                 .ok_or(Invalid("midi retained range must be positive"))?,
         );
         fragments.push(MidiClip {
+            active: original.active,
+            playback_offset: crate::BeatTime::ZERO,
             name: original.name.clone(),
             flavor: original.flavor,
             id: original.id,

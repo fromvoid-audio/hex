@@ -63,6 +63,7 @@ fn bounded_policies<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Policy
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::clip_activation::require_legacy_compatible(project)?;
     let base = crate::encode_document(&super::fade_curve_positions::encode(project)?)?;
     let mut value: serde_json::Value = serde_json::from_slice(&base)?;
     let policies: Vec<_> = project

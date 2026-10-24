@@ -844,6 +844,8 @@ fn matching_clip_shell(
                     .zip(b.midi_clips().iter().find(|c| c.id == clip))
                     .is_some_and(|(a, b)| {
                         let MidiClip {
+                            active,
+                            playback_offset,
                             name,
                             flavor,
                             id,
@@ -852,7 +854,7 @@ fn matching_clip_shell(
                             source: _,
                             volume,
                         } = a;
-                        name == &b.name
+                        active == &b.active && playback_offset == &b.playback_offset && name == &b.name
                             && flavor == &b.flavor
                             && (volume_edit || volume == &b.volume)
                             && id == &b.id
@@ -865,13 +867,15 @@ fn matching_clip_shell(
             match (a.session_cell(track, scene), b.session_cell(track, scene)) {
                 (Some(SessionCellContent::Midi(a)), Some(SessionCellContent::Midi(b))) => {
                     let crate::SessionMidiClip {
+                        active,
+                        playback_offset,
                         id,
                         name,
                         flavor,
                         source: _,
                         volume,
                     } = a;
-                    *id == clip
+                    *active == b.active && *playback_offset == b.playback_offset && *id == clip
                         && b.id == clip
                         && *name == b.name
                         && *flavor == b.flavor

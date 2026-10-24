@@ -178,6 +178,8 @@ fn isolated_source(
         let source = item.source();
         let end = source.effective_end();
         MidiClipSnapshot {
+            active: true,
+            playback_offset_raw: 0,
             one_shot_boundary: item.source().one_shot_boundary(),
             volume: item.volume().clone(),
             name: item.name().to_owned(),

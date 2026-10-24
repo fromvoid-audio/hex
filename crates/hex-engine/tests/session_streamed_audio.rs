@@ -93,6 +93,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -119,6 +120,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 track: SESSION_TRACK,
                 scene: SCENE,
                 content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id: SESSION_CLIP,
@@ -908,6 +910,7 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         panic!("audio track expected")
     };
     clips.push(ClipSnapshot {
+        active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         edit: None,
@@ -1017,6 +1020,7 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = 0.5;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         edit: None,
