@@ -508,7 +508,8 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
-        let mut playback = crate::Playback::from_interactive_arrangement_preroll(runtime).unwrap();
+        let mut playback =
+            crate::playback::Playback::from_interactive_arrangement_preroll(runtime).unwrap();
         playback
             .prepare_computer_keyboard(&project, track, Arc::clone(&input))
             .unwrap();
