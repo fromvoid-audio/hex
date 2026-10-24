@@ -178,6 +178,21 @@ impl Toggle {
         }
     }
 
+    fn foreground(&self) -> u32 {
+        if self.checked
+            && matches!(
+                self.appearance,
+                ToggleAppearance::CompactButton | ToggleAppearance::CompactIconButton
+            )
+        {
+            self.style.accent_text
+        } else if self.enabled {
+            self.style.text
+        } else {
+            self.style.muted
+        }
+    }
+
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.enabled {
             self.checked = !self.checked;
@@ -390,12 +405,7 @@ impl gpui::Render for Toggle {
                 );
         }
         if self.appearance == ToggleAppearance::CompactIconButton {
-            let enabled = self.enabled;
-            let icon_color = rgb(if enabled {
-                self.style.text
-            } else {
-                self.style.muted
-            });
+            let icon_color = rgb(self.foreground());
             root = root.child(
                 canvas(
                     |_, _, _| (),
@@ -443,11 +453,7 @@ impl gpui::Render for Toggle {
                     .overflow_hidden()
                     .text_center()
                     .text_size(px(8.0))
-                    .text_color(rgb(if self.enabled {
-                        self.style.text
-                    } else {
-                        self.style.muted
-                    }))
+                    .text_color(rgb(self.foreground()))
                     .child(self.label.clone()),
             );
         } else {
@@ -883,11 +889,15 @@ impl gpui::Render for Selector {
                             self.style.surface
                         }))
                         .when(self.enabled && index != self.selected, |option| {
-                            option.hover(|hover| hover.bg(rgb(self.style.hover)))
+                            option.hover(|hover| {
+                                hover
+                                    .bg(rgb(self.style.hover))
+                                    .text_color(rgb(self.style.hover_text))
+                            })
                         })
                         .text_size(px(8.0))
                         .text_color(rgb(if index == self.selected {
-                            self.style.background
+                            self.style.accent_text
                         } else {
                             self.style.text
                         }))
@@ -1070,9 +1080,15 @@ impl gpui::Render for Selector {
                         } else {
                             self.style.surface
                         }))
-                        .hover(move |hover| hover.bg(rgb(style.hover)))
+                        .hover(move |hover| {
+                            hover.bg(rgb(style.hover)).text_color(rgb(style.hover_text))
+                        })
                         .text_size(px(self.style.font_size))
-                        .text_color(rgb(self.style.text))
+                        .text_color(rgb(if index == current {
+                            style.hover_text
+                        } else {
+                            style.text
+                        }))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, listener)
                         .child(choice)
@@ -1140,3 +1156,26 @@ pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -
 
 #[cfg(test)]
 mod selector_tests;
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+    use crate::tests::STYLE;
+    #[gpui::test]
+    fn checked_compact_labels_and_icons_use_dark_ink_on_bright_fill(cx: &mut gpui::TestAppContext) {
+        for appearance in [
+            ToggleAppearance::CompactButton,
+            ToggleAppearance::CompactIconButton,
+        ] {
+            let toggle = cx.new(|cx| {
+                Toggle::from_config(
+                    cx,
+                    ToggleConfig::new("contrast", "on", true, STYLE)
+                        .unwrap()
+                        .with_appearance(appearance),
+                )
+            });
+            toggle.read_with(cx, |toggle, _| assert_eq!(toggle.foreground(), 0x202020));
+        }
+    }
+}
