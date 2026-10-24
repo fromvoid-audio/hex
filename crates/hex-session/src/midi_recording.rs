@@ -1,0 +1,229 @@
+//! Control-side admission and construction of one finite Arrangement MIDI take.
+//!
+//! The input/audio owners supply completed note spans in the delivered output's
+//! content-frame clock. These scalars do not prove delivery or mint native audio
+//! ownership. The captured canonical binding refuses source/timing substitution;
+//! the ordinary service still owns prepare-before-commit and one history edit.
+//! Input journals, live monitoring, transport and quantization have other owners.
+use hex_project::{
+    BeatTime, ClipId, Command, DeviceId, MidiNoteInsert, MidiSourceIdentity, Project, TempoMap,
+    TrackId,
+};
+
+/// One take is bounded independently of the project's existing global note cap.
+/// The caller keeps its original spans until the canonical edit acknowledges.
+pub const MAX_MIDI_TAKE_NOTES: usize = 16_384;
+
+/// Completed physical note in the same nonlooping project-frame clock as Stop.
+/// Channel is zero based; velocity zero is an input note-off, never a new note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordedMidiNote {
+    pub start_frame: u64,
+    pub end_frame: u64,
+    pub pitch: u8,
+    pub channel: u8,
+    pub velocity: u8,
+}
+
+/// A retained source/timing binding, not an audio admission or playback receipt.
+/// The source token retains actual canonical backing; one active take owns one
+/// bounded token and tempo map. Arming is transient capture state, not a saved
+/// project field. No source, note, device or clip identity is allocated here.
+pub struct MidiTakeBinding {
+    track: TrackId,
+    clip: ClipId,
+    instrument: DeviceId,
+    source: MidiSourceIdentity,
+    sample_rate: u32,
+    tempo: TempoMap,
+    start: BeatTime,
+    length: BeatTime,
+    source_start: BeatTime,
+    audible_end: BeatTime,
+    first_frame: u64,
+    end_frame: u64,
+}
+impl MidiTakeBinding {
+    pub fn capture(project: &Project, track: TrackId, clip: ClipId) -> Result<Self, &'static str> {
+        let owner = project
+            .track(track)
+            .ok_or("recording track no longer exists")?;
+        let instrument = owner
+            .instrument()
+            .filter(|device| !device.bypassed())
+            .ok_or("midi recording requires an enabled instrument")?;
+        let clip = owner
+            .midi_clips()
+            .iter()
+            .find(|candidate| candidate.id() == clip)
+            .ok_or("midi recording requires an arrangement clip on the armed track")?;
+        if clip.looping() || project.loop_region().is_some_and(|region| region.enabled()) {
+            return Err("loop recording is not available for this midi recorder");
+        }
+        if clip
+            .source_start()
+            .raw()
+            .checked_add(clip.length().raw())
+            .is_none_or(|end| end > clip.source().effective_end().raw())
+        {
+            return Err("midi recording requires the clip to fit its audible source extent");
+        }
+        let end = clip
+            .start()
+            .raw()
+            .checked_add(clip.length().raw())
+            .map(BeatTime::from_raw)
+            .ok_or("midi recording clip end overflow")?;
+        let first_frame = project
+            .tempo_map()
+            .beat_to_frame(clip.start())
+            .map_err(|_| "midi recording start cannot be projected")?;
+        let end_frame = project
+            .tempo_map()
+            .beat_to_frame(end)
+            .map_err(|_| "midi recording end cannot be projected")?;
+        if first_frame >= end_frame {
+            return Err("midi recording clip must span a positive output interval");
+        }
+        Ok(Self {
+            track,
+            clip: clip.id(),
+            instrument: instrument.id(),
+            source: clip.source_identity(),
+            sample_rate: project.sample_rate(),
+            tempo: project.tempo_map().clone(),
+            start: clip.start(),
+            length: clip.length(),
+            source_start: clip.source_start(),
+            audible_end: clip.source().effective_end(),
+            first_frame,
+            end_frame,
+        })
+    }
+    pub fn track(&self) -> TrackId {
+        self.track
+    }
+    pub fn clip(&self) -> ClipId {
+        self.clip
+    }
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    pub fn first_frame(&self) -> u64 {
+        self.first_frame
+    }
+    pub fn end_frame(&self) -> u64 {
+        self.end_frame
+    }
+
+    fn validate(&self, project: &Project) -> Result<(), &'static str> {
+        let owner = project
+            .track(self.track)
+            .ok_or("recording track no longer exists")?;
+        let clip = owner
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.id() == self.clip)
+            .ok_or("recording clip no longer exists")?;
+        if owner
+            .instrument()
+            .is_none_or(|device| device.id() != self.instrument || device.bypassed())
+            || clip.source_identity() != self.source
+            || project.sample_rate() != self.sample_rate
+            || project.tempo_map() != &self.tempo
+            || clip.start() != self.start
+            || clip.length() != self.length
+            || project.loop_region().is_some_and(|region| region.enabled())
+        {
+            return Err("midi recording source or timing changed; retain the take before retrying");
+        }
+        Ok(())
+    }
+}
+
+/// Build the existing atomic MIDI authoring command without mutating the project
+/// or consuming captured notes. Existing same-pitch overwrite semantics apply:
+/// later authors win, including across MIDI channels. Names/mixer changes do not
+/// invalidate an otherwise identical source; native generation/revision/epoch
+/// validation remains the recording admission and service request's responsibility.
+/// Empty takes create no history. The final service edit can still refuse global
+/// capacity or preparation, so callers retain the captured take through its ACK.
+pub fn finish_take(
+    project: &Project,
+    binding: &MidiTakeBinding,
+    notes: &[RecordedMidiNote],
+    stop_frame: u64,
+) -> Result<Option<Command>, &'static str> {
+    binding.validate(project)?;
+    if notes.len() > MAX_MIDI_TAKE_NOTES || stop_frame < binding.first_frame {
+        return Err("midi take exceeds its note or time bound");
+    }
+    let mut previous_start = None;
+    // Refuse malformed/unsorted capture before allocating the proposed command.
+    for note in notes {
+        if note.pitch > 127
+            || note.channel > 15
+            || !(1..=127).contains(&note.velocity)
+            || note.start_frame < binding.first_frame
+            || note.start_frame >= binding.end_frame
+            || note.end_frame <= note.start_frame
+            || note.end_frame > stop_frame
+            || previous_start.is_some_and(|previous| note.start_frame < previous)
+        {
+            return Err("midi take contains invalid or unordered note spans");
+        }
+        previous_start = Some(note.start_frame);
+    }
+    if notes.is_empty() {
+        return Ok(None);
+    }
+    let mut insert = Vec::new();
+    insert
+        .try_reserve_exact(notes.len())
+        .map_err(|_| "could not reserve recorded midi notes")?;
+    for note in notes {
+        let first = binding
+            .tempo
+            .frame_to_beat(note.start_frame)
+            .map_err(|_| "midi take start cannot be projected")?;
+        let last = binding
+            .tempo
+            .frame_to_beat(note.end_frame.min(binding.end_frame))
+            .map_err(|_| "midi take end cannot be projected")?;
+        // A sample boundary may round to the neighboring side of an authored
+        // subframe edge. Clamp only this validated clip-boundary projection.
+        let clip_end = binding
+            .start
+            .raw()
+            .checked_add(binding.length.raw())
+            .ok_or("midi recording clip end overflow")?;
+        let source_position = |beat: BeatTime| {
+            beat.raw()
+                .clamp(binding.start.raw(), clip_end)
+                .checked_sub(binding.start.raw())
+                .and_then(|elapsed| binding.source_start.raw().checked_add(elapsed))
+        };
+        let start = source_position(first).ok_or("midi take source position overflow")?;
+        let end = source_position(last)
+            .ok_or("midi take source end overflow")?
+            .min(binding.audible_end.raw());
+        let duration = end
+            .checked_sub(start)
+            .filter(|duration| *duration > 0)
+            .ok_or("recorded midi note has no positive audible duration")?;
+        insert.push(MidiNoteInsert {
+            start: BeatTime::from_raw(start),
+            duration: BeatTime::from_raw(duration),
+            pitch: note.pitch,
+            channel: note.channel,
+            velocity: note.velocity,
+        });
+    }
+    Ok(Some(Command::AddMidiNotes {
+        clip: binding.clip,
+        notes: insert,
+    }))
+}
+
+#[cfg(test)]
+mod tests;
