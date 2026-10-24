@@ -100,7 +100,7 @@ impl NativeSamplerInput<'_> {
     }
     fn needed(&self, asset: hex_project::AssetId) -> bool {
         let project = self.project;
-        project.tracks().iter().any(|t| t.clips().iter().any(|c| c.asset() == asset)
+        project.tracks().iter().any(|t| t.clips().iter().any(|c| c.referenced_assets().any(|source| source == asset))
             || t.instrument().is_some_and(|d| d.state().asset_references().iter().any(|r| r.asset.value() == asset.value())))
             || project.session_cells().iter().any(|c| matches!(c.content(), hex_project::SessionCellContent::Audio(c) if c.asset() == asset))
     }
@@ -199,6 +199,11 @@ impl NativeSamplerInput<'_> {
         let storage = quote
             .storage_reservation(pcm)
             .map_err(|e| format!("sampler reservation refused: {e:?}").to_lowercase())?;
+        // The native constructor retains one additional finite PCM root for
+        // each transformed clip. Reserve physical frames before any copy/work.
+        frames = frames
+            .checked_add(quote.prepared_pcm_frames)
+            .ok_or("prepared audio frame reservation overflow")?;
         Ok((quote, storage, count, frames))
     }
     /// Reserve additional native copy/control together with actual Session and

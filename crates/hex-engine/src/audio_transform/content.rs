@@ -9,16 +9,15 @@ const MAX_CONTENT_OCCURRENCES: u64 = 8_192;
 impl AudioTransformPreparation {
     pub(super) fn compile_content(
         &self,
-        project: &CanonicalProject,
+        tempo_map: &hex_project::TempoMap,
         clip: &hex_project::Clip,
         edit: &AudioClipEdit,
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Clip, Invalid> {
-        let view = edit
-            .content_view
+        edit.content_view
             .ok_or(Invalid("directed audio view missing"))?;
-        let projection = AudioViewProjection::new(clip, project.tempo_map())?;
+        let projection = AudioViewProjection::new(clip, tempo_map)?;
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
@@ -34,9 +33,9 @@ impl AudioTransformPreparation {
                 "directed audio preparation currently requires resident media; source changes were not committed",
             ));
         };
-        let tempo = self.shared_tempo(project.tempo_map())?;
+        let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio)=self.lookup_key(source,asset,|key|matches!(key,EntryKey::View {edit:retained,tempo,start,duration}
-            if retained==edit&&tempo.as_ref()==project.tempo_map()&&*start==clip.start()&&*duration==clip.duration()))? {
+            if retained==edit&&tempo.as_ref()==tempo_map&&*start==clip.start()&&*duration==clip.duration()))? {
             return super::view::placed_clip(audio,clip);
         }
         let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
@@ -58,7 +57,7 @@ impl AudioTransformPreparation {
             let occurrence = projection.occurrence(i)?;
             if musical
                 && let Some(span) =
-                    read_map::prepare(&projection, edit, clip, project.tempo_map(), occurrence)?
+                    read_map::prepare(&projection, edit, clip, tempo_map, occurrence)?
             {
                 segments = segments
                     .checked_add(span.map.segments().len())
@@ -99,7 +98,7 @@ impl AudioTransformPreparation {
             .map_err(|_| Invalid("directed audio allocation failed"))?;
         frames.resize(length, [0.0; 2]);
         if musical {
-            self.render_musical_content(project, clip, asset, source, &mut frames)?;
+            self.render_musical_content(tempo_map, clip, asset, source, &mut frames)?;
         } else {
             // Only the transient pre-fade processing program is neutralized. Saved
             // fade/source settings and source PCM are never rewritten.
@@ -107,73 +106,118 @@ impl AudioTransformPreparation {
             Arc::make_mut(&mut unfaded.domain).fade =
                 hex_project::ClipFade::neutral(edit.domain.fade.span())
                     .map_err(|e| Invalid(e.0))?;
-            let mut frame_root = None;
-            for i in 0..projection.occurrence_count() {
-                if self.cancelled() {
-                    return Err(Invalid("audio preparation cancelled"));
-                }
-                let occurrence = projection.occurrence(i)?;
-                let begin = occurrence.elapsed_start.max(view.window.start);
-                let end = occurrence.elapsed_end.min(view.window.end);
-                if begin >= end {
-                    continue;
-                }
-                let (a, b) = if view.window.reversed {
-                    (view.window.end - end, view.window.end - begin)
-                } else {
-                    (begin - view.window.start, end - view.window.start)
-                };
-                let first = projection.frame_at_elapsed(a)?.max(clip.start());
-                let last = projection.frame_at_elapsed(b)?.min(
-                    clip.start()
-                        .checked_add(clip.duration())
-                        .ok_or(Invalid("audio end overflow"))?,
-                );
-                if first >= last {
-                    continue;
-                }
+            if projection.occurrence_count() != 0 {
+                let occurrence = projection.occurrence(0)?;
                 let root_edit = super::view::occurrence_edit(
                     &unfaded,
                     occurrence.root_origin,
                     self,
-                    project.tempo_map(),
+                    tempo_map,
                 )?;
-                let root = if let Some(root) = frame_root.as_ref() {
-                    root
-                } else {
-                    frame_root = Some(self.prepare_audio(project, &root_edit, asset, source)?);
-                    frame_root
-                        .as_ref()
-                        .ok_or(Invalid("directed processing root missing"))?
-                };
-                if root.frames().len() as u64 != occurrence.root_frame_length {
-                    return Err(Invalid("directed root differs from admitted pcm"));
-                }
-
-                for frame in first..last {
-                    if (frame - first) % 1_024 == 0 && self.cancelled() {
-                        return Err(Invalid("audio preparation cancelled"));
-                    }
-                    let elapsed = projection.elapsed_at_frame(frame)?;
-                    let read = view.window.read_position(elapsed)?;
-                    let base = projection.base_frame_at_elapsed(read)?;
-                    let sample = occurrence
-                        .root_start
-                        .checked_add(base.saturating_sub(occurrence.destination_start))
-                        .ok_or(Invalid("directed root sample overflow"))?;
-                    if sample >= occurrence.root_end {
-                        return Err(Invalid("directed sample exceeds admitted crop"));
-                    }
-                    let value = *root
-                        .frames()
-                        .get(sample as usize)
-                        .ok_or(Invalid("directed sample exceeds admitted root"))?;
-                    *frames
-                        .get_mut((frame - clip.start()) as usize)
-                        .ok_or(Invalid("directed destination exceeds admitted pcm"))? = value;
-                }
+                let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
+                self.copy_frame_content(clip, &projection, root.frames(), &mut frames)?;
             }
         }
+        self.apply_content_fade(tempo_map, clip, edit, &projection, &mut frames)?;
+        if self.cancelled() {
+            return Err(Invalid("audio preparation cancelled"));
+        }
+        let audio = Audio::from_derived(source.sample_rate(), frames, reservation)?;
+        self.retain(Entry {
+            source: source.clone(),
+            key: EntryKey::View {
+                edit: edit.clone(),
+                tempo,
+                start: clip.start(),
+                duration: clip.duration(),
+            },
+            algorithm_version: hex_warp::ALGORITHM_VERSION,
+            conversion: asset.conversion_version(),
+            source_rate: asset.source_sample_rate(),
+            prepared: audio.clone(),
+            bytes,
+            source_bytes: std::mem::size_of_val(source.frames()),
+        })?;
+        super::view::placed_clip(audio, clip)
+    }
+    /// Reflect admitted frame-root PCM through the canonical directed view.
+    /// Shared by ordinary and composite roots; no intermediate PCM is allocated.
+    pub(super) fn copy_frame_content(
+        &self,
+        clip: &hex_project::Clip,
+        projection: &AudioViewProjection<'_>,
+        root: &[crate::Frame],
+        frames: &mut [crate::Frame],
+    ) -> Result<(), Invalid> {
+        let view = clip
+            .audio_edit()
+            .and_then(|edit| edit.content_view)
+            .ok_or(Invalid("directed audio view missing"))?;
+        for i in 0..projection.occurrence_count() {
+            if self.cancelled() {
+                return Err(Invalid("audio preparation cancelled"));
+            }
+            let occurrence = projection.occurrence(i)?;
+            let begin = occurrence.elapsed_start.max(view.window.start);
+            let end = occurrence.elapsed_end.min(view.window.end);
+            if begin >= end {
+                continue;
+            }
+            let (a, b) = if view.window.reversed {
+                (view.window.end - end, view.window.end - begin)
+            } else {
+                (begin - view.window.start, end - view.window.start)
+            };
+            let first = projection.frame_at_elapsed(a)?.max(clip.start());
+            let last = projection.frame_at_elapsed(b)?.min(
+                clip.start()
+                    .checked_add(clip.duration())
+                    .ok_or(Invalid("audio end overflow"))?,
+            );
+            if first >= last {
+                continue;
+            }
+            if root.len() as u64 != occurrence.root_frame_length {
+                return Err(Invalid("directed root differs from admitted pcm"));
+            }
+
+            for frame in first..last {
+                if (frame - first) % 1_024 == 0 && self.cancelled() {
+                    return Err(Invalid("audio preparation cancelled"));
+                }
+                let elapsed = projection.elapsed_at_frame(frame)?;
+                let read = view.window.read_position(elapsed)?;
+                let base = projection.base_frame_at_elapsed(read)?;
+                let sample = occurrence
+                    .root_start
+                    .checked_add(base.saturating_sub(occurrence.destination_start))
+                    .ok_or(Invalid("directed root sample overflow"))?;
+                if sample >= occurrence.root_end {
+                    return Err(Invalid("directed sample exceeds admitted crop"));
+                }
+                let value = *root
+                    .get(sample as usize)
+                    .ok_or(Invalid("directed sample exceeds admitted root"))?;
+                *frames
+                    .get_mut((frame - clip.start()) as usize)
+                    .ok_or(Invalid("directed destination exceeds admitted pcm"))? = value;
+            }
+        }
+        Ok(())
+    }
+
+    /// Destination fades retain their forward clock after content reflection.
+    pub(super) fn apply_content_fade(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        projection: &AudioViewProjection<'_>,
+        frames: &mut [crate::Frame],
+    ) -> Result<(), Invalid> {
+        let view = edit
+            .content_view
+            .ok_or(Invalid("directed audio view missing"))?;
         if !edit.domain.fade.is_neutral() {
             // A fade keeps its original forward container clock. Iterate base
             // occurrences once; no fade buffer or callback work is introduced.
@@ -202,14 +246,10 @@ impl AudioTransformPreparation {
                 {
                     *f = [0.0; 2];
                 }
-                let root_edit = super::view::occurrence_edit(
-                    edit,
-                    occurrence.root_origin,
-                    self,
-                    project.tempo_map(),
-                )?;
+                let root_edit =
+                    super::view::occurrence_edit(edit, occurrence.root_origin, self, tempo_map)?;
                 let fade = root_edit
-                    .projected_fade(project.tempo_map())
+                    .projected_fade(tempo_map)
                     .map_err(|e| Invalid(e.0))?;
                 for frame in first..last {
                     let elapsed =
@@ -237,33 +277,15 @@ impl AudioTransformPreparation {
                 *f = [0.0; 2];
             }
         }
-        if self.cancelled() {
-            return Err(Invalid("audio preparation cancelled"));
-        }
-        let audio = Audio::from_derived(source.sample_rate(), frames, reservation)?;
-        self.retain(Entry {
-            source: source.clone(),
-            key: EntryKey::View {
-                edit: edit.clone(),
-                tempo,
-                start: clip.start(),
-                duration: clip.duration(),
-            },
-            algorithm_version: hex_warp::ALGORITHM_VERSION,
-            conversion: asset.conversion_version(),
-            source_rate: asset.source_sample_rate(),
-            prepared: audio.clone(),
-            bytes,
-            source_bytes: std::mem::size_of_val(source.frames()),
-        })?;
-        super::view::placed_clip(audio, clip)
+        Ok(())
     }
+
     /// Assemble the actual finite outer content once. Adjacent occurrence PCM
     /// supplies sinc context across internal Repeat/crop/tempo seams; only the
     /// true finite base edges use the kernel's zero-padding policy.
     fn render_musical_content(
         &self,
-        project: &CanonicalProject,
+        tempo_map: &hex_project::TempoMap,
         clip: &hex_project::Clip,
         asset: &Asset,
         source: &Audio,
@@ -275,7 +297,7 @@ impl AudioTransformPreparation {
         let view = edit
             .content_view
             .ok_or(Invalid("directed audio view missing"))?;
-        let projection = AudioViewProjection::new(clip, project.tempo_map())?;
+        let projection = AudioViewProjection::new(clip, tempo_map)?;
         let (base_start, base_end) = read_map::base_bounds(&projection, edit)?;
         let length = usize::try_from(base_end - base_start)
             .map_err(|_| Invalid("directed filter context size overflow"))?;
@@ -295,13 +317,9 @@ impl AudioTransformPreparation {
                 return Err(Invalid("audio preparation cancelled"));
             }
             let occurrence = projection.occurrence(i)?;
-            let root_edit = super::view::occurrence_edit(
-                &unfaded,
-                occurrence.root_origin,
-                self,
-                project.tempo_map(),
-            )?;
-            let root = self.prepare_audio(project, &root_edit, asset, source)?;
+            let root_edit =
+                super::view::occurrence_edit(&unfaded, occurrence.root_origin, self, tempo_map)?;
+            let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
             if root.frames().len() as u64 != occurrence.root_frame_length {
                 return Err(Invalid("directed root differs from admitted pcm"));
             }
@@ -347,7 +365,7 @@ impl AudioTransformPreparation {
                 &projection,
                 edit,
                 clip,
-                project.tempo_map(),
+                tempo_map,
                 projection.occurrence(i)?,
             )? {
                 let destination = frames

@@ -55,12 +55,14 @@ impl Project {
             let before = clipboard.clips.len();
             for clip in track.clips().iter().filter(|c| selected.contains(&c.id())) {
                 origin = origin.min(clip.start());
-                if !clipboard.assets.iter().any(|(id, _)| *id == clip.asset()) {
-                    let asset = self
-                        .asset(clip.asset())
-                        .cloned()
-                        .ok_or(Invalid("copied asset no longer exists"))?;
-                    clipboard.assets.push((clip.asset(), asset));
+                for id in clip.referenced_assets() {
+                    if !clipboard.assets.iter().any(|(asset, _)| *asset == id) {
+                        let asset = self
+                            .asset(id)
+                            .cloned()
+                            .ok_or(Invalid("copied asset no longer exists"))?;
+                        clipboard.assets.push((id, asset));
+                    }
                 }
                 clipboard.clips.push(Captured {
                     track: track.id(),

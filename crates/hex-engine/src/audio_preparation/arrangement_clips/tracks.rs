@@ -808,6 +808,7 @@ impl TrackAssembly {
     pub(super) fn validate_root_sources(
         &self,
         root: &[Track],
+        slots: &[SourceSlot],
         bank: &OwnedAudioInputs,
     ) -> Result<(), AudioStorageError> {
         for row in &self.rows[..self.active] {
@@ -828,10 +829,18 @@ impl TrackAssembly {
                 {
                     return Err(AudioStorageError::SourceMismatch);
                 }
-                let (_, source) = bank
-                    .sources
-                    .get(pair.origin.source)
+                let slot = slots
+                    .get(pair.origin.slot)
                     .ok_or(AudioStorageError::SourceMismatch)?;
+                if slot.track != pair.origin.track
+                    || slot.clip != pair.origin.clip
+                    || slot.source != pair.origin.source
+                    || slot.handle != pair.origin.handle
+                    || slot.disposal != Disposal::Transferred
+                {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                let source = slot.source_owner(bank)?;
                 let matches = match (&source.kind, &clip.audio, clip.metadata.as_deref()) {
                     (SourceKind::Resident(original), Some(actual), _) => {
                         original.shares_pcm_with(actual) && binding.declaration.is_none()

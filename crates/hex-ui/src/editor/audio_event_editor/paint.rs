@@ -74,10 +74,12 @@ mod tests {
     #[test]
     fn replacement_accents_follow_occupied_victims_and_range_overwrite_semantics() {
         let events = AudioEvents {
+            sources: Vec::new(),
             next_id: 4,
             events: [(1, 0, 20), (2, 30, 40), (3, 60, 100)]
                 .into_iter()
                 .map(|(id, start, end)| AudioEvent {
+                    source: 0,
                     id,
                     start,
                     end,

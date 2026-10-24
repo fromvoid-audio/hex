@@ -34,6 +34,17 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    let groups: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| track["audio_clips"].as_array().unwrap().iter())
+        .map(|clip| json!({"clip":clip["id"],"group":null}))
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("grouped_audio"),
+        Some(json!(groups))
+    );
     let event_fades: Vec<_> = old["audio_event_state"]
         .as_array()
         .unwrap()
