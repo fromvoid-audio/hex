@@ -75,6 +75,12 @@ impl MidiEdgePreview {
             Self::Stretch(p) => p.source_start(),
         }
     }
+    pub(super) fn playback_offset(self) -> BeatTime {
+        match self {
+            Self::Trim(p) => p.playback_offset(),
+            Self::Stretch(p) => p.playback_offset(),
+        }
+    }
     pub(super) fn note_interval(
         self,
         note: &hex_project::MidiNote,

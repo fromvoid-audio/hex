@@ -169,8 +169,7 @@ pub(super) fn card(
         // nested text editors. Handle only the card's own exact focus instead.
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key != "0"
-                    || event.keystroke.modifiers != gpui::Modifiers::default()
+                if !super::super::activation::is_activation_key(event)
                     || !toggle_focus.is_focused(window)
                 {
                     return;

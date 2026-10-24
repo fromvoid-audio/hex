@@ -82,6 +82,9 @@ mod fades;
 mod gain_lane;
 mod gain_recording;
 mod header;
+mod activation;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod activation_ui_test;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;

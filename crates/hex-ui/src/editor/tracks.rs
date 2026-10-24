@@ -246,7 +246,8 @@ pub(super) fn midi_trim_note_shapes(
         clip.looping().then_some((loop_start, loop_end)),
         trim.length(),
         initial_end,
-    );
+    )
+    .and_then(|playback| playback.with_playback_offset(trim.playback_offset()));
     let Ok(playback) = playback else {
         return Vec::new();
     };
@@ -589,7 +590,12 @@ impl EditorView {
                         } else {
                             0x000000
                         }))
-                        .bg(rgb(theme::clip_fill(track.color(), clip.flavor(), false)))
+                        .bg(rgb(theme::clip_activity_fill(
+                            track.color(),
+                            clip.flavor(),
+                            false,
+                            clip.active(),
+                        )))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
                         let shapes = midi_trim_note_shapes(
@@ -649,10 +655,11 @@ impl EditorView {
                         } else {
                             0x000000
                         }))
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             preview_clip.flavor(),
                             false,
+                            preview_clip.active(),
                         )))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
@@ -716,9 +723,9 @@ impl EditorView {
                     }
                     overlap_events.push((start, 1, 0));
                     overlap_events.push((end, -1, 0));
-                    let flavor = match &member.content {
-                        ClipGroupContent::Audio(c) => c.flavor(),
-                        ClipGroupContent::Midi(c) => c.flavor(),
+                    let (flavor, active) = match &member.content {
+                        ClipGroupContent::Audio(c) => (c.flavor(), c.active()),
+                        ClipGroupContent::Midi(c) => (c.flavor(), c.active()),
                     };
                     let id = member.id();
                     let mut overlay = div()
@@ -734,7 +741,12 @@ impl EditorView {
                         .overflow_hidden()
                         .border_1()
                         .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                        .bg(rgb(theme::clip_fill(track.color(), flavor, false)))
+                        .bg(rgb(theme::clip_activity_fill(
+                            track.color(),
+                            flavor,
+                            false,
+                            active,
+                        )))
                         .children([clip_grid_layer(grid, start, end)]);
                     let source = match &member.content {
                         ClipGroupContent::Audio(_) => group
@@ -748,7 +760,7 @@ impl EditorView {
                             source,
                             (bounds.start_frame, bounds.end_frame),
                             (start, end),
-                            theme::clip_fill(track.color(), flavor, false),
+                            theme::clip_activity_fill(track.color(), flavor, false, active),
                             &mut shape_budget,
                             self.track_height(track_id) <= super::track_layout::HEADER_ONLY_HEIGHT,
                         )
@@ -838,12 +850,15 @@ impl EditorView {
                     } else {
                         0x000000
                     }))
-                    .bg(rgb(theme::clip_fill(
+                    .bg(rgb(theme::clip_activity_fill(
                         track.color(),
                         self.displayed_clip_drag()
                             .and_then(|d| state.project.clip_flavor(d.clip))
                             .unwrap_or_default(),
                         false,
+                        self.displayed_clip_drag()
+                            .and_then(|drag| state.project.clip_active(drag.clip))
+                            .unwrap_or(true),
                     )))
                     .opacity(if clip_preview.is_some() { 1.0 } else { 0.88 })
                     .children([clip_grid_layer(grid, visible_start, visible_end)]);
@@ -862,10 +877,11 @@ impl EditorView {
                                 .map(ClipPaintSource::Midi)
                         });
                     if let Some(source) = source {
-                        let fill = theme::clip_fill(
+                        let fill = theme::clip_activity_fill(
                             track.color(),
                             state.project.clip_flavor(drag.clip).unwrap_or_default(),
                             false,
+                            state.project.clip_active(drag.clip).unwrap_or(true),
                         );
                         let mut note_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
                         if let Some(content) = self.clip_drag_content(
@@ -1007,7 +1023,12 @@ impl EditorView {
                     continue;
                 };
                 if let Some(fragment_view) = passive_audio_fragment(
-                    theme::clip_fill(track.color(), fragment.flavor(), false),
+                    theme::clip_activity_fill(
+                        track.color(),
+                        fragment.flavor(),
+                        false,
+                        fragment.active(),
+                    ),
                     &fragment,
                     state.waveforms.get(&fragment.asset()),
                     viewport,
@@ -1024,7 +1045,12 @@ impl EditorView {
                             self.clip_name_drag_header(
                                 fragment.id(),
                                 fragment.name(),
-                                theme::clip_fill(track.color(), fragment.flavor(), false),
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    fragment.flavor(),
+                                    false,
+                                    fragment.active(),
+                                ),
                             )
                             .into_any_element()
                         },
@@ -1054,7 +1080,7 @@ impl EditorView {
                     continue;
                 };
                 let (fragment, shown) = passive_midi_fragment(
-                    theme::clip_fill(track.color(), clip.flavor(), false),
+                    theme::clip_activity_fill(track.color(), clip.flavor(), false, clip.active()),
                     clip.id(),
                     &preview.samples,
                     (selected_start, selected_end),
@@ -1069,7 +1095,12 @@ impl EditorView {
                             self.clip_name_drag_header(
                                 clip.id(),
                                 clip.name(),
-                                theme::clip_fill(track.color(), clip.flavor(), false),
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    false,
+                                    clip.active(),
+                                ),
                             )
                             .into_any_element()
                         },
@@ -1566,7 +1597,12 @@ impl EditorView {
                     .flatten()
                 {
                     if let Some(fragment_view) = passive_audio_fragment(
-                        theme::clip_fill(track.color(), fragment.flavor(), false),
+                        theme::clip_activity_fill(
+                            track.color(),
+                            fragment.flavor(),
+                            false,
+                            fragment.active(),
+                        ),
                         &fragment,
                         state.waveforms.get(&fragment.asset()),
                         viewport,
@@ -1583,7 +1619,12 @@ impl EditorView {
                                 self.clip_name_drag_header(
                                     fragment.id(),
                                     fragment.name(),
-                                    theme::clip_fill(track.color(), fragment.flavor(), false),
+                                    theme::clip_activity_fill(
+                                        track.color(),
+                                        fragment.flavor(),
+                                        false,
+                                        fragment.active(),
+                                    ),
                                 )
                                 .into_any_element()
                             }),
@@ -1634,7 +1675,12 @@ impl EditorView {
                         continue;
                     };
                     let (fragment, shown) = passive_midi_fragment(
-                        theme::clip_fill(track.color(), clip.flavor(), false),
+                        theme::clip_activity_fill(
+                            track.color(),
+                            clip.flavor(),
+                            false,
+                            clip.active(),
+                        ),
                         clip.id(),
                         &preview.samples,
                         interval,
@@ -1649,7 +1695,12 @@ impl EditorView {
                                 self.clip_name_drag_header(
                                     clip.id(),
                                     clip.name(),
-                                    theme::clip_fill(track.color(), clip.flavor(), false),
+                                    theme::clip_activity_fill(
+                                        track.color(),
+                                        clip.flavor(),
+                                        false,
+                                        clip.active(),
+                                    ),
                                 )
                                 .into_any_element()
                             }),
@@ -1708,7 +1759,12 @@ impl EditorView {
                     )
                 })
                 .take(midi_shape_budget);
-            let fill = theme::clip_fill(track.color(), clip.flavor(), selected_clip);
+            let fill = theme::clip_activity_fill(
+                track.color(),
+                clip.flavor(),
+                selected_clip,
+                clip.active(),
+            );
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -2035,13 +2091,14 @@ impl EditorView {
                     lane,
                 )
             });
-        let fill = theme::clip_fill(
+        let fill = theme::clip_activity_fill(
             state
                 .project
                 .track(track)
                 .map_or(hex_project::ElementColor::default(), |t| t.color()),
             clip.flavor(),
             selected,
+            clip.active(),
         );
         let mut content = div()
             .absolute()
@@ -2251,10 +2308,11 @@ impl EditorView {
                     height,
                 },
                 ClipGhostDecor {
-                    fill: theme::clip_fill(
+                    fill: theme::clip_activity_fill(
                         hex_project::ElementColor::default(),
                         state.project.clip_flavor(payload.clip).unwrap_or_default(),
                         false,
+                        state.project.clip_active(payload.clip).unwrap_or(true),
                     ),
                     selector: "clip-drag-append-preview",
                     grid: Some((
@@ -2285,10 +2343,11 @@ impl EditorView {
                                 source,
                                 (preview.start_frame, preview.end_frame),
                                 (visible_start, visible_end),
-                                theme::clip_fill(
+                                theme::clip_activity_fill(
                                     hex_project::ElementColor::default(),
                                     state.project.clip_flavor(payload.clip).unwrap_or_default(),
                                     false,
+                                    state.project.clip_active(payload.clip).unwrap_or(true),
                                 ),
                                 &mut note_budget,
                                 false,
@@ -2319,7 +2378,7 @@ impl EditorView {
                 height: 32.0,
             },
             ClipGhostDecor {
-                fill: theme::clip_fill(
+                fill: theme::clip_activity_fill(
                     self.state
                         .as_ref()
                         .and_then(|s| s.project.track(payload.source_track))
@@ -2329,6 +2388,10 @@ impl EditorView {
                         .and_then(|s| s.project.clip_flavor(payload.clip))
                         .unwrap_or_default(),
                     false,
+                    self.state
+                        .as_ref()
+                        .and_then(|state| state.project.clip_active(payload.clip))
+                        .unwrap_or(true),
                 ),
                 selector: "clip-drag-floating-preview",
                 grid: None,
@@ -2351,7 +2414,7 @@ impl EditorView {
                         source,
                         (bounds.start_frame, bounds.end_frame),
                         (bounds.start_frame, bounds.end_frame),
-                        theme::clip_fill(
+                        theme::clip_activity_fill(
                             state
                                 .project
                                 .track(payload.source_track)
@@ -2360,6 +2423,7 @@ impl EditorView {
                                 }),
                             state.project.clip_flavor(payload.clip).unwrap_or_default(),
                             false,
+                            state.project.clip_active(payload.clip).unwrap_or(true),
                         ),
                         &mut note_budget,
                         false,

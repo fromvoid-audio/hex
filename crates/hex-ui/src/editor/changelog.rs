@@ -201,6 +201,7 @@ pub(super) fn bind_keys(cx: &mut App) {
             "l",
             "w",
             "0",
+            "a",
         ]
         .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_changelog"))),
     );

@@ -121,6 +121,12 @@ impl EditorView {
                 matches!(target, Target::Track(_)) && focus.is_focused(window)
             })
     }
+    pub(super) fn focused_header_target(&self, window: &Window) -> Option<Target> {
+        self.track_name
+            .focuses
+            .iter()
+            .find_map(|(target, focus)| focus.is_focused(window).then_some(*target))
+    }
     pub(super) fn focus_track_header_after_navigation(&self, track: TrackId, window: &mut Window) {
         self.track_name
             .focuses
