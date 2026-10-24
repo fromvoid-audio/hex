@@ -45,7 +45,6 @@ fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal()
         }
         #[cfg(not(feature = "allocation-probe"))]
         {
-            let mut construct = construct;
             construct();
         }
         match outcome.unwrap() {
