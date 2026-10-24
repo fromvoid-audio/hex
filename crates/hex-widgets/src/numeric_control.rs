@@ -99,9 +99,12 @@ pub enum NumericControlAppearance {
     CompactDial,
     MicroDial,
     WideMicroDial,
+    /// A compact editable readout with a square frame and recessed background.
     InlineValue,
     /// A compact filled rectangle with an internal editable readout.
     CompactSlider,
+    /// A centered label above a thin horizontal fill with an editable readout.
+    LabeledSlider,
     /// One filled mixer field with centered editable text and upward scrubbing.
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
@@ -110,6 +113,7 @@ pub enum NumericControlAppearance {
 
 #[cfg(test)]
 mod compact_slider_tests;
+mod vertical_fader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericEventPhase {
@@ -211,6 +215,8 @@ impl NumericControlConfig {
 enum PressTarget {
     Control,
     Value,
+    // A slider handle scrubs like a readout but does not enter text on click.
+    Fader,
 }
 
 #[derive(Clone, Copy)]
@@ -785,7 +791,9 @@ impl NumericControl {
         }
         let sensitivity = if shift { 1200.0 } else { 120.0 };
         let delta = f64::from(primary_delta) / sensitivity;
-        let adjusted = if self.value_drag_steps && matches!(press.target, PressTarget::Value) {
+        let adjusted = if self.value_drag_steps
+            && matches!(press.target, PressTarget::Value | PressTarget::Fader)
+        {
             // Accumulate each movement with its current modifier, preserving
             // fractional motion. Clamping here prevents overshoot debt.
             match self
@@ -1281,7 +1289,6 @@ impl NumericControl {
     fn slider_element(
         &self,
         value: f32,
-        vertical: bool,
         text: NumericTextElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1290,7 +1297,6 @@ impl NumericControl {
             text,
             SliderPresentation {
                 value,
-                vertical,
                 bipolar: self.spec.scale() == crate::NumericScale::Bipolar,
                 field: ValueFieldPresentation {
                     invalid: self.invalid_text,
@@ -1406,7 +1412,7 @@ impl gpui::Render for NumericControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self
             .press
-            .is_some_and(|press| matches!(press.target, PressTarget::Value))
+            .is_some_and(|press| matches!(press.target, PressTarget::Value | PressTarget::Fader))
             && !self.focus.is_focused(window)
         {
             self.cancel(cx);
@@ -1432,10 +1438,9 @@ impl gpui::Render for NumericControl {
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |control, _, cx| {
-                if control
-                    .press
-                    .is_some_and(|press| matches!(press.target, PressTarget::Value))
-                {
+                if control.press.is_some_and(|press| {
+                    matches!(press.target, PressTarget::Value | PressTarget::Fader)
+                }) {
                     control.cancel(cx);
                 } else {
                     control.finish_text_edit_on_blur(cx);
@@ -1447,9 +1452,9 @@ impl gpui::Render for NumericControl {
             self.window_activation =
                 Some(cx.observe_window_activation(window, |control, window, cx| {
                     if !window.is_window_active()
-                        && control
-                            .press
-                            .is_some_and(|press| matches!(press.target, PressTarget::Value))
+                        && control.press.is_some_and(|press| {
+                            matches!(press.target, PressTarget::Value | PressTarget::Fader)
+                        })
                     {
                         control.cancel(cx);
                     }
@@ -1579,19 +1584,28 @@ impl gpui::Render for NumericControl {
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
-                .child(value_field_sized(
-                    self.id.clone(),
-                    value_text,
-                    ValueFieldPresentation {
-                        invalid: self.invalid_text,
-                        editing: self.editing,
-                        enabled,
-                        style,
-                        width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
-                        height: px(14.0),
-                    },
-                    self.value_mouse_down_listener(cx),
-                )),
+                .child(
+                    value_field_sized(
+                        self.id.clone(),
+                        value_text,
+                        ValueFieldPresentation {
+                            invalid: self.invalid_text,
+                            editing: self.editing,
+                            enabled,
+                            style,
+                            width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
+                            height: px(14.0),
+                        },
+                        self.value_mouse_down_listener(cx),
+                    )
+                    .rounded_none()
+                    .bg(rgb(style.background))
+                    .border_color(rgb(if self.invalid_text {
+                        0xff554c
+                    } else {
+                        style.border
+                    })),
+                ),
             (NumericControlKind::Knob, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1624,6 +1638,37 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::LabeledSlider) => {
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .min_w(px(60.0))
+                    .h(px(32.0))
+                    .gap(px(1.0))
+                    .items_center()
+                    .track_focus(&self.focus)
+                    .key_context(key_context)
+                    .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(14.0))
+                            .text_center()
+                            .overflow_hidden()
+                            .text_size(px(style.font_size))
+                            .text_color(rgb(if enabled { style.muted } else { style.border }))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .w_full()
+                            .h(px(14.0))
+                            .child(self.slider_element(value, value_text, cx)),
+                    )
+            }
             (
                 NumericControlKind::HorizontalSlider,
                 NumericControlAppearance::FilledSlider | NumericControlAppearance::CompactSlider,
@@ -1642,7 +1687,8 @@ impl gpui::Render for NumericControl {
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
-                .child(self.slider_element(value, false, value_text, cx)),
+                .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
+                .child(self.slider_element(value, value_text, cx)),
             (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1652,6 +1698,7 @@ impl gpui::Render for NumericControl {
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
+                .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
                 .child(
                     div()
                         .w(px(42.0))
@@ -1661,7 +1708,7 @@ impl gpui::Render for NumericControl {
                         .text_color(rgb(if enabled { style.muted } else { style.border }))
                         .child(label),
                 )
-                .child(self.slider_element(value, false, value_text, cx)),
+                .child(self.slider_element(value, value_text, cx)),
             (NumericControlKind::VerticalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1682,7 +1729,16 @@ impl gpui::Render for NumericControl {
                         .text_center()
                         .child(label),
                 )
-                .child(self.slider_element(value, true, value_text, cx)),
+                .child(self.vertical_fader(value, cx))
+                .child(value_field(
+                    self.id.clone(),
+                    value_text,
+                    self.invalid_text,
+                    self.editing,
+                    enabled,
+                    style,
+                    self.value_mouse_down_listener(cx),
+                )),
         };
 
         let selected =
@@ -1876,12 +1932,9 @@ impl Element for GestureCaptureElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if self
-            .move_entity
-            .read(cx)
-            .press
-            .is_some_and(|press| press.dragging && matches!(press.target, PressTarget::Value))
-            && window.is_window_active()
+        if self.move_entity.read(cx).press.is_some_and(|press| {
+            press.dragging && matches!(press.target, PressTarget::Value | PressTarget::Fader)
+        }) && window.is_window_active()
         {
             window.set_window_cursor_style(CursorStyle::Hidden);
         }
@@ -1987,10 +2040,9 @@ fn value_field_sized(
         .child(child)
 }
 
-/// One rectangular field for both orientations; only fill geometry changes.
+/// Horizontal filled field; vertical controls use their separate fader geometry.
 struct SliderPresentation {
     value: f32,
-    vertical: bool,
     bipolar: bool,
     field: ValueFieldPresentation,
 }
@@ -2003,7 +2055,6 @@ fn filled_slider(
 ) -> impl IntoElement {
     let SliderPresentation {
         value,
-        vertical,
         bipolar,
         field,
     } = presentation;
@@ -2014,16 +2065,9 @@ fn filled_slider(
     let fill = div()
         .debug_selector(move || fill_id.clone())
         .absolute()
-        .when(vertical, |fill| {
-            fill.bottom(relative(value.min(origin)))
-                .h(relative((value - origin).abs()))
-                .w_full()
-        })
-        .when(!vertical, |fill| {
-            fill.left(relative(value.min(origin)))
-                .w(relative((value - origin).abs()))
-                .h_full()
-        })
+        .left(relative(value.min(origin)))
+        .w(relative((value - origin).abs()))
+        .h_full()
         .bg(rgb(if field.enabled {
             field.style.accent
         } else {
@@ -2036,8 +2080,8 @@ fn filled_slider(
         .flex()
         .flex_1()
         .min_w(px(46.0))
-        .when(vertical, |bar| bar.w_full().min_h(px(32.0)))
-        .when(!vertical, |bar| bar.h_full())
+        // Keep the surrounding row's hit area while thinning the painted field.
+        .h(px(14.0))
         .overflow_hidden()
         .bg(rgb(field.style.rail))
         .child(fill)
@@ -2046,12 +2090,9 @@ fn filled_slider(
                 div()
                     .debug_selector(move || center_id.clone())
                     .absolute()
-                    .when(vertical, |mark| {
-                        mark.bottom(relative(0.5)).h(px(1.0)).w_full()
-                    })
-                    .when(!vertical, |mark| {
-                        mark.left(relative(0.5)).w(px(1.0)).h_full()
-                    })
+                    .left(relative(0.5))
+                    .w(px(1.0))
+                    .h_full()
                     .bg(rgb(field.style.muted))
                     .opacity(0.6),
             )
