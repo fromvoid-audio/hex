@@ -11,7 +11,7 @@ use hex_engine::native_device_resources::{
 
 mod bounce;
 mod runtime_inputs;
-pub(super) use bounce::bounce_clip;
+pub(super) use bounce::{bounce_arrangement, bounce_clip};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
@@ -1475,6 +1475,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    mod bounce_tests;
     mod export_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};

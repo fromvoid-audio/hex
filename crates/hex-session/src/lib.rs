@@ -29,6 +29,7 @@ use std::{
     sync::Arc,
 };
 
+mod arrangement_bounce;
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
@@ -228,6 +229,7 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
             | Command::ImportPreparedAudioClip { .. }
             | Command::ImportPreparedAudioClipWithOverwrite { .. }
             | Command::ImportPreparedSessionAudioClip { .. }
+            | Command::CommitArrangementBounce { .. }
             | Command::ConvertMidiClipToAudio { .. }
     ) {
         return Err(SessionError::Invalid(
