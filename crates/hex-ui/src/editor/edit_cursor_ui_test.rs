@@ -1903,6 +1903,10 @@ fn time_selection_markers_split_live_above_loop_and_follow_visible_endpoints(
                 assert_eq!(bounds.size.width, px(5.0));
                 if edge == "top" {
                     assert!(bounds.bottom() <= rail.top());
+                    assert!(
+                        rail.top() - bounds.bottom() <= px(1.0),
+                        "upper tips sit immediately above the loop row"
+                    );
                 } else {
                     assert_eq!(bounds.bottom(), bottom);
                 }

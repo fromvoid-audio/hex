@@ -250,7 +250,15 @@ impl EditorView {
                 theme::time_position_marker_color(),
             )
         });
-        Some(div().absolute().inset_0().children(markers))
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
+                .children(markers),
+        )
     }
 
     pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {

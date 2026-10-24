@@ -762,7 +762,16 @@ impl Workspace {
                             .opacity(theme::TIME_SELECTION_OPACITY),
                     );
                 for edge in [TimeMarkerEdge::Top, TimeMarkerEdge::Bottom] {
-                    preview = preview.children(time_position_marker(
+                    let mut markers = div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .h(px(TIME_POSITION_MARKER_HEIGHT))
+                        .when(edge == TimeMarkerEdge::Top, |layer| {
+                            layer.top(px(24.0 - TIME_POSITION_MARKER_HEIGHT))
+                        })
+                        .when(edge == TimeMarkerEdge::Bottom, |layer| layer.bottom_0());
+                    markers = markers.children(time_position_marker(
                         format!("sandbox-marker-{edge:?}-start").into(),
                         start,
                         if start == end {
@@ -774,7 +783,7 @@ impl Workspace {
                         theme::time_position_marker_color(),
                     ));
                     if start != end {
-                        preview = preview.children(time_position_marker(
+                        markers = markers.children(time_position_marker(
                             format!("sandbox-marker-{edge:?}-end").into(),
                             end,
                             TimeMarkerEndpoint::End,
@@ -782,6 +791,7 @@ impl Workspace {
                             theme::time_position_marker_color(),
                         ));
                     }
+                    preview = preview.child(markers);
                 }
                 div()
                     .w_full()
