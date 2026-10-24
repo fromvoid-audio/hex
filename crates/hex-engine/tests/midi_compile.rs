@@ -56,6 +56,16 @@ fn add_clip(
     }
 }
 
+fn rendered_excerpt(project: &Project, frame: u64) -> [hex_engine::Frame; 64] {
+    let compiled = compile::project(project, &BTreeMap::new()).unwrap();
+    let mut playback = Playback::new(compiled);
+    playback.apply(PlaybackCommand::Seek(frame));
+    playback.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 64];
+    playback.render(&mut output).unwrap();
+    output
+}
+
 #[test]
 fn note_edges_convert_across_tempo_changes_and_sort_off_before_on() {
     let (mut editor, track) = setup();
@@ -1412,7 +1422,19 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
             .tempo_map()
             .beat_to_frame(beat(2, 1))
             .unwrap();
-        let (note_start, selection_end, destination, remaining) = if tail {
+        let (note_start, selection_end, destination, remaining) = if reversed {
+            let onset = editor
+                .project()
+                .tempo_map()
+                .beat_to_frame(beat(3, 2))
+                .unwrap();
+            (
+                beat(5, 2),
+                two,
+                two,
+                vec![onset, two, two + onset, two + two],
+            )
+        } else if tail {
             (
                 BeatTime::ZERO,
                 one / 2,
@@ -1434,7 +1456,7 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
                 velocity: 100,
             })
             .unwrap();
-        if tail && rate == 44_100 {
+        if reversed || (tail && rate == 44_100) {
             editor
                 .execute(Command::ReplaceMidiClipVolume {
                     clip,
@@ -1461,6 +1483,12 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
         let mut before = editor.project().snapshot();
         let source_notes = editor.project().midi_clip(clip).unwrap().notes().to_vec();
         let source_volume = editor.project().midi_clip(clip).unwrap().volume().clone();
+        let excerpt = reversed.then(|| {
+            let frame = remaining[0] + 128;
+            let output = rendered_excerpt(editor.project(), frame);
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-5));
+            (frame, output)
+        });
         assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
         editor
             .execute(Command::CopyTimeRangeTo {
@@ -1485,6 +1513,15 @@ fn frame_range_copy_never_creates_zero_frame_midi_remainders() {
             editor.project().midi_clip(clip).unwrap().volume(),
             &source_volume
         );
+        if let Some((frame, expected)) = excerpt {
+            let actual = rendered_excerpt(editor.project(), frame);
+            for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+                assert!(
+                    (actual - expected).abs() <= 1e-6,
+                    "a prefix crop must preserve audible phase and authored volume before its cut"
+                );
+            }
+        }
         let after = editor.project().snapshot();
         // Undo restores complete musical state while the identity allocator
         // retains its documented high-water mark to prevent ID reuse.
