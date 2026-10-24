@@ -343,6 +343,38 @@ impl ComputerKeyboardInput {
                 .as_ref()
                 .is_none_or(|queue| queue.faulted(token))
     }
+    /// Negative-only control observation for choosing Finish versus Cancel.
+    /// Call before the caller revokes input/output for Stop. This grants no
+    /// graph admission or delivery proof; changes after this observation race
+    /// the caller's finish decision. Pending Arm remains a valid empty take.
+    pub fn recording_input_current_on_control(
+        &self,
+        keys: MidiKeyActivation,
+        output_epoch: u64,
+        hardware: Option<LiveNoteActivation>,
+    ) -> bool {
+        !self.is_cancelled()
+            && self.output_activation.as_ref().is_some_and(|activation| {
+                activation.epoch.load(Acquire) == output_epoch
+                    && activation.clock.permits(output_epoch)
+            })
+            && self.ordered_keys.as_ref().is_some_and(|queue| {
+                (queue.exact(keys, PENDING) || queue.active(keys))
+                    && queue.output_epoch.load(Acquire) == output_epoch
+            })
+            && match hardware {
+                Some(token) => {
+                    self.live_notes
+                        .as_ref()
+                        .is_some_and(|live| live.same_current_activation(token))
+                        && self.live_output_epoch.load(Acquire) == output_epoch
+                }
+                None => self
+                    .live_notes
+                    .as_ref()
+                    .is_none_or(|live| live.is_cancelled()),
+            }
+    }
     pub fn output_epoch_on_control(&self) -> Option<u64> {
         self.output_activation
             .as_ref()
@@ -353,6 +385,51 @@ impl ComputerKeyboardInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finish_precheck_distinguishes_pending_active_faulted_replaced_and_revoked_inputs() {
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input = ComputerKeyboardInput::with_output_activation(Arc::clone(&clock))
+            .unwrap()
+            .with_live_notes()
+            .unwrap()
+            .with_recording_support()
+            .unwrap();
+        let hardware = input
+            .live_notes()
+            .unwrap()
+            .current_activation_on_control()
+            .unwrap();
+        let keys = input.begin_ordered_keys_on_control().unwrap();
+        let output = input.output_epoch_on_control().unwrap();
+        assert!(input.recording_input_current_on_control(keys, output, Some(hardware)));
+        assert!(!input.recording_input_current_on_control(keys, output, None));
+        input
+            .ordered_keys
+            .as_ref()
+            .unwrap()
+            .accept(keys, output)
+            .unwrap();
+        assert!(input.recording_input_current_on_control(keys, output, Some(hardware)));
+        input
+            .live_notes()
+            .unwrap()
+            .cancel_activation(hardware)
+            .unwrap();
+        assert!(!input.recording_input_current_on_control(keys, output, Some(hardware)));
+        let next_hardware = input.begin_live_notes_activation_on_control().unwrap();
+        assert!(input.recording_input_current_on_control(keys, output, Some(next_hardware)));
+        for token in 1..=129 {
+            input.set_key(0, Some((60, 100, token))).unwrap();
+            input.set_key(0, None).unwrap();
+        }
+        assert!(!input.recording_input_current_on_control(keys, output, Some(next_hardware)));
+        input.seal_ordered_keys_on_control(keys).unwrap();
+        let next_keys = input.begin_ordered_keys_on_control().unwrap();
+        assert!(!input.recording_input_current_on_control(keys, output, Some(next_hardware)));
+        assert!(input.recording_input_current_on_control(next_keys, output, Some(next_hardware)));
+        clock.revoke_reserved_prefix();
+        assert!(!input.recording_input_current_on_control(next_keys, output, Some(next_hardware)));
+    }
     fn word(pitch: u8, velocity: u8, token: u64) -> u64 {
         (token << 16) | (u64::from(velocity) << 8) | u64::from(pitch + 1)
     }

@@ -3686,6 +3686,7 @@ impl EditorView {
                         })
                 })
             });
+        self.finish_midi_recording();
         // Publish the MIDI finish intent before any input prefix is revoked.
         if let Some(audio) = &self.audio {
             audio.control.stop();

@@ -277,7 +277,8 @@ impl EditorView {
             });
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !automated(track)
-            && !(self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+            && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.bindings[&id];
@@ -411,7 +412,8 @@ impl EditorView {
                 _ => None,
             });
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && !(self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+            && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.mixer[&key];

@@ -189,6 +189,9 @@ impl Control {
     }
     /// Out-of-band and take scoped. Called BEFORE input/output revocation by
     /// priority Stop, including when ordinary command/receipt queues are full.
+    /// Call Cancel first for a known input interruption. A normal Stop finishes
+    /// the confirmed prefix; it cannot infer whether input cancellation was
+    /// caused by its own revocation or occurred earlier on a different producer.
     pub fn finish(&self) {
         if let Some(target) = self.target {
             let cancelled = (target.capture.take_id << 2) | CANCEL;
