@@ -77,6 +77,7 @@ fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> V
     out.extend(config.quantum.to_le_bytes());
     out.extend([config.input_channels, config.output_channels]);
     out.extend(u32::MAX.to_le_bytes());
+    out.extend(0_u32.to_le_bytes());
     out.extend([1, 1]); // applied, actual contributions supplied
     out.extend(77_u32.to_le_bytes());
     out.extend(91_u32.to_le_bytes());
@@ -186,7 +187,7 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
         Some([1, 2, 3].as_slice())
     );
     for offset in [
-        0, 2, 34, 50, 58, 60, 61, 66, 67, 68, 72, 76, 77, 78, 80, 88, 104, 136,
+        0, 2, 34, 50, 58, 60, 61, 70, 71, 72, 76, 80, 81, 82, 84, 92, 108, 140,
     ] {
         let mut wrong = body.clone();
         wrong[offset] ^= 0x80;
@@ -202,7 +203,7 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
     trailing.push(0);
     assert!(Ready::decode(&trailing, &config, known()).is_err());
     let mut absent = body.clone();
-    absent[66] = 0;
+    absent[70] = 0;
     assert_eq!(
         Ready::decode(&absent, &config, known())
             .unwrap()
@@ -269,17 +270,19 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     body.extend(config.quantum.to_le_bytes());
     body.extend([config.input_channels, config.output_channels]);
     body.extend(u32::MAX.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
     body.push(1);
     body.extend([0, 0, 0]);
     assert_eq!(
         Facts::decode(&body, &config).unwrap(),
         Facts {
             algorithmic_latency_frames: u32::MAX,
+            tail_frames: 0,
             presentation_available: true,
             restored: false
         }
     );
-    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 130, 131, 132, 133] {
+    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 134, 135, 136, 137] {
         let mut bad = body.clone();
         bad[offset] ^= 0x80;
         assert!(Facts::decode(&bad, &config).is_err());
@@ -326,6 +329,7 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     facts.extend(config.quantum.to_le_bytes());
     facts.extend([config.input_channels, config.output_channels]);
     facts.extend(3_u32.to_le_bytes());
+    facts.extend(0_u32.to_le_bytes());
     facts.push(1); // real optional presentation interface
     facts.extend(&request[46..]);
     assert!(Facts::decode(&facts, &config).unwrap().restored);
@@ -338,7 +342,7 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     let ready = ready_body(&config);
     assert!(Ready::decode(&ready, &config, known()).unwrap().restored);
     let mut missing_ack = ready;
-    missing_ack[76] = 0;
+    missing_ack[80] = 0;
     assert!(Ready::decode(&missing_ack, &config, known()).is_err());
     assert_eq!(
         config.restore.as_ref().unwrap(),
@@ -413,6 +417,7 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body.extend(config.quantum.to_le_bytes());
     body.extend([config.input_channels, config.output_channels]);
     body.extend(3_u32.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
     body.push(1);
     body.extend(&config.startup_request().unwrap()[46..]);
     body.extend(sequence.to_le_bytes());
@@ -425,7 +430,7 @@ fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let body = epoch_body(&config, 3);
     let facts = quiescent_facts(&body, &config, 3).unwrap();
     assert_eq!(facts.algorithmic_latency_frames, 3);
-    for at in [2, 34, 50, 82, 114, 122, 130, 131, 134, 142] {
+    for at in [2, 34, 50, 82, 114, 122, 134, 135, 138, 146] {
         let mut bad = body.clone();
         bad[at] ^= 0x80;
         assert!(quiescent_facts(&bad, &config, 3).is_err());
@@ -460,4 +465,42 @@ fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     assert!(resumed(&unknown, &config, 3, facts, None).is_err());
     ready.push(0);
     assert!(resumed(&ready, &config, 3, facts, known()).is_err());
+}
+
+#[test]
+fn tail_facts_preserve_finite_zero_and_infinite_reports_and_fence_resumption() {
+    let config = config();
+    for tail in [0_u32, 96_000, u32::MAX] {
+        let mut body = epoch_body(&config, 3);
+        body[130..134].copy_from_slice(&tail.to_le_bytes());
+        let facts = quiescent_facts(&body, &config, 3).unwrap();
+        assert_eq!(facts.tail_frames, tail);
+        let mut ready = ready_body(&config);
+        ready[66..70].copy_from_slice(&tail.to_le_bytes());
+        assert_eq!(
+            Ready::decode(&ready, &config, known()).unwrap().tail_frames,
+            tail
+        );
+        body.extend([1, 1]);
+        body.extend(77_u32.to_le_bytes());
+        body.extend(91_u32.to_le_bytes());
+        assert!(resumed(&body, &config, 3, facts, known()).is_ok());
+        assert!(
+            resumed(
+                &body,
+                &config,
+                3,
+                Facts {
+                    tail_frames: tail ^ 1,
+                    ..facts
+                },
+                known()
+            )
+            .is_err()
+        );
+        // An old body with no tail field is not a current preparation or epoch.
+        let mut old = body.clone();
+        old.drain(130..134);
+        assert!(quiescent_facts(&old, &config, 3).is_err());
+    }
 }

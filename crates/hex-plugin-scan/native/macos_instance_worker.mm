@@ -125,20 +125,20 @@ wire::Bytes state_payload(const wire::Config& config,const hex_instance::Capture
     wire::number(out,state.component_bytes,4);wire::number(out,state.controller_bytes,4);
     out.insert(out.end(),state.bytes.begin(),state.bytes.begin()+state.component_bytes+state.controller_bytes);return out;
 }
-wire::Bytes facts_body(const wire::Config& config,uint32 latency,bool presentation_available,const wire::Startup& startup) {
+wire::Bytes facts_body(const wire::Config& config,uint32 latency,uint32 tail,bool presentation_available,const wire::Startup& startup) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     out.insert(out.end(),config.executable_hash.begin(),config.executable_hash.end());
     out.insert(out.end(),config.info_hash.begin(),config.info_hash.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
-    wire::number(out,latency,4);wire::number(out,presentation_available?1:0,1);startup.acknowledge(out);return out;
+    wire::number(out,latency,4);wire::number(out,tail,4);wire::number(out,presentation_available?1:0,1);startup.acknowledge(out);return out;
 }
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
-    uint32 latency,hex_instance::Instance::PresentationResult presentation,const std::optional<wire::Presentation>& supplied,bool restored) {
+    uint32 latency,uint32 tail,hex_instance::Instance::PresentationResult presentation,const std::optional<wire::Presentation>& supplied,bool restored) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
-    wire::number(out,latency,4);wire::number(out,static_cast<uint32>(presentation),1);
+    wire::number(out,latency,4);wire::number(out,tail,4);wire::number(out,static_cast<uint32>(presentation),1);
     wire::number(out,supplied?1:0,1);
     if(supplied) { wire::number(out,supplied->input,4);wire::number(out,supplied->output,4); }
     wire::number(out,restored?1:0,1);
@@ -183,10 +183,11 @@ int main(int argc,char** argv) {
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
             auto latency=instance.reported_latency_on_control();
+            auto tail=instance.reported_tail_on_control();
             auto available=instance.presentation_latency_available_on_control();
-            if(!latency || !available) throw Refusal{};
+            if(!latency || !tail || !available) throw Refusal{};
             failure=ProtocolFailure;
-            if(!wire::send(channel,"HXVIFA02",facts_body(*config,*latency,*available,restoration))) throw Refusal{};
+            if(!wire::send(channel,"HXVIFA03",facts_body(*config,*latency,*tail,*available,restoration))) throw Refusal{};
             std::optional<wire::Presentation> supplied;
             if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
@@ -201,9 +202,10 @@ int main(int argc,char** argv) {
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
             const auto final_latency=instance.reported_latency_on_control();
+            const auto final_tail=instance.reported_tail_on_control();
             failure=Presentation;
-            if(!final_latency || *final_latency!=*latency) throw Refusal{}; // caller's plan became stale
-            const auto hello=ready_body(*config,state,*latency,presentation,supplied,restoration.restored());
+            if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
+            const auto hello=ready_body(*config,state,*latency,*tail,presentation,supplied,restoration.restored());
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
             // One serialized epoch mailbox, never a second request reader. The
@@ -297,7 +299,7 @@ int main(int argc,char** argv) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
-            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD03",hello);
+            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD04",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             // Pump the helper main lane, never the Hex callback. Unsupported
@@ -310,11 +312,12 @@ int main(int argc,char** argv) {
                     { std::lock_guard<std::mutex> lock(startup_mutex);stage=epoch_stage; }
                     if(stage==FactsRequested) {
                         latency=instance.reported_latency_on_control();
+                        tail=instance.reported_tail_on_control();
                         available=instance.presentation_latency_available_on_control();
-                        if(!latency || !available) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
-                        auto body=facts_body(*config,*latency,*available,restoration);
+                        if(!latency || !tail || !available) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                        auto body=facts_body(*config,*latency,*tail,*available,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
-                        if(!wire::send(channel,"HXVIQF01",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVIQF02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=FactsSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
@@ -323,7 +326,8 @@ int main(int argc,char** argv) {
                         if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
                         else if(*available) { error(channel,&*config,Presentation);std::_Exit(Presentation); }
                         const auto current_latency=instance.reported_latency_on_control();
-                        if(!current_latency || *current_latency!=*latency || instance.host_refusals() ||
+                        const auto current_tail=instance.reported_tail_on_control();
+                        if(!current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail || instance.host_refusals() ||
                             (presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
                             (presentation!=hex_instance::Instance::PresentationResult::Applied &&
                              presentation!=hex_instance::Instance::PresentationResult::Absent)) {
@@ -336,12 +340,12 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeConfigured;startup_changed.notify_all();
                     } else if(stage==Restarted) {
-                        auto body=facts_body(*config,*latency,*available,restoration);
+                        auto body=facts_body(*config,*latency,*tail,*available,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,static_cast<uint32>(presentation),1);
                         wire::number(body,supplied?1:0,1);
                         if(supplied) { wire::number(body,supplied->input,4);wire::number(body,supplied->output,4); }
-                        if(!wire::send(channel,"HXVIRR01",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVIRR02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
                     }

@@ -404,7 +404,7 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA02" {
+            if packet.magic() != b"HXVIFA03" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
@@ -507,7 +507,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD03" {
+            if self.packet.magic() != b"HXVIRD04" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));
@@ -515,6 +515,7 @@ impl Pending {
             let ready = Ready::decode(self.packet.body()?, &self.config, presentation)?;
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
+                || ready.tail_frames != self.facts.tail_frames
                 || (ready.presentation == protocol::Presentation::Applied)
                     != self.facts.presentation_available
             {

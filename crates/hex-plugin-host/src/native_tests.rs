@@ -832,6 +832,7 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
         pending.facts(),
         Facts {
             algorithmic_latency_frames: 0,
+            tail_frames: 0,
             presentation_available: true,
             restored: false
         }
@@ -1559,4 +1560,142 @@ fn sticky_lost_custody_preserves_original_io_error_without_heap_diagnostic_copie
         assert_eq!(source.raw_os_error(), Some(10));
     }
     assert!(matches!(custody, ChildCustody::Lost(_)));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_reported_tail_survives_completion_and_refreshes_on_original_instance_epoch() {
+    let build = build();
+    for tail in [0_u32, 96_000, u32::MAX] {
+        let case = Case::new();
+        let setup = case.setup(0);
+        let pending = Pending::prepare(
+            &build,
+            source(),
+            options().preparation,
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command
+                    .env("HEX_ORIGINAL_TAIL_FRAMES", tail.to_string())
+                    .env("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT", (tail ^ 1).to_string());
+            },
+        )
+        .unwrap();
+        assert_eq!(pending.facts().tail_frames, tail);
+        let mut instance = pending
+            .complete_on_control(Some(options().presentation))
+            .unwrap();
+        assert_eq!(instance.ready().tail_frames, tail);
+        let child = instance.child_id_on_control();
+        let block = request(instance.configuration(), 0);
+        instance.exchange_on_worker(block).unwrap();
+        let stopped = instance.quiesce_on_control().unwrap();
+        assert_eq!(stopped.facts().tail_frames, tail ^ 1);
+        let previous = stopped.configuration().binding;
+        let mut instance = stopped
+            .resume_on_control(
+                Binding {
+                    epoch: previous.epoch + 1,
+                    ..previous
+                },
+                Some(options().presentation),
+            )
+            .unwrap();
+        assert_eq!(instance.ready().tail_frames, tail ^ 1);
+        assert_eq!(instance.child_id_on_control(), child);
+        let block = request(instance.configuration(), 1);
+        instance.exchange_on_worker(block).unwrap();
+        let retired = instance.stop_and_reap_on_control().unwrap();
+        assert!(retired.status.success());
+        assert_eq!(retired.terminal.unwrap().blocks, 2);
+        assert_eq!(
+            case.observation().unwrap()[1],
+            0,
+            "SDK queries stay on the main lane"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_tail_change_before_final_ack_refuses_without_starting_processing() {
+    let case = Case::new();
+    let setup = case.setup(0);
+    let pending = Pending::prepare(
+        &build(),
+        source(),
+        options().preparation,
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command
+                .env("HEX_ORIGINAL_TAIL_FRAMES", "3")
+                .env("HEX_ORIGINAL_TAIL_AFTER_PRESENTATION", "4");
+        },
+    )
+    .unwrap();
+    assert_eq!(pending.facts().tail_frames, 3);
+    match pending.complete_on_control(Some(options().presentation)) {
+        Err(Error::Preparation {
+            cause,
+            exit,
+            custody_error,
+        }) => {
+            assert!(matches!(*cause, Error::Worker(5)));
+            assert!(exit.is_some());
+            assert!(custody_error.is_none());
+        }
+        _ => panic!("changed tail cannot acknowledge the old plan"),
+    }
+    let observed = case.observation().unwrap();
+    assert_eq!((observed[1], observed[8], observed[10]), (0, 0, 0));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_tail_change_during_resume_refuses_before_original_instance_restarts() {
+    let case = Case::new();
+    let setup = case.setup(0);
+    let pending = Pending::prepare(
+        &build(),
+        source(),
+        options().preparation,
+        PreparationCancellation::new_on_control().unwrap(),
+        move |command| {
+            setup(command);
+            command
+                .env("HEX_ORIGINAL_TAIL_FRAMES", "3")
+                .env("HEX_ORIGINAL_TAIL_AFTER_RESUME", "4");
+        },
+    )
+    .unwrap();
+    let mut instance = pending
+        .complete_on_control(Some(options().presentation))
+        .unwrap();
+    let block = request(instance.configuration(), 0);
+    instance.exchange_on_worker(block).unwrap();
+    let stopped = instance.quiesce_on_control().unwrap();
+    assert_eq!(stopped.facts().tail_frames, 3);
+    let previous = stopped.configuration().binding;
+    match stopped.resume_on_control(
+        Binding {
+            epoch: previous.epoch + 1,
+            ..previous
+        },
+        Some(options().presentation),
+    ) {
+        Err(Error::Preparation {
+            cause,
+            exit,
+            custody_error,
+        }) => {
+            assert!(matches!(*cause, Error::Worker(5)));
+            assert!(exit.is_some());
+            assert!(custody_error.is_none());
+        }
+        _ => panic!("changed tail cannot resume the old plan"),
+    }
+    let observed = case.observation().unwrap();
+    assert_eq!((observed[1], observed[8], observed[10]), (0, 1, 1));
 }

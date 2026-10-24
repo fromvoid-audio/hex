@@ -193,6 +193,19 @@ public:
         if(fault==68 && observed.stops && presentation_calls>2) return restored_latency+1;
         return fault==36 && presentation_calls?7:(fault>=37?restored_latency:0);
     }
+    uint32 PLUGIN_API getTailSamples() override {
+        if(!control()) return kInfiniteTail;
+        const auto* value=std::getenv(presentation_calls?"HEX_ORIGINAL_TAIL_AFTER_PRESENTATION":"HEX_ORIGINAL_TAIL_FRAMES");
+        if(observed.stops && std::getenv("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT"))
+            value=std::getenv("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT");
+        if(presentation_calls>2 && std::getenv("HEX_ORIGINAL_TAIL_AFTER_RESUME"))
+            value=std::getenv("HEX_ORIGINAL_TAIL_AFTER_RESUME");
+        if(!value) value=std::getenv("HEX_ORIGINAL_TAIL_FRAMES");
+        if(!value) return kNoTail;
+        char* end=nullptr;const auto frames=std::strtoull(value,&end,10);
+        if(!*value || !end || *end || frames>std::numeric_limits<uint32>::max()) return kInfiniteTail;
+        return static_cast<uint32>(frames);
+    }
     tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
         if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
             (direction==kInput && !inputs) || fault==17) return kResultFalse;

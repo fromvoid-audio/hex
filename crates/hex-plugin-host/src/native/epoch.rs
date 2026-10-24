@@ -61,7 +61,7 @@ impl Prepared {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIQF01" {
+            if self.packet.magic() != b"HXVIQF02" {
                 return Err(Error::Protocol("missing actual quiescent acknowledgement"));
             }
             let facts =
@@ -138,7 +138,7 @@ impl Quiescent {
                     .or_else(|_| protocol::error(body, self.instance.config.binding))?;
                 return Err(Error::Worker(code));
             }
-            if self.instance.packet.magic() != b"HXVIRR01" {
+            if self.instance.packet.magic() != b"HXVIRR02" {
                 return Err(Error::Protocol("missing actual resumed acknowledgement"));
             }
             let applied = protocol::resumed(
@@ -156,6 +156,7 @@ impl Quiescent {
                 self.instance.config = config;
                 self.instance.ready.algorithmic_latency_frames =
                     self.facts.algorithmic_latency_frames;
+                self.instance.ready.tail_frames = self.facts.tail_frames;
                 self.instance.ready.presentation = applied;
                 Ok(self.instance)
             }

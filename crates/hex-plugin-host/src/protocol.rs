@@ -172,6 +172,10 @@ pub fn presentation_request(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Facts {
     pub algorithmic_latency_frames: u32,
+    /// Source-reported residual tail in SDK sample frames. u32::MAX is the SDK
+    /// infinite-tail sentinel. This raw report is not a quiescence proof or a
+    /// host/bridge drain bound and never sizes an allocation.
+    pub tail_frames: u32,
     pub presentation_available: bool,
     pub restored: bool,
 }
@@ -193,6 +197,7 @@ impl Facts {
             ));
         }
         let algorithmic_latency_frames = u32::from_le_bytes(r.array()?);
+        let tail_frames = u32::from_le_bytes(r.array()?);
         let presentation_available = match r.byte()? {
             0 => false,
             1 => true,
@@ -202,6 +207,7 @@ impl Facts {
         r.end()?;
         Ok(Self {
             algorithmic_latency_frames,
+            tail_frames,
             presentation_available,
             restored,
         })
@@ -219,6 +225,10 @@ pub struct Ready {
     /// Untrusted raw SDK report. The graph owner must reserve/validate its delay
     /// capacity before admission; no allocation is sized from it here.
     pub algorithmic_latency_frames: u32,
+    /// Source-reported residual tail in SDK sample frames. u32::MAX is the SDK
+    /// infinite-tail sentinel. This raw report is not a quiescence proof or a
+    /// host/bridge drain bound and never sizes an allocation.
+    pub tail_frames: u32,
     pub presentation: Presentation,
     /// Exact startup request was acknowledged; canonical state remains caller owned.
     pub restored: bool,
@@ -241,6 +251,7 @@ impl Ready {
             return Err(Error::Protocol("instance ready configuration mismatch"));
         }
         let algorithmic_latency_frames = u32::from_le_bytes(r.array()?);
+        let tail_frames = u32::from_le_bytes(r.array()?);
         let presentation = match r.byte()? {
             0 => Presentation::Absent,
             1 => Presentation::Applied,
@@ -291,6 +302,7 @@ impl Ready {
         Ok(Self {
             initial_state,
             algorithmic_latency_frames,
+            tail_frames,
             presentation,
             restored,
         })
@@ -460,7 +472,7 @@ fn epoch_facts<'a>(
 ) -> Result<(Facts, Reader<'a>)> {
     // Current fixed facts plus the exact optional original startup envelope.
     config.validate()?;
-    let size = 134_usize
+    let size = 138_usize
         .checked_add(
             config
                 .restore

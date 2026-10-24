@@ -278,6 +278,13 @@ public:
         return processor->getLatencySamples();
     }
 
+    // The SDK permits getTailSamples on the UI lane after setup. Keep it at
+    // the same quiescent, main-lane fence as latency; no Hex callback calls SDK.
+    std::optional<uint32> reported_tail_on_control() const {
+        if (![NSThread isMainThread] || !configured || !active || processing.load()) return std::nullopt;
+        return processor->getTailSamples();
+    }
+
     bool start_processing() {
         if ([NSThread isMainThread] || !configured || !active || processing.load() || processing_fault.load() || quarantined.load()) return false;
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
