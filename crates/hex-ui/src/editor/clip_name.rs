@@ -216,9 +216,10 @@ impl EditorView {
         fill: u32,
     ) -> impl IntoElement + use<> {
         clip_name_surface(fill)
+            .truncate()
             .id(("clip-drag-name", clip.value()))
             .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
-            .child(clip_name_text(name))
+            .child(theme::text(name))
     }
 
     fn clip_name_strip(
@@ -230,7 +231,20 @@ impl EditorView {
         interactive: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let editing = self
+            .clip_name_edit
+            .as_ref()
+            .is_some_and(|edit| edit.clip == clip && edit.generation == self.project_generation);
+        // This strip already supplies the full label width and text style.
+        // Keep the live input wrapper, but do not nest a second passive Div for
+        // every visible clip merely to inherit the same truncation settings.
+        let content = if editing {
+            self.clip_name_label(clip, name)
+        } else {
+            theme::text(name).into_any_element()
+        };
         clip_name_surface(fill)
+            .when(!editing, |header| header.truncate())
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
             .when(interactive, |header| {
@@ -254,7 +268,7 @@ impl EditorView {
                     },
                 ))
             })
-            .child(self.clip_name_label(clip, name))
+            .child(content)
     }
 }
 
