@@ -471,7 +471,8 @@ impl Workspace {
         };
         let entity = cx.entity();
         let owner = entity.downgrade();
-        let button = round_action_surface("workspace-round-action", style, colors.border)
+        let pressed = theme::action_press_style(style);
+        let button = round_action_surface("workspace-round-action", style, colors.border, pressed)
             .debug_selector({
                 let id = self.id("workspace-round-action");
                 move || id.clone()
@@ -693,7 +694,7 @@ impl Workspace {
                     theme::action_style()
                 };
                 div().child(
-                    action(theme::text(glyph), style)
+                    toggle_action(theme::text(glyph), style)
                         .id("workspace-button")
                         .debug_selector({
                             let id = self.id("workspace-button");
@@ -758,7 +759,7 @@ impl Workspace {
                         cx.stop_propagation();
                     }))
                     .children((0..24).map(|i| {
-                        action(
+                        toggle_action(
                             theme::text(format!("local row {}", i + 1)),
                             if self.count == i as u64 {
                                 theme::action_style().with_state_colors(
@@ -881,7 +882,7 @@ mod tests {
         (visual, entity)
     }
     #[gpui::test]
-    fn active_glyphs_keep_their_state_fill_while_hovered(cx: &mut TestAppContext) {
+    fn glyph_toggles_keep_small_corners_and_show_hover_feedback(cx: &mut TestAppContext) {
         struct Restore(hex_preferences::ThemePreferences);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -899,9 +900,21 @@ mod tests {
             },
         ] {
             theme::apply_preferences(palette);
-            for name in ["fold", "play", "arm"] {
+            for name in [
+                "play", "stop", "record", "arm", "mute", "solo", "track", "fold",
+            ] {
                 let (mut visual, view) = fixture(cx, Kind::Button(name));
                 let bounds = visual.debug_bounds("workspace-button").unwrap();
+                let scale = visual.update(|window, _| window.scale_factor());
+                assert_eq!(
+                    visual
+                        .rendered_surface_geometry("workspace-button")
+                        .unwrap()
+                        .0
+                        .top_left,
+                    px(TOGGLE_CORNER_RADIUS).scale(scale),
+                    "idle {name}"
+                );
                 visual.simulate_click(bounds.center(), Modifiers::default());
                 visual.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::default());
                 visual.run_until_parked();
@@ -909,10 +922,26 @@ mod tests {
                 assert_eq!(active, Some(rgb(theme::control_style().accent).into()));
                 visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
                 visual.run_until_parked();
+                assert_ne!(
+                    visual.rendered_background("workspace-button"),
+                    active,
+                    "hover {name}"
+                );
+                visual.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::default());
+                visual.run_until_parked();
                 assert_eq!(
                     visual.rendered_background("workspace-button"),
                     active,
-                    "{name}"
+                    "leave {name}"
+                );
+                assert_eq!(
+                    visual
+                        .rendered_surface_geometry("workspace-button")
+                        .unwrap()
+                        .0
+                        .top_left,
+                    px(TOGGLE_CORNER_RADIUS).scale(scale),
+                    "active {name}"
                 );
                 view.read_with(&visual, |s, _| assert!(s.active));
             }
@@ -1017,7 +1046,17 @@ mod tests {
         assert!(visual.debug_bounds("workspace-row-0").unwrap().top() < before.top());
         let row = visual.debug_bounds("workspace-row-10").unwrap();
         assert!(list.contains(&row.center()));
+        let scale = visual.update(|window, _| window.scale_factor());
+        let geometry = visual
+            .rendered_surface_geometry("workspace-row-10")
+            .unwrap();
+        assert_eq!(geometry.0.top_left, px(TOGGLE_CORNER_RADIUS).scale(scale));
         visual.simulate_click(row.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_surface_geometry("workspace-row-10"),
+            Some(geometry)
+        );
         view.read_with(&visual, |s, _| assert!(s.status.contains("row · 11")));
         visual.simulate_keystrokes("down");
         visual.run_until_parked();
@@ -1045,7 +1084,12 @@ mod tests {
                     false,
                     theme::color(theme::PaletteRole::Secondary),
                 ),
-                (0.75, -3.0, false, theme::color(theme::PaletteRole::Primary)),
+                (
+                    0.95,
+                    -0.44,
+                    false,
+                    theme::color(theme::PaletteRole::Primary),
+                ),
                 (1.1, 1.0, true, 0xe34b4b),
             ] {
                 view.update(&mut visual.cx, |view, cx| {
@@ -1393,6 +1437,18 @@ mod tests {
                         .is_some(),
                     selected == 3
                 );
+                if selected == 3 {
+                    let cap = visual
+                        .debug_bounds("workspace-indicator-channel-0-above")
+                        .unwrap();
+                    visual.simulate_click(cap.center(), Modifiers::default());
+                    visual.run_until_parked();
+                    assert!(
+                        visual
+                            .debug_bounds("workspace-indicator-channel-0-above")
+                            .is_none()
+                    );
+                }
             }
         }
     }
