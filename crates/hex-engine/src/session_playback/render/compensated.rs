@@ -14,6 +14,7 @@ impl SessionPlayback {
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -73,7 +74,10 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
-                                raw: false,
+                                // Retained Main history can keep this path active
+                                // after the current graph returns to a fused mix.
+                                // The content-origin fader below owns that mix.
+                                raw: true,
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },
@@ -111,7 +115,7 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
-                                raw: false,
+                                raw: true,
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },
@@ -125,6 +129,7 @@ impl SessionPlayback {
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
                                 revision: &self.revision,
+                                sources,
                                 routes: &self.route_scratch,
                                 runtimes: &mut self.mutable_instruments,
                                 onsets: &mut self.mutable_onsets,

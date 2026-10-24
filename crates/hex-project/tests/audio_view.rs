@@ -6,7 +6,7 @@ use hex_project::{
 };
 const Q: u64 = 1 << 32;
 
-fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
+fn review_adjacent_fixture() -> (Editor, ClipId, ClipId, ClipId) {
     let (mut editor, clip) = frame_fixture(AudioViewMode::Repeat);
     let track = editor.project().tracks()[0].id();
     let asset = editor.project().clip(clip).unwrap().asset();
@@ -14,8 +14,8 @@ fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
         .execute(Command::PlaceClip {
             track,
             asset,
-            start: 12_000,
-            duration: 60_000,
+            start: 48_000,
+            duration: 24_000,
             source_offset: 2_000,
             source_length: 120_000,
             looping: false,
@@ -27,21 +27,21 @@ fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
     let Created::Clip(midi) = editor
         .execute(Command::PlaceMidiClip {
             track,
-            start: beat(Q / 2),
-            length: beat(5 * Q / 2),
+            start: beat(3 * Q),
+            length: beat(Q),
         })
         .unwrap()
     else {
         panic!("midi")
     };
-    // Current-format load accepts these existing same-track overlaps.
+    // Current-format load preserves the adjacent hybrid placements.
     let loaded = Project::from_snapshot(editor.project().snapshot()).unwrap();
     (Editor::new(loaded, 8).unwrap(), clip, audio, midi)
 }
 
 #[test]
-fn review_outer_noop_preserves_existing_overlap_ids_and_redo() {
-    let (mut editor, clip, _, _) = review_overlap_fixture();
+fn review_outer_noop_preserves_adjacent_ids_and_redo() {
+    let (mut editor, clip, _, _) = review_adjacent_fixture();
     editor
         .execute(Command::SetAudioClipGain { clip, millidb: 100 })
         .unwrap();
@@ -65,8 +65,8 @@ fn review_outer_noop_preserves_existing_overlap_ids_and_redo() {
 }
 
 #[test]
-fn review_outer_shrink_preserves_existing_audio_midi_overlap_and_one_history_step() {
-    let (mut editor, clip, audio, midi) = review_overlap_fixture();
+fn review_outer_shrink_preserves_adjacent_audio_midi_and_one_history_step() {
+    let (mut editor, clip, audio, midi) = review_adjacent_fixture();
     let before = editor.project().snapshot();
     let old_audio = editor.project().clip(audio).unwrap().clone();
     let old_midi = editor.project().midi_clip(midi).unwrap().clone();
@@ -92,7 +92,7 @@ fn review_outer_shrink_preserves_existing_audio_midi_overlap_and_one_history_ste
 
 #[test]
 fn review_outer_growth_cuts_only_new_tail_and_prepare_refusal_is_atomic() {
-    let (mut editor, clip, audio, midi) = review_overlap_fixture();
+    let (mut editor, clip, audio, midi) = review_adjacent_fixture();
     let before = editor.project().snapshot();
     let command = Command::ResizeAudioClipView {
         clip,
@@ -101,21 +101,21 @@ fn review_outer_growth_cuts_only_new_tail_and_prepare_refusal_is_atomic() {
         },
     };
     let check = |candidate: &Project| {
-        let left = candidate.clip(audio).unwrap();
-        assert_eq!(
-            (left.start(), left.duration(), left.source_offset()),
-            (12_000, 36_000, 2_000)
-        );
-        let left = candidate.midi_clip(midi).unwrap();
-        assert_eq!(left.start(), beat(Q / 2));
+        assert!(candidate.clip(audio).is_none());
+        let retained = candidate.midi_clip(midi).unwrap();
         assert_eq!(
             candidate
                 .tempo_map()
-                .beat_to_frame(beat(
-                    left.start().raw().checked_add(left.length().raw()).unwrap()
-                ))
+                .beat_to_frame(retained.start())
                 .unwrap(),
-            48_000
+            84_000
+        );
+        assert_eq!(
+            candidate
+                .tempo_map()
+                .beat_to_frame(beat(retained.start().raw() + retained.length().raw()))
+                .unwrap(),
+            96_000
         );
         assert_eq!(candidate.snapshot().next_id, before.next_id);
     };
@@ -203,7 +203,7 @@ fn beat_fixture() -> (Editor, ClipId) {
     let edit = c.edit.as_mut().unwrap();
     edit.view_start = 2 * Q;
     edit.view_end = 4 * Q;
-    edit.musical_start = Some(beat(Q));
+    edit.timing = hex_project::AudioClipTiming::Musical(beat(Q));
     edit.placement = Some(AudioViewPlacement {
         mode: AudioViewMode::Repeat,
         outer_length: AudioDomainClock::Beats(beat(7 * Q)),
@@ -1139,7 +1139,9 @@ fn explicit_repeat_outer_activates_once_in_both_clocks_without_changing_retained
             );
             assert!(std::sync::Arc::ptr_eq(&original.domain, &edit.domain));
             let projection = AudioViewProjection::new(clip, e.project().tempo_map()).unwrap();
-            let start = original.musical_start.map_or(clip.start(), BeatTime::raw);
+            let start = original
+                .live_musical_start()
+                .map_or(clip.start(), BeatTime::raw);
             let first = start + cycle - cycle / 4;
             let expected_boundary = if musical {
                 e.project().tempo_map().beat_to_frame(beat(first)).unwrap()
@@ -1742,4 +1744,80 @@ fn review_phase_musical_cycle_boundary_is_exact_or_refused_without_once_restrict
             }
         }
     }
+}
+
+#[test]
+fn global_tempo_freezes_repeated_crop_projection_then_translates_every_occurrence() {
+    let (mut editor, clip) = beat_fixture();
+    let before = editor.project().clip(clip).unwrap();
+    let projection = AudioViewProjection::new(before, editor.project().tempo_map()).unwrap();
+    let occurrences = (0..projection.occurrence_count())
+        .map(|i| projection.occurrence(i).unwrap())
+        .collect::<Vec<_>>();
+    let old_start = before.start();
+    let duration = before.duration();
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    for destination in [48_000, 160_000] {
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: destination,
+            })
+            .unwrap();
+        let current = editor.project().clip(clip).unwrap();
+        assert_eq!(current.duration(), duration);
+        let projected = AudioViewProjection::new(current, editor.project().tempo_map()).unwrap();
+        assert_eq!(projected.occurrence_count(), occurrences.len() as u64);
+        let delta = i128::from(destination) - i128::from(old_start);
+        for (i, old) in occurrences.iter().enumerate() {
+            let new = projected.occurrence(i as u64).unwrap();
+            assert_eq!(
+                (
+                    new.root_origin,
+                    new.root_frame_length,
+                    new.root_start,
+                    new.root_end
+                ),
+                (
+                    old.root_origin,
+                    old.root_frame_length,
+                    old.root_start,
+                    old.root_end
+                )
+            );
+            assert_eq!(new.root_frame_origin, old.root_frame_origin + delta);
+            assert_eq!(
+                i128::from(new.destination_start),
+                i128::from(old.destination_start) + delta
+            );
+            assert_eq!(
+                i128::from(new.destination_end),
+                i128::from(old.destination_end) + delta
+            );
+            assert_eq!(
+                i128::from(new.root_start),
+                i128::from(new.destination_start) - new.root_frame_origin
+            );
+        }
+    }
+    let mut snapshot = editor.project().snapshot();
+    let edit = snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+        .edit
+        .as_mut()
+        .unwrap();
+    let hex_project::AudioClipTiming::Frozen {
+        reference_start_raw,
+        ..
+    } = &mut edit.timing
+    else {
+        panic!("frozen")
+    };
+    *reference_start_raw = i128::MIN;
+    assert!(Project::from_snapshot(snapshot).is_err());
 }

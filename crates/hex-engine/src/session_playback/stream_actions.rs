@@ -129,7 +129,8 @@ impl SessionPlayback {
                 .cells()
                 .iter()
                 .any(|cell| cell.scene == scene && cell.track == track),
-            SessionPlaybackCommand::StopTrack { track: target, .. } => track == target,
+            SessionPlaybackCommand::StopTrack { track: target, .. }
+            | SessionPlaybackCommand::CueMidiClip { track: target, .. } => track == target,
             SessionPlaybackCommand::StopAllClips { .. }
             | SessionPlaybackCommand::BackToArrangement { .. } => true,
             _ => false,
@@ -155,6 +156,7 @@ impl SessionPlayback {
             },
             PlaybackAction::Session(
                 command @ (SessionPlaybackCommand::LaunchClip { .. }
+                | SessionPlaybackCommand::CueMidiClip { .. }
                 | SessionPlaybackCommand::LaunchScene { .. }
                 | SessionPlaybackCommand::StopTrack { .. }
                 | SessionPlaybackCommand::StopAllClips { .. }
@@ -188,9 +190,10 @@ impl SessionPlayback {
                 for route in &mut self.route_scratch {
                     route.pending = None;
                     route.owner = match route.owner {
-                        RouteOwner::Session { clip, .. } => {
-                            RouteOwner::Session { clip, launch: beat }
-                        }
+                        RouteOwner::Session { clip, .. } => RouteOwner::Session {
+                            clip,
+                            origin: SessionMidiOrigin::launch(beat),
+                        },
                         RouteOwner::SessionAudio { clip, .. } => RouteOwner::SessionAudio {
                             clip,
                             launch_frame: frame,

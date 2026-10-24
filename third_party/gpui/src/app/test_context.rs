@@ -761,6 +761,29 @@ impl VisualTestContext {
         })
     }
 
+    /// Filled quad fragments inside a debug element in the completed scene,
+    /// clipped to its bounds and each replay/content mask. Canvas primitives do
+    /// not have individual element selectors. This is scene geometry, not native
+    /// framebuffer readback; it draws no frame and injects no input.
+    pub fn rendered_filled_quads(
+        &mut self,
+        selector: &'static str,
+    ) -> Vec<(Bounds<crate::ScaledPixels>, crate::Background)> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.quads.iter().filter_map(|quad| {
+                let visible = quad.bounds.intersect(&scaled).intersect(&quad.content_mask.bounds);
+                (!quad.background.is_transparent()
+                    && visible.size.width > crate::ScaledPixels(0.0)
+                    && visible.size.height > crate::ScaledPixels(0.0))
+                    .then(|| (visible, quad.background.clone()))
+            }).collect()
+        })
+    }
+
     /// Border color, widths and ancestor mask of the last matching scene quad.
     /// Reads completed paint under test support without changing layout or input.
     pub fn rendered_border(

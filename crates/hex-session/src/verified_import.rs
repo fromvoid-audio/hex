@@ -24,7 +24,25 @@ impl Session {
         mode: DocumentAudioMode,
         reservation: Option<SourcePlanReservation>,
     ) -> Result<Self, SessionError> {
-        let mut session = Self::new(rate, history, max_resident_frames)?;
+        Self::new_with_audio_mode_in_overview_domain(
+            rate,
+            history,
+            max_resident_frames,
+            mode,
+            reservation,
+            crate::source_overview::OverviewBudget::standard()?,
+        )
+    }
+    pub(crate) fn new_with_audio_mode_in_overview_domain(
+        rate: u32,
+        history: usize,
+        max_resident_frames: u64,
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+        overview_budget: crate::source_overview::OverviewBudget,
+    ) -> Result<Self, SessionError> {
+        let mut session =
+            Self::new_with_overview_budget(rate, history, max_resident_frames, overview_budget)?;
         session.source_reservation = match mode {
             DocumentAudioMode::Resident => None,
             DocumentAudioMode::VerifiedStreaming => Some(
@@ -155,14 +173,14 @@ impl Session {
             _ => None,
         };
         let command = verified_import_command(&source, destination);
-        let commands = verified_audio_only_commands(self.project(), vec![command])?;
+        let commands = vec![command];
         let mut bank = self.media_bank();
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
         let (_, (created, id, prepared)) =
             self.editor
-                .execute_many_prepared(commands, |candidate, results| {
+                .execute_audio_imports_prepared(commands, |candidate, results| {
                     let created = crate::import_batch::normalize_imports(
                         candidate,
                         results,
@@ -266,14 +284,13 @@ impl Session {
                     .ok_or(SessionError::Invalid("timeline end overflow"))?;
             }
         }
-        let commands = verified_audio_only_commands(self.project(), commands)?;
         let mut bank = self.media_bank();
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
         let (_, (created, prepared)) =
             self.editor
-                .execute_many_prepared(commands, |candidate, results| {
+                .execute_audio_imports_prepared(commands, |candidate, results| {
                     let created = crate::import_batch::normalize_imports(
                         candidate,
                         results,
@@ -313,41 +330,6 @@ impl Session {
 // Only newly created Verified audio tracks shed the generated default
 // instrument. Project/history observes one transaction, and existing tracks or
 // Resident imports never pass through this helper.
-fn verified_audio_only_commands(
-    project: &Project,
-    commands: Vec<Command>,
-) -> Result<Vec<Command>, SessionError> {
-    let mut projected = Editor::new(project.clone(), 1)?;
-    let mut expanded = Vec::new();
-    expanded
-        .try_reserve_exact(
-            commands
-                .len()
-                .checked_mul(2)
-                .ok_or(SessionError::Invalid("verified command count overflow"))?,
-        )
-        .map_err(|_| SessionError::Allocation)?;
-    for command in commands {
-        let creates_track = matches!(command, Command::ImportPreparedAudioTrackAt { .. });
-        let created = projected.execute(command.clone())?;
-        expanded.push(command);
-        if creates_track && let Created::Imported { track, .. } = created {
-            let instrument = projected
-                .project()
-                .track(track)
-                .and_then(|track| track.instrument());
-            if instrument.is_some_and(|instrument| {
-                instrument.state().type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
-            }) {
-                let remove = Command::RemoveInstrument { track };
-                projected.execute(remove.clone())?;
-                expanded.push(remove);
-            }
-        }
-    }
-    Ok(expanded)
-}
-
 fn verified_import_command(
     source: &VerifiedAudioFile,
     destination: VerifiedImportDestination,

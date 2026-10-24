@@ -1,4 +1,15 @@
-//! Small reusable GPUI controls for compact native audio-device interfaces.
+//! # Purpose
+//! Own reusable native GPUI controls, local gesture state and typed edit events.
+//!
+//! # Dependencies
+//! Uses pinned GPUI, unicode-segmentation and the standard library; the caller supplies display text, style, typography
+//! and canonical bindings.
+//!
+//! # Does not own
+//! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
+//! previews do not become authored state until the owner accepts a validated event.
+mod action;
+pub use action::{action, action_surface, round_action_surface};
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
 mod color_picker;
@@ -22,21 +33,23 @@ mod spectrum_painter;
 mod spectrum_plot;
 mod style;
 mod text_case;
+mod text_click_selection;
 pub use spectrum_plot::{
     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
 };
 pub use text_case::TextCase;
+pub use text_click_selection::TextClickSelection;
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
 };
-pub use curve::{curve_plot, transfer_plot};
+pub use curve::{CurvePlotGrid, curve_plot};
 pub use dial::{
     DialLayout, MICRO_DIAL_DIAMETER, MICRO_DIAL_HEIGHT, MICRO_DIAL_WIDTH, WIDE_MICRO_DIAL_WIDTH,
 };
 pub use discrete::{
-    DiscreteControlAppearance, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged,
-    ToggleConfig, panel_tab,
+    Selector, SelectorAppearance, SelectorChanged, SelectorConfig, Toggle, ToggleAppearance,
+    ToggleChanged, ToggleConfig, panel_tab,
 };
 pub use frame::{
     DEVICE_BODY_INSET, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_GAP,
@@ -48,20 +61,37 @@ pub use frame::{
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
+    COMPACT_DIAL_HEIGHT, COMPACT_DIAL_WIDTH, INLINE_VALUE_HEIGHT, INLINE_VALUE_WIDTH,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlFinalValue,
+    NumericControlKind, NumericControlPresentation, NumericEscape, NumericEventPhase,
     bind_numeric_control_keys,
 };
 pub use response_graph::{
-    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,
-    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent,
-    ResponseGraphScrollPhase, bind_response_graph_keys,
+    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
+    ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraphScrollEvent, ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
-    CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,
+    ActionStyle, CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle,
 };
 
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
 mod tests;
+
+mod text_input;
+pub use text_input::{
+    TextBackspace, TextCopy, TextCut, TextDelete, TextEnd, TextHome, TextInput, TextInputChanged,
+    TextInputConfig, TextInputKind, TextLeft, TextPaste, TextRight, TextSelectAll, TextSelectLeft,
+    TextSelectRight, bind_text_input_keys,
+};
+
+mod level_meter;
+pub use level_meter::{LevelMeterStyle, level_meter};
+
+mod meter_indicator;
+pub use meter_indicator::{
+    METER_INDICATOR_TICKS_DBFS, MeterChannelReadout, MeterIndicatorReadout, MeterIndicatorStyle,
+    meter_indicator,
+};

@@ -15,9 +15,10 @@ mod device_comparison_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
-mod eq_ui_tests;
+pub(in crate::editor) mod eq_ui_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
+mod header_drop_tests;
 mod header_style_tests;
 mod keyboard_delete_tests;
 mod navigation_ui_tests;
@@ -59,8 +60,11 @@ fn actor_utility_fixture() -> (
     let service = Service::new(48_000, 8, 8_000_000).expect("service");
     let _initial = receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "device track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .expect("add track request");
     let track_event = receive_service_event(&service);
@@ -1303,15 +1307,15 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         let knob = Box::leak(
             format!("device-{}-parameter-{level_id}-knob", instrument_id.value()).into_boxed_str(),
         );
-        let bounds = visual.debug_bounds(knob).expect("shell MiniDial");
+        let bounds = visual.debug_bounds(knob).expect("shell MicroDial");
         assert!(
             bounds.size.width >= px(18.0),
-            "MiniDial ring width: {:?}",
+            "MicroDial ring width: {:?}",
             bounds.size
         );
         assert!(
             bounds.size.height >= px(18.0),
-            "MiniDial ring height: {:?}",
+            "MicroDial ring height: {:?}",
             bounds.size
         );
     }
@@ -3592,6 +3596,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
             comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -3907,6 +3912,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
             comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4080,7 +4086,7 @@ fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &m
     visual.run_until_parked();
     visual.simulate_input("utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.search.read(cx).text(), "utility");
         let ParameterControl::Float { entity, .. } =
             &view.device_panel.controls[&ParameterKey { device, parameter }]
         else {
@@ -4153,7 +4159,7 @@ fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("escape cmd-f");
     visual.simulate_input("utility");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "utility")
+        assert_eq!(view.browser.search.read(cx).text(), "utility")
     });
 }
 
@@ -4199,6 +4205,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
                     comparison_audio: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4341,6 +4348,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             comparison_audio: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4594,10 +4602,23 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     assert!(menu.origin.x >= window.origin.x && menu.origin.y >= window.origin.y);
     assert!(menu.origin.x + menu.size.width <= window.origin.x + window.size.width);
     assert!(menu.origin.y + menu.size.height <= window.origin.y + window.size.height);
+    assert!(
+        value.size.width >= px(46.0),
+        "numeric value retains its minimum hit width"
+    );
+    assert!(value.left() >= menu.left() && value.right() <= menu.right());
+    let bar_selector = Box::leak(
+        format!(
+            "return-send-{}-{}-slider",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
     assert_eq!(
-        value.size.width,
-        px(46.0),
-        "numeric value hit target is not clipped"
+        value,
+        visual.debug_bounds(bar_selector).unwrap(),
+        "value spans the filled rectangle"
     );
 
     editor.update(cx, |view, cx| {
@@ -4946,7 +4967,7 @@ fn return_send_pointer_drag_previews_then_commits_once(cx: &mut TestAppContext) 
     );
     let slider = visual.debug_bounds(selector).expect("return send slider");
     let start = point(slider.center().x, slider.center().y);
-    let moved = point(start.x + px(36.0), start.y);
+    let moved = point(start.x, start.y - px(36.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
@@ -5236,6 +5257,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         comparison_audio: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        source_overviews: state.source_overviews.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -5352,3 +5374,5 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
         }
     }
 }
+
+mod main_chain_ui_tests;

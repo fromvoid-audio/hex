@@ -75,7 +75,7 @@ impl EditorView {
             return false;
         }
         // A double click without travel creates one grid cell (one beat when free).
-        let minimum_end = if grid == SnapGrid::Off {
+        let minimum_end = if grid.is_off() {
             start
                 .raw()
                 .checked_add(BeatTime::ONE.raw())

@@ -52,6 +52,10 @@ pub(super) struct SampleBrowser {
 }
 
 impl SampleBrowser {
+    pub(super) fn history_loading(&self) -> bool {
+        self.in_flight || self.pending
+    }
+
     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
         self.visible_with_listing(query, None, None)
     }
@@ -296,7 +300,7 @@ impl EditorView {
 
     pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
-        let noun = ResultsMode::for_query(&self.browser.search.read(cx).content).count_noun();
+        let noun = ResultsMode::for_query(self.browser.search.read(cx).text()).count_noun();
         format!(
             "{count} {noun}{}",
             if self.browser.samples.in_flight {

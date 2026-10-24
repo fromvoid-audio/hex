@@ -1,0 +1,38 @@
+{
+  "format": "hex-project",
+  "version": 13,
+  "sample_rate": 48000,
+  "next_id": 2,
+  "assets": [],
+  "tracks": [
+    {
+      "id": 1,
+      "name": "keys",
+      "gain": 1.0,
+      "balance": 0.0,
+      "muted": false,
+      "soloed": false,
+      "audio_clips": [],
+      "midi_clips": []
+    }
+  ],
+  "loop_region": null,
+  "master_gain": 1.0,
+  "tempo_points": [
+    {
+      "beat_raw": 0,
+      "micro_bpm": 120000000
+    }
+  ],
+  "meter_points": [
+    {
+      "beat_raw": 0,
+      "numerator": 4,
+      "denominator": 4
+    }
+  ],
+  "session": {
+    "scenes": [],
+    "cells": []
+  }
+}

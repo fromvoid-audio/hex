@@ -27,6 +27,17 @@ fn intent(
     let entry = state.project.device(device)?;
     let panel = view.device_panel.owner?;
     let actual_class = match panel {
+        device_panel::DevicePanelOwner::Main => {
+            if !state
+                .project
+                .main_devices()
+                .iter()
+                .any(|entry| entry.id() == device)
+            {
+                return None;
+            }
+            NativeDeviceClass::Effect
+        }
         device_panel::DevicePanelOwner::Track(track) => {
             let track = state.project.track(track)?;
             if track.instrument().is_some_and(|entry| entry.id() == device) {

@@ -1,4 +1,12 @@
-//! Pure control-side stereo preparation. No I/O, threads, callback work or project model.
+//! # Purpose
+//! Own pure control-side stereo sample preparation and warp kernels.
+//!
+//! # Dependencies
+//! Uses only the standard library; no project, UI or device dependency.
+//!
+//! # Does not own
+//! Does not own files, threads, canonical edits or realtime callback processing. Callers validate
+//! resource/work bounds and retain original source identity.
 mod beats;
 pub mod fft;
 mod granular;

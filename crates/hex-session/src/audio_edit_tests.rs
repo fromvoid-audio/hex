@@ -8,8 +8,12 @@ fn unresolved_device_asset_resources_refuse_actual_preparation_without_committin
         let (mut session, _, previous) = fixture();
         let (Created::Track(track), previous) = session
             .command_prepared_revision(
-                Command::AddMidiTrack {
+                Command::InsertTrackWithDevice {
                     name: "unused instrument".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
                 },
                 Some(&previous),
             )

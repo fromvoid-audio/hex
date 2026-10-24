@@ -20,8 +20,11 @@ use std::{
 fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "fixed operator".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
     })?
     else {
         return Err("track missing".into());
@@ -180,8 +183,11 @@ fn operator_modulation_allocations(
     companion: Option<u32>,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "operator feedback allocation".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
     })?
     else {
         return Err("track missing".into());
@@ -426,8 +432,11 @@ fn operator_modulation_allocations(
 fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<(), Box<dyn Error>>
 {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "eq eight allocation".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
     })?
     else {
         return Err("track missing".into());

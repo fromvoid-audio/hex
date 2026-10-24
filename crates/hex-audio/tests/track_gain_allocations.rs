@@ -44,8 +44,11 @@ fn launched_session_gain_candidates_keep_phase_and_routes_without_callback_alloc
 fn gain_callback(mutable: bool, session: bool) -> Result<(), Box<dyn Error>> {
     let rate = 48_000;
     let mut editor = Editor::new(Project::new(rate)?, 16)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "held volume".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })?
     else {
         return Err("track".into());

@@ -16,6 +16,7 @@ pub(super) fn prepare_map(
     tempo: &hex_project::TempoMap,
     cancel: &AtomicBool,
 ) -> Result<(hex_warp::TimeMap, Vec<u64>), Invalid> {
+    let tempo = edit.processing_tempo(tempo);
     let (first, length, _, _) = edit.projected_domain(tempo)?;
     let length_usize = usize::try_from(length)
         .map_err(|_| Invalid("audio domain length exceeds addressable range"))?;
@@ -78,7 +79,7 @@ pub(super) fn prepare_map(
             }
         }
     }
-    let origin = edit.projection_origin()?;
+    let origin = edit.processing_origin()?;
     for point in tempo.points() {
         let local = i128::from(point.beat().raw()) - origin;
         if local > 0 && local < i128::from(span.raw()) {

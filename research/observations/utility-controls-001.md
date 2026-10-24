@@ -1,10 +1,4 @@
-# UTILITY-CONTROLS-001 — bounded DC and bass-frequency paths
-
-Status: two static control paths observed; filter response and audible behavior
-remain unconfirmed. This is reference evidence for Pulse tickets 18 and 31, not
-completion of Utility parity or the full reference-evidence backlog.
-
-## provenance and scope
+# Utility bounded static analysis
 
 - Reference: installed Live 12 Suite 12.4.6 (2026-09-10_0de5c8fa9a), rechecked
   read-only on 9 October 2026. Universal executable SHA-256:
@@ -55,14 +49,3 @@ Private export hashes:
   `2a7cd1d3bc8c8092d88552c5f62831e06e25d806536225ab0e03c17af5c59988`
 - `utility-bass-frequency-001.txt`:
   `12fa1ab5d48cb58a89fad052aea09b659bba06e14f19814156be0b5174d8f8e6`
-
-## next evidence
-
-Use original asymmetric stereo impulse, DC step and swept/tone fixtures with
-all unrelated processing disabled. Compare neutral, DC enabled, bass mono at
-50/200/500 Hz and audition, at matching sample rates. Define alignment and
-magnitude/phase tolerances before capture. Repeat an off-to-on DC transition to
-discriminate reset from preserved history. Observe parameter display/keyboard
-steps separately from DSP. Source-only original filters in
-[Utility filters](../../docs/utility-filters.md) remain unregistered and explicitly
-unverified against Live; static studies do not replace those fixture comparisons.

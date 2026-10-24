@@ -149,7 +149,7 @@ fn replace_with_hooks(
     })?;
     project_temp.disarm();
 
-    let token = FileToken(Arc::from(new_bytes));
+    let token = FileToken::from_validated_bytes(Arc::from(new_bytes));
     let warning = sync_project_directory(&parent)
         .err()
         .map(|source| ReplaceWarning {
@@ -367,7 +367,7 @@ pub(crate) fn decode_envelope(
     }
     let payload = &bytes[basename_end..];
     let project = decode(payload)?;
-    Ok((project, FileToken(Arc::from(payload))))
+    Ok((project, FileToken::from_validated_bytes(Arc::from(payload))))
 }
 
 pub(crate) struct Temporary {

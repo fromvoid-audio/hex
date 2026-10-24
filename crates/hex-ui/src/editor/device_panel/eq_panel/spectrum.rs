@@ -108,6 +108,9 @@ pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
                             && device.state().type_id() == eq::EQ_TYPE_ID
                     };
                     match target.identity.owner {
+                        hex_engine::ProcessorChainOwner::Main => {
+                            state.project.main_devices().iter().any(matches)
+                        }
                         hex_engine::ProcessorChainOwner::Track(id) => state
                             .project
                             .tracks()

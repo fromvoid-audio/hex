@@ -3,8 +3,10 @@ use crate::{Session, SessionError};
 use hex_engine::{NativeDeviceClass, PreparedRevision};
 use hex_project::{DeviceId, Project, ReturnId, TrackId};
 use std::sync::Arc;
+mod preparation;
 #[cfg(test)]
 mod snapshot_tests;
+pub(crate) use preparation::command_for_snapshot;
 
 pub use hex_lattice_contract::{
     DeviceParameterSnapshot, DeviceTypeId, ParameterId, ParameterValue,
@@ -21,6 +23,12 @@ pub struct GestureKey {
 pub enum GestureTarget {
     TrackGain {
         track: TrackId,
+    },
+    TrackBalance {
+        track: TrackId,
+    },
+    ReturnGain {
+        return_track: ReturnId,
     },
     DeviceParameter {
         device: DeviceId,
@@ -102,6 +110,9 @@ pub enum GesturePhase {
 
 #[derive(Clone, Debug)]
 pub struct GestureAck {
+    /// A refused native terminal kept the worker's last accepted overlay audible. Reconcile
+    /// with the exact active snapshot from the same Event; never infer restoration or retry.
+    pub preview_retained: bool,
     pub key: GestureKey,
     pub phase: GesturePhase,
     pub sequence: u64,
@@ -127,6 +138,7 @@ pub struct GestureClient {
     active: Option<GestureSnapshot>,
     in_flight: Option<GestureRequest>,
     submitted: bool,
+    recovery_pending: bool,
     pending_begin: Option<GestureRequest>,
     latest_change: Option<GestureRequest>,
     terminal: Option<GestureRequest>,
@@ -139,6 +151,12 @@ impl GestureClient {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<GestureKey, &'static str> {
+        if self.recovery_pending {
+            if !self.has_pending_terminal() {
+                self.cancel()?;
+            }
+            return Err("previous device edit is canceling · retry after it finishes");
+        }
         if self.active.is_some() {
             return Err("another device gesture is active");
         }
@@ -167,6 +185,12 @@ impl GestureClient {
         second: ParameterId,
         initial: ParameterPairValue,
     ) -> Result<GestureKey, &'static str> {
+        if self.recovery_pending {
+            if !self.has_pending_terminal() {
+                self.cancel()?;
+            }
+            return Err("previous device edit is canceling · retry after it finishes");
+        }
         if self.active.is_some() {
             return Err("another device gesture is active");
         }
@@ -408,6 +432,7 @@ impl GestureClient {
     }
 
     pub fn reset(&mut self) {
+        self.recovery_pending = false;
         self.active = None;
         self.in_flight = None;
         self.submitted = false;
@@ -419,6 +444,17 @@ impl GestureClient {
     /// A matching acknowledgment releases the protocol slot. Stale or unrelated
     /// responses leave the current gesture and its reserved terminal untouched.
     pub fn acknowledge(&mut self, ack: &GestureAck) -> bool {
+        self.acknowledge_with_snapshot(ack, None)
+    }
+
+    /// Reconcile an exact terminal refusal with the worker's accepted scalar overlay. Missing
+    /// or unrelated snapshots leave the in-flight protocol slot untouched. A retained overlay
+    /// is parked without an automatic Commit; callers may retry or explicitly Cancel it.
+    pub fn acknowledge_with_snapshot(
+        &mut self,
+        ack: &GestureAck,
+        worker_active: Option<GestureSnapshot>,
+    ) -> bool {
         let Some(request) = self.in_flight else {
             return false;
         };
@@ -428,20 +464,50 @@ impl GestureClient {
         {
             return false;
         }
+        let retained = if ack.preview_retained {
+            if ack.accepted || !matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) {
+                return false;
+            }
+            let Some(snapshot) = worker_active.filter(|snapshot| {
+                snapshot.key == ack.key
+                    && self
+                        .active
+                        .is_some_and(|active| active.target == snapshot.target)
+            }) else {
+                return false;
+            };
+            Some(snapshot)
+        } else {
+            None
+        };
         self.in_flight = None;
         self.submitted = false;
+        if let Some(snapshot) = retained {
+            self.active = Some(snapshot);
+            self.pending_begin = None;
+            self.latest_change = None;
+            self.terminal = None;
+            self.recovery_pending = true;
+            return true;
+        }
         if !ack.accepted && ack.phase == GesturePhase::Begin {
             self.active = None;
             self.pending_begin = None;
             self.latest_change = None;
             self.terminal = None;
         } else if matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) {
+            self.recovery_pending = false;
             self.active = None;
             self.latest_change = None;
             self.terminal = None;
             self.pending_begin = None;
         }
         true
+    }
+
+    /// A refused native terminal left an audible overlay which needs retry or Cancel.
+    pub fn is_recovery_pending(&self) -> bool {
+        self.recovery_pending
     }
 
     pub fn snapshot(&self) -> Option<GestureSnapshot> {
@@ -494,11 +560,89 @@ mod client_tests {
 
     fn ack(request: GestureRequest, accepted: bool) -> GestureAck {
         GestureAck {
+            preview_retained: false,
             key: request.key(),
             phase: request.phase(),
             sequence: request.sequence(),
             accepted,
             reason: None,
+        }
+    }
+
+    #[test]
+    fn retained_terminal_uses_worker_snapshot_and_next_begin_only_requests_cancel() {
+        let device = device();
+        let parameter = ParameterId::from_static(1);
+        let target = GestureTarget::DeviceParameter { device, parameter };
+        for next_kind in 0..3 {
+            let mut client = GestureClient::default();
+            client.begin(7, target, ParameterValue::Float(1.0)).unwrap();
+            let begin = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(begin, true)));
+            client.change(ParameterValue::Float(0.5)).unwrap();
+            let change = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(change, true)));
+            let accepted = client.snapshot().unwrap();
+            client.finish(ParameterValue::Float(0.9)).unwrap();
+            let terminal = client.next_request().unwrap();
+            client.mark_submitted();
+            let mut refused = ack(terminal, false);
+            refused.preview_retained = true;
+            assert!(!client.acknowledge(&refused));
+            assert!(!client.acknowledge_with_snapshot(&refused, None));
+            let mut foreign = accepted;
+            foreign.key.token += 1;
+            assert!(!client.acknowledge_with_snapshot(&refused, Some(foreign)));
+            assert!(client.has_pending_terminal());
+            assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+            assert_eq!(client.snapshot(), Some(accepted));
+            assert!(client.is_recovery_pending());
+            assert!(
+                client.next_request().is_none(),
+                "permanent refusal cannot spin Commit"
+            );
+            client.change(ParameterValue::Float(0.6)).unwrap();
+            let change = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(change, true)));
+            assert!(
+                client.is_recovery_pending(),
+                "accepted overlay changes cannot release terminal dependents"
+            );
+            let accepted = client.snapshot().unwrap();
+            let declined = match next_kind {
+                0 => client.begin(7, target, ParameterValue::Float(0.8)),
+                1 => client.begin_pair(
+                    7,
+                    device,
+                    parameter,
+                    ParameterId::from_static(2),
+                    ParameterPairValue {
+                        first: ParameterValue::Float(0.8),
+                        second: ParameterValue::Float(0.9),
+                    },
+                ),
+                _ => client.begin_snapshot(
+                    7,
+                    device,
+                    DeviceParameterSnapshot::new(&[(parameter, ParameterValue::Float(0.8))])
+                        .unwrap(),
+                ),
+            };
+            assert!(declined.unwrap_err().contains("retry after"));
+            assert_eq!(client.snapshot(), Some(accepted));
+            assert!(client.change(ParameterValue::Float(0.8)).is_err());
+            let cancel = client.next_request().unwrap();
+            assert!(matches!(cancel, GestureRequest::Cancel { .. }));
+            let mut cancel_refused = ack(cancel, false);
+            cancel_refused.preview_retained = true;
+            assert!(client.acknowledge_with_snapshot(&cancel_refused, Some(accepted)));
+            assert!(client.next_request().is_none());
+            client.cancel().unwrap();
+            let retry = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(retry, true)));
+            assert!(client.snapshot().is_none());
+            assert!(!client.is_recovery_pending());
+            assert!(client.begin(7, target, ParameterValue::Float(1.0)).is_ok());
         }
     }
 
@@ -582,6 +726,7 @@ mod client_tests {
         let begin = client.next_request().unwrap();
         assert_eq!(client.next_request(), Some(begin));
         let wrong = GestureAck {
+            preview_retained: false,
             key: GestureKey {
                 generation: 2,
                 token: 99,
@@ -813,6 +958,17 @@ pub(crate) struct GestureOutcome {
     pub canonical_changed: bool,
 }
 
+/// The existing machine validates ordering/targets; the worker prepares and publishes before
+/// this operation may advance its active snapshot or canonical history.
+#[derive(Clone, Copy)]
+pub(crate) enum GesturePreparation {
+    Preview(GestureSnapshot),
+    Commit(GestureSnapshot),
+    Restore,
+}
+pub(crate) type PreparedGesture =
+    Result<Option<(Arc<Project>, Arc<PreparedRevision>)>, SessionError>;
+
 struct Active {
     snapshot: GestureSnapshot,
     kind: ActiveKind,
@@ -821,6 +977,8 @@ struct Active {
 #[derive(Clone, Copy)]
 enum ActiveKind {
     TrackGain,
+    TrackBalance,
+    ReturnGain,
     Device {
         class: NativeDeviceClass,
         type_id: DeviceTypeId,
@@ -888,8 +1046,37 @@ impl GestureMachine {
         previous: Option<&Arc<PreparedRevision>>,
         generation: u64,
     ) -> GestureOutcome {
+        self.handle_using(
+            session,
+            request,
+            previous,
+            generation,
+            false,
+            |session, operation| default_preparation(session, operation, previous),
+        )
+    }
+    pub(crate) fn handle_prepared(
+        &mut self,
+        session: &mut Session,
+        request: GestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> GestureOutcome {
+        self.handle_using(session, request, previous, generation, true, prepare)
+    }
+    fn handle_using(
+        &mut self,
+        session: &mut Session,
+        request: GestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        retain_terminal: bool,
+        mut prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> GestureOutcome {
         let mut outcome = GestureOutcome {
             ack: GestureAck {
+                preview_retained: false,
                 key: request.key(),
                 phase: request.phase(),
                 sequence: request.sequence(),
@@ -900,14 +1087,21 @@ impl GestureMachine {
             preview_project: None,
             canonical_changed: false,
         };
-        let result = self.apply(session, request, previous, generation, &mut outcome);
+        let result = self.apply(session, request, generation, &mut outcome, &mut prepare);
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
                 outcome.ack.reason = Some(error.to_string().to_lowercase());
-                // A refused terminal still retires its own overlay and restores
-                // canonical sound. Never retire another gesture for a stale key.
-                if request.phase() == GesturePhase::Commit
+                // Native terminal refusal keeps the actual accepted overlay. The legacy
+                // adapter retains its existing retirement behavior; stale keys own neither.
+                if retain_terminal
+                    && matches!(request.phase(), GesturePhase::Commit | GesturePhase::Cancel)
+                    && self
+                        .snapshot()
+                        .is_some_and(|active| active.key == request.key())
+                {
+                    outcome.ack.preview_retained = true;
+                } else if request.phase() == GesturePhase::Commit
                     && request.sequence() != 0
                     && self.snapshot().is_some_and(|active| {
                         active.key == request.key() && request.sequence() >= active.sequence
@@ -925,9 +1119,9 @@ impl GestureMachine {
         &mut self,
         session: &mut Session,
         request: GestureRequest,
-        previous: Option<&Arc<PreparedRevision>>,
         generation: u64,
         outcome: &mut GestureOutcome,
+        prepare: &mut impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
     ) -> Result<(), SessionError> {
         let key = request.key();
         if key.generation != generation || key.token == 0 {
@@ -1000,24 +1194,35 @@ impl GestureMachine {
                 {
                     return Err(SessionError::Invalid("snapshot gesture parameters changed"));
                 }
-                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                let GestureTarget::DeviceParameterSnapshot { .. } = active.target else {
                     return Err(SessionError::Invalid("snapshot gesture target changed"));
                 };
                 if terminal {
                     let before = session.project().clone();
-                    outcome.playback = Some(session.commit_device_snapshot(
-                        device,
-                        &snapshot,
-                        previous.map(Arc::as_ref),
-                    )?);
+                    let (_, prepared) = prepare(
+                        session,
+                        GesturePreparation::Commit(GestureSnapshot {
+                            sequence,
+                            parameters: Some(snapshot),
+                            ..active
+                        }),
+                    )?
+                    .ok_or(SessionError::Invalid("gesture commit produced no revision"))?;
+                    outcome.playback = Some(prepared);
                     outcome.canonical_changed = session.project() != &before;
                     self.active = None;
                 } else {
-                    let (project, prepared) = session.preview_device_snapshot(
-                        device,
-                        &snapshot,
-                        previous.map(Arc::as_ref),
-                    )?;
+                    let (project, prepared) = prepare(
+                        session,
+                        GesturePreparation::Preview(GestureSnapshot {
+                            sequence,
+                            parameters: Some(snapshot),
+                            ..active
+                        }),
+                    )?
+                    .ok_or(SessionError::Invalid(
+                        "gesture preview produced no revision",
+                    ))?;
                     let current = self.active.as_mut().unwrap();
                     current.snapshot.sequence = sequence;
                     current.snapshot.parameters = Some(snapshot);
@@ -1095,6 +1300,16 @@ impl GestureMachine {
                             Some(second_value),
                         )
                     }
+                    GestureTarget::TrackBalance { track } => (
+                        ActiveKind::TrackBalance,
+                        ParameterValue::Float(static_track_balance(session, track)?),
+                        None,
+                    ),
+                    GestureTarget::ReturnGain { return_track } => (
+                        ActiveKind::ReturnGain,
+                        ParameterValue::Float(static_return_gain(session, return_track)?),
+                        None,
+                    ),
                     GestureTarget::TrackGain { track } => (
                         ActiveKind::TrackGain,
                         ParameterValue::Float(static_track_gain(session, track)?),
@@ -1146,8 +1361,17 @@ impl GestureMachine {
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
-                let (project, prepared) =
-                    preview_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (project, prepared) = prepare(
+                    session,
+                    GesturePreparation::Preview(GestureSnapshot {
+                        sequence,
+                        value,
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid(
+                    "gesture preview produced no revision",
+                ))?;
                 if let Some(current) = self.active.as_mut() {
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value;
@@ -1162,8 +1386,18 @@ impl GestureMachine {
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
-                let (project, prepared) =
-                    preview_pair_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (project, prepared) = prepare(
+                    session,
+                    GesturePreparation::Preview(GestureSnapshot {
+                        sequence,
+                        value: value.first,
+                        secondary_value: Some(value.second),
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid(
+                    "gesture preview produced no revision",
+                ))?;
                 if let Some(current) = self.active.as_mut() {
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value.first;
@@ -1180,8 +1414,15 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
                 let before = session.project().clone();
-                let prepared =
-                    commit_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (_, prepared) = prepare(
+                    session,
+                    GesturePreparation::Commit(GestureSnapshot {
+                        sequence,
+                        value,
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid("gesture commit produced no revision"))?;
                 outcome.canonical_changed = session.project() != &before;
                 outcome.playback = Some(prepared);
                 self.active = None;
@@ -1194,16 +1435,25 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
                 let before = session.project().clone();
-                let prepared =
-                    commit_pair_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (_, prepared) = prepare(
+                    session,
+                    GesturePreparation::Commit(GestureSnapshot {
+                        sequence,
+                        value: value.first,
+                        secondary_value: Some(value.second),
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid("gesture commit produced no revision"))?;
                 outcome.canonical_changed = session.project() != &before;
                 outcome.playback = Some(prepared);
                 self.active = None;
             }
             GestureRequest::Cancel { .. } => {
                 self.checked_key(key)?;
+                let prepared = prepare(session, GesturePreparation::Restore)?;
                 self.active = None;
-                outcome.playback = previous.cloned();
+                outcome.playback = prepared.map(|(_, prepared)| prepared);
             }
         }
         Ok(())
@@ -1225,6 +1475,12 @@ impl GestureMachine {
             .as_ref()
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
         match (snapshot.target, active.kind) {
+            (GestureTarget::TrackBalance { track }, ActiveKind::TrackBalance) => {
+                static_track_balance(session, track)?;
+            }
+            (GestureTarget::ReturnGain { return_track }, ActiveKind::ReturnGain) => {
+                static_return_gain(session, return_track)?;
+            }
             (GestureTarget::TrackGain { track }, ActiveKind::TrackGain) => {
                 static_track_gain(session, track)?;
             }
@@ -1361,6 +1617,7 @@ impl GestureMachine {
         match result {
             Ok((project, prepared)) => Some(GestureOutcome {
                 ack: GestureAck {
+                    preview_retained: false,
                     key: active.key,
                     phase: GesturePhase::Change,
                     sequence: active.sequence,
@@ -1384,6 +1641,67 @@ impl GestureMachine {
         }
     }
 
+    pub(crate) fn rebase_prepared(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        prepare: &mut impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> Option<GestureOutcome> {
+        let active = self.snapshot()?;
+        let result = self
+            .checked_active(session, active.key)
+            .and_then(|_| prepare(session, GesturePreparation::Preview(active)))
+            .and_then(|prepared| {
+                prepared.ok_or(SessionError::Invalid(
+                    "gesture preview produced no revision",
+                ))
+            });
+        match result {
+            Ok((project, prepared)) => Some(GestureOutcome {
+                ack: GestureAck {
+                    preview_retained: false,
+                    key: active.key,
+                    phase: GesturePhase::Change,
+                    sequence: active.sequence,
+                    accepted: true,
+                    reason: None,
+                },
+                playback: Some(prepared),
+                preview_project: Some(project),
+                canonical_changed: false,
+            }),
+            Err(error) => {
+                // The caller has already accepted an independent canonical graph, so its normal
+                // publication retires this invalid overlay. Never claim that edit rolled back.
+                self.active = None;
+                Some(GestureOutcome {
+                    ack: GestureAck {
+                        preview_retained: false,
+                        key: active.key,
+                        phase: GesturePhase::Cancel,
+                        sequence: 0,
+                        accepted: false,
+                        reason: Some(error.to_string()),
+                    },
+                    playback: previous.cloned(),
+                    preview_project: None,
+                    canonical_changed: false,
+                })
+            }
+        }
+    }
+    pub(crate) fn finish_prepared(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> Option<GestureOutcome> {
+        let active = self.snapshot()?;
+        let request = terminal_request(active);
+        Some(self.handle_prepared(session, request, previous, generation, prepare))
+    }
+
     pub fn finish(
         &mut self,
         session: &mut Session,
@@ -1391,29 +1709,96 @@ impl GestureMachine {
         generation: u64,
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
-        let request = if let Some(snapshot) = active.parameters {
-            GestureRequest::CommitSnapshot {
-                key: active.key,
-                sequence: active.sequence.max(1),
-                snapshot,
-            }
-        } else if let Some(second) = active.secondary_value {
-            GestureRequest::CommitPair {
-                key: active.key,
-                sequence: active.sequence.max(1),
-                value: ParameterPairValue {
-                    first: active.value,
-                    second,
-                },
-            }
-        } else {
-            GestureRequest::Commit {
-                key: active.key,
-                sequence: active.sequence.max(1),
-                value: active.value,
-            }
-        };
+        let request = terminal_request(active);
         Some(self.handle(session, request, previous, generation))
+    }
+}
+
+fn terminal_request(active: GestureSnapshot) -> GestureRequest {
+    if let Some(snapshot) = active.parameters {
+        GestureRequest::CommitSnapshot {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            snapshot,
+        }
+    } else if let Some(second) = active.secondary_value {
+        GestureRequest::CommitPair {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            value: ParameterPairValue {
+                first: active.value,
+                second,
+            },
+        }
+    } else {
+        GestureRequest::Commit {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            value: active.value,
+        }
+    }
+}
+fn default_preparation(
+    session: &mut Session,
+    operation: GesturePreparation,
+    previous: Option<&Arc<PreparedRevision>>,
+) -> PreparedGesture {
+    match operation {
+        GesturePreparation::Preview(active) => {
+            let prepared = if let Some(parameters) = active.parameters {
+                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                    return Err(SessionError::Invalid("snapshot target changed"));
+                };
+                session.preview_device_snapshot(device, &parameters, previous.map(Arc::as_ref))
+            } else if let Some(second) = active.secondary_value {
+                preview_pair_target(
+                    session,
+                    active.target,
+                    ParameterPairValue {
+                        first: active.value,
+                        second,
+                    },
+                    previous.map(Arc::as_ref),
+                )
+            } else {
+                preview_target(
+                    session,
+                    active.target,
+                    active.value,
+                    previous.map(Arc::as_ref),
+                )
+            }?;
+            Ok(Some(prepared))
+        }
+        GesturePreparation::Commit(active) => {
+            let prepared = if let Some(parameters) = active.parameters {
+                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                    return Err(SessionError::Invalid("snapshot target changed"));
+                };
+                session.commit_device_snapshot(device, &parameters, previous.map(Arc::as_ref))
+            } else if let Some(second) = active.secondary_value {
+                commit_pair_target(
+                    session,
+                    active.target,
+                    ParameterPairValue {
+                        first: active.value,
+                        second,
+                    },
+                    previous.map(Arc::as_ref),
+                )
+            } else {
+                commit_target(
+                    session,
+                    active.target,
+                    active.value,
+                    previous.map(Arc::as_ref),
+                )
+            }?;
+            Ok(Some((Arc::new(session.project().clone()), prepared)))
+        }
+        GesturePreparation::Restore => Ok(
+            previous.map(|prepared| (Arc::new(session.project().clone()), Arc::clone(prepared)))
+        ),
     }
 }
 
@@ -1424,6 +1809,12 @@ fn preview_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
     match target {
+        GestureTarget::TrackBalance { track } => {
+            session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
+        }
+        GestureTarget::ReturnGain { return_track } => {
+            session.preview_return_gain(return_track, mix_value(value, 0.0, 2.0)?, previous)
+        }
         GestureTarget::TrackGain { track } => {
             session.preview_track_gain(track, track_gain_value(value)?, previous)
         }
@@ -1448,6 +1839,12 @@ fn commit_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     match target {
+        GestureTarget::TrackBalance { track } => {
+            session.commit_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
+        }
+        GestureTarget::ReturnGain { return_track } => {
+            session.commit_return_gain(return_track, mix_value(value, 0.0, 2.0)?, previous)
+        }
         GestureTarget::TrackGain { track } => {
             session.commit_track_gain(track, track_gain_value(value)?, previous)
         }
@@ -1507,6 +1904,48 @@ fn commit_pair_target(
         ),
         _ => Err(SessionError::Invalid(
             "paired values require a paired device gesture",
+        )),
+    }
+}
+
+fn static_track_balance(session: &Session, track: TrackId) -> Result<f32, SessionError> {
+    require_resident_mix(session)?;
+    session
+        .project()
+        .track(track)
+        .map(hex_project::Track::balance)
+        .ok_or(SessionError::Invalid(
+            "track balance target no longer exists",
+        ))
+}
+
+fn static_return_gain(session: &Session, id: ReturnId) -> Result<f32, SessionError> {
+    require_resident_mix(session)?;
+    session
+        .project()
+        .return_tracks()
+        .iter()
+        .find(|track| track.id() == id)
+        .map(hex_project::ReturnTrack::gain)
+        .ok_or(SessionError::Invalid("return gain target no longer exists"))
+}
+
+fn require_resident_mix(session: &Session) -> Result<(), SessionError> {
+    if session.audio_mode() != crate::DocumentAudioMode::Resident {
+        return Err(SessionError::Invalid(
+            "held mixer controls require resident audio mode",
+        ));
+    }
+    Ok(())
+}
+
+fn mix_value(value: ParameterValue, min: f32, max: f32) -> Result<f32, SessionError> {
+    match value {
+        ParameterValue::Float(value) if value.is_finite() && (min..=max).contains(&value) => {
+            Ok(value)
+        }
+        _ => Err(SessionError::Invalid(
+            "mixer value must be finite and within its range",
         )),
     }
 }

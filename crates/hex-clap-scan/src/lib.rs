@@ -1,4 +1,13 @@
-//! Owned controlled discovery/offline records; no Rust plugin loading or engine API.
+//! # Purpose
+//! Own bounded controlled CLAP discovery/offline records and validation.
+//!
+//! # Dependencies
+//! Uses serde/serde_json for records and sha2 for exact artifact identity; native execution is
+//! confined to the separate controlled helper boundary.
+//!
+//! # Does not own
+//! Does not expose a Rust plugin loader, persistent plugin instance or engine audio-host API.
+//! Discovery evidence does not qualify foreign code for realtime processing.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{

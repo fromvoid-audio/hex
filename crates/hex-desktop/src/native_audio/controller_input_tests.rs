@@ -45,8 +45,11 @@ fn resident_controller_and_keyboard_publications_keep_source_identity_through_wo
         harness.audio.as_ref().unwrap().mode,
         DocumentAudioMode::Resident
     );
-    let added = harness.run(Request::Edit(hex_project::Command::AddMidiTrack {
+    let added = harness.run(Request::Edit(hex_project::Command::InsertTrackWithDevice {
         name: "vector".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }));
     let track = added.state.project.tracks()[0].id();
     let instrument = added

@@ -32,6 +32,7 @@ fn queued_stale_revision_and_reused_generation_refuse_before_history_and_preview
     };
     let revision = added.state.revision;
     let point = GainPoint {
+        incoming_gain: None,
         beat: BeatTime::from_raw(1),
         gain: 0.25,
         outgoing: GainInterpolation::Linear,
@@ -155,11 +156,13 @@ fn occupied_move_and_removed_owner_preserve_exact_committed_history() {
     };
     let points = vec![
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::from_raw(1),
             gain: 0.25,
             outgoing: GainInterpolation::Step,
         },
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::from_raw(2),
             gain: 0.75,
             outgoing: GainInterpolation::Linear,

@@ -1,4 +1,18 @@
+//! # Purpose
+//! Own native output lifecycle, bounded prepared-graph publication, callback command delivery and
+//! off-callback reclamation. Owns copied isolated-processor endpoints and their joining control
+//! worker; plugin ABI loading and native instance admission remain outside this crate.
+//!
+//! # Dependencies
+//! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
+//! rtrb for bounded ownership queues.
+//!
+//! # Does not own
+//! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
+//! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
+//! control.
 mod device;
+pub mod plugin_transport;
 mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerPreparedOutput};

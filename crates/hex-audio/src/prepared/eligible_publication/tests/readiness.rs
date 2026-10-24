@@ -527,8 +527,11 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
     edit.execute(hex_project::Command::RemoveTrack(a_track))
         .unwrap();
     let hex_project::Created::Track(b_track) = edit
-        .execute(hex_project::Command::AddTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "replacement".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

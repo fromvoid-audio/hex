@@ -40,6 +40,7 @@ struct CacheSlot {
     disposal: Disposal,
 }
 struct CellSlot {
+    active: bool,
     track: hex_project::TrackId,
     scene: hex_project::SceneId,
     clip: hex_project::ClipId,
@@ -167,6 +168,28 @@ impl SessionSourceConstruction {
         bank: &OwnedAudioInputs,
         arrangement_handles: usize,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_scoped(project, generation, bank, arrangement_handles, false)
+    }
+    pub(crate) fn reserve_current_sampler(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        bank: &OwnedAudioInputs,
+        arrangement_handles: usize,
+    ) -> Result<(), AudioStorageError> {
+        if !crate::native_device_resources::current_sampler::validate_project(project)? {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        self.reserve_scoped(project, generation, bank, arrangement_handles, true)
+    }
+    fn reserve_scoped(
+        &mut self,
+        project: &Project,
+        generation: u64,
+        bank: &OwnedAudioInputs,
+        arrangement_handles: usize,
+        current_sampler: bool,
+    ) -> Result<(), AudioStorageError> {
         if !self.cells.is_empty() || !self.cache.is_empty() {
             return Err(AudioStorageError::Capacity);
         }
@@ -175,6 +198,7 @@ impl SessionSourceConstruction {
             .session_cells()
             .iter()
             .try_fold(0_usize, |n, cell| match cell.content() {
+                SessionCellContent::Midi(_) if current_sampler => Ok(n),
                 SessionCellContent::Midi(_) => Err(AudioStorageError::UnsupportedGraph),
                 SessionCellContent::Audio(_) => n.checked_add(1).ok_or(AudioStorageError::Overflow),
                 SessionCellContent::Stop => Ok(n),
@@ -280,6 +304,7 @@ impl SessionSourceConstruction {
             // reserved directly in the persistent cell before source cloning.
             let index = self.cells.len();
             self.cells.push(CellSlot {
+                active: clip.active(),
                 track: cell.track(),
                 scene: cell.scene(),
                 clip: clip.id(),
@@ -511,6 +536,7 @@ impl SessionSourceConstruction {
         l.vec(cache)?;
         for row in cells {
             let CellSlot {
+                active: _,
                 track: _,
                 scene: _,
                 clip: _,

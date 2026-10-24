@@ -55,8 +55,11 @@ fn fixture(class: NativeDeviceClass, type_name: &'static str) -> (Service, Event
     let service = Service::new(48_000, 32, 0).unwrap();
     event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "preset owner".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = event(&service);

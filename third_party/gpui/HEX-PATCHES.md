@@ -18,7 +18,7 @@ retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
 explicit grid-literal and bounded accessibility decisions.
 view-cache epoch, scene replay and explicit grid-literal decisions.
-See docs/native-input.md and run python3 scripts/check-gpui-patch.py from the Hex
+See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
 For refresh: obtain a verified published upstream archive; review which documented
@@ -107,12 +107,17 @@ draws another frame nor injects pointer input, so tests can distinguish actual
 paint from focus state that has not reached the screen. Test-support only; no
 production rendering or native graphics behavior changes.
 
+`rendered_filled_quads` also exposes filled canvas fragments within a debug
+element, clipped to the completed scene's content/replay masks. It supports
+pointer/worker tests of primitives without inventing per-primitive UI elements.
+It remains test-support only and is not native framebuffer readback.
+
 14 October accessibility extension (ticket29/PR188): safe bounded semantic
 snapshots/actions and cached prepaint integration. The first native AppKit
 candidate is quarantined for an off-UI final-owner hazard; no native AX backend
 is enabled at this checkpoint. The reviewed file list and added accessibility.rs are explicitly hashed;
 all original baseline hashes, license and prior input/cursor deltas remain.
-See docs/native-accessibility.md in the Hex repository for owner/revision,
+See third_party/gpui/src/accessibility.rs in the Hex repository for owner/revision,
 revocation, asynchronous dispatch, offscreen refusal and native acceptance limits.
 The unified diff uses zero context; apply only against the verified archive with
 `git apply --unidiff-zero`. Hash verification remains mandatory.
@@ -151,7 +156,7 @@ isAccessibilityEnabled and isAccessibilityFocused selectors. A Mac-only real
 semantic-object regression verifies enabled/focused snapshot changes and revoked
 hidden/unavailable state; the old selectors fail it. All four native fixtures
 pass with Hex's macos-blade features. Inspector/VoiceOver acceptance remains open;
-see docs/native-accessibility.md. Original archive identity remains unchanged.
+see third_party/gpui/src/accessibility.rs. Original archive identity remains unchanged.
 
 17 October clip-border test support: `rendered_border` reads the last matching
 completed scene quad with nonzero border widths and returns its color, widths
@@ -236,3 +241,12 @@ exercise the production-used fold; they are not compositor/hardware validation.
 Original source hashes, license and unrelated cumulative patch blocks remain;
 only changed-source provenance hashes are updated and the patch is reapplied
 against verified originals to compare every patched/added byte.
+
+23 October stateless action semantics: the existing bounded accessibility value
+contract adds Button, permitting only Focus/Press. AppKit exposes AXButton with no
+editable value or value description; value-setting actions refuse. Owner lifetime, revision, snapshot
+budgets, revocation and mailbox validation remain unchanged; no new FFI or native
+application pointer path. The browser clear action is the first consumer. A real
+AppKit semantic-object regression checks role/no-value and action restrictions;
+actual Inspector/VoiceOver acceptance remains separate. Original archive hashes
+are retained; added-source hashes and cumulative patch are regenerated.

@@ -29,62 +29,57 @@ pub(crate) fn well(
     let peak_height = fraction(held);
     let tooltip = readout.tooltips[index].clone();
     let selector = format!("{id}-{}-meter", if index == 0 { "input" } else { "output" });
-    let fill_selector = format!("{selector}-fill");
-    div()
-        .id(SharedString::from(selector.clone()))
-        .debug_selector(move || selector.clone())
-        .relative()
-        .w(px(8.0))
-        .flex_shrink_0()
-        .h_full()
-        .bg(rgb(style.rail))
-        .child(
-            div()
-                .debug_selector(move || fill_selector.clone())
-                .absolute()
-                .bottom(px(0.0))
-                .w_full()
-                .h(relative(height))
-                .bg(rgb(if level >= 1.0 {
-                    readout.clipping
-                } else if level >= 0.5 {
-                    readout.warning
-                } else {
-                    readout.signal
-                })),
-        )
-        .when(held > 0.0, |well| {
-            well.child(
-                div()
-                    .absolute()
-                    .bottom(relative(peak_height))
-                    .w_full()
-                    .h(px(1.0))
-                    .bg(rgb(if held >= 1.0 {
-                        readout.clipping
-                    } else {
-                        style.text
-                    })),
-            )
-        })
-        .child(
+    crate::level_meter(
+        selector.clone().into(),
+        height,
+        false,
+        crate::LevelMeterStyle {
+            background: style.rail,
+            fill: if level >= 1.0 {
+                readout.clipping
+            } else if level >= 0.5 {
+                readout.warning
+            } else {
+                readout.signal
+            },
+            above: readout.clipping,
+        },
+    )
+    .id(SharedString::from(selector))
+    .w(px(8.0))
+    .h_full()
+    .when(held > 0.0, |well| {
+        well.child(
             div()
                 .absolute()
-                .bottom(relative(60.0 / 84.0))
+                .bottom(relative(peak_height))
                 .w_full()
                 .h(px(1.0))
-                .bg(rgb(style.text))
-                .opacity(0.35),
+                .bg(rgb(if held >= 1.0 {
+                    readout.clipping
+                } else {
+                    style.text
+                })),
         )
-        .child(
-            div()
-                .absolute()
-                .bottom(relative(((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)))
-                .w_full()
-                .h(px(2.0))
-                .bg(rgb(readout.warning)),
-        )
-        .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
+    })
+    .child(
+        div()
+            .absolute()
+            .bottom(relative(60.0 / 84.0))
+            .w_full()
+            .h(px(1.0))
+            .bg(rgb(style.text))
+            .opacity(0.35),
+    )
+    .child(
+        div()
+            .absolute()
+            .bottom(relative(((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)))
+            .w_full()
+            .h(px(2.0))
+            .bg(rgb(readout.warning)),
+    )
+    .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }
 fn fraction(amplitude: f32) -> f32 {
     if !amplitude.is_finite() || amplitude <= 0.0 {

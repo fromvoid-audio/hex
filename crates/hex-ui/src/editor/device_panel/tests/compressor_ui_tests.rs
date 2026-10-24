@@ -65,7 +65,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));
-    for parameter in 1..=7 {
+    for parameter in 1..=8 {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),
@@ -192,7 +192,7 @@ fn compressor_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
         view.clip_view_open = true;
         cx.notify();
     });
-    let visual = VisualTestContext::from_window(handle, cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let expected = hex_engine::patch_native_device_parameter(
         &original,
@@ -210,9 +210,24 @@ fn compressor_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
             },
             ParameterValue::Float(-42.0),
         );
+        view.device_panel.pending_values.insert(
+            ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(8),
+            },
+            ParameterValue::Choice(1),
+        );
         cx.notify();
     });
     visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("compressor-rms-detector-{}", device.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "pending mode updates actual detector-axis caption"
+    );
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.state
@@ -481,6 +496,148 @@ fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
         assert_eq!(
             reopened.state.project.device(device).unwrap().state(),
             expected.device(device).unwrap().state()
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[gpui::test]
+fn compressor_mode_menu_track_return_cancel_commit_preview_history_and_reopen(
+    cx: &mut TestAppContext,
+) {
+    let (service, _, track, return_track, return_device, _) = actor_return_utility_fixture();
+    let original = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.compressor"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device: return_device,
+            state: original.clone(),
+        }))
+        .unwrap();
+    assert!(receive_service_event(&service).error.is_none());
+    service
+        .submit(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: original.clone(),
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let device = state.project.track(track).unwrap().devices()[0].id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    for (owner, device) in [(None, device), (Some(return_track), return_device)] {
+        editor.update(cx, |view, cx| {
+            view.focused_return = owner;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let selector = Box::leak(format!("device-{}-parameter-8", device.value()).into_boxed_str());
+        let graph = visual
+            .debug_bounds(Box::leak(
+                format!("compressor-transfer-{}", device.value()).into_boxed_str(),
+            ))
+            .expect("actual provider-backed plot");
+        assert!(graph.size.width > px(30.0) && graph.size.height > px(40.0));
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        let position = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.run_until_parked();
+        let option =
+            Box::leak(format!("device-{}-parameter-8-option-1", device.value()).into_boxed_str());
+        let option_bounds = visual
+            .debug_bounds(option)
+            .expect("actual detector mode options");
+        visual.simulate_mouse_move(option_bounds.center(), None, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(option).is_none(),
+            "dismiss selector without applying hovered option"
+        );
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, before)
+        });
+        let position = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.run_until_parked();
+        let position = visual.debug_bounds(option).unwrap().center();
+        visual.simulate_click(position, Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        let changed = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        assert_ne!(changed, before);
+        let changed_state = changed.device(device).unwrap().state();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Effect,
+                changed_state,
+                hex_lattice_contract::ParameterId::from_static(8)
+            )
+            .unwrap(),
+            ParameterValue::Choice(1)
+        );
+        visual.run_until_parked();
+        let mode_label =
+            Box::leak(format!("compressor-rms-detector-{}", device.value()).into_boxed_str());
+        assert!(
+            visual.debug_bounds(mode_label).is_some(),
+            "actual RMS detector-axis caption"
+        );
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                compressor_panel::cached_curve(view, device),
+                Some(&hex_engine::native_compressor_transfer_curve(changed_state).unwrap())
+            );
+            assert_eq!(changed_state.state_version(), 3);
+            assert_eq!(changed_state.payload().len(), 32);
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project,
+                before,
+                "one Undo covers selected option"
+            )
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, changed)
+        });
+    }
+    let expected = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    let path = std::env::temp_dir().join(format!(
+        "hex-compressor-mode-{}-{}.hex",
+        std::process::id(),
+        device.value()
+    ));
+    assert!(!path.exists());
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| assert!(view.error.is_none()));
+    let reload = Service::new(48000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    for id in [device, return_device] {
+        assert_eq!(
+            reopened.state.project.device(id).unwrap().state(),
+            expected.device(id).unwrap().state()
         );
     }
     std::fs::remove_file(path).unwrap();

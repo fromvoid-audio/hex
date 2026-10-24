@@ -93,6 +93,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         "browser-section-devices",
         "browser-section-projects",
         "browser-section-all",
+        "browser-section-vst3",
         "browser-control-⚙",
         "browser-place-0",
     ];
@@ -104,6 +105,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         "browser-picker-glyph-section-1",
         "browser-picker-glyph-section-2",
         "browser-picker-glyph-section-3",
+        "browser-picker-glyph-section-4",
         "browser-picker-glyph-place-0",
     ];
     let outer = visual.debug_bounds("browser-resize-handle").unwrap();

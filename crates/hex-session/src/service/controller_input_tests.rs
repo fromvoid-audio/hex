@@ -18,8 +18,11 @@ fn live_expression_worker_preserves_parameter_revisions_and_rejects_stale_genera
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     next(&service);
     service
-        .submit(Request::Edit(hex_project::Command::AddMidiTrack {
+        .submit(Request::Edit(hex_project::Command::InsertTrackWithDevice {
             name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = next(&service);
@@ -124,8 +127,11 @@ fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     next(&service);
     service
-        .submit(Request::Edit(hex_project::Command::AddMidiTrack {
+        .submit(Request::Edit(hex_project::Command::InsertTrackWithDevice {
             name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = next(&service);
@@ -232,8 +238,11 @@ fn verified_streaming_refuses_controller_before_success_ack_or_playback() {
     let created = next(&service);
     assert!(created.error.is_none());
     service
-        .submit(Request::Edit(hex_project::Command::AddMidiTrack {
+        .submit(Request::Edit(hex_project::Command::InsertTrackWithDevice {
             name: "vector".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let added = next(&service);

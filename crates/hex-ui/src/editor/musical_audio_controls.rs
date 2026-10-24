@@ -15,6 +15,20 @@ struct Capture {
     revision: u64,
     generation: u64,
 }
+pub(super) fn warp_command(
+    view: &EditorView,
+    clip: ClipId,
+) -> Result<hex_project::Command, hex_project::Invalid> {
+    let state = view
+        .state
+        .as_ref()
+        .ok_or(hex_project::Invalid("project unavailable"))?;
+    if view.selected_clip_ids().len() > 1 {
+        actions::selection_command(&state.project, clip, Action::Warp)
+    } else {
+        command(&state.project, clip, Action::Warp)
+    }
+}
 /// Selected-clip stretch controls stay above the scrollable source fields.
 pub(super) fn warp_header(
     view: &mut EditorView,
@@ -38,16 +52,6 @@ pub(super) fn warp_header(
     let mode = domain
         .and_then(|domain| domain.warp.as_ref())
         .map_or(modes()[0], |warp| warp.mode);
-    controls = controls.child(
-        button(
-            capture,
-            if active { "warp · on" } else { "warp · off" },
-            Action::Warp,
-            view.edit_pending(),
-            cx,
-        )
-        .debug_selector(|| "audio-clip-warp-toggle".into()),
-    );
     controls = controls.child(sample_bpm::field(view, clip_id, cx));
     if active {
         if let WarpMode::Beats {
@@ -130,7 +134,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     ));
     controls = controls.child(button(
         capture,
-        if edit.is_some_and(|e| e.musical_start.is_some()) {
+        if edit.is_some_and(|e| e.live_musical_start().is_some()) {
             "anchor · beats"
         } else {
             "anchor · frames"
@@ -415,22 +419,19 @@ fn button(
     disabled: bool,
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
-    div()
+    hex_widgets::action(theme::text(value), theme::action_style())
         .id(gpui::ElementId::Name(
             format!("musical-{}-{}", capture.clip.value(), action_key(action)).into(),
         ))
         .min_h(px(20.0))
         .px(px(3.0))
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
         .opacity(if disabled { 0.4 } else { 1.0 })
-        .child(theme::text(value))
         .on_click(cx.listener(move |view, _, _, cx| {
             if disabled
                 || view.edit_pending()
                 || view.project_generation != capture.generation
-                || view.selected_clip != Some(capture.clip)
+                || view.detail_clip_id() != Some(capture.clip)
             {
                 return;
             }
@@ -471,9 +472,28 @@ fn button(
                 cx.notify();
                 return;
             }
-            match command(&state.project, capture.clip, action) {
+            let intent = if view.selected_clip_ids().len() > 1 {
+                actions::selection_command(&state.project, capture.clip, action)
+            } else {
+                command(&state.project, capture.clip, action)
+            };
+            match intent {
                 Ok(command) => {
-                    view.enqueue(hex_session::service::Request::Edit(command));
+                    if matches!(
+                        action,
+                        Action::MarkerAdd
+                            | Action::MarkerFrame(..)
+                            | Action::MarkerBeat(..)
+                            | Action::MarkerRemove(_)
+                            | Action::EnvelopeAdd
+                            | Action::EnvelopeFrame(..)
+                            | Action::EnvelopeGain(..)
+                            | Action::EnvelopeRemove(_)
+                    ) {
+                        view.enqueue_focused_source_edit(command);
+                    } else {
+                        view.enqueue(hex_session::service::Request::Edit(command));
+                    }
                 }
                 Err(error) => view.error = Some(error.0.into()),
             };

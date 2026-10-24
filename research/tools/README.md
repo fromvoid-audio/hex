@@ -7,7 +7,7 @@ for a result with a 30-second timeout. It does not run whole-program analysis.
 Its output includes language, address, inferred body, entry flow and warnings;
 it creates a new file and refuses to overwrite an existing export.
 
-Use only entries tied to the behavior questions in docs/research/workflow.md.
+Use only entries tied to the behavior questions in research/README.md.
 Pass output paths under ignored `research/private/`, and keep the imported binary,
 project database, pseudocode and logs there. Do not copy recovered code into Hex.
 A successful export establishes tool execution, not algorithm correctness: types,
