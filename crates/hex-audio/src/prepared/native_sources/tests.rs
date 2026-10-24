@@ -326,16 +326,22 @@ fn actual_installed_native_endpoint_requires_both_carriers_and_completed_backend
         let mut backend = Some(());
         let mut pending = false;
         let mut disposed = false;
-        assert!(
-            crate::lifecycle::test_dispose_backend(
-                &mut backend,
-                &mut pending,
-                &mut disposed,
-                &mut retirement,
-                |_| Ok(())
-            )
-            .unwrap()
-        );
+        // Backend disposal supplies its actual frontier once; native return
+        // and cleanup may still be pending on the existing Work lane. Preserve
+        // all owners while driving the same supported retirement operation.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap()
+        {
+            assert!(Instant::now() < deadline, "original native retirement");
+            std::thread::yield_now();
+        }
         finish(&mut retirement);
         assert!(
             retirement
