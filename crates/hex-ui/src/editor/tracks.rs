@@ -420,6 +420,9 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Row);
+        #[cfg(all(test, feature = "ui-test-support"))]
         {
             self.track_row_builds = self.track_row_builds.saturating_add(1);
         }
@@ -1540,6 +1543,9 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::ClipModel);
         let ClipViewTimeline {
             viewport,
             grid,

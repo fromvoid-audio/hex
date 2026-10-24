@@ -221,6 +221,10 @@ pub(super) fn waveform_canvas(
     waveform_surface(canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
+            #[cfg(all(test, feature = "ui-test-support"))]
+            let _navigation_timer = super::navigation_metrics::Timer::start(
+                super::navigation_metrics::Stage::WaveformSubmit,
+            );
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
             if visible_start >= visible_end || width <= 0.0 || height <= 0.0 {
