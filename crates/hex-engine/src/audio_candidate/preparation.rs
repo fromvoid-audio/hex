@@ -238,8 +238,6 @@ impl AudioCandidatePreparation {
         {
             return Err(AudioStorageError::SourceMismatch);
         }
-        crate::midi_compile::require_supported_clip_volume(project)
-            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         if self.bank.is_none() && self.token.is_none() {
             OwnedAudioInputs::try_new_in_place(
                 &mut self.sources,

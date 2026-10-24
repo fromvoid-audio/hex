@@ -63,6 +63,8 @@ pub(crate) struct VolumeEndpoint {
 pub(crate) struct PreparedMidiClipVolume {
     volume: MidiClipVolume,
     source: MidiSourcePlayback,
+    source_offset: u64,
+    reversed: bool,
     constant: Option<f64>,
     sample_rate: u32,
     max_micro_bpm: u64,
@@ -79,6 +81,8 @@ impl VolumePreparationIdentity {
         let old = &self.0;
         old.volume.same_revision(&program.volume)
             && old.source == program.source
+            && old.source_offset == program.source_offset
+            && old.reversed == program.reversed
             && old.constant == program.constant
             && old.sample_rate == program.sample_rate
             && old.max_micro_bpm == program.max_micro_bpm
@@ -103,6 +107,26 @@ struct Neighbors {
     constant: bool,
 }
 impl PreparedMidiClipVolume {
+    /// One source-playback law shared by ordinary and sealed CURRENT Console
+    /// compilation. This owns only immutable curve metadata, never note/PCM data.
+    pub(crate) fn prepare_session<T: MidiTempoBreaks + ?Sized>(
+        clip: &hex_project::SessionMidiClip,
+        timing: &T,
+    ) -> Result<Option<Self>, Invalid> {
+        if clip.volume().points().is_empty() {
+            return Ok(None);
+        }
+        let data = clip.source();
+        let horizon = u64::MAX
+            .checked_sub(clip.playback_offset().raw())
+            .filter(|n| *n > 0)
+            .ok_or(Invalid("clip volume source window exhausted"))?;
+        let playback = data
+            .playback_for_duration(BeatTime::from_raw(horizon))
+            .and_then(|p| p.with_playback_offset(clip.playback_offset()))
+            .map_err(|e| Invalid(e.0))?;
+        Self::prepare(clip.volume(), playback, timing).map(Some)
+    }
     pub(crate) fn preparation_identity(&self) -> VolumePreparationIdentity {
         VolumePreparationIdentity(self.clone())
     }
@@ -173,9 +197,19 @@ impl PreparedMidiClipVolume {
         {
             return Err(Invalid("clip volume density exceeds capacity"));
         }
+        let source_offset = source.playback_offset().raw();
+        let reversed = source.playback_reversed();
+        let source = source
+            .with_content_window(
+                hex_project::ContentWindow::new(0, source.arrangement_duration().raw(), false)
+                    .map_err(|e| Invalid(e.0))?,
+            )
+            .map_err(|e| Invalid(e.0))?;
         Ok(Self {
             volume: volume.clone(),
             source,
+            source_offset,
+            reversed,
             constant,
             sample_rate: timing.sample_rate(),
             max_micro_bpm: timing.max_micro_bpm(),
@@ -226,6 +260,30 @@ impl PreparedMidiClipVolume {
             frame: mapped_frame(timing, end)?,
             gain: self.value_at(domain, end, true)?,
         }))
+    }
+
+    /// Stateless history can recover an immutable source-clock left limit
+    /// without fabricating a frame on a retired clock. Stateful voices instead
+    /// retain their already captured endpoint scalar in the occurrence ledger.
+    pub(crate) fn historical_end_gain<T: MidiTempoBreaks + ?Sized>(
+        &self,
+        timing: &T,
+        placement: VolumePlacement,
+    ) -> Result<Option<f64>, Invalid> {
+        let Some(domain) = self.domain(placement)? else {
+            return Ok(None);
+        };
+        let Some(end) = domain.end_global else {
+            return Ok(None);
+        };
+        let cut = timing
+            .rebase_boundary()
+            .map_err(|_| Invalid("clip volume clock rebase is unavailable"))?;
+        if cut.is_some_and(|cut| end < cut.beat.raw()) {
+            self.value_at(domain, end, true).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Query an actual global frame with a checked caller window of at most256
@@ -355,11 +413,29 @@ impl PreparedMidiClipVolume {
             ),
             VolumePlacement::Session { origin } => (origin, None),
         };
-        let source_end = self
-            .source
-            .loop_range()
-            .is_none()
-            .then(|| self.source.source_length().raw() - self.source.source_start().raw());
+        let mut floor_elapsed = origin.elapsed_at_anchor.raw();
+        let source_end = if self.reversed {
+            let upper = self
+                .source_offset
+                .checked_add(self.source.arrangement_duration().raw())
+                .ok_or(Invalid("clip volume reverse window overflow"))?;
+            if self.source.loop_range().is_none() {
+                let end = self.source.initial_end().raw() - self.source.source_start().raw();
+                if self.source_offset >= end {
+                    return Ok(None);
+                }
+                floor_elapsed = floor_elapsed.max(upper.saturating_sub(end));
+            }
+            Some(self.source.arrangement_duration().raw())
+        } else if self.source.loop_range().is_none() {
+            let end = self.source.initial_end().raw() - self.source.source_start().raw();
+            let Some(end) = end.checked_sub(self.source_offset) else {
+                return Ok(None);
+            };
+            Some(end)
+        } else {
+            None
+        };
         let end_elapsed = match (finite, source_end) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -372,7 +448,7 @@ impl PreparedMidiClipVolume {
         let end_global = end_elapsed.map(|end| project(origin, end)).transpose()?;
         Ok(Some(Domain {
             origin,
-            floor_global: origin.performance_anchor.raw(),
+            floor_global: project(origin, floor_elapsed)?,
             end_elapsed,
             end_global,
         }))
@@ -422,47 +498,88 @@ impl PreparedMidiClipVolume {
             constant,
         })
     }
+    fn raw_elapsed(&self, elapsed: u64) -> Result<u64, Invalid> {
+        let local = if self.reversed {
+            self.source
+                .arrangement_duration()
+                .raw()
+                .checked_sub(elapsed)
+                .ok_or(Invalid("clip volume reverse query exceeds window"))?
+        } else {
+            elapsed
+        };
+        self.source_offset
+            .checked_add(local)
+            .ok_or(Invalid("clip volume source window overflow"))
+    }
     fn source_neighbors(
         &self,
         domain: Domain,
         elapsed: u64,
     ) -> Result<(u64, Option<u64>, bool), Invalid> {
+        let raw = self.raw_elapsed(elapsed)?;
+        // Select the left source interval for a reversed right-continuous
+        // destination query. Endpoints themselves remain continuous boundaries;
+        // no one-tick shift is introduced into the gain/ramp coordinates.
+        let probe = if self.reversed {
+            raw.checked_sub(1)
+                .ok_or(Invalid("clip volume reverse source exhausted"))?
+        } else {
+            raw
+        };
         let phase = self
             .source
-            .source_phase_at_elapsed(BeatTime::from_raw(elapsed))
+            .source_phase_at_elapsed(BeatTime::from_raw(probe))
             .ok_or(Invalid("clip volume source phase is unavailable"))?;
         let (cycle_elapsed, cycle_source, cycle_end) =
             if let Some((start, end)) = self.source.loop_range() {
                 let first = end.raw() - self.source.source_start().raw();
-                if elapsed < first {
+                if probe < first {
                     (0, self.source.source_start().raw(), end.raw())
                 } else {
                     let period = end.raw() - start.raw();
-                    let cycle = first + ((elapsed - first) / period) * period;
-                    (cycle, start.raw(), end.raw())
+                    (
+                        first + ((probe - first) / period) * period,
+                        start.raw(),
+                        end.raw(),
+                    )
                 }
             } else {
                 (
                     0,
                     self.source.source_start().raw(),
-                    self.source.source_length().raw(),
+                    self.source.initial_end().raw(),
                 )
             };
         let points = self.volume.points();
         let index = points.partition_point(|point| point.beat <= phase);
-        let previous = index
+        let lower = index
             .checked_sub(1)
             .and_then(|i| points.get(i))
             .filter(|p| p.beat.raw() >= cycle_source)
             .map_or(cycle_elapsed, |p| {
                 cycle_elapsed + (p.beat.raw() - cycle_source)
-            })
-            .max(domain.origin.elapsed_at_anchor.raw());
+            });
         let next_phase = points
             .get(index)
             .filter(|p| p.beat.raw() < cycle_end)
             .map_or(cycle_end, |p| p.beat.raw());
-        let next = cycle_elapsed.checked_add(next_phase - cycle_source);
+        let upper = cycle_elapsed.checked_add(next_phase - cycle_source);
+        let (previous, next) = if self.reversed {
+            let end = self
+                .source_offset
+                .checked_add(self.source.arrangement_duration().raw())
+                .ok_or(Invalid("clip volume reverse window overflow"))?;
+            let previous = upper.map_or(0, |upper| end.saturating_sub(upper));
+            let next = end.checked_sub(lower.max(self.source_offset));
+            (previous, next)
+        } else {
+            (
+                lower.saturating_sub(self.source_offset),
+                upper.and_then(|upper| upper.checked_sub(self.source_offset)),
+            )
+        };
+        let previous = previous.max(domain.origin.elapsed_at_anchor.raw());
         let next = match (next, domain.end_elapsed) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -488,26 +605,23 @@ impl PreparedMidiClipVolume {
         if let Some(value) = self.constant {
             return Ok(value);
         }
+        let raw = self.raw_elapsed(elapsed)?;
+        let before = before != self.reversed;
         let phase = if before {
             if let Some((start, end)) = self.source.loop_range() {
                 let first = end.raw() - self.source.source_start().raw();
-                if elapsed >= first && (elapsed - first) % (end.raw() - start.raw()) == 0 {
+                if raw >= first && (raw - first) % (end.raw() - start.raw()) == 0 {
                     Some(end)
                 } else {
-                    self.source
-                        .source_phase_at_elapsed(BeatTime::from_raw(elapsed))
+                    self.source.source_phase_at_elapsed(BeatTime::from_raw(raw))
                 }
-            } else if elapsed
-                == self.source.source_length().raw() - self.source.source_start().raw()
-            {
-                Some(self.source.source_length())
+            } else if raw == self.source.initial_end().raw() - self.source.source_start().raw() {
+                Some(self.source.initial_end())
             } else {
-                self.source
-                    .source_phase_at_elapsed(BeatTime::from_raw(elapsed))
+                self.source.source_phase_at_elapsed(BeatTime::from_raw(raw))
             }
         } else {
-            self.source
-                .source_phase_at_elapsed(BeatTime::from_raw(elapsed))
+            self.source.source_phase_at_elapsed(BeatTime::from_raw(raw))
         };
         let phase = phase.ok_or(Invalid("clip volume source phase is unavailable"))?;
         Ok(if before {

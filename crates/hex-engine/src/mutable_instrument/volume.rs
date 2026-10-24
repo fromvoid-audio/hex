@@ -9,6 +9,7 @@ use hex_lattice::{NativeInstrumentClock, NativeInstrumentOccurrenceGain};
 pub(crate) struct VolumeSlice {
     pub(crate) at: u64,
     pub(crate) ramp: VolumeRamp,
+    pub(crate) terminal: Option<u64>,
 }
 pub(crate) type VolumeLookup<'a> = dyn FnMut(
         MutableOccurrenceSignature,
@@ -34,7 +35,7 @@ impl VolumeSlice {
         self,
         id: u64,
         frames: usize,
-    ) -> Result<(NativeInstrumentOccurrenceGain, u64), MutableInstrumentRuntimeError> {
+    ) -> Result<(NativeInstrumentOccurrenceGain, u64, bool), MutableInstrumentRuntimeError> {
         if self.remaining(frames)? != frames {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
@@ -62,7 +63,11 @@ impl VolumeSlice {
         if !last.is_finite() || !(0.0..=4.0).contains(&last) {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
-        Ok((gain, last.to_bits()))
+        Ok((
+            gain,
+            last.to_bits(),
+            self.terminal.is_some_and(|at| end >= at),
+        ))
     }
 }
 
@@ -127,15 +132,21 @@ pub(super) fn gains_for_segment(
         if !included {
             continue;
         }
-        let slice = match lookup.as_mut() {
-            Some(f) => f(proof.signature, start, frames)?,
-            None => None,
+        let slice = if proof.gain_frozen {
+            None
+        } else {
+            match lookup.as_mut() {
+                Some(f) => f(proof.signature, start, frames)?,
+                None => None,
+            }
         };
         let gain = if let Some(slice) = slice {
-            let (gain, last) = slice.gain(proof.id, frames)?;
+            let (gain, last, terminal) = slice.gain(proof.id, frames)?;
             proof.gain_at_end_bits = last;
+            proof.gain_frozen |= terminal;
             gain
         } else {
+            proof.gain_frozen = true;
             let last = f64::from_bits(proof.gain_at_end_bits);
             NativeInstrumentOccurrenceGain::new(proof.id, last, last, frames as u64, 0)
                 .map_err(map_runtime_error)?
@@ -222,6 +233,9 @@ impl MutableInstrumentTrackRuntime {
                 }
             }
             for proof in &self.scratch {
+                if proof.gain_frozen {
+                    continue;
+                }
                 if let Some(slice) = lookup(proof.signature, performance, count)? {
                     count = count.min(slice.remaining(count)?);
                 }

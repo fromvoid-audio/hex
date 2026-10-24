@@ -1,5 +1,5 @@
-//! Component evidence for finite rendering while public preparation still
-//! refuses nonempty curves until the remaining playback consumers are complete.
+//! Isolated finite analytic rendering. Public preparation/native constructor
+//! evidence lives in the ordinary inventory and actual CURRENT consumer tests.
 use super::*;
 use hex_project::{Command, Created, Editor};
 use std::collections::BTreeMap;
@@ -93,7 +93,7 @@ fn real_finite_voices_keep_independent_gain_endpoint_tails_and_partition_identit
     let timing =
         crate::PreparedTempoMap::prepare(editor.project().tempo_map().clone(), 8000).unwrap();
     // Attach the actual prepared owner directly only for this component test;
-    // public compilation remains guarded, and this is not publication evidence.
+    // this remains isolated analytic evidence, separate from actual publication.
     compiled.tracks[0].instrument.as_mut().unwrap().volumes = PreparedArrangementVolumes::prepare(
         editor.project(),
         editor.project().track(track).unwrap(),

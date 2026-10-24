@@ -595,3 +595,77 @@ fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_
 
 #[path = "harmonic_tests/cue.rs"]
 mod cue;
+
+#[test]
+fn first_harmonic_edit_preserves_live_clip_volume_ramp_in_arrangement_and_console() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    for session in [false, true] {
+        let run = |volume: bool| {
+            let mut editor = Editor::new(fixture(1, 8 << 32), 8).unwrap();
+            let clip = if session {
+                prepared(editor.project(), None).session().midi_clips()[0].id
+            } else {
+                editor.project().tracks()[0].midi_clips()[0].id()
+            };
+            if volume {
+                let length = editor.project().midi_source(clip).unwrap().source_length();
+                editor
+                    .execute(Command::ReplaceMidiClipVolume {
+                        clip,
+                        volume: MidiClipVolume::new(
+                            vec![
+                                MidiClipVolumePoint::linear(
+                                    BeatTime::ZERO,
+                                    MidiClipGain::new(0.25).unwrap(),
+                                ),
+                                MidiClipVolumePoint::linear(
+                                    BeatTime::ONE,
+                                    MidiClipGain::new(0.75).unwrap(),
+                                ),
+                            ],
+                            length,
+                        )
+                        .unwrap(),
+                    })
+                    .unwrap();
+            }
+            let mut old = start(editor.project(), session);
+            old.render(&mut [[0.0; 2]; 64]).unwrap();
+            let custom = edit(
+                editor.project(),
+                &[
+                    (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+                    (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+                ],
+            );
+            let mut next =
+                SessionPlayback::new(prepared(&custom, Some(old.revision.session()))).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            assert_eq!(
+                next.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .proofs()
+                    .count(),
+                1
+            );
+            let mut output = [[0.0; 2]; 512];
+            for block in output.chunks_mut(17) {
+                next.render(block).unwrap();
+            }
+            output
+        };
+        let baseline = run(false);
+        let actual = run(true);
+        assert!(baseline.iter().flatten().any(|v| v.abs() > 1e-3));
+        for (i, (a, b)) in actual.iter().zip(baseline).enumerate() {
+            let gain = 0.25 + 0.5 * (i + 64) as f64 / 24_000.0;
+            for c in 0..2 {
+                assert!(
+                    (f64::from(a[c]) - f64::from(b[c]) * gain).abs() < 2e-7,
+                    "session={session} frame={i} actual={a:?} unity={b:?} gain={gain}"
+                );
+            }
+        }
+    }
+}

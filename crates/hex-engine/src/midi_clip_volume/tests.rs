@@ -555,3 +555,44 @@ fn finite_endpoint_freezes_exact_left_limit_without_playing_terminal_jump() {
         Err(Invalid("clip volume endpoint precedes clock rebase"))
     ));
 }
+
+#[test]
+fn retained_forward_and_reverse_windows_match_the_canonical_materialized_curve_without_unrolling() {
+    let timing = clock();
+    let authored = curve(
+        &[
+            (b(0), 0.25, 0.25),
+            (b(2), 1.0, 0.5),
+            (b(5), 0.75, 2.0),
+            (b(8), 1.0, 1.0),
+        ],
+        b(8),
+    );
+    for reversed in [false, true] {
+        let playback = MidiSourcePlayback::new(b(8), b(1), Some((b(2), b(5))), b(7))
+            .unwrap()
+            .with_content_window(
+                hex_project::ContentWindow::new(b(3).raw(), b(10).raw(), reversed).unwrap(),
+            )
+            .unwrap();
+        let expected = authored.materialized(playback, b(0), b(7)).unwrap();
+        let prepared = PreparedMidiClipVolume::prepare(&authored, playback, &timing).unwrap();
+        assert!(prepared.source_revision_matches(&authored));
+        for frame in [
+            0, 1, 3999, 4000, 4001, 8000, 11999, 12000, 15999, 20000, 23999, 27999,
+        ] {
+            let ramp = prepared
+                .segment_at(&timing, arrangement(), frame, 1)
+                .unwrap()
+                .unwrap();
+            let actual = ramp.gain_at(frame).unwrap();
+            let expected = expected
+                .gain_at(timing.frame_to_beat(frame).unwrap())
+                .linear();
+            assert!(
+                (actual - expected).abs() < 1e-8,
+                "reversed={reversed}, frame={frame}: {actual} vs {expected}"
+            );
+        }
+    }
+}

@@ -115,6 +115,13 @@ pub(super) fn prepare_clip(
         .as_deref()
         .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
         .transpose()?;
+    if !clip.volume().points().is_empty()
+        && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume)
+    {
+        return Err(crate::Invalid(
+            "clip volume is unsupported by this mutable instrument mode",
+        ));
+    }
     if clip.active()
         && mutable_limits.is_some()
         && let Some(instrument) = config.config.as_deref()
@@ -157,24 +164,8 @@ pub(super) fn prepare_clip(
     // changing only this clip's curve must not manufacture new note custody.
     // Revalidate volume admission on every preparation: effective tempo loops
     // can change break density without changing the canonical map/max BPM.
-    let volume = if clip.volume().points().is_empty() {
-        None
-    } else {
-        let data = clip.source();
-        let playback = hex_project::MidiSourcePlayback::new(
-            data.source_length(),
-            data.source_start(),
-            data.looping()
-                .then_some((data.loop_start(), data.loop_end())),
-            data.source_length(),
-        )
-        .map_err(|error| crate::Invalid(error.0))?;
-        Some(crate::midi_clip_volume::PreparedMidiClipVolume::prepare(
-            clip.volume(),
-            playback,
-            source_timing,
-        )?)
-    };
+    let volume =
+        crate::midi_clip_volume::PreparedMidiClipVolume::prepare_session(clip, source_timing)?;
     let bank = config
         .note_bank
         .as_ref()

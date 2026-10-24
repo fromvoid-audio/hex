@@ -386,7 +386,6 @@ impl PreparedRevision {
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
-            crate::midi_compile::require_supported_clip_volume(project)?;
             crate::gain_envelope::validate_project(project)?;
             crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
             let shared_contexts =
@@ -897,25 +896,6 @@ impl PreparedRevision {
                 new_root,
                 session,
             )
-    }
-
-    /// Indexed membership in the existing prepared descriptor, including empty
-    /// volume curves. Outgoing/deleted sources are distinct from an active
-    /// owner whose explicit volume edit restored unity. No callback model scan.
-    pub(crate) fn arrangement_midi_source_active(
-        &self,
-        track: TrackId,
-        clip: hex_project::ClipId,
-    ) -> bool {
-        self.mutable_track_revision(track)
-            .and_then(|track| {
-                track
-                    .arrangement_midi_sources
-                    .binary_search_by_key(&clip, |source| source.id)
-                    .ok()
-                    .and_then(|index| track.arrangement_midi_sources.get(index))
-            })
-            .is_some_and(|source| source.active)
     }
 
     /// Exact authored inactivity for an existing prepared MIDI instance. Missing

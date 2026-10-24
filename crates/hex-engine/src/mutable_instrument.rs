@@ -144,6 +144,7 @@ pub(crate) struct MutableOccurrence {
     pub(crate) note_off_sent: bool,
     /// Fixed left-limit gain survives source/graph retirement without a curve owner.
     pub(crate) gain_at_end_bits: u64,
+    pub(crate) gain_frozen: bool,
 }
 
 /// One source query's maximum admitted sounding intervals. This is shared by
@@ -620,6 +621,9 @@ impl MutableInstrumentTrackRuntime {
         self.pair.max_events_per_block()
     }
     pub(crate) fn cut_speculative_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.scratch {
+            occurrence.gain_frozen = true;
+        }
         let tail = self.max_release_tail_frames();
         for occurrence in &mut self.scratch {
             if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
@@ -645,6 +649,9 @@ impl MutableInstrumentTrackRuntime {
     /// frame-zero NoteOff in its next segment; feedback and release state stay
     /// owned and are not reset.
     pub(crate) fn cut_gate_deadlines_at(&mut self, performance_frame: u64) {
+        for occurrence in &mut self.primary {
+            occurrence.gain_frozen = true;
+        }
         self.reconcile_gate_deadlines_at(performance_frame, |_| Some(performance_frame));
     }
 
@@ -881,6 +888,7 @@ impl MutableInstrumentTrackRuntime {
                 quiet_deadline_frame,
                 note_off_sent,
                 gain_at_end_bits: 1.0_f64.to_bits(),
+                gain_frozen: false,
             });
         }
 

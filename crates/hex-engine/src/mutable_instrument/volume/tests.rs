@@ -119,7 +119,11 @@ fn ramp(
             next_boundary: None,
         }
     };
-    Ok(Some(VolumeSlice { at, ramp }))
+    Ok(Some(VolumeSlice {
+        at,
+        ramp,
+        terminal: None,
+    }))
 }
 #[test]
 fn real_sampler_gains_follow_exact_ids_onsets_jumps_and_arbitrary_partitions() {
@@ -285,4 +289,128 @@ fn foreign_live_id_refuses_before_output_and_rollback_keeps_original_history() {
         .unwrap();
     runtime.commit_block();
     assert_eq!(accepted, [[0.5; 2]; 2]);
+}
+
+#[test]
+fn retired_gain_never_reacquires_a_new_curve_or_a_rebased_old_clock() {
+    let pcm = [1.0; 16];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let (track, mut onsets) = onsets();
+    onsets.len = 1;
+    let mut runtime = runtime(views[0]);
+    let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+    runtime.begin_block();
+    let mut first = [[0.0; 2]; 4];
+    runtime
+        .process_segment_with_volume(
+            track,
+            0,
+            0,
+            &mut first,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            &mut ramp,
+        )
+        .unwrap();
+    runtime.commit_block();
+    runtime.begin_block();
+    let mut retired = [[0.0; 2]; 1];
+    runtime
+        .process_segment_with_resources(
+            track,
+            4,
+            4,
+            &mut retired,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(retired, [[0.5; 2]]);
+    runtime.begin_block();
+    let mut output = [[0.0; 2]; 2];
+    let mut queries = 0;
+    let mut incompatible_clock = |_, _, _| {
+        queries += 1;
+        Err(MutableInstrumentRuntimeError::InvalidSourceSpan)
+    };
+    runtime
+        .process_segment_with_volume(
+            track,
+            5,
+            5,
+            &mut output,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            &mut incompatible_clock,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(queries, 0);
+    assert_eq!(output, [[0.5; 2]; 2]);
+}
+
+#[test]
+fn finite_terminal_freezes_left_limit_before_a_new_clock_or_curve_is_visible() {
+    let pcm = [1.0; 16];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let (track, mut onsets) = onsets();
+    onsets.len = 1;
+    let mut runtime = runtime(views[0]);
+    let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+    let mut finite = |signature, at, frames| {
+        let mut slice = ramp(signature, at, frames)?.unwrap();
+        slice.terminal = Some(8);
+        Ok(Some(slice))
+    };
+    runtime.begin_block();
+    let mut first = [[0.0; 2]; 8];
+    runtime
+        .process_segment_with_volume(
+            track,
+            0,
+            0,
+            &mut first,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            &mut finite,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(first[7], [0.875; 2]);
+    assert!(runtime.primary[0].gain_frozen);
+    assert_eq!(f64::from_bits(runtime.primary[0].gain_at_end_bits), 1.0);
+    runtime.begin_block();
+    let mut output = [[0.0; 2]; 9];
+    runtime
+        .process_segment_with_volume(
+            track,
+            8,
+            8,
+            &mut output,
+            &mut onsets,
+            &[],
+            &mut events,
+            None,
+            &resources,
+            &mut |_, _, _| panic!("finite tail queried a replacement clock"),
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(output[..8], [[1.0; 2]; 8]);
+    assert_eq!(output[8], [0.0; 2]);
 }

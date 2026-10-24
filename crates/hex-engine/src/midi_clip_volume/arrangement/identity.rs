@@ -10,7 +10,7 @@ struct RowIdentity {
     clip: ClipId,
     start: BeatTime,
     start_frame: u64,
-    endpoint: VolumeEndpoint,
+    endpoint: Option<VolumeEndpoint>,
     program: VolumePreparationIdentity,
 }
 #[derive(Debug)]

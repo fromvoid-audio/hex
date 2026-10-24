@@ -188,6 +188,14 @@ impl SessionPlayback {
                 age_frames: age,
                 gate_frame: (gate <= cut).then_some(gate.saturating_sub(start)),
             };
+            let (gain, gain_frozen) = super::clip_gain::at_cut(
+                previous,
+                old_index,
+                old_route.owner,
+                signature.key().clip,
+                previous.arrangement_frame,
+                previous.performance_frame,
+            )?;
             plan.proofs[plan.len] = Some(MutableOccurrence {
                 signature,
                 id,
@@ -204,7 +212,8 @@ impl SessionPlayback {
                     )
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
                 note_off_sent: gate <= cut,
-                gain_at_end_bits: 1.0_f64.to_bits(),
+                gain_at_end_bits: gain.to_bits(),
+                gain_frozen,
             });
             plan.len += 1;
             Ok(())

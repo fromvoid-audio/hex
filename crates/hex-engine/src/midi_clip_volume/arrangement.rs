@@ -16,7 +16,7 @@ pub(crate) struct PreparedArrangementClipVolume {
     pub(crate) start: BeatTime,
     pub(crate) start_frame: u64,
     pub(crate) program: PreparedMidiClipVolume,
-    pub(crate) endpoint: VolumeEndpoint,
+    pub(crate) endpoint: Option<VolumeEndpoint>,
 }
 impl PreparedArrangementVolumes {
     pub(crate) fn preparation_identity(&self) -> Result<ArrangementVolumeIdentity, Invalid> {
@@ -77,18 +77,16 @@ impl PreparedArrangementVolumes {
                 clip.source_playback().map_err(|error| Invalid(error.0))?,
                 timing,
             )?;
-            let endpoint = program
-                .finite_endpoint(
-                    timing,
-                    VolumePlacement::Arrangement {
-                        start: clip.start(),
-                    },
-                )?
-                .ok_or(Invalid("arrangement clip volume has no finite endpoint"))?;
+            let endpoint = program.finite_endpoint(
+                timing,
+                VolumePlacement::Arrangement {
+                    start: clip.start(),
+                },
+            )?;
             let start_frame = timing
                 .beat_to_frame(clip.start())
                 .map_err(|_| Invalid("arrangement clip volume start mapping is unavailable"))?;
-            if endpoint.frame < start_frame {
+            if endpoint.is_some_and(|end| end.frame < start_frame) {
                 return Err(Invalid("arrangement clip volume end precedes start"));
             }
             rows.push(PreparedArrangementClipVolume {
@@ -150,12 +148,15 @@ impl PreparedArrangementClipVolume {
         if frame < self.start_frame {
             return Err(Invalid("arrangement clip volume query precedes clip"));
         }
-        if frame >= self.endpoint.frame {
+        let endpoint = self
+            .endpoint
+            .ok_or(Invalid("clip volume source window is silent"))?;
+        if frame >= endpoint.frame {
             return Ok(VolumeRamp {
-                start_frame: self.endpoint.frame,
+                start_frame: endpoint.frame,
                 end_frame: u64::MAX,
-                start_gain: self.endpoint.gain,
-                end_gain: self.endpoint.gain,
+                start_gain: endpoint.gain,
+                end_gain: endpoint.gain,
                 next_boundary: None,
             });
         }

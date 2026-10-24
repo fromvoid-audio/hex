@@ -1951,18 +1951,35 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
             )
             .map_err(crate::mutable_instrument::MutableInstrumentRuntimeError::render_error);
     }
-    let console_endpoint = console
+    let console_historical = console
         .as_ref()
         .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
         .map(|(origin, program)| {
-            program.finite_endpoint(
+            program.historical_end_gain(
                 timing,
                 crate::midi_clip_volume::VolumePlacement::Session { origin },
             )
         })
         .transpose()
         .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
-        .flatten();
+        .flatten()
+        .is_some();
+    let console_endpoint = if console_historical {
+        None
+    } else {
+        console
+            .as_ref()
+            .and_then(|(_, origin, prepared)| prepared.volume_program().map(|p| (*origin, p)))
+            .map(|(origin, program)| {
+                program.finite_endpoint(
+                    timing,
+                    crate::midi_clip_volume::VolumePlacement::Session { origin },
+                )
+            })
+            .transpose()
+            .map_err(|_| SessionPlaybackError::MutableInstrumentEvents)?
+            .flatten()
+    };
     let mut lookup = |signature: crate::mutable_instrument::MutableOccurrenceSignature,
                       performance: u64,
                       frames: usize| {
@@ -1971,6 +1988,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         let key = signature.key();
         let unity = |at| VolumeSlice {
             at,
+            terminal: None,
             ramp: VolumeRamp {
                 start_frame: 0,
                 end_frame: u64::MAX,
@@ -1981,9 +1999,36 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
         };
         match midi_route.owner {
             RouteOwner::Arrangement => {
-                if key.loop_pass != arrangement_loop_pass
-                    || !revision.arrangement_midi_source_active(track_id, key.clip)
-                {
+                if key.track != track_id || key.loop_pass != arrangement_loop_pass {
+                    return Ok(None);
+                }
+                // CURRENT deliberately omits ordinary mutable source descriptor
+                // owners. Its existing admitted note interval index is the
+                // authority: query at this exact authored onset, bounded by the
+                // compiled voice-density law, never scan canonical clips/notes.
+                // A missing/edited source keeps the outgoing scalar; an exact
+                // source with an empty curve explicitly restores unity.
+                let (onset, gate, pitch, channel, velocity) = signature.details();
+                let first = revision
+                    .session()
+                    .timing()
+                    .beat_to_frame(onset)
+                    .map_err(|_| Error::InvalidSourceSpan)?;
+                let end = first.checked_add(1).ok_or(Error::Arithmetic)?;
+                let mut found = false;
+                track
+                    .for_each_mutable_midi_span(first, end, |span| {
+                        found |= span.clip == key.clip
+                            && span.note == key.note
+                            && span.iteration == key.iteration
+                            && span.onset_beat == onset
+                            && span.gate_end_beat == gate
+                            && span.pitch == pitch
+                            && span.channel == channel
+                            && span.velocity == velocity;
+                    })
+                    .map_err(|_| Error::InvalidSourceSpan)?;
+                if !found {
                     return Ok(None);
                 }
                 let at = performance
@@ -1993,8 +2038,20 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                 arrangement_volumes.and_then(|v| v.clip(key.clip)).map_or(
                     Ok(Some(unity(at))),
                     |row| {
+                        let Some(endpoint) = row.endpoint else {
+                            return Ok(None);
+                        };
+                        if at >= endpoint.frame {
+                            return Ok(None);
+                        }
                         row.segment_or_hold(timing, at, frames)
-                            .map(|ramp| Some(VolumeSlice { at, ramp }))
+                            .map(|ramp| {
+                                Some(VolumeSlice {
+                                    at,
+                                    ramp,
+                                    terminal: Some(endpoint.frame),
+                                })
+                            })
                             .map_err(|_| Error::InvalidSourceSpan)
                     },
                 )
@@ -2009,17 +2066,8 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                 else {
                     return Ok(Some(unity(performance)));
                 };
-                if let Some(endpoint) = console_endpoint.filter(|e| performance >= e.frame) {
-                    return Ok(Some(VolumeSlice {
-                        at: performance,
-                        ramp: VolumeRamp {
-                            start_frame: endpoint.frame,
-                            end_frame: u64::MAX,
-                            start_gain: endpoint.gain,
-                            end_gain: endpoint.gain,
-                            next_boundary: None,
-                        },
-                    }));
+                if console_historical || console_endpoint.is_some_and(|e| performance >= e.frame) {
+                    return Ok(None);
                 }
                 program
                     .segment_at(
@@ -2032,6 +2080,7 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                     .map(|ramp| VolumeSlice {
                         at: performance,
                         ramp,
+                        terminal: console_endpoint.map(|e| e.frame),
                     })
                     .map(Some)
                     .ok_or(Error::InvalidSourceSpan)
@@ -2337,6 +2386,7 @@ fn render_release_captured(
             .sample_at_with_continuation(absolute, contexts, retained, continuations)
             .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
         {
+            let sample = sample.map(|v| (f64::from(v) * release.clip_gain) as f32);
             let contribution = release.mix.apply_frame(sample);
             frame[0] += contribution[0];
             frame[1] += contribution[1];
@@ -2373,8 +2423,8 @@ fn render_release_raw(
             .sample_at_with_continuation(absolute, contexts, retained, continuations)
             .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?
         {
-            frame[0] += sample[0];
-            frame[1] += sample[1];
+            frame[0] += (f64::from(sample[0]) * release.clip_gain) as f32;
+            frame[1] += (f64::from(sample[1]) * release.clip_gain) as f32;
         }
     }
     Ok(())

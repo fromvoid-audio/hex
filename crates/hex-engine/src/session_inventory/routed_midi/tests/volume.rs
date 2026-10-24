@@ -74,11 +74,18 @@ fn volume_revision_replaces_only_program_and_charges_each_prepared_owner() {
             volume: volume.clone(),
         })
         .unwrap();
-    // Public preparation remains an honest refusal until audible consumers land.
-    assert!(matches!(
-        PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), Some(&inventory)),
-        Err(crate::Invalid("midi clip volume playback is not prepared"))
-    ));
+    let public =
+        PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), Some(&inventory))
+            .unwrap();
+    let admitted = public.midi_clip(id).unwrap();
+    assert!(
+        admitted
+            .volume_program()
+            .unwrap()
+            .source_revision_matches(&volume)
+    );
+    assert!(Arc::ptr_eq(&admitted.source, &old.source));
+    assert!(Arc::ptr_eq(&admitted.instrument, &old.instrument));
     let first = prepare(editor.project(), &inventory, &config, old, &timing);
     assert!(first.source_content_matches(old));
     assert!(first.instrument_config_matches(old));

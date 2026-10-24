@@ -33,13 +33,24 @@ pub(super) fn prepare_gains<T: MidiTempoBreaks + ?Sized>(
         return Ok(None);
     }
     let placement = VolumePlacement::Session { origin };
-    let endpoint = program
-        .finite_endpoint(timing, placement)
+    let historical = program
+        .historical_end_gain(timing, placement)
         .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+    let endpoint = if historical.is_some() {
+        None
+    } else {
+        program
+            .finite_endpoint(timing, placement)
+            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?
+    };
     let mut gains = [1.0; MIDI_TEMPLATE_QUERY_FRAMES as usize];
     let mut cached: Option<VolumeRamp> = None;
     for index in 0..frames {
         if !active[index] {
+            continue;
+        }
+        if let Some(gain) = historical {
+            gains[index] = gain;
             continue;
         }
         let frame = start_frame + index as u64;

@@ -1361,6 +1361,20 @@ impl SessionPlayback {
                                             ),
                                             continuation: None,
                                             inline_tuning_owned: false,
+                                            clip_gain: match super::clip_gain::at_cut(
+                                                previous,
+                                                old_index,
+                                                old_route.owner,
+                                                span.clip,
+                                                previous.arrangement_frame,
+                                                previous.performance_frame,
+                                            ) {
+                                                Ok((gain, _)) => gain,
+                                                Err(error) => {
+                                                    failure = Some(error);
+                                                    return;
+                                                }
+                                            },
                                             voice,
                                         },
                                     ) {
@@ -1788,6 +1802,20 @@ impl SessionPlayback {
                                     previous.revision.gain_recording_track(),
                                     previous.gain_recording_override,
                                 ),
+                                clip_gain: match super::clip_gain::at_cut(
+                                    previous,
+                                    old_index,
+                                    old_route.owner,
+                                    span.clip,
+                                    previous.arrangement_frame,
+                                    previous.performance_frame,
+                                ) {
+                                    Ok((gain, _)) => gain,
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        return;
+                                    }
+                                },
                                 continuation: (matching_candidate
                                     && matches!(
                                         sampler,
@@ -2191,6 +2219,15 @@ impl SessionPlayback {
                             track_id: old_route.id,
                             order: 0,
                             mix,
+                            clip_gain: super::clip_gain::at_cut(
+                                previous,
+                                old_index,
+                                old_route.owner,
+                                span.clip,
+                                previous.arrangement_frame,
+                                previous.performance_frame,
+                            )?
+                            .0,
                             continuation,
                             inline_tuning_owned: matches
                                 && matches!(

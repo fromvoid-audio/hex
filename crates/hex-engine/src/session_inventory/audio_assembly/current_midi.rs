@@ -16,6 +16,7 @@ pub(super) struct MidiTarget {
     scope: u64,
     tuning: crate::shared_analytic::TuningIdentity,
     source_identity: MidiSourceIdentity,
+    volume_identity: Option<crate::midi_clip_volume::VolumePreparationIdentity>,
     active: bool,
     playback_offset: hex_project::BeatTime,
     limits: crate::midi_compile::MutableInstrumentLimits,
@@ -33,7 +34,9 @@ fn identity_metadata_bytes(identity: &MidiSourceIdentity) -> Result<usize, Audio
         .retained_control_metadata_bytes()
         .ok_or(AudioStorageError::Overflow)
 }
-/// Both the prepared clip and its continuity sidecar retain the canonical source.
+/// Both the prepared clip and its continuity sidecar retain canonical source
+/// and volume identities. Curves use conservative control-metadata allowances;
+/// this grants no declaration or lifetime authority over their external Arc.
 /// Used by the caller reservation as well as the constructor's pre-birth quote.
 pub(crate) fn canonical_source_metadata_bytes(
     project: &Project,
@@ -46,7 +49,12 @@ pub(crate) fn canonical_source_metadata_bytes(
                 return Ok(total);
             };
             identity_metadata_bytes(&clip.source_identity())?
-                .checked_mul(2)
+                .checked_add(
+                    clip.volume()
+                        .retained_control_metadata_bytes()
+                        .ok_or(AudioStorageError::Overflow)?,
+                )
+                .and_then(|bytes| bytes.checked_mul(2))
                 .and_then(|bytes| total.checked_add(bytes))
                 .ok_or(AudioStorageError::Overflow)
         })
@@ -133,17 +141,11 @@ impl SessionAssembly {
         {
             return Err(AudioStorageError::SourceMismatch);
         }
-        // Nonempty volume introduces retained metadata that this sealed born
-        // constructor has not declared yet. Keep its explicit refusal until
-        // audible consumers and actual allocation custody are integrated.
-        if project.session_cells().iter().any(|cell| {
-            matches!(cell.content(), SessionCellContent::Midi(clip) if !clip.volume().points().is_empty())
-        }) {
-            return Err(AudioStorageError::UnsupportedGraph);
-        }
         let max =
             crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+        let timing =
+            crate::prepared_tempo::CanonicalMidiTiming::for_validated(project.tempo_map(), max);
         for cell in project.session_cells() {
             let SessionCellContent::Midi(clip) = cell.content() else {
                 continue;
@@ -206,6 +208,10 @@ impl SessionAssembly {
                 OwnedShared::new_owned(instrument).into_paired_parts_on_control();
             let work =
                 work_for(&source, &instrument).map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let volume =
+                crate::midi_clip_volume::PreparedMidiClipVolume::prepare_session(clip, &timing)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            let volume_identity = volume.as_ref().map(|p| p.preparation_identity());
             let row = MidiTarget {
                 clip: clip.id(),
                 track: cell.track(),
@@ -214,6 +220,7 @@ impl SessionAssembly {
                 scope: metadata.id,
                 tuning: contexts.tuning_identity(),
                 source_identity: clip.source_identity(),
+                volume_identity,
                 active: clip.active(),
                 playback_offset: clip.playback_offset(),
                 limits,
@@ -238,7 +245,7 @@ impl SessionAssembly {
                 active: clip.active(),
                 playback_offset: clip.playback_offset(),
                 source,
-                volume: None,
+                volume,
                 instrument,
                 instrument_id: Some(device.id()),
                 instrument_state: None,
@@ -275,6 +282,11 @@ impl SessionAssembly {
         }
         self.current_sampler_values(external)?;
         for (clip, row) in values.iter().zip(&self.sampler_midi) {
+            match (clip.volume.as_ref(), row.volume_identity.as_ref()) {
+                (None, None) => {}
+                (Some(program), Some(identity)) if identity.matches(program) => {}
+                _ => return Err(AudioStorageError::SourceMismatch),
+            }
             if Some(row.scope) != self.sampler_midi_scope
                 || !self.current_sampler_values(external)?.iter().any(|f| {
                     f.track == row.track
@@ -288,7 +300,6 @@ impl SessionAssembly {
                 || clip.source_identity != row.source_identity
                 || clip.instrument_id != Some(row.device)
                 || clip.instrument_state.is_some()
-                || clip.volume.is_some()
                 || clip.tuning_identity != row.tuning
                 || clip.active != row.active
                 || clip.playback_offset != row.playback_offset
@@ -380,6 +391,20 @@ impl SessionAssembly {
             total = total
                 .checked_add(identity_metadata_bytes(&clip.source_identity)?)
                 .and_then(|n| n.checked_add(identity_metadata_bytes(&row.source_identity).ok()?))
+                .and_then(|n| {
+                    n.checked_add(
+                        clip.volume
+                            .as_ref()
+                            .map_or(0, |p| p.retained_control_metadata_bytes()),
+                    )
+                })
+                .and_then(|n| {
+                    n.checked_add(
+                        row.volume_identity
+                            .as_ref()
+                            .map_or(0, |p| p.retained_control_metadata_bytes()),
+                    )
+                })
                 .and_then(|n| n.checked_add(clip.name.capacity()))
                 .and_then(|n| n.checked_add(clip.source.current_sampler_bytes().ok()?))
                 .and_then(|n| {
@@ -409,6 +434,26 @@ impl SessionAssembly {
                         0,
                     ),
                     identity_metadata_bytes(identity)?,
+                )?;
+            }
+            if let Some(program) = &clip.volume {
+                ledger.bytes(
+                    Owner::exclusive(program),
+                    crate::audio_storage::Location(
+                        "current-midi-volume-control-metadata-allowance",
+                        0,
+                    ),
+                    program.retained_control_metadata_bytes(),
+                )?;
+            }
+            if let Some(identity) = &row.volume_identity {
+                ledger.bytes(
+                    Owner::exclusive(identity),
+                    crate::audio_storage::Location(
+                        "current-midi-volume-identity-control-metadata-allowance",
+                        0,
+                    ),
+                    identity.retained_control_metadata_bytes(),
                 )?;
             }
             ledger.shared(

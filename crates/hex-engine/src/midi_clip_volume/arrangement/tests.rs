@@ -93,10 +93,10 @@ fn finite_rows_lookup_by_clip_and_hold_exact_incoming_endpoint_through_tail() {
     assert_eq!(row.start, b(1));
     assert_eq!(
         row.endpoint,
-        VolumeEndpoint {
+        Some(VolumeEndpoint {
             frame: 12000,
             gain: 0.5
-        }
+        })
     );
     let ramp = row.segment_or_hold(&timing, 4000, 1).unwrap();
     assert_eq!(
