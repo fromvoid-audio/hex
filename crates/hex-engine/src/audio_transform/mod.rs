@@ -169,11 +169,12 @@ impl AudioTransformPreparation {
     /// Native constructor bridge: no cache/domain/source owners survive this
     /// one control-side clip compilation or enter the native storage ledger.
     pub(crate) fn new_uncached_on_control() -> Self {
-        let mut preparation = Self::default();
-        preparation.cache_limit = 0;
-        preparation.source_limit = 0;
-        preparation.entry_limit = 0;
-        preparation
+        Self {
+            cache_limit: 0,
+            source_limit: 0,
+            entry_limit: 0,
+            ..Self::default()
+        }
     }
     pub fn new(shutdown: Arc<AtomicBool>) -> Self {
         Self {

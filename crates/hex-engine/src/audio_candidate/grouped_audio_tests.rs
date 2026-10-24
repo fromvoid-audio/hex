@@ -101,7 +101,7 @@ fn candidate(
     let quote = AudioCandidateReservationQuote::for_project(project, media.len()).unwrap();
     let bytes = media
         .values()
-        .map(|a| a.frames().len() * std::mem::size_of::<crate::Frame>())
+        .map(|a| std::mem::size_of_val(a.frames()))
         .sum();
     let limits = quote.storage_reservation(bytes).unwrap();
     let mut cell = AudioCandidatePreparation::try_new_on_control(media.len(), limits).unwrap();
