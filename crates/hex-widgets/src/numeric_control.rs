@@ -99,6 +99,7 @@ pub enum NumericControlAppearance {
     CompactDial,
     MicroDial,
     WideMicroDial,
+    /// A compact editable readout with a square frame and recessed background.
     InlineValue,
     /// A compact filled rectangle with an internal editable readout.
     CompactSlider,
@@ -1579,19 +1580,28 @@ impl gpui::Render for NumericControl {
                 .items_center()
                 .track_focus(&self.focus)
                 .key_context(key_context)
-                .child(value_field_sized(
-                    self.id.clone(),
-                    value_text,
-                    ValueFieldPresentation {
-                        invalid: self.invalid_text,
-                        editing: self.editing,
-                        enabled,
-                        style,
-                        width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
-                        height: px(14.0),
-                    },
-                    self.value_mouse_down_listener(cx),
-                )),
+                .child(
+                    value_field_sized(
+                        self.id.clone(),
+                        value_text,
+                        ValueFieldPresentation {
+                            invalid: self.invalid_text,
+                            editing: self.editing,
+                            enabled,
+                            style,
+                            width: px(self.inline_value_width.map_or(46.0, |width| width - 2.0)),
+                            height: px(14.0),
+                        },
+                        self.value_mouse_down_listener(cx),
+                    )
+                    .rounded_none()
+                    .bg(rgb(style.background))
+                    .border_color(rgb(if self.invalid_text {
+                        0xff554c
+                    } else {
+                        style.border
+                    })),
+                ),
             (NumericControlKind::Knob, _) => div()
                 .id(self.id.clone())
                 .flex()
