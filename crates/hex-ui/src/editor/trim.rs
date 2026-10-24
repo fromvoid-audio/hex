@@ -2253,6 +2253,10 @@ mod stretch_limit_tests;
 mod resize_release_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_loop_ui_tests.rs"]
+mod loop_ui_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
 #[path = "resize_terminal_tests.rs"]
 mod resize_terminal_tests;
 
