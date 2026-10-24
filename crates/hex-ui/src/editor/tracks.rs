@@ -2671,8 +2671,7 @@ mod overlap_tests {
                     .w(px(193.25))
                     .h(px(73.25))
                     .overflow_hidden()
-                    .child(legacy)
-                    .child(midi_note_body(self.0, shapes, false).0),
+                    .children([legacy, midi_note_body(self.0, shapes, false).0]),
             )
         }
     }
