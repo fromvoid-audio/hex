@@ -139,11 +139,11 @@ impl SessionPlayback {
     /// remain routed to Arrangement, then reconstruct Arrangement history to
     /// `destination_frame`. Unlike the linear export candidate, this runtime
     /// accepts subsequent Session commands and state inheritance. Enabled
-    /// transport loops normalize destinations at or beyond their end into the
-    /// loop, matching playing seek content coordinates. Both candidate clocks
-    /// start at that normalized destination with a fresh loop pass; history is
-    /// reconstructed from zero through the first pass, preserving gate clipping.
-    /// The work budget is checked against the original requested destination.
+    /// transport loops retain the absolute destination. A destination before
+    /// the loop end reconstructs its first pass with ordinary gate clipping;
+    /// a destination at/after the end reconstructs linear history and continues
+    /// beyond the loop. Both clocks retain the requested frame, with no invented
+    /// loop history. The saved loop and original work/storage budgets are unchanged.
     /// Run preparation on an adequately sized
     /// control thread; the production seek worker reserves an explicit 8 MiB
     /// stack because stateful multi-chain construction can exceed the Rust
@@ -266,22 +266,11 @@ impl SessionPlayback {
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
-        // A fresh seek reconstructs the first pass to the same content cursor
-        // as ordinary playing Seek, rather than inventing elapsed loop history.
-        // Request budgets above remain based on the caller's absolute target.
-        let destination_frame = match policy {
-            PrerollRuntimePolicy::Interactive | PrerollRuntimePolicy::SectionLoop(_) => {
-                match policy {
-                    PrerollRuntimePolicy::SectionLoop(region) => Some(region),
-                    _ => revision.arrangement().loop_region(),
-                }
-                .filter(|region| region.enabled())
-                .map(|region| render::normalize_loop_cursor(destination_frame, region, 0))
-                .transpose()?
-                .map_or(destination_frame, |(frame, _)| frame)
-            }
-            PrerollRuntimePolicy::LinearExport => destination_frame,
-        };
+        let linear_cursor_history = matches!(policy, PrerollRuntimePolicy::Interactive)
+            && revision
+                .arrangement()
+                .loop_region()
+                .is_some_and(|region| region.enabled() && destination_frame >= region.end());
         let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
@@ -312,13 +301,24 @@ impl SessionPlayback {
         if actual_preparation_storage > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
+        // A control-only override prevents replay from wrapping before it can
+        // reach an absolute post-loop cursor. Restore it before publication;
+        // the final cursor itself determines whether the saved loop participates.
+        let transient_loop = candidate.transient_loop;
+        if linear_cursor_history {
+            candidate.transient_loop = revision
+                .arrangement()
+                .loop_region()
+                .map(|region| hex_project::LoopRegion::new(region.start(), region.end(), false))
+                .transpose()
+                .map_err(|_| ArrangementPrerollError::ArithmeticOverflow)?;
+        }
         if start_playing || destination_frame != 0 {
             candidate.apply(SessionPlaybackCommand::Play)?;
         }
 
-        // An enabled interactive loop was normalized above, so reconstruction
-        // ends strictly before its end. Ordinary rendering retains loop gate
-        // clipping and the first-pass tempo without ever wrapping this replay.
+        // Pre-loop/interior destinations retain normal first-pass gate clipping;
+        // post-loop destinations replay the canonical linear tempo and source law.
         let mut remaining = destination_frame;
         let mut block = [[0.0; 2]; PREROLL_BLOCK_FRAMES];
         while remaining > 0 {
@@ -340,6 +340,7 @@ impl SessionPlayback {
         {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);
         }
+        candidate.transient_loop = transient_loop;
         if !start_playing {
             candidate.apply(SessionPlaybackCommand::Pause)?;
         }

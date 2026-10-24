@@ -44,6 +44,17 @@ pub(super) fn preview_waveform_view_cached(
         return None;
     }
     if let Some(edit) = preview.audio_edit() {
+        // Placement sampling owns repeat wraps for both ordinary crop/loop
+        // changes and canonical Shift-Warp root retiming.
+        if edit.placement.is_some() {
+            return super::waveform_loop::loop_waveform_view(
+                request,
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            );
+        }
         if original
             .audio_edit()
             .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
@@ -220,6 +231,10 @@ pub(super) fn waveform_canvas(
     let mapping = mapping.clone();
     waveform_plot(
         move |paint| {
+            #[cfg(all(test, feature = "ui-test-support"))]
+            let _navigation_timer = super::navigation_metrics::Timer::start(
+                super::navigation_metrics::Stage::WaveformProvider,
+            );
             let bounds = paint.bounds;
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);

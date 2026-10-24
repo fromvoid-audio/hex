@@ -103,7 +103,7 @@ impl Metronome {
         if !self.enabled || output.is_empty() {
             return;
         }
-        let region = region.filter(|region| region.enabled());
+        let region = region.filter(|region| region.enabled() && frame < region.end());
         let mut offset = 0;
         while offset < output.len() {
             if let Some(region) = region

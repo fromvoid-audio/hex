@@ -466,10 +466,7 @@ impl SessionPlayback {
         let mut arrangement_loop_pass = self.arrangement_loop_pass;
         let mut output_offset = 0;
         let mut route_changed = false;
-        let region = (!self.linear_arrangement_export)
-            .then(|| self.loop_region())
-            .flatten()
-            .filter(|loop_region| loop_region.enabled());
+        let region = self.active_loop_region();
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -703,7 +700,7 @@ impl SessionPlayback {
             }
             let is_audio = matches!(pending.target, RouteTarget::Session(clip) if self.revision.session().audio_clip(clip).is_some());
             let target_beat = if matches!(pending.target, RouteTarget::Session(_)) && !is_audio {
-                timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor)
+                timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
                     .frame_to_beat(performance_frame)
                     .map_err(|_| SessionPlaybackError::TempoConversion)?
             } else {
@@ -746,13 +743,13 @@ impl SessionPlayback {
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
-        let region = self.loop_region();
+        let region = self.active_loop_region();
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
             scratch[..output.len()].fill([0.0; 2]);
         }
-        let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let effect_clock = crate::effect_clock::ArrangementEffectClock::session(
             revision.session().timing(),
             arrangement_frame,
@@ -1442,7 +1439,7 @@ impl SessionPlayback {
         frame_offset: usize,
         capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
-        let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let table = self.revision.session().sine_table().as_ref();
         // Removed stateless tracks retain their copied linear mix. Stateful
         // tails are grouped by their captured old runtime chain and old mix.

@@ -34,6 +34,8 @@ mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod navigation_metrics;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
 mod track_header;
@@ -190,6 +192,7 @@ mod tuning;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
+mod waveform_loop;
 mod waveform_stretch;
 mod zoom_fit;
 

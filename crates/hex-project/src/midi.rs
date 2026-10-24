@@ -535,6 +535,9 @@ pub(crate) fn validate_note(
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
+        Command::ResizeMidiClipView { clip, operation } => {
+            crate::midi_loop_resize::apply(project, clip, operation)
+        }
         Command::AddMidiTrack { name } => {
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
