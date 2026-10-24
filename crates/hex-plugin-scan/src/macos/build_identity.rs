@@ -18,6 +18,8 @@ const INSTANCE_APP: &str = "hex-vst3-instance.app";
 const INSTANCE_HELPER: &str = "hex-vst3-instance.app/Contents/MacOS/hex-vst3-instance";
 mod inventory;
 use inventory::{MAX_MEMBERS, inventory};
+mod instance_inventory;
+pub use instance_inventory::RevalidationStorageBound;
 mod storage;
 pub use storage::BuildStorage;
 
@@ -265,7 +267,9 @@ impl Build {
         } else {
             return Err("unknown helper package layout".into());
         };
-        if inventory(&root, role.app())? != files {
+        if matches!(role, HelperRole::Instance) {
+            instance_inventory::verify(&root, &files)?;
+        } else if inventory(&root, role.app())? != files {
             return Err("helper bundle content changed".into());
         }
         let helper = relative_file(&root, role.helper())?;
@@ -285,6 +289,18 @@ impl Build {
     }
 
     pub fn unchanged(&self) -> Result<(), String> {
+        if matches!(self.role, HelperRole::Instance) {
+            // No second map/worklist or allocated digest for the fixed native
+            // instance package. The receipt snapshot drops before member I/O.
+            let same = {
+                let bytes = read_file(&self.path, MAX_BINARY)?;
+                instance_inventory::hash_matches(&bytes, &self.receipt_sha256)
+            };
+            if !same {
+                return Err("helper or build receipt changed during operation".into());
+            }
+            return instance_inventory::verify(&self.root, &self.files);
+        }
         // One file-data buffer at a time during revalidation (<= MAX_BINARY).
         // The bounded path/hash inventory metadata is a separate retained cost.
         let receipt = {
@@ -321,5 +337,11 @@ impl InstanceBuild {
     }
     pub fn unchanged(&self) -> Result<(), String> {
         self.0.unchanged()
+    }
+    /// The fixed helper revalidator's known path/name scratch and opaque I/O
+    /// obligations. The one file snapshot is listed separately. This is not a
+    /// source/publication witness or a bound on initial JSON inspection.
+    pub fn revalidation_storage_bound(&self) -> Option<RevalidationStorageBound> {
+        instance_inventory::storage_bound(&self.0.root)
     }
 }

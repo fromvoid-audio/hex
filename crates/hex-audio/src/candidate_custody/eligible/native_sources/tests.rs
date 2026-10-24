@@ -312,6 +312,50 @@ fn actual_protocol_peak_is_reserved_before_cancellation_or_child() {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_helper_workspace_is_charged_before_cancellation_or_child() {
+    let (build, source, preparation) = input();
+    let bound = source
+        .preparation_storage_bound_on_control(&build, None)
+        .unwrap();
+    assert!(bound.helper_working_data_bytes > 0);
+    // This covers the previously admitted retained/file/protocol components,
+    // but deliberately leaves no allowance for the actual helper workspace.
+    let peak = bound.max_retained_data_bytes()
+        + hex_plugin_scan::MAX_BINARY as usize
+        + hex_plugin_host::protocol::MAX_WORKING_DATA_BYTES;
+    let root = root();
+    root.configure_native_sources(
+        1,
+        NativeSourceDataReservation {
+            max_retained_data_bytes: bound.max_retained_data_bytes(),
+            max_construction_peak_data_bytes: peak,
+        },
+    )
+    .unwrap();
+    let before = root.usage();
+    let result = root.begin_native_source_between(
+        identity(),
+        12,
+        &build,
+        source,
+        preparation,
+        None,
+        native::TrustUserCode::Acknowledged,
+        || panic!("helper workspace over budget must not construct cancellation or child"),
+        || panic!("helper workspace over budget must not reserve a slot"),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        "native preparation exceeds known peak data reservation"
+    );
+    assert_eq!(root.usage(), before);
+    let bank = lock(&root.bank);
+    assert!(!bank.sources.occupied());
+    assert_eq!(bank.sources.next_epoch, 1);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_recovery() {
     let root = root();
     root.configure_native_sources(1, source_reservation())

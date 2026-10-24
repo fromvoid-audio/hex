@@ -42,6 +42,7 @@ pub struct PreparationStorageBound {
     pub input_data_bytes: usize,
     pub max_pending_data_bytes: usize,
     pub max_prepared_data_bytes: usize,
+    pub helper_working_data_bytes: usize,
 }
 impl PreparationStorageBound {
     pub fn max_retained_data_bytes(self) -> usize {
@@ -49,12 +50,13 @@ impl PreparationStorageBound {
             .max(self.max_pending_data_bytes)
             .max(self.max_prepared_data_bytes)
     }
-    /// Retained phases, one bounded file snapshot and explicit protocol
-    /// buffers. Inventory/path/map working metadata, diagnostics and opaque
-    /// resources must be added separately before complete Root sealing.
+    /// Retained phases, one bounded file snapshot, the fixed instance helper's
+    /// path/name scratch and explicit protocol buffers. Selected-module path
+    /// work, diagnostics and opaque resources remain before complete sealing.
     pub fn base_peak_data_bytes(self) -> Option<usize> {
         self.max_retained_data_bytes()
             .checked_add(usize::try_from(hex_plugin_scan::MAX_BINARY).ok()?)?
+            .checked_add(self.helper_working_data_bytes)?
             .checked_add(protocol::MAX_WORKING_DATA_BYTES)
     }
 }
@@ -141,6 +143,7 @@ impl Source {
             max_prepared_data_bytes: config_data
                 .checked_add(restore_bytes)?
                 .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)?,
+            helper_working_data_bytes: build.revalidation_storage_bound()?.data_bytes,
         })
     }
     pub(super) fn metadata_backing(&self) -> Option<usize> {
