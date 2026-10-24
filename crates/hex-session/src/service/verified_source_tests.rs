@@ -201,6 +201,67 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
     assert_ne!(fresh.semantic_source_epoch, epoch);
 }
 #[test]
+fn ordinary_document_keeps_placing_complete_samples_past_its_resident_working_set() {
+    let files = Files::new();
+    let a = files.wav("resident-first.wav", 48000, 4, 1000);
+    let b = files.wav("next-complete-source.wav", 48000, 4, 2000);
+    let service = Service::new(48000, 16, 4).unwrap();
+    let _ = next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: Some(reservation(4)),
+        },
+    );
+    let first = run(&service, Request::Import(a));
+    let track = first.state.project.tracks()[0].id();
+    let original = first.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::ImportToTrack {
+            path: b,
+            track,
+            start: 4,
+        })
+        .unwrap();
+    let added = next(&service);
+    assert!(
+        added.error.is_none(),
+        "the ordinary sample drop must use bounded file sources: {:?}",
+        added.error
+    );
+    let clips = added.state.project.track(track).unwrap().clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(clips[0].id(), original);
+    assert_eq!((clips[0].start(), clips[0].duration()), (0, 4));
+    assert_eq!((clips[1].start(), clips[1].duration()), (4, 4));
+    assert_ne!(clips[0].asset(), clips[1].asset());
+    let new_clip = clips[1].id();
+    let snapshot = added.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(snapshot.audio_mode(), DocumentAudioMode::Resident);
+    assert_eq!(snapshot.required_sources().count(), 2);
+    assert!(
+        snapshot
+            .sources()
+            .values()
+            .any(|source| matches!(source, AudioSourceBinding::VerifiedFile(_))),
+        "crossing the PCM working set must not just increase its frame ceiling"
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(undone.state.project.track(track).unwrap().clips().len(), 1);
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project.clip(new_clip).unwrap().duration(), 4);
+    let saved = files.0.join("growing-project.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    let reopened = run(&service, Request::Open(saved));
+    assert_eq!(
+        reopened.state.project.track(track).unwrap().clips().len(),
+        2
+    );
+    assert_eq!(reopened.state.project.clip(new_clip).unwrap().duration(), 4);
+}
+
+#[test]
 fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explicit_reopen() {
     let files = Files::new();
     let path = files.wav("source.wav", 24000, 1024, 1000);
