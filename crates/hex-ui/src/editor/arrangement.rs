@@ -846,6 +846,7 @@ impl EditorView {
             .cursor_pointer()
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Help,
                     description: "drag to seek".into(),
                 })
                 .into()

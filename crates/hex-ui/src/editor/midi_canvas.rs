@@ -2383,6 +2383,7 @@ impl EditorView {
             .text_xs()
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: tooltip.into(),
                 })
                 .into()

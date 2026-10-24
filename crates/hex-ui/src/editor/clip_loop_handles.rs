@@ -206,6 +206,11 @@ pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> 
         .hover(|s| s.bg(rgba(0xffffff22)))
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control(if control.kind == LoopHandleKind::Outer {
+                    "repeat clip"
+                } else {
+                    "first repeat boundary"
+                }),
                 description: if control.kind == LoopHandleKind::Outer {
                     "drag to repeat clip · cmd: invert snapping"
                 } else {
