@@ -137,6 +137,7 @@ impl EditorView {
                 cx,
             ))
             .children([self.snap_control(cx)])
+            .children([self.section_focus_toggle(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx))
             .child(

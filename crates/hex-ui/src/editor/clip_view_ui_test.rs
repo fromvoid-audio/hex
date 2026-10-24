@@ -977,6 +977,17 @@ fn time_range_keeps_audio_detail_through_real_worker_updates(cx: &mut TestAppCon
     assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
     let lanes =
         [source, target].map(|track| editor.read_with(&visual, |v, _| v.drag_lanes[&track]));
+    let original_view = editor.read_with(&visual, |view, _| {
+        let root = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_event_root();
+        view.event_viewport(&root)
+    });
     let down = point(
         px(lanes[0].left + lanes[0].width * 0.125),
         px(lanes[0].top + lanes[0].height * 0.75),
@@ -1000,6 +1011,7 @@ fn time_range_keeps_audio_detail_through_real_worker_updates(cx: &mut TestAppCon
         );
         assert!(v.normalized_time_selection().is_some());
     });
+    assert!(visual.debug_bounds("arrange-reflected-range-0").is_some());
     // Install a real unrelated worker revision while the pointer is held.
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::RenameClip {
@@ -1009,11 +1021,50 @@ fn time_range_keeps_audio_detail_through_real_worker_updates(cx: &mut TestAppCon
     });
     pump(&editor, &mut visual);
     assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
+    assert!(
+        visual.debug_bounds("arrange-reflected-range-0").is_none(),
+        "a stale captured gesture clears its reflected range"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(view.normalized_time_selection().is_none());
+        let root = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(clip)
+            .unwrap()
+            .audio_event_root();
+        assert_eq!(
+            view.event_viewport(&root),
+            original_view,
+            "stale gesture cancellation restores the pre-gesture viewport"
+        );
+    });
     editor.read_with(&visual, |v, _| {
         assert!(v.selected_clip_ids().is_empty());
         assert_eq!(v.detail_clip_id(), Some(clip));
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    // Completed ranges are persistent and survive unrelated canonical revisions.
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let reflected = visual.debug_bounds("arrange-reflected-range-0").unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RenameClip {
+            clip,
+            name: "later revision".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    assert_eq!(
+        visual.debug_bounds("arrange-reflected-range-0"),
+        Some(reflected)
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(view.normalized_time_selection().is_some())
+    });
     visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);
     assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
