@@ -68,10 +68,16 @@ impl WorkerAudioSink for ResidentSink {
             }
         });
     }
-    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        self.inner.begin_section_edit(context)
+    fn begin_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+        allow_playing: bool,
+    ) -> Result<(), String> {
+        self.inner.begin_section_edit(context, allow_playing)
     }
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
         self.inner.section_edit_ready()
     }
     fn cancel_section_edit(&mut self) {
@@ -137,6 +143,9 @@ impl ResidentHarness {
     pub(super) fn with_frame_limit(frame_limit: u64) -> Self {
         Self::with_open_gate(frame_limit, Arc::new(AtomicBool::new(true)))
     }
+    pub(super) fn with_frame_limit_at_rate(frame_limit: u64, rate: u32) -> Self {
+        Self::with_event_capacity_at_rate(frame_limit, Arc::new(AtomicBool::new(true)), 4, rate)
+    }
     pub(super) fn with_open_gate(frame_limit: u64, gate: Arc<AtomicBool>) -> Self {
         Self::with_event_capacity(frame_limit, gate, 4)
     }
@@ -144,6 +153,14 @@ impl ResidentHarness {
         frame_limit: u64,
         gate: Arc<AtomicBool>,
         capacity: usize,
+    ) -> Self {
+        Self::with_event_capacity_at_rate(frame_limit, gate, capacity, 48_000)
+    }
+    fn with_event_capacity_at_rate(
+        frame_limit: u64,
+        gate: Arc<AtomicBool>,
+        capacity: usize,
+        rate: u32,
     ) -> Self {
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
@@ -154,19 +171,20 @@ impl ResidentHarness {
             inner.worker_owned_resident_graphs,
             "production resident publication default"
         );
-        inner.output_factory = Some(Box::new(move |_| {
+        inner.output_factory = Some(Box::new(move |requested_rate| {
             if !gate.load(Acquire) {
                 return Err("fixture output unavailable".into());
             }
             // The prior fixture's async native carrier can still own the exclusive Lease
             // after its control owner has returned. Retry exactly as the existing Harness does.
-            let (output, backend) = match hex_audio::worker_fixture::open(48_000) {
-                Ok(pair) => pair,
-                Err(error) if error == "audio output is open or still shutting down" => {
-                    return Ok(None);
-                }
-                Err(error) => return Err(error),
-            };
+            let (output, backend) =
+                match hex_audio::worker_fixture::open(requested_rate.unwrap_or(rate)) {
+                    Ok(pair) => pair,
+                    Err(error) if error == "audio output is open or still shutting down" => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                };
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
         }));
@@ -571,6 +589,7 @@ impl ResidentHarness {
             project_revision: revision,
             destination_frame: 129,
             start_playing: true,
+            section: None,
             fence: hex_session::service::ResidentFreshRuntimeFence {
                 output_identity: control.output_identity().unwrap(),
                 active_audio_revision: fence.expected_active_revision(),
@@ -906,4 +925,285 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(cancelled.state.revision, canonical.state.revision);
     assert_eq!(h.render(), [[0.25; 2]; 64]);
     assert!(loaded.playback.is_none());
+}
+
+#[test]
+fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history_edit() {
+    use hex_audio::midi_recording::{Receipt, Target};
+    use hex_engine::midi_capture::MidiCaptureBinding;
+    use hex_project::{BeatTime, Command};
+    use hex_session::midi_recording::{MidiTake, MidiTakeBinding};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::InsertTrackWithDevice {
+        name: "record".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().unwrap(),
+    }));
+    let track = added.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4).unwrap(),
+    }));
+    let clip = placed.state.project.track(track).unwrap().midi_clips()[0].id();
+    (applied, _) = h.applied(applied);
+    let binding = Arc::new(MidiTakeBinding::capture(&placed.state.project, track, clip).unwrap());
+    let input = Arc::new(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_live_notes()
+            .unwrap()
+            .with_recording_support()
+            .unwrap(),
+    );
+    h.run(Request::PrepareComputerKeyboard {
+        project_generation: 0,
+        revision: placed.state.revision,
+        request_id: 51,
+        track,
+        input: Arc::clone(&input),
+    });
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap()
+            .audio_revision,
+        applied
+    );
+    let hardware = input.begin_live_notes_activation_on_control().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    // Existing render is deliberately not host-delivery evidence. Confirmed
+    // capture below uses the native conversion helper into an explicit fake sink.
+    h.render();
+    let keys = input.begin_ordered_keys_on_control().unwrap();
+    let source = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    let target = Target {
+        capture: MidiCaptureBinding {
+            take_id: 1,
+            track,
+            device: binding.instrument(),
+            sample_rate: 48_000,
+            output_epoch: input.output_epoch_on_control().unwrap(),
+            keys,
+            hardware: Some(hardware),
+            first_frame: binding.first_frame(),
+            end_frame: binding.end_frame(),
+        },
+        project_generation: 0,
+        canonical_revision: placed.state.revision,
+        audio_revision: source.audio_revision,
+        output_identity: source.output_identity,
+        transport_epoch: h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .transport_epoch
+            .load(Acquire),
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .midi_begin(target)
+        .unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    input.set_key(0, None).unwrap();
+    let held = hex_midi::HeldNoteInput::default();
+    hex_midi::deliver_packets_with_notes(
+        &mut hex_midi::Decoder::default(),
+        2,
+        Default::default(),
+        [&[0x92, 64, 37, 64, 0, 67, 70][..]],
+        &held,
+        &|_| {},
+        &|event| {
+            use hex_engine::computer_keyboard::LiveNoteEvent;
+            let event = match event {
+                hex_midi::NoteEvent::On {
+                    channel,
+                    pitch,
+                    velocity,
+                } => LiveNoteEvent::NoteOn {
+                    channel,
+                    pitch,
+                    velocity,
+                },
+                hex_midi::NoteEvent::Off {
+                    channel,
+                    pitch,
+                    velocity,
+                } => LiveNoteEvent::NoteOff {
+                    channel,
+                    pitch,
+                    velocity,
+                },
+                _ => panic!("valid fixture message"),
+            };
+            input
+                .live_notes()
+                .unwrap()
+                .publish(hardware, event)
+                .unwrap();
+        },
+    );
+    assert!(h.audio.as_mut().unwrap().control.midi_receipt().is_none());
+    let mut frames = [[0.0; 2]; 64];
+    let mut sink = [0.0_f32; 128];
+    {
+        let mut backend = h.callback.lock().unwrap();
+        let allocations = allocation_counter::measure(|| {
+            backend
+                .as_mut()
+                .unwrap()
+                .render_direct(&mut frames, &mut sink)
+                .unwrap()
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    assert_eq!(frames.as_flattened(), &sink);
+    assert!(sink.iter().any(|value| *value != 0.0));
+    let Receipt::Armed { clock, .. } = h.audio.as_mut().unwrap().control.midi_receipt().unwrap()
+    else {
+        panic!("armed before notes")
+    };
+    let mut take = MidiTake::new(binding.first_frame(), binding.end_frame(), clock).unwrap();
+    while let Some(receipt) = h.audio.as_mut().unwrap().control.midi_receipt() {
+        let Receipt::Note {
+            note,
+            content_frame,
+            ..
+        } = receipt
+        else {
+            panic!("note prefix")
+        };
+        take.push(note, content_frame).unwrap();
+    }
+    h.audio.as_ref().unwrap().control.stop();
+    h.callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .render_direct(&mut frames, &mut sink)
+        .unwrap();
+    let Receipt::Finished {
+        clock: Some(stop), ..
+    } = h.audio.as_mut().unwrap().control.midi_receipt().unwrap()
+    else {
+        panic!("finish from delivered boundary")
+    };
+    assert_eq!(stop.content_frame, clock.content_frame + 64);
+    take.finish(stop).unwrap();
+    let mut captured = take
+        .notes()
+        .iter()
+        .map(|n| (n.pitch, n.channel, n.velocity))
+        .collect::<Vec<_>>();
+    captured.sort_unstable();
+    assert_eq!(captured, [(60, 0, 100), (64, 2, 37), (67, 2, 70)]);
+    assert_eq!(take.notes().last().unwrap().end_frame, stop.content_frame);
+    let _ = input.seal_ordered_keys_on_control(keys);
+    let notes: Arc<[_]> = Arc::from(take.notes());
+    // Refuse the actual final resource admission. Canonical notes/history stay
+    // unchanged and the immutable delivered take remains available for retry.
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::CommitMidiTake {
+            request_id: 61,
+            project_generation: 0,
+            revision: placed.state.revision,
+            binding: Arc::clone(&binding),
+            notes: Arc::clone(&notes),
+            stop_frame: stop.content_frame,
+        })
+        .unwrap();
+    let refused = h.next();
+    assert!(!refused.midi_take_complete.unwrap().accepted);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, placed.state.project);
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    let committed = h.run(Request::CommitMidiTake {
+        request_id: 62,
+        project_generation: 0,
+        revision: placed.state.revision,
+        binding,
+        notes: Arc::clone(&notes),
+        stop_frame: stop.content_frame,
+    });
+    assert!(committed.midi_take_complete.unwrap().accepted);
+    (applied, _) = h.applied(applied);
+    let recorded = committed.state.project.midi_clip(clip).unwrap().notes();
+    assert_eq!(recorded.len(), 3);
+    for (actual, expected) in recorded.iter().zip(notes.iter()) {
+        assert_eq!(
+            (actual.pitch(), actual.channel(), actual.velocity()),
+            (expected.pitch, expected.channel, expected.velocity)
+        );
+        let actual_frame = committed
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(actual.start())
+            .unwrap();
+        assert!(actual_frame.abs_diff(expected.start_frame) <= 1);
+    }
+    let encoded = hex_storage::encode(&committed.state.project).unwrap();
+    assert_eq!(
+        hex_storage::decode(&encoded).unwrap().snapshot(),
+        committed.state.project.snapshot()
+    );
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert!(
+        undone
+            .state
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .notes()
+            .is_empty()
+    );
+    let redone = h.run(Request::Redo);
+    h.applied(applied);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        committed.state.project.snapshot()
+    );
+    assert_eq!(notes.len(), 3);
 }

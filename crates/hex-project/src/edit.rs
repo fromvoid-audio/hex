@@ -15,6 +15,23 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    CommitArrangementBounce {
+        target: crate::BounceTarget,
+        in_place: bool,
+        files: Vec<crate::BounceFile>,
+    },
+    /// Set one authored clip's activation across Arrangement or Session.
+    SetClipActive {
+        clip: ClipId,
+        active: bool,
+    },
+    /// Split only intersected Arrangement clips at the selected frame edges and
+    /// set the selected spans atomically, preserving both exterior fragments.
+    SetTimeRangeActive {
+        range: crate::TimeRange,
+        active: bool,
+    },
     /// Apply one clip-wide value to a frozen Arrangement selection atomically.
     EditClips {
         clips: Vec<ClipId>,
@@ -27,11 +44,25 @@ pub enum Command {
         start: crate::BeatTime,
         end: crate::BeatTime,
     },
-    /// Marker-only placement/resize; music is never stretched or moved.
+    /// Isolated marker range edit; overlaps are refused and music stays fixed.
     SetArrangementSectionRange {
         section: crate::SectionId,
         start: crate::BeatTime,
         end: crate::BeatTime,
+    },
+    /// Move one marker without changing its length or any musical content.
+    /// Destination overlap trims/removes other markers; an interior cut retains
+    /// their left identity and allocates a fresh right identity/name/color copy.
+    MoveArrangementSectionMarker {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+    },
+    /// Resize one marker edge, carving overlapping markers without editing music.
+    /// Surviving fragments follow the same identity law as marker movement.
+    ResizeArrangementSectionMarker {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        boundary: crate::BeatTime,
     },
     RenameArrangementSection {
         section: crate::SectionId,
@@ -71,6 +102,13 @@ pub enum Command {
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
+    /// Split marker metadata at a strict interior beat, preserving all music.
+    /// The left marker retains its ID; the right gets a fresh ID and the same
+    /// name/color. One validated command owns both adjoining positive ranges.
+    SplitArrangementSection {
+        section: crate::SectionId,
+        at: crate::BeatTime,
+    },
     /// Merge the earliest-to-latest selected marker span, including intervening
     /// markers/gaps, retaining earliest identity/name/color and all music.
     MergeArrangementSections(Vec<crate::SectionId>),
@@ -104,7 +142,7 @@ pub enum Command {
         clip: ClipId,
         flavor: crate::ClipFlavor,
     },
-    /// Replace audio with an empty editable MIDI source, retaining clip identity.
+    /// Unsupported transcription request; refuses without changing content or history.
     ConvertAudioClipToMidi(ClipId),
     /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
     ConvertMidiClipToAudio {
@@ -280,6 +318,11 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    /// Insert complete captured tracks in canonical order with fresh identities.
+    PasteTracks {
+        clipboard: std::sync::Arc<crate::TrackClipboard>,
+        before: Option<TrackId>,
+    },
     /// Paste complete clips, retaining relative timing and stable multi-track owners.
     PasteClips {
         clipboard: std::sync::Arc<crate::ClipClipboard>,
@@ -385,6 +428,21 @@ pub enum Command {
         source_start: u64,
         source_end: u64,
     },
+    /// Move a complete ordinary track before a stable anchor, or to the end
+    /// with None. Already adjacent, self, and already-last drops are no-ops.
+    /// Returns use distinct ReturnId owners and remain in their own partition;
+    /// Main is not a Track. Neither can be addressed by this typed command.
+    MoveTrackBefore {
+        track: TrackId,
+        before: Option<TrackId>,
+    },
+    /// Move complete selected ordinary tracks as one block in canonical order.
+    /// A selected anchor or an already-adjacent block is a no-op. Identity-owned
+    /// content, routing and automation remain attached; one history edit owns it.
+    MoveTracksBefore {
+        tracks: crate::TrackSelectionIds,
+        before: Option<TrackId>,
+    },
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
@@ -405,7 +463,8 @@ pub enum Command {
         gain: f32,
     },
     /// Replace all project tempo points and retain musical clip onsets.
-    /// Unwarped audio keeps its source processing and natural frame duration.
+    /// Audio keeps its source processing; colliding tails are non-destructively
+    /// cropped at the next placed clip's onset, preserving all clip identities.
     SetProjectTempo {
         tempo: crate::Tempo,
     },
@@ -482,6 +541,10 @@ pub enum Command {
     },
     /// Place a new clip after the selected clip using its same media interval.
     DuplicateClip(ClipId),
+    /// Copy a frozen whole-clip selection after its complete extent, atomically.
+    DuplicateClips(Vec<ClipId>),
+    /// Reverse finite audible content atomically, preserving sources and edit settings.
+    ReverseClips(Vec<ClipId>),
     /// Split a clip at an absolute timeline frame.
     SplitClip {
         clip: ClipId,
@@ -682,6 +745,18 @@ pub enum Command {
         source: ClipId,
         scene: crate::SceneId,
     },
+    /// Create one normal track and optional scene, then copy through the same
+    /// Session law. Editor prepares the whole candidate and commits one history edge.
+    CopyArrangementAudioClipToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
+    CopyArrangementMidiToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
     MoveSessionCell {
         from_track: TrackId,
         from_scene: crate::SceneId,
@@ -742,6 +817,13 @@ pub enum Command {
         edge: TrimEdge,
         beat: crate::BeatTime,
     },
+    /// Scale retained MIDI source timing around the opposite Arrangement edge.
+    /// Collapsed notes/volume boundaries and overflow refuse the complete edit.
+    StretchMidiClipEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        beat: crate::BeatTime,
+    },
     /// Split a finite MIDI Arrangement clip at an absolute musical beat.
     SplitMidiClip {
         clip: ClipId,
@@ -756,6 +838,12 @@ pub enum Command {
         loop_end: crate::BeatTime,
         looping: bool,
         length: crate::BeatTime,
+    },
+    /// Recompute a clip-local MIDI loop edit from its current source/window.
+    /// Outer growth uses the common occupancy planner; cycle edits keep length.
+    ResizeMidiClipView {
+        clip: ClipId,
+        operation: crate::MidiViewResizeOperation,
     },
     /// Replace one clip-owned source-beat volume curve in either MIDI domain.
     ReplaceMidiClipVolume {
@@ -891,6 +979,11 @@ pub struct MidiNoteInsert {
 pub enum Created {
     ArrangementSection(crate::SectionId),
     Track(TrackId),
+    /// Inclusive track-only ID range born in one atomic paste.
+    Tracks {
+        first: TrackId,
+        last: TrackId,
+    },
     ReturnTrack(ReturnId),
     Device(DeviceId),
     Asset(AssetId),
@@ -1134,6 +1227,7 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        active: true,
         name: clip.name.clone(),
         flavor: clip.flavor,
         gain: clip.gain,
@@ -1207,6 +1301,7 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        active: original.active,
         name: original.name.clone(),
         flavor: original.flavor,
         id: right_id,
@@ -1240,7 +1335,7 @@ pub(crate) fn split_clip_at_tempo(
     if frame <= original.start || frame >= end {
         return Err(Invalid("split cursor must be inside the clip"));
     }
-    if edit.placement.is_some() {
+    if edit.content_view.is_some() || edit.placement.is_some() {
         let left = crate::audio_edit::trim_view(original, crate::TrimEdge::Right, frame, tempo)?;
         let mut right =
             crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
@@ -1424,6 +1519,7 @@ impl Project {
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
             let mut clip = Clip {
+                active: true,
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
                 id: ClipId(0),
@@ -1488,8 +1584,15 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::CommitArrangementBounce {
+                target,
+                in_place,
+                files,
+            } => crate::bounce::commit(self, target, in_place, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
+            | Command::MoveArrangementSectionMarker { .. }
+            | Command::ResizeArrangementSectionMarker { .. }
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
@@ -1500,6 +1603,7 @@ impl Project {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
             }
@@ -1511,9 +1615,7 @@ impl Project {
                 crate::audio_events::apply(self, clip, operation)?;
                 Ok(Created::None)
             }
-            Command::ConvertAudioClipToMidi(clip) => {
-                crate::clip_conversion::audio_to_midi(self, clip)
-            }
+            Command::ConvertAudioClipToMidi(_) => Err(Invalid(crate::AUDIO_TO_MIDI_UNSUPPORTED)),
             Command::ConvertMidiClipToAudio { clip, path, frames } => {
                 crate::clip_conversion::midi_to_audio(self, clip, path, frames)
             }
@@ -1606,6 +1708,12 @@ impl Project {
                 self.track_mut(track)?.color = color;
                 Ok(Created::None)
             }
+            Command::SetClipActive { clip, active } => {
+                crate::clip_activation::set(self, clip, active)
+            }
+            Command::SetTimeRangeActive { range, active } => {
+                crate::clip_activation::set_range(self, &range, active)
+            }
             Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::ReplaceMidiClipVolume { clip, volume } => {
                 self.replace_midi_clip_volume(clip, volume)
@@ -1684,7 +1792,9 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
+            | Command::ResizeMidiClipView { .. }
             | Command::TrimMidiClipEdge { .. }
+            | Command::StretchMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
@@ -1721,6 +1831,8 @@ impl Project {
             | Command::CreateSessionAudioClip { .. }
             | Command::CopyArrangementAudioClipToSession { .. }
             | Command::CopyArrangementMidiToSession { .. }
+            | Command::CopyArrangementAudioClipToNewSessionTrack { .. }
+            | Command::CopyArrangementMidiToNewSessionTrack { .. }
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
@@ -1731,6 +1843,8 @@ impl Project {
             | Command::RenameSessionMidiClip { .. }) => {
                 crate::session::apply(self, session_command)
             }
+            Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
+            Command::ReverseClips(clips) => crate::clip_reverse::apply(self, clips),
             Command::DuplicateClip(clip) => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = original
@@ -2062,6 +2176,10 @@ impl Project {
                     source_end,
                 })
             }
+            Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
+            Command::MoveTracksBefore { tracks, before } => {
+                self.move_tracks_before(&tracks, before)
+            }
             Command::RemoveTracks(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
                     return Err(Invalid("track removal needs a bounded selection"));
@@ -2376,6 +2494,7 @@ impl Project {
                 interval_valid(start, duration, source_offset, source_length, media)?;
                 let fade = ClipFade::neutral(duration)?;
                 let incoming = Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id: ClipId(0),
@@ -2444,6 +2563,9 @@ impl Project {
                 let track = insert_track_before(self, name, before_track)?;
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
+            }
+            Command::PasteTracks { clipboard, before } => {
+                crate::track_clipboard::paste(self, &clipboard, before)
             }
             Command::PasteClips {
                 clipboard,
@@ -2661,9 +2783,9 @@ impl Project {
 }
 
 impl Command {
-    /// Structural section edits use stopped resident preparation/publication.
+    /// Structural section edits use fenced resident preparation/publication.
     /// Metadata edits and marker merging do not alter musical material.
-    pub fn requires_stopped_section_edit(&self) -> bool {
+    pub fn requires_section_publication(&self) -> bool {
         matches!(
             self,
             Self::ReorderSectionBefore { .. }
@@ -2737,6 +2859,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id,
@@ -2800,6 +2923,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id,

@@ -241,3 +241,22 @@ exercise the production-used fold; they are not compositor/hardware validation.
 Original source hashes, license and unrelated cumulative patch blocks remain;
 only changed-source provenance hashes are updated and the patch is reapplied
 against verified originals to compare every patched/added byte.
+
+23 October stateless action semantics: the existing bounded accessibility value
+contract adds Button, permitting only Focus/Press. AppKit exposes AXButton with no
+editable value or value description; value-setting actions refuse. Owner lifetime, revision, snapshot
+budgets, revocation and mailbox validation remain unchanged; no new FFI or native
+application pointer path. The browser clear action is the first consumer. A real
+AppKit semantic-object regression checks role/no-value and action restrictions;
+actual Inspector/VoiceOver acceptance remains separate. Original archive hashes
+are retained; added-source hashes and cumulative patch are regenerated.
+
+24 October loop cursor: additive `CursorStyle::Loop` uses original circular-arrow
+vector artwork, a centered hotspot and cached AppKit ownership alongside existing
+bracket cursors. Allocation happens at platform setup, never pointer movement;
+headless platforms skip native construction. Linux/Windows retain horizontal
+resize fallbacks. No workspace FFI or unsafe code is added. Original published
+archive/file hashes and unrelated patch blocks are retained; changed hashes and
+the cumulative patch are regenerated from the verified original archive. Native
+hover selection is checked headlessly; actual cursor appearance remains a user
+interaction acceptance item on the optimized macOS app.

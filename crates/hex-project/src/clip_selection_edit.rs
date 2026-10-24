@@ -14,6 +14,9 @@ use std::collections::BTreeSet;
 /// values explicitly leave selected MIDI clips unchanged; zero eligible clips refuse.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClipEdit {
+    Active {
+        active: bool,
+    },
     Gain {
         millidb: i32,
     },
@@ -149,11 +152,15 @@ impl ClipEdit {
     fn audio_only(&self) -> bool {
         !matches!(
             self,
-            Self::Flavor { .. } | Self::Rename { .. } | Self::Delete
+            Self::Active { .. } | Self::Flavor { .. } | Self::Rename { .. } | Self::Delete
         )
     }
     fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
         Ok(match self {
+            Self::Active { active } => Command::SetClipActive {
+                clip,
+                active: *active,
+            },
             Self::GainBy { millidb } => Command::SetAudioClipGain {
                 clip,
                 millidb: project
@@ -384,6 +391,10 @@ pub(crate) fn apply(
 impl Command {
     pub fn clip_scope(&self) -> ClipCommandScope {
         match self {
+            Self::SetClipActive { clip, active } => ClipCommandScope::Property {
+                clip: *clip,
+                edit: ClipEdit::Active { active: *active },
+            },
             Self::SetAudioClipGain { clip, millidb } => ClipCommandScope::Property {
                 clip: *clip,
                 edit: ClipEdit::Gain { millidb: *millidb },
@@ -455,9 +466,11 @@ impl Command {
             | Self::TrimClip { clip, .. }
             | Self::StretchAudioClipEdge { clip, .. }
             | Self::ResizeAudioClipView { clip, .. }
+            | Self::ResizeMidiClipView { clip, .. }
             | Self::NudgeClip { clip, .. }
             | Self::TrimClipEndBy { clip, .. }
             | Self::TrimMidiClipEdge { clip, .. }
+            | Self::StretchMidiClipEdge { clip, .. }
             | Self::SplitMidiClip { clip, .. }
             | Self::MoveMidiClip { clip, .. }
             | Self::MoveMidiClipWithOverwrite { clip, .. }
@@ -469,16 +482,19 @@ impl Command {
             Self::DuplicateClip(clip) => ClipCommandScope::Geometry { clip: *clip },
             Self::DuplicateMidiClip(clip) => ClipCommandScope::Geometry { clip: *clip },
             Self::ConvertAudioClipToMidi(clip) => ClipCommandScope::Geometry { clip: *clip },
-            Self::CopyArrangementAudioClipToSession { source, .. } => {
+            Self::CopyArrangementAudioClipToSession { source, .. }
+            | Self::CopyArrangementAudioClipToNewSessionTrack { source, .. } => {
                 ClipCommandScope::Geometry { clip: *source }
             }
-            Self::CopyArrangementMidiToSession { source, .. } => {
+            Self::CopyArrangementMidiToSession { source, .. }
+            | Self::CopyArrangementMidiToNewSessionTrack { source, .. } => {
                 ClipCommandScope::Geometry { clip: *source }
             }
             Self::UpdateMidiNote { note, .. } | Self::RemoveMidiNote(note) => {
                 ClipCommandScope::FocusedNote { note: *note }
             }
-            Self::EditClips { .. }
+            Self::SetTimeRangeActive { .. }
+            | Self::EditClips { .. }
             | Self::DeleteTimeRange { .. }
             | Self::PasteTimeRange { .. }
             | Self::PasteClips { .. }
@@ -488,9 +504,13 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
-            | Self::MoveClipsWithOverwrite { .. } => ClipCommandScope::Explicit,
+            | Self::MoveClipsWithOverwrite { .. }
+            | Self::DuplicateClips(_)
+            | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
+            | Self::MoveArrangementSectionMarker { .. }
+            | Self::ResizeArrangementSectionMarker { .. }
             | Self::RenameArrangementSection { .. }
             | Self::SetArrangementSectionColor { .. }
             | Self::RemoveArrangementSection(..)
@@ -501,6 +521,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
@@ -539,7 +560,11 @@ impl Command {
             | Self::MoveReturnDevice { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
+            | Self::MoveTrackBefore { .. }
+            | Self::MoveTracksBefore { .. }
+            | Self::PasteTracks { .. }
             | Self::ImportAudioTrack { .. }
+            | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }
             | Self::ImportPreparedAudioClip { .. }

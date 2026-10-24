@@ -1,7 +1,7 @@
 //! Actual prepared rendering and final host conversion, driven headlessly.
 //! No native device admission, physical deadline or user acceptance is claimed.
 use super::*;
-use crate::plugin_transport::{self, Fault};
+use hex_plugin_host::transport::{self as plugin_transport, Fault};
 use std::sync::atomic::Ordering::Acquire;
 
 fn original_graph() -> hex_engine::playback::Playback {
@@ -165,7 +165,7 @@ fn owned_worker_and_all_four_original_guards_retire_on_control_after_zero_alloca
     }
     let lifetime = WorkerLifetime(Arc::clone(&records));
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
-    let binding = plugin_transport::Binding {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
         root: control.output_identity().unwrap(),
         instance: 1,
         graph: 1,
@@ -271,12 +271,8 @@ fn owned_worker_and_all_four_original_guards_retire_on_control_after_zero_alloca
     assert!(retirement.advance().unwrap());
     let records = records.lock().unwrap();
     assert_eq!(records.len(), 3);
-    for (name, thread) in records.iter() {
-        if *name == "processor" {
-            assert_ne!(*thread, control_thread);
-        } else {
-            assert_eq!(*thread, control_thread);
-        }
+    for (_, thread) in records.iter() {
+        assert_eq!(*thread, control_thread);
     }
     assert!(
         records.iter().position(|(name, _)| *name == "processor")

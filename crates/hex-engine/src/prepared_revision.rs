@@ -40,9 +40,13 @@ impl From<&Device> for PreparedDeviceIdentity {
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedArrangementMidiSource {
+    content_view: Option<hex_project::ContentWindow>,
+    active: bool,
+    playback_offset: hex_project::BeatTime,
     id: hex_project::ClipId,
     start: hex_project::BeatTime,
     length: hex_project::BeatTime,
+    end_frame: u64,
     source: MidiSourceIdentity,
 }
 
@@ -327,6 +331,30 @@ impl PreparedRevision {
         )
     }
 
+    /// Prepare the ordinary resident graph with a host's effect registry and
+    /// the existing built-in instrument registry. Foreign factories declare
+    /// immutable facts only; the audio host must separately retain and admit
+    /// their actual source/worker/endpoint owners. This grants no publication
+    /// authority and never reconstructs a native instance from state bytes.
+    pub fn prepare_with_effect_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_registries(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            effects,
+            &instruments,
+        )
+    }
+
     pub fn prepare_with_audio_transforms(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -483,9 +511,39 @@ impl PreparedRevision {
         max_scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<Self, Invalid> {
-        resources.validate_project(project)?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_device_resources_and_effect_registry(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            transforms,
+            resources,
+            max_scan_frames,
+            cancel,
+            &effects,
+        )
+    }
+
+    /// The same registered-resource compiler with host-provided effect
+    /// definitions. Original sampler leases, transformations, cancellation and
+    /// scan reservations retain their existing owners and validation. Foreign
+    /// facts grant no native source/endpoint or publication custody; the host
+    /// must separately retain the matching actual instances through delivery.
+    #[allow(clippy::too_many_arguments)] // Existing complete resident inputs plus the effect registry.
+    pub fn prepare_with_device_resources_and_effect_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        resources.validate_project(project)?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
         let preparation = crate::native_device_resources::CompilerDeviceResources::new(
@@ -498,7 +556,7 @@ impl PreparedRevision {
             media,
             sine_table,
             previous_session,
-            &effects,
+            effects,
             &instruments,
             transforms,
             Some(&preparation),
@@ -895,6 +953,65 @@ impl PreparedRevision {
             )
     }
 
+    /// Exact authored inactivity for an existing prepared MIDI instance. Missing
+    /// or deleted clips retain their separate handoff policy. Routed sources
+    /// are queried through their destination's canonical descriptor.
+    pub(crate) fn midi_clip_inactive(&self, track: TrackId, clip: hex_project::ClipId) -> bool {
+        if let Some(clip) = self.session.midi_clip_for_track(clip, track) {
+            return !clip.active;
+        }
+        self.mutable_track_revision(track)
+            .and_then(|track| {
+                track
+                    .arrangement_midi_sources
+                    .binary_search_by_key(&clip, |source| source.id)
+                    .ok()
+                    .and_then(|index| track.arrangement_midi_sources.get(index))
+            })
+            .is_some_and(|clip| !clip.active)
+    }
+
+    /// A retained prefix is a strict narrowing of the same source clock, not
+    /// an edited/replaced source. Handoff separately validates clock/loop and
+    /// actual dispatched occurrence proofs before allowing a shorter gate.
+    pub(crate) fn retained_midi_prefix_end(
+        &self,
+        candidate: &Self,
+        key: crate::mutable_instrument::MutableOccurrenceKey,
+    ) -> Option<(hex_project::BeatTime, u64)> {
+        let old = self.mutable_track_revision(key.track)?;
+        let new = candidate.mutable_track_revision(key.track)?;
+        if !old.topology_matches(new) || old.midi_source_track != new.midi_source_track {
+            return None;
+        }
+        fn find(
+            track: &PreparedMutableTrackRevision,
+            clip: hex_project::ClipId,
+        ) -> Option<&PreparedArrangementMidiSource> {
+            track
+                .arrangement_midi_sources
+                .binary_search_by_key(&clip, |source| source.id)
+                .ok()
+                .and_then(|index| track.arrangement_midi_sources.get(index))
+        }
+        let old = find(old, key.clip)?;
+        let new = find(new, key.clip)?;
+        (old.active
+            && new.active
+            && old.content_view == new.content_view
+            && old.source == new.source
+            && old.start == new.start
+            && old.playback_offset == new.playback_offset
+            && new.length < old.length)
+            .then(|| {
+                new.start
+                    .raw()
+                    .checked_add(new.length.raw())
+                    .map(|end| (hex_project::BeatTime::from_raw(end), new.end_frame))
+            })
+            .flatten()
+    }
+
     pub(crate) fn mutable_arrangement_sources_match(
         &self,
         candidate: &Self,
@@ -1006,14 +1123,26 @@ fn prepare_mutable_track_revisions(
         arrangement_midi_sources
             .try_reserve_exact(source.midi_clips().len())
             .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
-        arrangement_midi_sources.extend(source.midi_clips().iter().map(|clip| {
-            PreparedArrangementMidiSource {
+        for clip in source.midi_clips() {
+            let end = clip
+                .start()
+                .raw()
+                .checked_add(clip.length().raw())
+                .ok_or(Invalid("midi descriptor end overflow"))?;
+            arrangement_midi_sources.push(PreparedArrangementMidiSource {
+                content_view: clip.content_view(),
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 id: clip.id(),
                 start: clip.start(),
                 length: clip.length(),
+                end_frame: project
+                    .tempo_map()
+                    .beat_to_frame(hex_project::BeatTime::from_raw(end))
+                    .map_err(|error| Invalid(error.0))?,
                 source: clip.source_identity(),
-            }
-        }));
+            });
+        }
         arrangement_midi_sources.sort_unstable_by_key(|clip| clip.id);
 
         revisions.push(PreparedMutableTrackRevision {

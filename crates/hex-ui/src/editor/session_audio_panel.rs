@@ -46,7 +46,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let mut row = div()
         .id("session-audio-source-panel")
         .w_full()
-        .h(px(DETAIL_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -113,6 +113,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 .tooltip(move |_, cx| {
                     let description = format!("source {start}–{end} / {asset_frames} frames");
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: description.into(),
                     })
                     .into()
@@ -210,6 +211,7 @@ fn gain_adjust_button(
     .debug_selector(move || format!("session-audio-gain-{direction}"))
     .tooltip(|_, cx| {
         cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::control("clip gain"),
             description: "adjust clip gain by 1 db · alt: 0.1 db".into(),
         })
         .into()
@@ -301,6 +303,7 @@ fn source_adjust_button(
         .tooltip(move |_, cx| {
             let description = tooltip.clone();
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: description.into(),
             })
             .into()

@@ -2,6 +2,7 @@
 //! Alternating 0.75s audio/MIDI placements retain 100 clips and 400 notes per
 //! track across 75s. Historical overlapping 50s fixtures are not equivalent
 //! performance inputs; generate new fixtures without rewriting existing files.
+//! Optional --audio-only preserves the same audio placements without MIDI clips.
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipGain, ClipSnapshot, Meter, MeterPoint, MidiClipSnapshot,
     MidiNoteSnapshot, Project, Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
@@ -13,7 +14,7 @@ use std::{
     path::Path,
 };
 
-fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
+fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dyn Error>> {
     if ![1, 100].contains(&count) {
         return Err("expected one or 100 tracks".into());
     }
@@ -31,6 +32,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         let mut midi_clips = Vec::new();
         for position in 0..50_u64 {
             audio_clips.push(ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: id(),
@@ -58,6 +60,10 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 });
             }
             midi_clips.push(MidiClipSnapshot {
+                content_view: None,
+                active: true,
+                playback_offset_raw: 0,
+                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
@@ -87,9 +93,13 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
-            content: TrackContentSnapshot::Hybrid {
-                audio_clips,
-                midi_clips,
+            content: if audio_only {
+                TrackContentSnapshot::Audio(audio_clips)
+            } else {
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                }
             },
         });
     }
@@ -144,7 +154,7 @@ fn wav(path: &Path) -> Result<(), Box<dyn Error>> {
     file.sync_all()?;
     Ok(())
 }
-fn generate(directory: &Path) -> Result<(), Box<dyn Error>> {
+fn generate(directory: &Path, audio_only: bool) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(directory)?;
     let directory = fs::canonicalize(directory)?;
     for name in ["shared.wav", "1.hex", "100.hex"] {
@@ -154,8 +164,8 @@ fn generate(directory: &Path) -> Result<(), Box<dyn Error>> {
     }
     let media = directory.join("shared.wav");
     // Validate both complete snapshots before creating files.
-    let small = project(1, &media)?;
-    let dense = project(100, &media)?;
+    let small = project(1, &media, audio_only)?;
+    let dense = project(100, &media, audio_only)?;
     wav(&media)?;
     hex_storage::save_new(directory.join("1.hex"), &small)?;
     hex_storage::save_new(directory.join("100.hex"), &dense)?;
@@ -165,14 +175,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
     let directory = args
         .next()
-        .ok_or("usage: time_selection_fixture directory")?;
+        .ok_or("usage: time_selection_fixture directory [--audio-only]")?;
+    let audio_only = match args.next() {
+        None => false,
+        Some(flag) if flag == "--audio-only" => true,
+        Some(_) => return Err("expected --audio-only or no second argument".into()),
+    };
     if args.next().is_some() {
         return Err("expected exactly one fixture directory".into());
     }
-    generate(Path::new(&directory))?;
+    generate(Path::new(&directory), audio_only)?;
     writeln!(
         std::io::stdout().lock(),
-        "created 1/100-track fixtures; 100 clips and 400 notes per track across 75s; shared 48000 hz stereo wav"
+        "created 1/100-track fixtures; audio_only={audio_only}; shared 48000 hz stereo wav"
     )?;
 
     Ok(())
@@ -183,8 +198,14 @@ mod tests {
     #[test]
     fn both_sizes_are_hybrid_with_identical_density() -> Result<(), Box<dyn Error>> {
         for count in [1, 100] {
-            let project = project(count, Path::new("shared.wav"))?;
+            let project = project(count, Path::new("shared.wav"), false)?;
+            let audio_only = super::project(count, Path::new("shared.wav"), true)?;
             assert_eq!(project.tracks().len(), count);
+            assert_eq!(audio_only.snapshot().assets, project.snapshot().assets);
+            for (mixed, audio) in project.tracks().iter().zip(audio_only.tracks()) {
+                assert_eq!(mixed.clips(), audio.clips());
+                assert!(audio.midi_clips().is_empty());
+            }
             for track in project.tracks() {
                 assert_eq!(track.clips().len(), 50);
                 assert_eq!(track.midi_clips().len(), 50);

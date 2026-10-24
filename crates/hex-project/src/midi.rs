@@ -9,7 +9,9 @@
 //! polyphonic. Current-format loading refuses overlapping authored notes without
 //! rewriting files; loop occurrences and DSP releases retain their separate semantics.
 //! Channel, pitch, velocity and positive duration are validated before mutation.
-//! Source shrink refuses notes it would invalidate.
+//! Source shrink refuses notes it would invalidate. Nonrepeating sources select their
+//! exclusive audible end independently from retained note/source extent; repeating
+//! playback always follows the existing loop interval. Source edits preserve that policy.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
@@ -21,6 +23,15 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// Exclusive audible end of a nonrepeating source; later authored notes remain retained.
+/// Repeating sources always use their loop interval, independently of this policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MidiOneShotBoundary {
+    #[default]
+    SourceEnd,
+    LoopEnd,
+}
+
 /// Independently-owned MIDI event source shared by Arrangement and Session clips.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSource {
@@ -29,6 +40,7 @@ pub struct MidiSource {
     pub(crate) loop_start: BeatTime,
     pub(crate) loop_end: BeatTime,
     pub(crate) looping: bool,
+    pub(crate) one_shot_boundary: MidiOneShotBoundary,
     pub(crate) notes: Vec<MidiNote>,
 }
 
@@ -90,6 +102,35 @@ impl MidiSource {
     pub fn notes(&self) -> &[MidiNote] {
         &self.notes
     }
+    pub fn one_shot_boundary(&self) -> MidiOneShotBoundary {
+        self.one_shot_boundary
+    }
+    /// Exclusive end of the initial pass. Notes outside it stay in the authored source.
+    pub fn effective_end(&self) -> BeatTime {
+        if self.looping || self.one_shot_boundary == MidiOneShotBoundary::LoopEnd {
+            self.loop_end
+        } else {
+            self.source_length
+        }
+    }
+    /// Shared finite projection for Arrangement and Session preparation.
+    pub fn playback_for_duration(&self, duration: BeatTime) -> Result<MidiSourcePlayback, Invalid> {
+        validate_source_boundary(
+            self.source_length,
+            self.source_start,
+            self.loop_start,
+            self.loop_end,
+            self.looping,
+            self.one_shot_boundary,
+        )?;
+        MidiSourcePlayback::new_with_initial_end(
+            self.source_length,
+            self.source_start,
+            self.looping.then_some((self.loop_start, self.loop_end)),
+            duration,
+            self.effective_end(),
+        )
+    }
     pub(crate) fn defaults(length: BeatTime) -> Self {
         Self {
             source_length: length,
@@ -97,6 +138,7 @@ impl MidiSource {
             loop_start: BeatTime::ZERO,
             loop_end: length,
             looping: false,
+            one_shot_boundary: MidiOneShotBoundary::SourceEnd,
             notes: Vec::new(),
         }
     }
@@ -106,6 +148,9 @@ impl MidiSource {
 /// identity, and a separately shared clip-owned source-beat volume curve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
+    pub(crate) content_view: Option<crate::ContentWindow>,
+    pub(crate) active: bool,
+    pub(crate) playback_offset: BeatTime,
     pub(crate) name: String,
     pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
@@ -117,12 +162,17 @@ pub struct MidiClip {
 /// Metadata-only edge candidate. A silent source prefix is materialized only on commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiClipTrim {
+    content_view: Option<crate::ContentWindow>,
+    playback_offset: BeatTime,
     start: BeatTime,
     length: BeatTime,
     source_start: BeatTime,
     source_prefix: BeatTime,
 }
 impl MidiClipTrim {
+    pub fn playback_offset(self) -> BeatTime {
+        self.playback_offset
+    }
     pub fn start(self) -> BeatTime {
         self.start
     }
@@ -140,6 +190,14 @@ impl MidiClipTrim {
 }
 
 impl MidiClip {
+    /// Authored clip activation, independent of track mute or selection.
+    pub fn active(&self) -> bool {
+        self.active
+    }
+    /// Elapsed source-playback window origin in quarter-note beats.
+    pub fn playback_offset(&self) -> BeatTime {
+        self.playback_offset
+    }
     pub fn volume(&self) -> &crate::MidiClipVolume {
         &self.volume
     }
@@ -151,8 +209,11 @@ impl MidiClip {
     }
     /// Preview an edge edit in O(1) metadata work without copying authored notes.
     /// Right extension may expose silence for a one-shot. Left edits preserve the
-    /// exclusive end and advance/rewind the source marker. A one-shot may grow
-    /// a silent source prefix; loop-phase and intro rewinds retain their law.
+    /// exclusive end. Inward left trims advance an elapsed playback window,
+    /// retaining authored markers/notes and chasing a crossing gate for its
+    /// remaining duration. Left extension consumes that window first, then uses
+    /// the source-marker/blank-prefix rewind law. Silent one-shot tails remain
+    /// valid windows; loop phase is projected from the retained source law.
     pub fn preview_edge_trim(
         &self,
         edge: crate::TrimEdge,
@@ -161,9 +222,96 @@ impl MidiClip {
         validate_clip(self.start, self.length)?;
         self.source_playback()?;
         let start = self.start.raw();
+        if let Some(view) = self.content_view {
+            let end = start
+                .checked_add(self.length.raw())
+                .ok_or(Invalid("midi end overflow"))?;
+            let (new_start, new_end) = match edge {
+                crate::TrimEdge::Left => (beat.raw(), end),
+                crate::TrimEdge::Right => (start, beat.raw()),
+            };
+            let length = new_end
+                .checked_sub(new_start)
+                .filter(|n| *n > 0)
+                .ok_or(Invalid("midi trim must retain positive length"))?;
+            let delta = i128::from(new_start) - i128::from(start);
+            let raw_end = if view.reversed {
+                i128::from(view.end) - delta
+            } else {
+                i128::from(view.start) + delta + i128::from(length)
+            };
+            let raw_start = raw_end - i128::from(length);
+            let rewind = u64::try_from((-raw_start).max(0))
+                .map_err(|_| Invalid("midi directed trim overflow"))?;
+            let source_start=self.source_start().raw().checked_sub(rewind).ok_or(Invalid("midi extension precedes retained source; a forward clip can add a blank prefix"))?;
+            let window = crate::ContentWindow::new(
+                u64::try_from(raw_start + i128::from(rewind))
+                    .map_err(|_| Invalid("midi directed trim overflow"))?,
+                u64::try_from(raw_end + i128::from(rewind))
+                    .map_err(|_| Invalid("midi directed trim overflow"))?,
+                view.reversed,
+            )?;
+            let offset = self
+                .playback_offset
+                .raw()
+                .checked_add(rewind)
+                .ok_or(Invalid("midi directed trim offset overflow"))?;
+            return Ok(MidiClipTrim {
+                content_view: Some(window),
+                playback_offset: BeatTime::from_raw(offset),
+                start: BeatTime::from_raw(new_start),
+                length: BeatTime::from_raw(length),
+                source_start: BeatTime::from_raw(source_start),
+                source_prefix: BeatTime::ZERO,
+            });
+        }
         let end = start
             .checked_add(self.length.raw())
             .ok_or(Invalid("midi timeline end overflow"))?;
+        if self.playback_offset != BeatTime::ZERO
+            || matches!(edge, crate::TrimEdge::Left) && beat.raw() >= start
+        {
+            let offset = self.playback_offset.raw();
+            if matches!(edge, crate::TrimEdge::Left)
+                && offset <= start
+                && beat.raw() < start - offset
+            {
+                // Consume the elapsed window first, then apply the established
+                // source-prefix/loop rewind law before the original origin.
+                let mut origin = self.clone();
+                origin.start = BeatTime::from_raw(start - offset);
+                origin.length = BeatTime::from_raw(
+                    self.length
+                        .raw()
+                        .checked_add(offset)
+                        .ok_or(Invalid("midi trim origin overflow"))?,
+                );
+                origin.playback_offset = BeatTime::ZERO;
+                return origin.preview_edge_trim(edge, beat);
+            }
+            let new_start = match edge {
+                crate::TrimEdge::Left => beat.raw().clamp(start.saturating_sub(offset), end - 1),
+                crate::TrimEdge::Right => start,
+            };
+            let new_end = match edge {
+                crate::TrimEdge::Right => beat.raw().max(start + 1),
+                crate::TrimEdge::Left => end,
+            };
+            let new_offset =
+                u64::try_from(i128::from(offset) + i128::from(new_start) - i128::from(start))
+                    .map_err(|_| Invalid("midi playback trim offset overflow"))?;
+            new_offset
+                .checked_add(new_end - new_start)
+                .ok_or(Invalid("midi playback window end overflow"))?;
+            return Ok(MidiClipTrim {
+                content_view: None,
+                playback_offset: BeatTime::from_raw(new_offset),
+                start: BeatTime::from_raw(new_start),
+                length: BeatTime::from_raw(new_end - new_start),
+                source_start: self.source_start(),
+                source_prefix: BeatTime::ZERO,
+            });
+        }
         let source_start = self.source_start().raw();
         let (new_start, new_end, new_source, prefix) = match edge {
             crate::TrimEdge::Right => (
@@ -188,7 +336,7 @@ impl MidiClip {
                 let max_start = if self.looping() {
                     end - 1
                 } else {
-                    let remaining = self.source_length().raw() - source_start - 1;
+                    let remaining = self.source.effective_end().raw() - source_start - 1;
                     start
                         .checked_add(remaining.min(self.length.raw() - 1))
                         .ok_or(Invalid("midi timeline overflow"))?
@@ -231,18 +379,21 @@ impl MidiClip {
                 .ok_or(Invalid("midi source prefix overflow"))
         };
         let preview = MidiClipTrim {
+            content_view: None,
+            playback_offset: BeatTime::ZERO,
             start: BeatTime::from_raw(new_start),
             length: BeatTime::from_raw(new_end - new_start),
             source_start: BeatTime::from_raw(new_source),
             source_prefix: BeatTime::from_raw(prefix),
         };
         validate_clip(preview.start, preview.length)?;
-        validate_source(
+        validate_source_boundary(
             shifted(self.source_length())?,
             preview.source_start,
             shifted(self.loop_start())?,
             shifted(self.loop_end())?,
             self.looping(),
+            self.source.one_shot_boundary,
         )?;
         Ok(preview)
     }
@@ -285,15 +436,16 @@ impl MidiClip {
     }
 
     /// Return the validated finite source mapping used by playback compilers.
+    pub fn content_view(&self) -> Option<crate::ContentWindow> {
+        self.content_view
+    }
     pub fn source_playback(&self) -> Result<MidiSourcePlayback, Invalid> {
-        MidiSourcePlayback::new(
-            self.source.source_length,
-            self.source.source_start,
-            self.source
-                .looping
-                .then_some((self.source.loop_start, self.source.loop_end)),
-            self.length,
-        )
+        let playback = self
+            .source
+            .playback_for_duration(self.length)?
+            .with_playback_offset(self.playback_offset)?;
+        self.content_view
+            .map_or(Ok(playback), |view| playback.with_content_window(view))
     }
 }
 impl std::ops::Deref for MidiClip {
@@ -387,6 +539,23 @@ pub(crate) fn validate_source(
     Ok(())
 }
 
+pub(crate) fn validate_source_boundary(
+    source_length: BeatTime,
+    source_start: BeatTime,
+    loop_start: BeatTime,
+    loop_end: BeatTime,
+    looping: bool,
+    boundary: MidiOneShotBoundary,
+) -> Result<(), Invalid> {
+    validate_source(source_length, source_start, loop_start, loop_end, looping)?;
+    if boundary == MidiOneShotBoundary::LoopEnd && source_start >= loop_end {
+        return Err(Invalid(
+            "bounded midi source start must precede its selected end",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_note(
     start: BeatTime,
     duration: BeatTime,
@@ -419,6 +588,9 @@ pub(crate) fn validate_note(
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
     match command {
+        Command::ResizeMidiClipView { clip, operation } => {
+            crate::midi_loop_resize::apply(project, clip, operation)
+        }
         Command::AddMidiTrack { name } => {
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
@@ -445,6 +617,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .track(track)
                 .ok_or(Invalid("track no longer exists"))?;
             let incoming = MidiClip {
+                content_view: None,
+                active: true,
+                playback_offset: crate::BeatTime::ZERO,
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
                 id: ClipId(0),
@@ -460,6 +635,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 true,
             )
         }
+        Command::StretchMidiClipEdge { clip, edge, beat } => {
+            crate::midi_stretch::apply(project, clip, edge, beat)
+        }
         Command::TrimMidiClipEdge { clip, edge, beat } => {
             let original = project
                 .midi_clip(clip)
@@ -468,6 +646,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             if preview.start == original.start
                 && preview.length == original.length
                 && preview.source_start == original.source_start()
+                && preview.playback_offset == original.playback_offset
             {
                 return Ok(Created::None);
             }
@@ -494,8 +673,10 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     note.start = shifted(note.start)?;
                 }
             }
+            target.content_view = preview.content_view;
             target.start = preview.start;
             target.length = preview.length;
+            target.playback_offset = preview.playback_offset;
             if target.source_start() != preview.source_start {
                 target.source_start = preview.source_start;
             }
@@ -517,6 +698,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?
                 .clone();
+            if original.content_view.is_some() {
+                return crate::clip_reverse::split_midi(project, track, original, beat);
+            }
             let end = original
                 .start
                 .raw()
@@ -625,6 +809,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
+                content_view: None,
+                active: left.active,
+                playback_offset: crate::BeatTime::ZERO,
                 name: left.name.clone(),
                 flavor: left.flavor,
                 id: right_id,
@@ -632,6 +819,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 length: right_length,
                 volume: right_volume,
                 source: Arc::new(MidiSource {
+                    one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                     source_length: right_length,
                     source_start: BeatTime::ZERO,
                     loop_start: BeatTime::ZERO,
@@ -657,7 +845,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let target = project
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
-            validate_source(source_length, source_start, loop_start, loop_end, looping)?;
+            validate_source_boundary(
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                target.one_shot_boundary(),
+            )?;
             target.volume.validate_source_length(source_length)?;
             validate_clip(target.start, length)?;
             for note in &target.notes {
@@ -671,12 +866,17 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 )?;
             }
             let mut target = target.clone();
+            target.content_view = target
+                .content_view
+                .map(|view| view.resized(0, length.raw()))
+                .transpose()?;
             target.length = length;
             target.source_length = source_length;
             target.source_start = source_start;
             target.loop_start = loop_start;
             target.loop_end = loop_end;
             target.looping = looping;
+            target.source_playback()?;
             crate::clip_group::replace_midi(project, target)
         }
         Command::AddMidiNote {
@@ -1039,6 +1239,9 @@ pub(crate) fn materialize_overwrite_ranges(
                 .ok_or(Invalid("midi retained range must be positive"))?,
         );
         fragments.push(MidiClip {
+            content_view: None,
+            active: original.active,
+            playback_offset: crate::BeatTime::ZERO,
             name: original.name.clone(),
             flavor: original.flavor,
             id: original.id,
@@ -1057,6 +1260,7 @@ pub(crate) fn materialize_overwrite_ranges(
                 ),
             )?,
             source: Arc::new(MidiSource {
+                one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                 source_length: length,
                 source_start: BeatTime::ZERO,
                 loop_start: BeatTime::ZERO,

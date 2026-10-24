@@ -154,7 +154,7 @@ impl EditorView {
         }
         self.browser
             .plugins
-            .rows(&self.browser.search.read(cx).content)
+            .rows(self.browser.search.read(cx).text())
     }
     pub(super) fn plugin_controls(&self, cx: &mut Context<Self>) -> Div {
         let state = &self.browser.plugins;
@@ -198,10 +198,10 @@ impl EditorView {
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(|view, _, _, cx| {
+                                    cx.listener(|_view, _, _, cx| {
                                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                                        if let Some(cancel) = &view.browser.plugins.cancellation {
-                                            view.browser.plugins.status = if cancel.cancel() {
+                                        if let Some(cancel) = &_view.browser.plugins.cancellation {
+                                            _view.browser.plugins.status = if cancel.cancel() {
                                                 "cancel requested · waiting for scanner cleanup"
                                                     .into()
                                             } else {

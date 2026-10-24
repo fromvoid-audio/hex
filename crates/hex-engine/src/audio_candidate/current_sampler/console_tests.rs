@@ -760,3 +760,6 @@ fn current_sampler_console_held_note_crosses_quantized_cut_with_literal_release_
 
 #[path = "console_tests/cue.rs"]
 mod cue;
+
+#[path = "console_tests/source_metadata.rs"]
+mod source_metadata;

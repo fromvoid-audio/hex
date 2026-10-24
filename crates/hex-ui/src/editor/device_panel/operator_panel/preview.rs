@@ -3,8 +3,8 @@ use super::super::{EditorView, control_style};
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_widgets::{
-    DiscreteControlAppearance, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlEvent, NumericControlKind, NumericScale, NumericSpec, Toggle, ToggleChanged,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericScale, NumericSpec, Toggle, ToggleAppearance, ToggleChanged,
     ToggleConfig,
 };
 use std::collections::HashMap;
@@ -297,6 +297,7 @@ fn routing_link(
         .key_context("hex_operator_routing")
         .tooltip(|_, cx| {
             cx.new(|_| super::super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control("routing and global context"),
                 description: theme::text("routing and global context · enter or space"),
             })
             .into()
@@ -396,7 +397,7 @@ pub(super) fn control(
             initial,
             control_style(),
         ) {
-            Ok(config) => config.with_appearance(NumericControlAppearance::MicroDial),
+            Ok(config) => config.with_presentation(NumericControlPresentation::MicroDial),
             Err(error) => return control_error(error),
         };
         let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
@@ -505,7 +506,7 @@ fn toggle(
             enabled,
             control_style(),
         ) {
-            Ok(config) => config.with_appearance(DiscreteControlAppearance::CompactSquare),
+            Ok(config) => config.with_appearance(ToggleAppearance::CompactSquare),
             Err(error) => return control_error(error),
         };
         let entity = cx.new(|control_cx| {

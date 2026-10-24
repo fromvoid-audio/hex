@@ -173,6 +173,7 @@ pub(super) fn render_body(
                 if let Some(plot) = hex_widgets::curve_plot(
                     points,
                     theme::device_style(theme::DeviceStyleRole::Display),
+                    hex_widgets::CurvePlotGrid::Horizontal,
                 ) {
                     graph = graph.child(div().flex_1().min_h_0().child(plot));
                 }

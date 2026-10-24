@@ -42,6 +42,11 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+mod native_effects;
+pub(crate) use native_effects::NativeEffectWindow;
+mod midi_recording;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native_sources;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -56,6 +61,7 @@ mod project_spectrum_tests;
 mod runtime_view;
 mod sampler_edit;
 mod sampler_keyboard;
+mod section_launch;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod streaming;
@@ -214,8 +220,10 @@ pub(crate) struct Publication {
     control_context_generation: u64,
     // A legacy default zero is not proof of a real project generation.
     explicit_control_context: bool,
+    source_context: Option<hex_engine::AudioSourceContext>,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+    section_launch_frame: Option<u64>,
     playback: Box<Playback>,
 }
 // Exactly one active musical runtime, including the constructor-owned path.
@@ -239,12 +247,16 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
@@ -275,9 +287,29 @@ pub enum PublicationPolicy {
     /// Install only if the active runtime, route generation, and command prefix
     /// still match the caller's control-side capture.
     InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
+    /// A prepared section seek waits on the predecessor's musical clock.
+    /// The first ready callback selects the next grid boundary. Installation
+    /// uses ordinary seek/reset semantics, retaining the candidate's DSP clock.
+    InstallSectionWhenReady {
+        fence: FreshRuntimeFence,
+        quantization: hex_engine::LaunchQuantization,
+    },
     /// Authored structural edit: the shared stopped gate remains held until exact
     /// installation. Stop keeps priority; Play cannot run on the old graph.
     InstallUnderStoppedArrangement(StoppedEditFence),
+    /// Structural live edit under the same source/command gate; inherit the actual
+    /// installation-boundary transport, routes and voice/release state.
+    InheritUnderArrangement(StoppedEditFence),
+}
+
+impl PublicationPolicy {
+    fn fresh_fence(self) -> Option<FreshRuntimeFence> {
+        match self {
+            Self::InstallFreshRuntimeIfUnchanged(fence)
+            | Self::InstallSectionWhenReady { fence, .. } => Some(fence),
+            _ => None,
+        }
+    }
 }
 
 const FRESH_PUBLICATION_PENDING: u32 = 0;
@@ -396,6 +428,8 @@ pub struct Status {
     constructor_mode: AtomicBool,
     verified_streaming_mode: AtomicBool,
     applied_source: applied_source::AppliedSourceStatus,
+    recording_source: applied_source::AppliedSourceStatus,
+    pub midi_recording_fault: AtomicBool,
     split_endpoints: AtomicBool,
     client_exposed: AtomicBool,
     submitted_revision: AtomicU64,
@@ -494,6 +528,21 @@ impl Status {
     pub(crate) fn preview_unused(&self) -> bool {
         !self.preview_used.load(Acquire)
     }
+    pub(crate) fn reserve_midi_begin(&self) -> Result<(), &'static str> {
+        if self.closing.load(Acquire) {
+            return Err("midi recording output is closing");
+        }
+        if self.verified_streaming_mode.load(Acquire) {
+            return Err("midi recording is unavailable for streamed documents");
+        }
+        if !self.publication_pending.reserve_midi() {
+            return Err("playback publication or recording is pending");
+        }
+        Ok(())
+    }
+    pub(crate) fn midi_end(&self) {
+        self.publication_pending.midi_finished();
+    }
     pub(crate) fn reserve_gain_begin(&self) -> Result<bool, &'static str> {
         if self.closing.load(Acquire) {
             return Err("gain recording output is closing");
@@ -501,13 +550,18 @@ impl Status {
         if self.constructor_mode.load(Acquire) {
             return Err("gain recording is unavailable for streamed documents");
         }
+        if self.publication_pending.midi_active() {
+            return Err("finish midi recording before gain recording");
+        }
         if self.split_endpoints.load(Acquire) {
             if !self.publication_pending.reserve_gain() {
                 return Err("playback publication or gain recording is pending");
             }
             Ok(true)
+        } else if self.publication_pending.reserve_legacy_gain() {
+            Ok(true)
         } else {
-            Ok(false)
+            Err("playback publication or recording is pending")
         }
     }
     pub(crate) fn gain_begin_committed(&self) {
@@ -542,6 +596,8 @@ impl Status {
             constructor_mode: AtomicBool::new(false),
             verified_streaming_mode: AtomicBool::new(false),
             applied_source: applied_source::AppliedSourceStatus::default(),
+            recording_source: applied_source::AppliedSourceStatus::default(),
+            midi_recording_fault: AtomicBool::new(false),
             split_endpoints: AtomicBool::new(false),
             client_exposed: AtomicBool::new(false),
             submitted_revision: AtomicU64::new(0),
@@ -913,12 +969,14 @@ pub struct Control {
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
     pub gain_recording: crate::gain_recording::Control,
+    pub midi_recording: crate::midi_recording::Control,
     command_ticket: u64,
     publication: PublicationControl,
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
-    output_transport_reaper: Option<crate::plugin_transport::Reaper>,
+    requested_physical_callback_frames: Option<u16>,
+    output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -957,7 +1015,10 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
-    output_transport: Option<Box<crate::plugin_transport::Callback>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: crate::candidate_custody::NativeEndpointBank,
+    requested_physical_callback_frames: Option<u16>,
+    output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
@@ -972,6 +1033,7 @@ pub struct Callback {
     processor_audition_lease: Option<processor_audition::ProcessorAuditionTarget>,
     processor_audition_rejected_epoch: u64,
     gain_recording: crate::gain_recording::Callback,
+    midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stage: SpectrumStage,
     active: Option<ActivePublication>,
@@ -1002,6 +1064,17 @@ pub struct Callback {
     test_after_spectrum_target_boundary: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 
+pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::candidate_custody::NativeEndpointBank::data_quote()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Some(0)
+    }
+}
+
 /// Allocate channels/telemetry on the control side. Initial graph must be
 /// published before playback; an empty provider emits silence.
 pub fn channel(rate: u32) -> Result<(Control, Callback), Invalid> {
@@ -1025,8 +1098,10 @@ pub fn channel_with_spectrum(
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
     let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
+    let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
     sample_preview.bind_status(status.clone());
     gain_recording.bind_status(status.clone());
+    midi_recording.bind_status(status.clone());
     let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
     let command_storage_bytes = commands
         .buffer()
@@ -1041,8 +1116,10 @@ pub fn channel_with_spectrum(
             spectrum_target,
             processor_audition,
             gain_recording,
+            midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                requested_physical_callback_frames: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
@@ -1062,6 +1139,9 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
+            requested_physical_callback_frames: None,
             output_transport: None,
             output_transport_cancelled: false,
             transport_setup_open: true,
@@ -1077,6 +1157,7 @@ pub fn channel_with_spectrum(
             processor_audition_lease: None,
             processor_audition_rejected_epoch: 0,
             gain_recording: callback_gain_recording,
+            midi_recording: callback_midi_recording,
             spectrum_capture: capture,
             spectrum_stage: SpectrumStage::default(),
             active: None,
@@ -1222,10 +1303,45 @@ fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
     })
 }
 
+#[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
 impl PublicationControl {
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
+    }
+    /// The fixed device buffer requested by this output's actual constructor.
+    /// This is not proof of delivered callback shape or a physical deadline;
+    /// every foreign callback must still validate its real complete extent.
+    pub fn requested_physical_callback_frames_on_control(&self) -> Option<u16> {
+        self.requested_physical_callback_frames
+    }
+    /// Bind only while both exact constructor endpoints remain unexposed.
+    /// Device construction requests this fixed size before backend creation;
+    /// headless constructor fixtures may use the same finite delivery profile.
+    pub(crate) fn configure_physical_callback_request(
+        &mut self,
+        callback: &mut Callback,
+        frames: u16,
+    ) -> Result<(), Invalid> {
+        if frames == 0
+            || usize::from(frames) > hex_plugin_host::transport::MAX_FRAMES
+            || self.requested_physical_callback_frames.is_some()
+            || callback.requested_physical_callback_frames.is_some()
+            || self.revision != 0
+            || self.native_custody
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || !callback.transport_setup_open
+            || !callback.belongs_to_candidate_root(&self.candidate_root)
+            || !callback.matches_native_status(&self.status)
+        {
+            return Err(Invalid(
+                "physical callback request requires its vacant constructor",
+            ));
+        }
+        self.requested_physical_callback_frames = Some(frames);
+        callback.requested_physical_callback_frames = Some(frames);
+        Ok(())
     }
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
@@ -1237,14 +1353,13 @@ impl PublicationControl {
     /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
     /// Configure this capability even for an initially resource-free project so a later sampler
     /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
-    /// clip PCM remains a separate conservative capacity allowance; its old graph is destroyed on
-    /// control before that allowance is released. Exact runtime leases may migrate into tails and
+    /// clip PCM uses exact control-owned backing records shared across publications. Each record
+    /// releases after its matching graph is destroyed on control. Runtime leases may migrate into tails and
     /// retain their source obligations across returns of the publication which introduced them.
     /// Graph publication for this entire output is permanently worker-owned. Client transport,
     /// Stop and observation remain available; its legacy raw graph-forwarding bridge refuses.
     /// Consumers must route every canonical graph edit, including the resource-free initial graph,
-    /// through the worker sink before enabling this capability. Configuring it alone in the current
-    /// app would strand legacy graph delivery; this API is not enabled by existing UI composition.
+    /// through the worker sink before enabling this capability, as the native resident adapter does.
     pub fn configure_device_resource_publication_on_control(
         &mut self,
         reservation: hex_engine::AudioStorageLedgerReservation,
@@ -1260,22 +1375,21 @@ impl PublicationControl {
         }
         // One queue, active, deferred, callback-held, control-held and construction owner, plus
         // the existing retirement queue. Each Playback's track/tail/keyboard bound is unchanged.
-        let max_obligations = self
+        let max_graphs = self
             .publications
             .buffer()
             .capacity()
             .checked_add(RETIRED)
             .and_then(|n| n.checked_add(5))
-            .and_then(|n| {
-                n.checked_mul(
-                    hex_engine::native_device_resources::MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
-                )
-            })
+            .ok_or("device resource publication capacity overflow")?;
+        let max_obligations = max_graphs
+            .checked_mul(hex_engine::native_device_resources::MAX_PLAYBACK_DEVICE_RESOURCE_LEASES)
             .ok_or("device resource publication capacity overflow")?;
         let resources =
             hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
                 reservation,
                 max_obligations,
+                max_graphs,
             )
             .map_err(|_| "device resource publication reservation refused")?;
         let bridge = self
@@ -1296,7 +1410,7 @@ impl PublicationControl {
     ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
         self.device_resources
             .as_ref()
-            .map(|book| book.admission_on_control(self.legacy_pcm_frames))
+            .map(|book| book.admission_on_control())
     }
 
     /// Freeze all graph publication and move the actual resource book into the caller's one
@@ -1323,6 +1437,37 @@ impl PublicationControl {
             hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
         ) -> Result<(), E>,
     ) -> Result<u64, AdmittedPublishError<E>> {
+        self.publish_admitted_with_source(playback, policy, control_context_generation, None, admit)
+    }
+    /// Tag the actual admitted ordinary graph with its captured canonical source.
+    /// Existing generation-only methods remain unknown to MIDI recording.
+    pub fn publish_with_admission_and_source_on_control<E>(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        source_context: hex_engine::AudioSourceContext,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        self.publish_admitted_with_source(
+            playback,
+            policy,
+            source_context.project_generation,
+            Some(source_context),
+            admit,
+        )
+    }
+    fn publish_admitted_with_source<E>(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        source_context: Option<hex_engine::AudioSourceContext>,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
         let Some(mut resources) = self.device_resources.take() else {
             return Err(AdmittedPublishError::Publication(PublishError {
                 reason: "ordinary worker publication is not configured",
@@ -1332,12 +1477,12 @@ impl PublicationControl {
         let legacy_pcm = playback
             .resident_pcm_capacity_frames()
             .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
-        let result = if let Some(legacy_pcm) = legacy_pcm {
-            resources.publish_admitted_on_control(playback, legacy_pcm, |playback, view| {
+        let result = if legacy_pcm.is_some() {
+            resources.publish_admitted_on_control(playback, |playback, view| {
                 if let Err(reason) = admit(view) {
                     return Err(AdmittedPublishError::Admission { reason, playback });
                 }
-                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, true, false)
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, true, false, source_context)
                     .map_err(AdmittedPublishError::Publication)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
@@ -1411,6 +1556,7 @@ impl PublicationControl {
                 control_context_generation,
                 explicit_control_context,
                 forwarded_pcm,
+                None,
             );
         };
         if forwarded_pcm {
@@ -1423,9 +1569,9 @@ impl PublicationControl {
         let legacy_pcm = playback
             .resident_pcm_capacity_frames()
             .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
-        let result = if let Some(legacy_pcm) = legacy_pcm {
-            resources.publish_on_control(playback, legacy_pcm, |playback| {
-                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm)
+        let result = if legacy_pcm.is_some() {
+            resources.publish_on_control(playback, |playback| {
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm, None)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
                     reason: "device resource publication storage reservation exceeded", playback,
@@ -1448,20 +1594,21 @@ impl PublicationControl {
         control_context_generation: u64,
         explicit_control_context: bool,
         forwarded_pcm: bool,
+        source_context: Option<hex_engine::AudioSourceContext>,
     ) -> Result<u64, PublishError> {
         let reason = if self.status.sampler_edit.active()
-            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token)
+            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
                 if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
         {
             Some("stopped edit excludes unrelated graph publication")
-        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token)
+        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
         } else if self.candidate_root.domains_configured() {
             Some("constructor publication does not adopt legacy playback")
-        } else if self.status.publication_pending.gain_active() {
-            Some("finish gain recording before replacing playback")
+        } else if self.status.publication_pending.recording_active() {
+            Some("finish recording before replacing playback")
         } else if self.status.closing.load(Acquire) {
             Some("playback is shutting down")
         } else if playback.sample_rate() != self.rate {
@@ -1498,13 +1645,12 @@ impl PublicationControl {
             });
         }
         let revision = self.revision + 1;
-        let cancellation = matches!(policy, PublicationPolicy::InstallFreshRuntimeIfUnchanged(_))
-            .then(|| {
-                Arc::new(FreshRuntimeCancellation {
-                    revision,
-                    decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
-                })
-            });
+        let cancellation = policy.fresh_fence().is_some().then(|| {
+            Arc::new(FreshRuntimeCancellation {
+                revision,
+                decision: AtomicU32::new(FRESH_PUBLICATION_PENDING),
+            })
+        });
         let mut playback = playback;
         playback.set_device_metering(true);
         let publication = Publication {
@@ -1513,8 +1659,10 @@ impl PublicationControl {
             revision,
             control_context_generation,
             explicit_control_context,
+            source_context,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
+            section_launch_frame: None,
             playback: Box::new(playback),
         };
         if let Err(publication) = enqueue_legacy(&mut self.publications, publication) {
@@ -1562,6 +1710,13 @@ impl PublicationControl {
                 break;
             };
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.candidate_root.ingest_native_endpoint(endpoint) {
+                        self.held_control_return = Some(ReturnedPublication::Native(endpoint));
+                        break;
+                    }
+                }
                 ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.candidate_root.ingest_pages(pages) {
                         self.held_control_return = Some(ReturnedPublication::Domain(pages));
@@ -1574,17 +1729,18 @@ impl PublicationControl {
                         break;
                     }
                 }
-                ReturnedPublication::Legacy(publication) => {
-                    let Publication {
-                        pcm_frames: frames,
-                        forwarded_pcm: forwarded,
-                        playback,
-                        ..
-                    } = publication;
+                ReturnedPublication::Legacy(mut publication) => {
+                    let frames = publication.pcm_frames;
+                    let forwarded = publication.forwarded_pcm;
                     if let Some(resources) = self.device_resources.as_mut() {
-                        resources.retire_on_control(playback);
+                        if let Err(playback) = resources.retire_on_control(publication.playback) {
+                            publication.playback = playback;
+                            self.held_control_return =
+                                Some(ReturnedPublication::Legacy(publication));
+                            break;
+                        }
                     } else {
-                        drop(playback);
+                        drop(publication.playback);
                     } // actual owner destruction precedes obligation release
                     if forwarded {
                         if let Some(bridge) = &self.resident_forwarding {
@@ -1703,9 +1859,9 @@ impl PublicationControl {
         self.candidate_root.report()
     }
     pub fn request_shutdown(&mut self) {
+        self.status.closing.store(true, Release);
         self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
-        self.status.closing.store(true, Release);
         if let Some(reaper) = self.output_transport_reaper.as_ref() {
             reaper.revoke();
         }
@@ -1778,6 +1934,7 @@ impl Control {
         ))
     }
     pub fn stop(&self) {
+        self.midi_recording.finish();
         self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         // Ticket MAX is refused for ordinary commands, so the supported marker
@@ -1790,6 +1947,7 @@ impl Control {
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
+        self.midi_recording.cancel();
         self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
@@ -1833,13 +1991,14 @@ impl PublicationControl {
     pub fn prepare_output_transport_worker_on_control(
         &mut self,
         callback: &mut Callback,
-        binding: crate::plugin_transport::Binding,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
         quantum: u16,
         process: impl FnMut(
-            crate::plugin_transport::Block,
-        )
-            -> Result<crate::plugin_transport::Block, crate::plugin_transport::Fault>
-        + Send
+            hex_plugin_host::transport::Block,
+        ) -> Result<
+            hex_plugin_host::transport::Block,
+            hex_plugin_host::transport::Fault,
+        > + Send
         + 'static,
     ) -> Result<(), Invalid> {
         if self.native_custody
@@ -1858,7 +2017,7 @@ impl PublicationControl {
             binding.epoch,
             quantum,
         )?;
-        match crate::plugin_transport::spawn(control, worker, process) {
+        match crate::plugin_worker::spawn(control, worker, process) {
             Ok(reaper) => {
                 self.output_transport_reaper = Some(reaper);
                 Ok(())
@@ -1875,7 +2034,7 @@ impl PublicationControl {
     pub fn output_transport_completed_blocks_on_control(&self) -> Option<u64> {
         self.output_transport_reaper
             .as_ref()
-            .map(crate::plugin_transport::Reaper::completed_blocks)
+            .map(crate::plugin_worker::Reaper::completed_blocks)
     }
 }
 
@@ -1893,8 +2052,8 @@ impl Callback {
         quantum: u16,
     ) -> Result<
         (
-            crate::plugin_transport::Control,
-            crate::plugin_transport::Worker,
+            hex_plugin_host::transport::Control,
+            hex_plugin_host::transport::Worker,
         ),
         Invalid,
     > {
@@ -1910,13 +2069,13 @@ impl Callback {
                 "output transport requires an unexposed empty callback",
             ));
         }
-        let binding = crate::plugin_transport::Binding {
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
             root: self.candidate_root.root_id(),
             instance,
             graph: graph_revision,
             epoch,
         };
-        let (control, callback, worker) = crate::plugin_transport::channel(binding, quantum)
+        let (control, callback, worker) = hex_plugin_host::transport::channel(binding, quantum)
             .map_err(|_| Invalid("invalid output transport configuration"))?;
         self.output_transport = Some(Box::new(callback));
         Ok((control, worker))
@@ -1929,6 +2088,7 @@ impl Callback {
     }
 
     pub(crate) fn revoke_output_transport(&mut self) {
+        self.revoke_native_effects();
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -1943,7 +2103,7 @@ impl Callback {
             frames.fill([0.0; 2]);
             if self.status.playing.load(Relaxed) {
                 if let Some(transport) = self.output_transport.as_mut() {
-                    transport.reject(crate::plugin_transport::Fault::Revoked);
+                    transport.reject(hex_plugin_host::transport::Fault::Revoked);
                 }
                 return false;
             }
@@ -1955,14 +2115,14 @@ impl Callback {
         if transport.binding().graph != self.status.applied_revision.load(Acquire)
             || transport.binding().epoch != self.status.transport_epoch.load(Acquire)
         {
-            transport.reject(crate::plugin_transport::Fault::Identity);
+            transport.reject(hex_plugin_host::transport::Fault::Identity);
             return false;
         }
-        if self.gain_recording.has_take() || frames.len() > crate::plugin_transport::MAX_FRAMES {
-            transport.reject(crate::plugin_transport::Fault::Protocol);
+        if self.gain_recording.has_take() || frames.len() > hex_plugin_host::transport::MAX_FRAMES {
+            transport.reject(hex_plugin_host::transport::Fault::Protocol);
             return false;
         }
-        let mut input = [[0.0; 2]; crate::plugin_transport::MAX_FRAMES];
+        let mut input = [[0.0; 2]; hex_plugin_host::transport::MAX_FRAMES];
         input[..frames.len()].copy_from_slice(frames);
         // This finite stereo-output profile has no MIDI destination. Refuse
         // output events rather than silently claiming they reached a device.
@@ -1978,7 +2138,7 @@ impl Callback {
         };
         if transport
             .fault()
-            .is_some_and(|fault| fault != crate::plugin_transport::Fault::Revoked)
+            .is_some_and(|fault| fault != hex_plugin_host::transport::Fault::Revoked)
         {
             return Refused;
         }
@@ -2008,9 +2168,13 @@ impl Callback {
     }
     pub(crate) fn output_transport_error(&self) -> Option<Invalid> {
         self.output_transport
-            .as_ref()?
-            .fault()
+            .as_ref()
+            .and_then(|transport| transport.fault())
             .map(|fault| Invalid(fault.message()))
+            .or_else(|| {
+                self.native_effects_revoked()
+                    .then_some(Invalid("native effect callback refused"))
+            })
     }
 
     pub(crate) fn native_spectrum_receipt(
@@ -2032,6 +2196,7 @@ impl Callback {
         self.sample_preview
             .constructor_channel_storage()?
             .plus(self.gain_recording.constructor_channel_storage()?)?
+            .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)
     }
@@ -2056,6 +2221,16 @@ impl Callback {
         self.active = Some(ActivePublication::Candidate(active));
         self.status.publication_pending.store(false, Release);
         Ok(())
+    }
+    pub(crate) fn native_endpoint_bank_data_bytes(&self) -> Option<usize> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.native_sources.data_bytes()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            Some(0)
+        }
     }
     pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
@@ -2166,6 +2341,10 @@ impl Callback {
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
                         self.publications.pop().ok().map(|queued| match queued {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            QueuedPublication::Native(endpoint) => {
+                                ReturnedPublication::Native(endpoint)
+                            }
                             QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
                             QueuedPublication::Eligible(value) => {
                                 ReturnedPublication::Eligible(value.reject_before_install())
@@ -2186,6 +2365,12 @@ impl Callback {
                 self.terminal_disposal_pending = false;
             } else if let Some(value) = self.held_retirement.take() {
                 let refused = match value {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    ReturnedPublication::Native(endpoint) => self
+                        .candidate_root
+                        .ingest_native_endpoint(endpoint)
+                        .err()
+                        .map(ReturnedPublication::Native),
                     ReturnedPublication::Domain(pages) => {
                         if let Some(index) = pages.index_for(self.candidate_root.root_id())
                             && self.domain_pages[index].is_none()
@@ -2235,6 +2420,7 @@ impl Callback {
         self.sample_preview
             .begin_block(self.status.closing.load(Acquire));
         if self.status.closing.load(Acquire) {
+            self.invalidate_midi_recording(crate::midi_recording::AbortReason::Cancelled);
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::Cancelled);
         }
         self.processor_audition.begin_block();
@@ -2259,6 +2445,8 @@ impl Callback {
             }
         }
         self.return_requested_domain_pages();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.return_requested_native_sources();
         if self.status.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
@@ -2302,6 +2490,11 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::Native(endpoint) => {
+                            self.return_publication(ReturnedPublication::Native(endpoint));
+                            return;
+                        }
                         QueuedPublication::Domain(pages) => {
                             self.return_publication(ReturnedPublication::Domain(pages));
                             return;
@@ -2360,6 +2553,17 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                QueuedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self
+                        .native_sources
+                        .install(self.candidate_root.root_id(), endpoint)
+                    {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                    }
+                    self.consume_commands();
+                    return;
+                }
                 QueuedPublication::Domain(pages) => {
                     if let Some(index) = pages.index_for(self.candidate_root.root_id())
                         && self.domain_pages[index].is_none()
@@ -2405,6 +2609,14 @@ impl Callback {
             return;
         }
 
+        self.advance_legacy_publication();
+        self.consume_commands();
+    }
+
+    fn advance_legacy_publication(&mut self) {
+        if !self.section_publication_due() {
+            return;
+        }
         // A candidate with a transient release-capacity refusal remains owned
         // here while the previous runtime continues to render and drain tails.
         // The queue gate prevents a second graph from being admitted meanwhile.
@@ -2420,7 +2632,8 @@ impl Callback {
             #[cfg(not(test))]
             let forced_refusal = false;
             let stale_fence = match next.policy {
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence) => {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+                | PublicationPolicy::InstallSectionWhenReady { fence, .. } => {
                     let active_revision = self
                         .active
                         .as_ref()
@@ -2439,7 +2652,8 @@ impl Callback {
                         || stop_pending)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
-                PublicationPolicy::InstallUnderStoppedArrangement(token) => {
+                PublicationPolicy::InstallUnderStoppedArrangement(token)
+                | PublicationPolicy::InheritUnderArrangement(token) => {
                     (self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
@@ -2450,6 +2664,7 @@ impl Callback {
                 && matches!(
                     next.policy,
                     PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                        | PublicationPolicy::InstallSectionWhenReady { .. }
                 )
                 && let Some(barrier) = self.test_after_fresh_fence_validation.take()
             {
@@ -2466,6 +2681,7 @@ impl Callback {
                 next.policy,
                 PublicationPolicy::InstallFreshRuntime
                     | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                    | PublicationPolicy::InstallSectionWhenReady { .. }
                     | PublicationPolicy::InstallUnderStoppedArrangement(_)
             ) {
                 None
@@ -2503,6 +2719,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                            | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(barrier) = self.test_before_fresh_runtime_apply.take()
                     {
                         barrier.wait();
@@ -2522,13 +2739,13 @@ impl Callback {
                         );
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);
-                        self.consume_commands();
                         return;
                     }
                     #[cfg(test)]
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                            | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(barrier) = self.test_after_fresh_runtime_apply_decision.take()
                     {
                         barrier.wait();
@@ -2540,6 +2757,7 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                            | PublicationPolicy::InstallSectionWhenReady { .. }
                     ) && let Some(previous) =
                         self.active.as_ref().and_then(ActivePublication::legacy)
                         && next.control_context_generation == previous.control_context_generation
@@ -2620,7 +2838,6 @@ impl Callback {
                         Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
                     ) {
                         self.return_graph(next);
-                        self.consume_commands();
                         return;
                     }
                     if let Some(ActivePublication::Legacy(previous)) =
@@ -2645,7 +2862,6 @@ impl Callback {
                 }
             }
         }
-        self.consume_commands();
     }
 
     fn apply_processor_audition_boundary(&mut self) {
@@ -2759,6 +2975,7 @@ impl Callback {
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if cut.stop_through.is_some() {
+            self.finish_midi_before_stop();
             self.revoke_output_transport();
             self.revoke_current_sampler_keyboard();
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -2830,6 +3047,9 @@ impl Callback {
                             | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Pause)
                     )
                 {
+                    self.invalidate_midi_recording(
+                        crate::midi_recording::AbortReason::TransportChanged,
+                    );
                     self.invalidate_gain_recording(
                         crate::gain_recording::AbortReason::TransportChanged,
                     );
@@ -2861,6 +3081,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
         self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
         #[cfg(all(test, feature = "allocation-probe"))]
@@ -2904,7 +3125,12 @@ impl Callback {
         {
             self.advance_eligible_publication(Some(output.len()));
         }
-        self.render_project(output)?;
+        if !output.is_empty() {
+            self.prepare_midi_recording_quantum(output.len());
+        }
+        if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
+            self.render_project(output)?;
+        }
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
@@ -2913,6 +3139,14 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.native_effects_revoked() {
+            output.fill([0.0; 2]);
+            return if self.status.playing.load(Relaxed) {
+                Err(Invalid("native effect callback is revoked"))
+            } else {
+                Ok(())
+            };
+        }
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.status.closing.load(Acquire) {
@@ -2995,16 +3229,24 @@ impl Callback {
         } else {
             None
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed_with_project(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 node,
                 project.as_mut(),
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3018,9 +3260,12 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active
-                .playback
-                .render_with_signal_observers(output, node, project.as_mut())?;
+            active.playback.render_with_signal_observers(
+                output,
+                node,
+                project.as_mut(),
+                foreign,
+            )?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -3034,15 +3279,24 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 None,
+                None,
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3085,7 +3339,9 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.render(output)?;
+            active
+                .playback
+                .render_with_signal_observers(output, None, None, foreign)?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -3357,6 +3613,9 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
+        self.status
+            .recording_source
+            .publish(self.recording_source());
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(ActivePublication::Candidate(active)) = self.active.as_ref() {
             if let Some((position, frame, playing)) = active.owner.test_transport() {
@@ -3400,6 +3659,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?
+        .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?
         .checked_add(endpoints::constructor_endpoint_storage_quote()?)
@@ -3603,6 +3863,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -3741,6 +4002,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -3867,6 +4129,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -4005,6 +4268,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,
@@ -4346,6 +4610,8 @@ mod tests {
         let fade = hex_project::ClipFade::new(1_024, 0, 64, 64)
             .unwrap()
             .with_shape(4, 4, 700, -700)
+            .unwrap()
+            .with_curve_positions(250, 750)
             .unwrap();
         editor
             .execute(hex_project::Command::SetClipFadeEnvelope { clip, fade })
@@ -6038,8 +6304,10 @@ mod tests {
                 revision: 99,
                 control_context_generation: 0,
                 explicit_control_context: false,
+                source_context: None,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
+                section_launch_frame: None,
                 playback: Box::new(graph().0),
             }))
             .unwrap();
@@ -6379,8 +6647,10 @@ mod tests {
                     revision,
                     control_context_generation: 0,
                     explicit_control_context: false,
+                    source_context: None,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
+                    section_launch_frame: None,
                     playback: Box::new(graph().0),
                 }))
                 .unwrap();
@@ -6852,6 +7122,83 @@ mod tests {
     }
 
     #[test]
+    fn live_arrangement_gate_inherits_installation_cursor_and_priority_stop() {
+        for stop in [false, true] {
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let revision = control
+                .publish_with_policy_and_context_generation(
+                    graph().0,
+                    PublicationPolicy::InstallFreshRuntime,
+                    7,
+                )
+                .unwrap();
+            callback.begin_block();
+            control.command(PlaybackCommand::Play).unwrap();
+            let gate = control
+                .request_live_arrangement_edit_fence(7, revision)
+                .unwrap();
+            let mut pcm = [[0.0; 2]; 8];
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            assert_eq!(control.arrangement_edit_playing(gate), Some(true));
+            let captured = control.arrangement_edit_position(gate).unwrap();
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            assert!(control.publish(graph().0).is_err());
+            let installed = control
+                .publish_with_policy_and_context_generation(
+                    graph_with_frame([0.5; 2]).0,
+                    PublicationPolicy::InheritUnderArrangement(gate),
+                    7,
+                )
+                .unwrap();
+            if stop {
+                control.stop();
+            }
+            #[cfg(feature = "allocation-probe")]
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut pcm).unwrap();
+            });
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                callback.begin_block();
+                callback.render(&mut pcm).unwrap();
+            }
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), installed);
+            assert_eq!(control.status.playing.load(Acquire), !stop);
+            let active = callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap();
+            if stop {
+                assert_eq!(active.playback.position(), 0);
+                assert_eq!(pcm, [[0.0; 2]; 8]);
+            } else {
+                assert!(active.playback.position() > captured + 8);
+                assert_eq!(pcm, [[0.5; 2]; 8]);
+            }
+            control.release_stopped_edit_fence(gate);
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
+    #[test]
     fn arrangement_stopped_gate_refuses_an_earlier_play_without_changing_runtime() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let revision = control
@@ -6945,6 +7292,7 @@ mod tests {
                     track: 1,
                     scene: 2,
                     content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                        active: true,
                         flavor: hex_project::ClipFlavor::default(),
                         gain: hex_project::ClipGain::UNITY,
                         id: 3,
@@ -6999,8 +7347,10 @@ mod tests {
             revision: 1,
             control_context_generation: 0,
             explicit_control_context: false,
+            source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
+            section_launch_frame: None,
             playback: Box::new(playback),
         }));
         assert!(weak_revision.upgrade().is_some());
@@ -7115,8 +7465,10 @@ mod tests {
                         revision,
                         control_context_generation: 0,
                         explicit_control_context: false,
+                        source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
+                        section_launch_frame: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7191,8 +7543,10 @@ mod tests {
                         revision,
                         control_context_generation: 0,
                         explicit_control_context: false,
+                        source_context: None,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
+                        section_launch_frame: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7206,8 +7560,10 @@ mod tests {
             revision: 4,
             control_context_generation: 0,
             explicit_control_context: false,
+            source_context: None,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
+            section_launch_frame: None,
             playback: Box::new(held),
         }));
         let mut last_ticket = 0;
@@ -7355,8 +7711,10 @@ mod tests {
                     revision: 3,
                     control_context_generation: 0,
                     explicit_control_context: false,
+                    source_context: None,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
+                    section_launch_frame: None,
                     playback: Box::new(queued),
                 }))
                 .is_ok()

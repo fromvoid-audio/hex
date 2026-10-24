@@ -1263,7 +1263,17 @@ fn rendered_sampler_save_open(
     });
     visual.run_until_parked();
     if looped {
-        keyboard::exercise_blocked_sampler_keyboard(cx, &mut visual, &mut h, window, end, stereo);
+        // Setup ends at this handoff. Keyboard operations must own their wait
+        // budgets rather than borrow the source/file workflow's deadline.
+        let setup_finished = Instant::now();
+        keyboard::exercise_blocked_sampler_keyboard(
+            cx,
+            &mut visual,
+            &mut h,
+            window,
+            setup_finished,
+            stereo,
+        );
         visual.update(|w, _| w.remove_window());
         visual.run_until_parked();
         return;

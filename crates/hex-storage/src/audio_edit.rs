@@ -444,6 +444,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             })
             .transpose()?;
         Ok(AudioClipEdit {
+            content_view: None,
             processing_projection,
             placement_start_offset: dto.placement_start_offset,
             placement_end_offset: dto.placement_end_offset,

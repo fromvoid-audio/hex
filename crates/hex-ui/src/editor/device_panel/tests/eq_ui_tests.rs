@@ -516,19 +516,33 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
         });
         visual.run_until_parked();
     }
-    for (index, (x, kind)) in [
-        (0.02, hex_engine::eq::NodeKind::LowCut),
-        (0.98, hex_engine::eq::NodeKind::HighCut),
-        (0.5, hex_engine::eq::NodeKind::Bell),
+    for (index, (x, y, kind, hint)) in [
+        (0.02, 0.4, hex_engine::eq::NodeKind::LowCut, "low-cut"),
+        (0.98, 0.4, hex_engine::eq::NodeKind::HighCut, "high-cut"),
+        (0.5, 0.4, hex_engine::eq::NodeKind::Bell, "bell"),
+        (0.5, 0.02, hex_engine::eq::NodeKind::Notch, "notch"),
     ]
     .into_iter()
     .enumerate()
     {
-        let start = plot(&mut visual, device, x, 0.4);
+        let start = plot(&mut visual, device, x, y);
+        visual.simulate_mouse_move(start, None, Modifiers::default());
+        visual.run_until_parked();
+        let hint_selector = Box::leak(
+            format!("eq-response-{}-creation-hint-{hint}", device.value()).into_boxed_str(),
+        );
+        assert!(
+            visual.debug_bounds(hint_selector).is_some(),
+            "actual {hint} creation indicator before press"
+        );
         let moved = plot(&mut visual, device, 0.6, 0.7);
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
+        assert!(
+            visual.debug_bounds(hint_selector).is_none(),
+            "a captured creation owns the pointer, not its hover hint"
+        );
         editor.read_with(cx, |v, _| {
             assert_eq!(
                 read(v, device).nodes.len(),
@@ -673,13 +687,22 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
 fn eq_creation_escape_and_changed_source_cancel_without_reserving_identity(
     cx: &mut TestAppContext,
 ) {
+    creation_cancellation(cx, [0.02, 0.5]);
+}
+#[gpui::test]
+fn eq_notch_creation_escape_and_changed_source_cancel_without_reserving_identity(
+    cx: &mut TestAppContext,
+) {
+    creation_cancellation(cx, [0.5, 0.025]);
+}
+fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     let (service, state, track, device) = fixture(false);
     let initial_next = state.project.next_identity();
     let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
-    let start = plot(&mut visual, device, 0.02, 0.5);
+    let start = plot(&mut visual, device, origin[0], origin[1]);
     let moved = plot(&mut visual, device, 0.4, 0.7);
     for cancellation in 0..3 {
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
@@ -1099,3 +1122,205 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
 
 #[path = "eq_held_pointer_tests.rs"]
 pub(in crate::editor) mod held_pointer_tests;
+
+#[gpui::test]
+fn eq_notch_hover_matches_creation_and_node_priority_at_narrow_and_wide_sizes(
+    cx: &mut TestAppContext,
+) {
+    fn reveal_in_chain(
+        editor: &gpui::Entity<EditorView>,
+        visual: &mut VisualTestContext,
+        target: &'static str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        let chain = visual.debug_bounds("device-chain-scroll").unwrap();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        let left = chain.left().max(px(0.0)) + px(1.0);
+        let right = chain.right().min(viewport.width) - px(1.0);
+        let before = visual.debug_bounds(target).unwrap();
+        assert!(
+            before.size.width <= right - left,
+            "{target} cannot fit the actual chain viewport: target={before:?}, chain={chain:?}, viewport={viewport:?}"
+        );
+        let delta = if before.left() < left {
+            left - before.left()
+        } else if before.right() > right {
+            right - before.right()
+        } else {
+            px(0.0)
+        };
+        if delta != px(0.0) {
+            editor.update(&mut *visual, |view, cx| {
+                let scroll = &view.device_panel.chain_window.scroll;
+                scroll.set_offset(scroll.offset() + point(delta, px(0.0)));
+                cx.notify();
+            });
+            visual.run_until_parked();
+        }
+        let revealed = visual.debug_bounds(target).unwrap();
+        assert!(
+            revealed.left() >= left
+                && revealed.right() <= right
+                && revealed.top() >= chain.top()
+                && revealed.bottom() <= chain.bottom(),
+            "{target} must be physically reachable through the chain, including its edges: target={revealed:?}, chain={chain:?}, viewport={viewport:?}"
+        );
+        revealed
+    }
+
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (width, bank) in [(880.0, 1), (1500.0, 4)] {
+        visual.simulate_resize(size(px(width), px(650.0)));
+        visual.run_until_parked();
+        for (x, y, kind, hint) in [
+            (0.5, 0.025, hex_engine::eq::NodeKind::Notch, "notch"),
+            (0.5, 0.5, hex_engine::eq::NodeKind::Bell, "bell"),
+            (0.02, 0.025, hex_engine::eq::NodeKind::LowCut, "low-cut"),
+            (0.98, 0.025, hex_engine::eq::NodeKind::HighCut, "high-cut"),
+        ] {
+            // Undo rebuilds detail selection under the existing owner. Select
+            // the intended bank again before each independent creation.
+            // The existing narrow chain viewport scrolls the EQ sidebar
+            // horizontally. Bring its real control onscreen, select, then
+            // reveal the whole graph before testing its pointer targets.
+            let bank_selector =
+                Box::leak(format!("eq-bank-{}-{bank}", device.value()).into_boxed_str());
+            let bank_control = reveal_in_chain(&editor, &mut visual, bank_selector).center();
+            visual.simulate_click(bank_control, Modifiers::default());
+            visual.run_until_parked();
+            let graph = reveal_in_chain(&editor, &mut visual, selector("eq-response", device));
+            let start = plot(&mut visual, device, x, y);
+            let chain = visual.debug_bounds("device-chain-scroll").unwrap();
+            assert!(
+                chain.contains(&start),
+                "{hint} pointer must belong to the revealed chain: point={start:?}, graph={graph:?}, chain={chain:?}"
+            );
+            visual.simulate_mouse_move(start, None, Modifiers::default());
+            visual.run_until_parked();
+            let hint_selector = Box::leak(
+                format!("eq-response-{}-creation-hint-{hint}", device.value()).into_boxed_str(),
+            );
+            let shown = visual
+                .debug_bounds(hint_selector)
+                .unwrap_or_else(|| panic!("missing actual {hint} hint at width={width}, bank={bank}, normalized=({x},{y}), pointer={start:?}, graph={graph:?}, chain={chain:?}"));
+            assert!(
+                shown.left() >= graph.left()
+                    && shown.right() <= graph.right()
+                    && shown.top() >= graph.top()
+                    && shown.bottom() <= graph.bottom(),
+                "{hint} hint must stay within compact graph: {shown:?} {graph:?}"
+            );
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::Crosshair)
+            );
+            visual.simulate_click(start, Modifiers::default());
+            pump_until(&editor, cx, |v| {
+                settled(v) && read(v, device).nodes.len() == 1
+            });
+            visual.run_until_parked();
+            let authored = editor.read_with(cx, |v, _| read(v, device));
+            assert_eq!(
+                authored.nodes[0].kind, kind,
+                "hint action must equal actual canonical shape"
+            );
+            assert_eq!(
+                authored.nodes[0].bank, bank,
+                "{hint} at {width}px must retain its selected bank"
+            );
+            if kind != hex_engine::eq::NodeKind::Bell {
+                assert_eq!(authored.nodes[0].gain_db, 0.0);
+                assert!((authored.nodes[0].q - 0.1 * 180.0_f32.powf(y)).abs() < 0.001);
+            }
+            visual.simulate_mouse_move(start, None, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds(hint_selector).is_none(),
+                "existing node consumes the same bottom/edge zone"
+            );
+            assert_ne!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::Crosshair)
+            );
+            visual.simulate_click(start, Modifiers::default());
+            pump_until(&editor, cx, settled);
+            editor.read_with(cx, |v, _| {
+                assert_eq!(
+                    read(v, device),
+                    authored,
+                    "existing node click must select without creating or changing it"
+                )
+            });
+            editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump_until(&editor, cx, |v| {
+                settled(v) && read(v, device).nodes.is_empty()
+            });
+            visual.run_until_parked();
+        }
+    }
+}
+
+#[gpui::test]
+fn eq_notch_hint_retires_for_real_pending_work_and_invalid_numeric_draft(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor, _root) = graph_layout_tests::bounded_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let start = plot(&mut visual, device, 0.5, 0.025);
+    let hint_selector =
+        Box::leak(format!("eq-response-{}-creation-hint-notch", device.value()).into_boxed_str());
+    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_some());
+    // Queue a real no-op command. Before consuming its exact worker event,
+    // the owner must hide the offer without creating any EQ state/history.
+    editor.update(cx, |v, cx| {
+        let name = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .name()
+            .to_owned();
+        assert!(v.enqueue(Request::Edit(Command::RenameTrack { track, name })));
+        assert_eq!(v.worker_requests_pending, 1);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_none());
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_none());
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    pump_until(&editor, cx, settled);
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_some());
+    enter_typed_value(&mut visual, device, hex_engine::eq::OUTPUT_GAIN, "invalid");
+    editor.read_with(cx, |v, cx| assert!(v.device_panel.has_pending_draft(cx)));
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_none());
+    editor.read_with(cx, |v, _| {
+        assert!(settled(v));
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(read(v, device).nodes.is_empty());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(hint_selector).is_some());
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}

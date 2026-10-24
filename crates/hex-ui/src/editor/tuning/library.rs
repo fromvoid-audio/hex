@@ -1,25 +1,9 @@
 //! Native library controls send bounded operations to the Session worker.
-use super::super::browser_input::*;
+use super::super::browser_input;
 use super::*;
-use gpui::{App, KeyBinding, PathPromptOptions};
+use gpui::PathPromptOptions;
 use hex_session::tuning_gesture::{TuningLibraryOperation as Operation, TuningLibraryResult};
 
-pub(in crate::editor) fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("backspace", BrowserBackspace, Some("hex_tuning_name")),
-        KeyBinding::new("delete", BrowserDelete, Some("hex_tuning_name")),
-        KeyBinding::new("left", BrowserLeft, Some("hex_tuning_name")),
-        KeyBinding::new("right", BrowserRight, Some("hex_tuning_name")),
-        KeyBinding::new("shift-left", BrowserSelectLeft, Some("hex_tuning_name")),
-        KeyBinding::new("shift-right", BrowserSelectRight, Some("hex_tuning_name")),
-        KeyBinding::new("cmd-a", BrowserSelectAll, Some("hex_tuning_name")),
-        KeyBinding::new("cmd-c", BrowserCopy, Some("hex_tuning_name")),
-        KeyBinding::new("cmd-v", BrowserPaste, Some("hex_tuning_name")),
-        KeyBinding::new("cmd-x", BrowserCut, Some("hex_tuning_name")),
-        KeyBinding::new("home", BrowserHome, Some("hex_tuning_name")),
-        KeyBinding::new("end", BrowserEnd, Some("hex_tuning_name")),
-    ]);
-}
 pub(super) struct DeviceTerminalContext {
     operation_id: u64,
     key: hex_session::device_gesture::GestureKey,
@@ -156,8 +140,7 @@ impl EditorView {
     }
     fn begin_tuning_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.tuning_slot_name();
-        let input =
-            cx.new(|cx| super::super::browser_input::BrowserSearch::for_clip_name(name, cx));
+        let input = cx.new(|cx| browser_input::name(name, cx));
         input.read(cx).focus(window);
         self.tuning.name = Some(input);
         cx.notify();
@@ -179,7 +162,7 @@ impl EditorView {
         let Some(input) = self.tuning.name.as_ref() else {
             return;
         };
-        let name = input.read(cx).content.clone();
+        let name = input.read(cx).text().to_owned();
         if let Err(reason) = hex_tuning::preset::validate_name(&name) {
             self.tuning.error = Some(reason.to_string());
             cx.notify();

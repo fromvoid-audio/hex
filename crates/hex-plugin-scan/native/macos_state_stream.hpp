@@ -16,6 +16,7 @@ class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeable
     std::atomic<uint32> references{1};
     std::atomic<bool> refused{false};
     size_t limit=0,position=0,length=0;
+    bool read_only=false;
     bool control() { if ([NSThread isMainThread]) return true;refused.store(true);return false; }
     Steinberg::tresult invalid() { refused.store(true);return Steinberg::kInvalidArgument; }
     ~StateStream() = default;
@@ -23,6 +24,13 @@ public:
     static constexpr size_t capacity=4000;
     std::array<unsigned char,capacity> bytes{};
     explicit StateStream(size_t maximum):limit(std::min(maximum,capacity)) {}
+    // Restore owns a fixed copied extent. Foreign code may read/seek it but
+    // cannot overwrite the caller's captured state or manufacture more bytes.
+    StateStream(const unsigned char* source,size_t count):read_only(true) {
+        if (count>capacity || (count && !source)) { refused.store(true);return; }
+        limit=length=count;
+        if (count) std::copy_n(source,count,bytes.begin());
+    }
     Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid,void** out) override {
         if (!out) return invalid();*out=nullptr;
         if (!iid) return invalid();
@@ -46,6 +54,10 @@ public:
     bool exclusive() const { return references.load()==1; }
     bool valid() const { return !refused.load(); }
     size_t size() const { return length; }
+    bool rewind_read_only_on_control() {
+        if (!control() || !valid() || !exclusive()) return false;
+        read_only=true;position=0;limit=length;return true;
+    }
     bool dispose_on_control() {
         if (!control() || !exclusive()) return false;
         delete this;return true;
@@ -61,7 +73,7 @@ public:
     }
     Steinberg::tresult PLUGIN_API write(void* buffer,int32 count,int32* done) override {
         if (done) *done=0;
-        if (!control() || count<0 || (count && !buffer) || static_cast<size_t>(count)>limit-position) return invalid();
+        if (!control() || read_only || count<0 || (count && !buffer) || static_cast<size_t>(count)>limit-position) return invalid();
         if (count) std::memcpy(bytes.data()+position,buffer,static_cast<size_t>(count));
         position+=static_cast<size_t>(count);length=std::max(length,position);
         if (done) *done=count;return Steinberg::kResultOk;
@@ -88,7 +100,7 @@ public:
         if (!control()) return invalid();size=static_cast<int64>(length);return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API setStreamSize(int64 size) override {
-        if (!control() || size<0 || static_cast<Steinberg::uint64>(size)>limit) return invalid();
+        if (!control() || read_only || size<0 || static_cast<Steinberg::uint64>(size)>limit) return invalid();
         const auto target=static_cast<size_t>(size);
         if (target>length) std::fill(bytes.begin()+length,bytes.begin()+target,0);
         length=target;position=std::min(position,length);return Steinberg::kResultOk;

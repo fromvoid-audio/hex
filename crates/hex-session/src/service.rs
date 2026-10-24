@@ -23,18 +23,22 @@ mod audio_batch_tests;
 mod audio_sink;
 mod canonical_audio_source;
 mod comparison_audio;
+#[cfg(test)]
+mod console_track_tests;
 mod export_lane;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
+mod stopped_arrangement;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, WorkerAudioSink,
+    ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
+    NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
+    WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -75,6 +79,12 @@ mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
+// Browser audition is independent of canonical resident-import admission. Bound
+// encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
+// Source and converted PCM can coexist during conversion (512 MiB total);
+// resident decoding can temporarily hold encoded bytes alongside source PCM.
+const BROWSER_PREVIEW_FILE_LIMIT: usize = 512 * 1024 * 1024;
+const BROWSER_PREVIEW_FRAME_LIMIT: usize = 32 * 1024 * 1024;
 const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
@@ -83,6 +93,15 @@ pub struct AudioClipWaveform {
     pub waveform: Arc<Waveform>,
     pub offset: u64,
     pub length: u64,
+    /// Original processing-root peaks for metadata-only placement gestures.
+    /// Outer waveform above continues to match actual committed playback.
+    pub preview_root: Option<AudioPreviewWaveform>,
+}
+
+#[derive(Clone)]
+pub struct AudioPreviewWaveform {
+    pub waveform: Arc<Waveform>,
+    pub origin: i128,
 }
 
 /// Read-only model and cached summaries for a single committed project revision.
@@ -122,6 +141,11 @@ pub struct AudioBatchMemberFailure {
     pub explanation: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiTakeCompletion {
+    pub request_id: u64,
+    pub accepted: bool,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SamplerLoadCompletion {
     pub request_id: u64,
@@ -185,8 +209,12 @@ pub struct Event {
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
     pub sampler_edit_complete: Option<u64>,
     pub computer_keyboard_complete: Option<u64>,
+    /// Exact terminal for a retained MIDI take commit, including refusal.
+    pub midi_take_complete: Option<MidiTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
+    /// Correlates the final bounce result with its shared cancellation control.
+    pub bounce_complete: Option<hex_export::ExportControl>,
     /// Correlates one final batch result; contains metadata only, never PCM.
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
@@ -262,8 +290,8 @@ pub struct AudioPreview {
     pub waveform: Arc<Waveform>,
 }
 
-/// Decode and convert an audio source using the same limits and conversion path
-/// as import, then retain only its bounded waveform summary and playback length.
+/// Decode and convert an audio source under the browser audition limits, then
+/// retain only its bounded waveform summary and full converted playback length.
 pub fn prepare_audio_preview(
     path: impl AsRef<Path>,
     project_sample_rate: u32,
@@ -284,18 +312,24 @@ pub fn prepare_audio_preview(
 
 /// Decode a bounded browser one-shot on a background worker, independent of
 /// canonical project/history. PCM is finite stereo at the actual output rate.
+/// Supports WAV files up to 512 MiB, with at most 33,554,432 frames both before
+/// and after conversion (256 MiB per stereo f32 buffer). Never truncates a source
+/// to fit. Resident import retains its separate, smaller resource ceilings.
 pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
+    let decoded = decode_wav_file(
+        path,
+        Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+    )
+    .map_err(|error| error.to_string().to_lowercase())?;
     let audio = hex_media::resample(
         decoded.audio(),
         output_sample_rate,
         ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: IMPORT_FRAME_LIMIT,
+            max_source_frames: BROWSER_PREVIEW_FRAME_LIMIT,
+            max_output_frames: BROWSER_PREVIEW_FRAME_LIMIT,
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
@@ -349,17 +383,61 @@ impl GainLaneEdit {
         }
     }
 }
+/// Context-specific, bounded whole-track clipboard operation. Metadata stays on
+/// control; the service owns clipboard lifetime and existing audio admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackClipboardAction {
+    Copy(hex_project::TrackSelectionIds),
+    Cut(hex_project::TrackSelectionIds),
+    Duplicate {
+        tracks: hex_project::TrackSelectionIds,
+        without_clips: bool,
+    },
+    Paste {
+        before: Option<hex_project::TrackId>,
+    },
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
-// The approved fixed snapshot remains inline: 800 bytes per request, 32 slots
-// (25,600 payload bytes). Boxing would hide storage and add control allocations.
+// Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    TrackClipboard {
+        project_generation: u64,
+        revision: u64,
+        action: TrackClipboardAction,
+    },
+    /// Captured ordinary-track block move. Immutable membership contains at most
+    /// MAX_TRACKS IDs (2048 ID bytes); clones share that allocation. With the
+    /// 32-slot FIFO, queued reorders retain at most 65536 ID bytes; the active
+    /// gesture and worker each retain their own bounded payload separately.
+    /// Identities and source revision must match before MoveTracksBefore.
+    ReorderTracks {
+        project_generation: u64,
+        revision: u64,
+        tracks: hex_project::TrackSelectionIds,
+        before: Option<hex_project::TrackId>,
+    },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
     EditArrangementSection {
         project_generation: u64,
         revision: u64,
         command: Command,
+    },
+    /// Existing-track drag release, bound to the gesture's source. Only clip
+    /// move/copy commands are accepted; unrelated worker activity may precede it,
+    /// but an intervening canonical edit must refuse rather than retarget it.
+    MoveExistingClips {
+        project_generation: u64,
+        revision: u64,
+        command: Command,
+    },
+    /// Whole-clip duplicate intent bound to one canonical source, never retargeted.
+    DuplicateClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
     },
     /// Explicitly confirmed recovery storage action, scoped to one observed failure.
     RestartRecovery(RecoveryRestart),
@@ -419,6 +497,24 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
+    },
+    /// Copy one captured Arrangement source to a new normal Console column.
+    /// Resolve stamps before any gesture barrier, source preparation or history.
+    CopyArrangementClipToConsoleTrack {
+        project_generation: u64,
+        revision: u64,
+        source: hex_project::ClipId,
+        before_track: Option<hex_project::TrackId>,
+        scene: hex_project::SessionSceneTarget,
+    },
+    /// Retains the take through preparation; every path echoes request_id.
+    CommitMidiTake {
+        request_id: u64,
+        project_generation: u64,
+        revision: u64,
+        binding: Arc<crate::midi_recording::MidiTakeBinding>,
+        notes: Arc<[crate::midi_recording::RecordedMidiNote]>,
+        stop_frame: u64,
     },
     ArmGainRecording {
         project_generation: u64,
@@ -543,7 +639,18 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
-    /// Convert against the exact selected canonical clip; delayed stale actions refuse.
+    /// Bounce selected Arrangement clips or an explicit range.
+    /// At most MAX_CLIPS captured IDs or MAX_TRACKS range rows in the existing
+    /// 32-slot FIFO. One synchronous control-worker job; Escape cancels via the
+    /// shared control without waiting for that FIFO. No audio/UI thread rendering.
+    BounceArrangement {
+        project_generation: u64,
+        revision: u64,
+        target: hex_project::BounceTarget,
+        in_place: bool,
+        control: hex_export::ExportControl,
+    },
+    /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
     ConvertClip {
         project_generation: u64,
         revision: u64,
@@ -595,7 +702,10 @@ impl Request {
     pub fn finalizes_parameter_gesture(&self) -> bool {
         matches!(
             self,
-            Request::Undo
+            Request::CommitMidiTake { .. }
+                | Request::Undo
+                | Request::ReorderTracks { .. }
+                | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::SamplerEdit(SamplerEdit::Midi(_))
@@ -610,6 +720,7 @@ impl Request {
                 | Request::CompareDevice { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
+                | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
                 | Request::TuningLibrary { .. }
         )
@@ -1064,6 +1175,18 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        if let Request::BounceArrangement {
+            target: hex_project::BounceTarget::Clips(ids),
+            ..
+        } = &request
+        {
+            if ids.is_empty()
+                || ids.len() > hex_project::MAX_CLIPS
+                || ids.capacity() > hex_project::MAX_CLIPS
+            {
+                return Err(SubmitError::Busy(request));
+            }
+        }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some()
                 || self
@@ -1574,6 +1697,8 @@ fn run_worker(
         Clips(Arc<hex_project::ClipClipboard>),
     }
     let mut range_clipboard: Option<ArrangementClipboard> = None;
+    // Typed clipboard contexts are independent; both expire with the document.
+    let mut track_clipboard: Option<Arc<hex_project::TrackClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -1670,8 +1795,10 @@ fn run_worker(
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
                 computer_keyboard_complete: None,
+                midi_take_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
+                bounce_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
                 document_format_upgrade_required: false,
@@ -1704,8 +1831,10 @@ fn run_worker(
             sampler_load_complete: None,
             sampler_edit_complete: None,
             computer_keyboard_complete: None,
+            midi_take_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
+            bounce_complete: None,
             audio_batch_complete: None,
             save_complete: false,
             document_format_upgrade_required: false,
@@ -1877,11 +2006,22 @@ fn run_worker(
                 }
             }
         }
+        let mut midi_take_complete = match &request {
+            Request::CommitMidiTake { request_id, .. } => Some(MidiTakeCompletion {
+                request_id: *request_id,
+                accepted: false,
+            }),
+            _ => None,
+        };
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
         let mut tuning_input_publication = None;
+        let bounce_complete = match &request {
+            Request::BounceArrangement { control, .. } => Some(control.clone()),
+            _ => None,
+        };
         let mut audio_batch_complete = None;
         let mut audio_batch_failure = None;
         let mut open_complete = false;
@@ -1910,11 +2050,104 @@ fn run_worker(
         let mut gesture_request = false;
         let mut preview_prepared = None;
         let mut preview_project = None;
-        // Resolve catalog insertions on the worker before any gesture barrier. Invalid identities
+        // Resolve source-bound UI edits on the worker before any gesture barrier. Invalid identities
         // and requests during a live draft cannot commit unrelated gesture history.
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
-        let browser_insert = match &request {
+        let mut cut_clipboard = None;
+        let resolved_edit = match &request {
+            Request::TrackClipboard {
+                project_generation: generation,
+                revision: source_revision,
+                action,
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(Err("track clipboard canceled · project changed".into()))
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some(Err(
+                        "finish or cancel the active gesture before copying tracks".into(),
+                    ))
+                } else {
+                    match action {
+                        TrackClipboardAction::Copy(_) => None,
+                        TrackClipboardAction::Cut(tracks) => Some(
+                            session
+                                .project()
+                                .capture_tracks(tracks, false)
+                                .map(|captured| {
+                                    cut_clipboard = Some(Arc::new(captured));
+                                    Command::RemoveTracks(tracks.ids().to_vec())
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                        TrackClipboardAction::Paste { before } => Some(
+                            track_clipboard
+                                .as_ref()
+                                .map(|clipboard| Command::PasteTracks {
+                                    clipboard: Arc::clone(clipboard),
+                                    before: *before,
+                                })
+                                .ok_or_else(|| {
+                                    "track clipboard is empty · copy tracks first".into()
+                                }),
+                        ),
+                        TrackClipboardAction::Duplicate {
+                            tracks,
+                            without_clips,
+                        } => Some(
+                            session
+                                .project()
+                                .capture_tracks(tracks, *without_clips)
+                                .map(|clipboard| {
+                                    let after = session
+                                        .project()
+                                        .tracks()
+                                        .iter()
+                                        .rposition(|t| tracks.ids().contains(&t.id()));
+                                    let before = after
+                                        .and_then(|i| session.project().tracks().get(i + 1))
+                                        .map(|t| t.id());
+                                    Command::PasteTracks {
+                                        clipboard: Arc::new(clipboard),
+                                        before,
+                                    }
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                    }
+                }
+            }
+
+            Request::ReorderTracks {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                tracks,
+                before,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("track reorder canceled · project changed".to_owned())
+                } else if tracks
+                    .ids()
+                    .iter()
+                    .any(|id| session.project().track(*id).is_none())
+                    || before.is_some_and(|anchor| session.project().track(anchor).is_none())
+                {
+                    Err("track reorder target no longer exists".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before reordering tracks".into())
+                } else {
+                    Ok(Command::MoveTracksBefore {
+                        tracks: tracks.clone(),
+                        before: *before,
+                    })
+                },
+            ),
             Request::InsertBrowserInstrumentTrack {
                 project_generation: expected_generation,
                 revision: expected_revision,
@@ -1965,9 +2198,87 @@ fn run_worker(
                     )
                 },
             ),
+            Request::MoveExistingClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                command,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip move canceled · project changed".to_owned())
+                } else if !match command {
+                    Command::MoveClipWithOverwrite { .. }
+                    | Command::MoveMidiClipWithOverwrite { .. }
+                    | Command::CopyClipTo { .. }
+                    | Command::CopyMidiClipTo { .. } => true,
+                    Command::MoveClipsWithOverwrite { clips, .. } => {
+                        !clips.is_empty() && clips.len() <= hex_project::MAX_CLIPS
+                    }
+                    _ => false,
+                } {
+                    Err("clip move canceled · invalid move request".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before moving clips".into())
+                } else {
+                    Ok(command.clone())
+                },
+            ),
+            Request::CopyArrangementClipToConsoleTrack {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                source,
+                before_track,
+                scene,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console clip insertion canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err(
+                        "finish or cancel the active gesture before inserting a console clip"
+                            .into(),
+                    )
+                } else if session.project().clip(*source).is_some() {
+                    Ok(Command::CopyArrangementAudioClipToNewSessionTrack {
+                        source: *source,
+                        before_track: *before_track,
+                        scene: *scene,
+                    })
+                } else if session.project().midi_clip(*source).is_some() {
+                    Ok(Command::CopyArrangementMidiToNewSessionTrack {
+                        source: *source,
+                        before_track: *before_track,
+                        scene: *scene,
+                    })
+                } else {
+                    Err("arrangement source no longer exists".into())
+                },
+            ),
+            Request::DuplicateClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip duplication canceled · project changed".to_owned())
+                } else if clips.is_empty() || clips.len() > hex_project::MAX_CLIPS {
+                    Err("clip duplication exceeds project limits".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before duplicating clips".into())
+                } else {
+                    Ok(Command::DuplicateClips(clips.clone()))
+                },
+            ),
             _ => None,
         };
-        let (request, browser_failure) = match browser_insert {
+        let (request, resolution_failure) = match resolved_edit {
             Some(Ok(command)) => (Request::Edit(command), None),
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
@@ -1975,7 +2286,32 @@ fn run_worker(
         let barrier = request.finalizes_parameter_gesture();
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
-        let mut barrier_failure = browser_failure.or_else(|| match &request {
+        let mut barrier_failure = resolution_failure.or_else(|| match &request {
+            Request::BounceArrangement {
+                project_generation: captured,
+                revision: captured_revision,
+                control,
+                ..
+            } => {
+                if *captured != project_generation
+                    || *captured_revision != revision
+                    || control.is_cancelled()
+                {
+                    Some("bounce cancelled · target changed".into())
+                } else if compiled
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.gain_recording_track().is_some())
+                {
+                    Some("finish gain recording before bouncing".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before bouncing".into())
+                } else {
+                    None
+                }
+            }
             Request::EditArrangementSection {
                 project_generation: captured,
                 revision: captured_revision,
@@ -2239,7 +2575,16 @@ fn run_worker(
                 Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
+                    | Request::TrackClipboard {
+                        action: TrackClipboardAction::Cut(_)
+                            | TrackClipboardAction::Duplicate { .. }
+                            | TrackClipboardAction::Paste { .. },
+                        ..
+                    }
+                    | Request::ReorderTracks { .. }
+                    | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
         let sampler_refusal = private_sampler
@@ -2254,7 +2599,11 @@ fn run_worker(
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
+                    | Request::TrackClipboard { .. }
+                    | Request::ReorderTracks { .. }
+                    | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
@@ -2662,6 +3011,9 @@ fn run_worker(
                         replacement_revision = Some(prepared);
                     }
                 }
+                Request::ReorderTracks { .. } => {
+                    error = Some("track reorder target was not resolved".into());
+                }
                 Request::InsertBrowserInstrumentTrack { .. } => {
                     error = Some(
                         "instrument insertion request was not prepared; select it again".into(),
@@ -2670,6 +3022,15 @@ fn run_worker(
                 Request::InsertEffectBusDevice { .. } => {
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
+                }
+                Request::MoveExistingClips { .. } => {
+                    error = Some("clip move target was not resolved".into());
+                }
+                Request::CopyArrangementClipToConsoleTrack { .. } => {
+                    error = Some("console clip target was not resolved".into());
+                }
+                Request::DuplicateClips { .. } => {
+                    error = Some("clip duplication target was not resolved".into());
                 }
                 Request::DropBrowserDeviceOnArrangement {
                     project_generation: expected_generation,
@@ -3674,6 +4035,19 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::TrackClipboard {
+                    action: TrackClipboardAction::Copy(tracks),
+                    ..
+                } => match session.project().capture_tracks(&tracks, false) {
+                    Ok(captured) => {
+                        track_clipboard = Some(Arc::new(captured));
+                        status = Some("tracks copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::TrackClipboard { .. } => {
+                    error = Some("track clipboard request was not resolved".into())
+                }
                 Request::CopyClips(ids) => match session.project().capture_clips(&ids) {
                     Ok(captured) => {
                         range_clipboard = Some(ArrangementClipboard::Clips(Arc::new(captured)));
@@ -4192,6 +4566,57 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::CommitMidiTake {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    binding,
+                    notes,
+                    stop_frame,
+                    ..
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("midi take refused · project changed; take retained".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some("midi take refused · device edit is still applying".into());
+                    } else {
+                        match crate::midi_recording::finish_take(
+                            session.project(),
+                            &binding,
+                            &notes,
+                            stop_frame,
+                        ) {
+                            Ok(Some(command)) => {
+                                let before = session.project().clone();
+                                match resident_audio::execute_command(
+                                    &mut session, command,
+                                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                    hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) },
+                                    &mut events, &mut resident_snapshot,
+                                    export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
+                                        resident_seek.as_ref(), resident_preview.as_ref()),
+                                ) {
+                                    Ok((result, prepared)) if session.project() != &before => {
+                                        unsaved = true;
+                                        replacement_revision = Some(prepared);
+                                        created = Some(result);
+                                        status = Some("midi take committed".into());
+                                        if let Some(completion) = &mut midi_take_complete { completion.accepted = true; }
+                                    }
+                                    Ok(_) => { status = Some("empty midi take".into()); if let Some(completion) = &mut midi_take_complete { completion.accepted = true; } },
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                }
+                            }
+                            Ok(None) => {
+                                status = Some("empty midi take".into());
+                                if let Some(completion) = &mut midi_take_complete {
+                                    completion.accepted = true;
+                                }
+                            }
+                            Err(reason) => error = Some(reason.into()),
+                        }
+                    }
+                }
                 Request::ArmGainRecording {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -4330,6 +4755,77 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::BounceArrangement {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    target,
+                    in_place,
+                    control,
+                } => {
+                    let result = if captured_generation != project_generation
+                        || captured_revision != revision
+                    {
+                        Err("bounce cancelled · project changed".into())
+                    } else if control.is_cancelled() {
+                        Err("bounce cancelled".into())
+                    } else {
+                        recovery
+                            .clone()
+                            .map(Ok)
+                            .unwrap_or_else(untitled_recovery_path)
+                            .and_then(|path| {
+                                let root = path
+                                    .parent()
+                                    .and_then(Path::parent)
+                                    .ok_or("bounce media folder unavailable")?
+                                    .join("media/bounces");
+                                if let Some(sink) = events.resident_audio() {
+                                    let context = hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    };
+                                    let admission = export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| {
+                                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                                sources: current_sources.as_ref(),
+                                                prepared: Some(prepared),
+                                            }
+                                        }),
+                                        resident_seek.as_ref(),
+                                        resident_preview.as_ref(),
+                                    );
+                                    resident_audio::bounce_arrangement(
+                                        &mut session,
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        context,
+                                        sink,
+                                        admission,
+                                        &mut resident_snapshot,
+                                    )
+                                } else {
+                                    session.bounce_arrangement(
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    )
+                                }
+                            })
+                    };
+                    match result {
+                        Ok((result, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some("arrangement bounced to audio".into());
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::ConvertClip {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -4374,42 +4870,14 @@ fn run_worker(
                             )
                         })
                     } else {
-                        resident_audio::execute_command(
-                            &mut session,
-                            Command::ConvertAudioClipToMidi(clip),
-                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            hex_engine::AudioSourceContext {
-                                project_generation,
-                                editor_revision: revision.saturating_add(1),
-                            },
-                            &mut events,
-                            &mut resident_snapshot,
-                            export_lane.admission_with_resident_owners(
-                                compiled.as_ref().map(|(_, prepared)| {
-                                    hex_engine::native_device_resources::ControlSamplerSelection {
-                                        sources: current_sources.as_ref(),
-                                        prepared: Some(prepared),
-                                    }
-                                }),
-                                resident_seek.as_ref(),
-                                resident_preview.as_ref(),
-                            ),
-                        )
-                        .map_err(|e| e.to_string())
+                        Err(hex_project::AUDIO_TO_MIDI_UNSUPPORTED.to_owned())
                     };
                     match result {
                         Ok((result, prepared)) => {
                             unsaved = true;
                             replacement_revision = Some(prepared);
                             created = Some(result);
-                            status = Some(
-                                if to_audio {
-                                    "clip bounced to audio"
-                                } else {
-                                    "clip converted to empty midi"
-                                }
-                                .into(),
-                            );
+                            status = Some("clip bounced to audio".into());
                         }
                         Err(reason) => error = Some(reason),
                     }
@@ -4494,7 +4962,56 @@ fn run_worker(
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                         && session
-                            .section_history_requires_stop(matches!(&request, Request::Redo)) =>
+                            .editor
+                            .next_history_requires_stopped_bounce(matches!(
+                                &request,
+                                Request::Redo
+                            )) =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            resident_audio::bounce_history(
+                                &mut session,
+                                matches!(request, Request::Redo),
+                                context,
+                                sink,
+                                admission,
+                                &mut resident_snapshot,
+                            )
+                        });
+                    match result {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("bounce history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session.section_history_requires_publication(matches!(
+                            &request,
+                            Request::Redo
+                        )) =>
                 {
                     let context = hex_engine::AudioSourceContext {
                         project_generation,
@@ -5323,7 +5840,15 @@ fn run_worker(
             }
         }
 
+        // Only successful canonical removal installs a cut. Failed preparation,
+        // queue/publication admission or stale input retains the previous copy.
+        if created.is_some()
+            && let Some(captured) = cut_clipboard
+        {
+            track_clipboard = Some(captured);
+        }
         if project_replaced {
+            track_clipboard = None;
             if let Some(input) = audition_activation.take() {
                 input.cancel();
             }
@@ -5728,8 +6253,10 @@ fn run_worker(
                 sampler_load_complete,
                 sampler_edit_complete,
                 computer_keyboard_complete,
+                midi_take_complete,
                 tuning_audition_complete,
                 live_expression_complete,
+                bounce_complete,
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
@@ -6282,6 +6809,16 @@ fn arrangement_device_command(
 mod browser_instrument_tests;
 
 #[cfg(test)]
+mod clip_move_tests;
+#[cfg(test)]
+#[path = "service/track_reorder_tests.rs"]
+mod track_reorder_tests;
+
+#[cfg(test)]
+#[path = "service/track_clipboard_tests.rs"]
+mod track_clipboard_tests;
+
+#[cfg(test)]
 mod service_tests {
     use super::*;
     use crate::arrangement_seek::ArrangementSeekMode;
@@ -6291,7 +6828,7 @@ mod service_tests {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
-    struct TestDir(PathBuf);
+    pub(super) struct TestDir(pub(super) PathBuf);
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -6510,7 +7047,7 @@ mod service_tests {
     }
 
     impl TestDir {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -6531,7 +7068,7 @@ mod service_tests {
         }
     }
 
-    fn wav_mono(samples: &[i16]) -> Vec<u8> {
+    pub(super) fn wav_mono(samples: &[i16]) -> Vec<u8> {
         let data: Vec<u8> = samples
             .iter()
             .flat_map(|sample| sample.to_le_bytes())
@@ -7007,18 +7544,111 @@ mod service_tests {
     }
 
     #[test]
+    fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
+        use std::io::{Seek, SeekFrom, Write};
+        let directory = TestDir::new();
+        let path = directory.0.join("large.wav");
+        // Sparse IEEE-float mono audio crosses both old limits without a large
+        // test-construction buffer. The last sample proves no prefix truncation.
+        let frames = IMPORT_FILE_LIMIT / 8 + 1;
+        let data_bytes = u32::try_from(frames * 8).unwrap();
+        let mut header = wav_mono(&[]);
+        header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+        header[20..22].copy_from_slice(&3_u16.to_le_bytes());
+        header[28..32].copy_from_slice(&(48_000_u32 * 8).to_le_bytes());
+        header[32..34].copy_from_slice(&8_u16.to_le_bytes());
+        header[34..36].copy_from_slice(&64_u16.to_le_bytes());
+        header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&header).unwrap();
+        file.set_len(44 + u64::from(data_bytes)).unwrap();
+        file.seek(SeekFrom::End(-8)).unwrap();
+        file.write_all(&0.5_f64.to_le_bytes()).unwrap();
+        drop(file);
+        assert!(fs::metadata(&path).unwrap().len() > IMPORT_FILE_LIMIT as u64);
+        assert!(frames > IMPORT_FRAME_LIMIT);
+
+        let audio = prepare_sample_preview(&path, 48_000).unwrap();
+        assert_eq!(audio.sample_rate(), 48_000);
+        assert_eq!(audio.frames().len(), frames);
+        assert_eq!(audio.frames()[0], [0.0; 2]);
+        assert_eq!(audio.frames().last(), Some(&[0.5; 2]));
+        drop(audio);
+        let preview = prepare_audio_preview(&path, 48_000).unwrap();
+        assert_eq!(preview.playback_frames, frames as u64);
+        assert_eq!(preview.sample_rate, 48_000);
+        assert_eq!(preview.waveform.source_frames, frames);
+        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+        assert_eq!(
+            preview
+                .waveform
+                .peaks_for_frames(frames - 1, frames)
+                .unwrap(),
+            [hex_media::waveform::Peak { min: 0.0, max: 0.5 }; 2]
+        );
+    }
+
+    #[test]
+    fn browser_preview_refuses_excess_source_and_converted_frames() {
+        use std::io::Write;
+        let directory = TestDir::new();
+        let path = directory.0.join("too-long.wav");
+        let frames = u32::try_from(BROWSER_PREVIEW_FRAME_LIMIT + 1).unwrap();
+        let mut header = wav_mono(&[]);
+        header[28..32].copy_from_slice(&48_000_u32.to_le_bytes());
+        header[32..34].copy_from_slice(&1_u16.to_le_bytes());
+        header[34..36].copy_from_slice(&8_u16.to_le_bytes());
+        header[40..44].copy_from_slice(&frames.to_le_bytes());
+        // The odd data payload has a required padding byte.
+        header[4..8].copy_from_slice(&(37 + frames).to_le_bytes());
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&header).unwrap();
+        file.set_len(45 + u64::from(frames)).unwrap();
+        drop(file);
+        assert!(
+            prepare_sample_preview(&path, 48_000)
+                .unwrap_err()
+                .contains("decoded frames")
+        );
+
+        let source_frames = BROWSER_PREVIEW_FRAME_LIMIT / 24 + 1;
+        let mut bytes = wav_mono(&vec![0; source_frames]);
+        bytes[24..28].copy_from_slice(&8_000_u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&16_000_u32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        assert!(
+            prepare_sample_preview(&path, 192_000)
+                .unwrap_err()
+                .contains("output frames")
+        );
+    }
+
+    #[test]
     fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
         let directory = TestDir::new();
         let path = directory.0.join("tone.WAV");
-        fs::write(&path, wav_mono(&[4_000; 96])).expect("write wav fixture");
+        for overrun in [0, 4] {
+            let mut bytes = wav_mono(&[4_000; 96]);
+            let size = u32::try_from(bytes.len() - 8).unwrap() + overrun;
+            bytes[4..8].copy_from_slice(&size.to_le_bytes());
+            fs::write(&path, &bytes).expect("write wav fixture");
 
-        let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
-
-        assert_eq!(preview.playback_frames, 48);
-        assert_eq!(preview.sample_rate, 24_000);
-        assert_eq!(preview.waveform.source_frames, 48);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert!(!preview.waveform.bins.is_empty());
+            let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
+            assert_eq!(preview.playback_frames, 48);
+            assert_eq!(preview.sample_rate, 24_000);
+            assert_eq!(preview.waveform.source_frames, 48);
+            assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
+            assert!(!preview.waveform.bins.is_empty());
+            let pcm = prepare_sample_preview(&path, 24_000).expect("prepare playback");
+            assert_eq!(pcm.sample_rate(), 24_000);
+            assert_eq!(pcm.frames().len(), 48);
+            assert!(
+                pcm.frames()
+                    .iter()
+                    .all(|frame| frame[0] > 0.0 && frame[0] == frame[1])
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]
@@ -9095,7 +9725,208 @@ mod service_tests {
         assert!(refused.playback.is_none());
     }
 
-    fn next_event(service: &Service) -> Event {
+    #[test]
+    fn selected_clip_duplicate_uses_cached_audio_and_one_history_step_and_refuses_stale_targets() {
+        let directory = TestDir::new();
+        let source = directory.0.join("duplicate-source.wav");
+        fs::write(&source, wav_mono(&[16_384; 128])).expect("authored PCM");
+        let service = Service::new(48_000, 32, 8_000_000).expect("service");
+        next_event(&service);
+        service.submit(Request::Import(source.clone())).unwrap();
+        let imported = next_event(&service);
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        let audio = imported.state.project.tracks()[0].clips()[0].id();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "midi".into(),
+            }))
+            .unwrap();
+        let track = next_event(&service).state.project.tracks()[1].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(1).unwrap(),
+            }))
+            .unwrap();
+        let before = next_event(&service);
+        let midi = before.state.project.track(track).unwrap().midi_clips()[0].id();
+        let clips = vec![audio, midi];
+        fs::remove_file(&source).unwrap();
+        // Source custody is already canonical: duplication must not reopen media.
+        service
+            .submit(Request::DuplicateClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: clips.clone(),
+            })
+            .unwrap();
+        let duplicated = next_event(&service);
+        assert!(duplicated.request_complete);
+        assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+        assert!(matches!(duplicated.created, Some(Created::Clips { .. })));
+        assert_eq!(duplicated.state.revision, before.state.revision + 1);
+        assert_eq!(duplicated.state.project.tracks()[0].clips().len(), 2);
+        assert_eq!(
+            duplicated
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        let mut playback = duplicated.playback.expect("prepared copied playback");
+        playback.apply(hex_engine::PlaybackCommand::Play);
+        let mut pcm = [[0.0; 2]; 128];
+        playback.render(&mut pcm).unwrap();
+        assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.1));
+        playback.apply(hex_engine::PlaybackCommand::Seek(24_000));
+        let mut copied_pcm = [[0.0; 2]; 128];
+        playback.render(&mut copied_pcm).unwrap();
+        assert_eq!(
+            copied_pcm, pcm,
+            "the copied clip retains exact original PCM"
+        );
+        for (generation, revision, selected) in [
+            (1, duplicated.state.revision, clips.clone()),
+            (0, before.state.revision, clips.clone()),
+            (0, duplicated.state.revision, Vec::new()),
+            (0, duplicated.state.revision, vec![audio, audio]),
+        ] {
+            service
+                .submit(Request::DuplicateClips {
+                    project_generation: generation,
+                    revision,
+                    clips: selected,
+                })
+                .unwrap();
+            let refused = next_event(&service);
+            assert!(refused.request_complete);
+            assert!(refused.error.is_some());
+            assert!(refused.created.is_none());
+            assert!(refused.playback.is_none());
+            assert_eq!(refused.state.revision, duplicated.state.revision);
+            assert_eq!(refused.state.project, duplicated.state.project);
+            assert_eq!(refused.state.can_undo, duplicated.state.can_undo);
+            assert_eq!(refused.state.can_redo, duplicated.state.can_redo);
+        }
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        let restored = undone.state.project.snapshot();
+        let mut original = before.state.project.snapshot();
+        original.next_id = restored.next_id;
+        assert_eq!(restored, original);
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(next_event(&service).state.project, duplicated.state.project);
+        // Restore the authored external file before testing reopen; missing-media
+        // recovery is separate from the cached-source duplication guarantee.
+        fs::write(&source, wav_mono(&[16_384; 128])).unwrap();
+        let path = directory.0.join("duplicated.hex");
+        service.submit(Request::SaveNew(path.clone())).unwrap();
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        service.submit(Request::Open(path)).unwrap();
+        let reopened = next_event(&service);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert!(reopened.project_replaced);
+        assert_eq!(reopened.state.project, duplicated.state.project);
+    }
+
+    #[test]
+    fn selected_clip_duplicate_early_native_refusal_is_a_terminal_without_legacy_flag() {
+        // Only the output boundary is substituted. The worker's real early
+        // native-source refusal precedes the ordinary Edit match/legacy flag.
+        struct HeldOutput {
+            armed: Arc<AtomicBool>,
+            context: Option<hex_engine::AudioSourceContext>,
+        }
+        impl WorkerAudioSink for HeldOutput {
+            fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+                Err("fixture offline output".into())
+            }
+            fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+                self.context = Some(source.context());
+            }
+            fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
+                NativeSamplerReservationHold {
+                    current_context: self
+                        .armed
+                        .load(Ordering::Acquire)
+                        .then_some(self.context)
+                        .flatten(),
+                    ..Default::default()
+                }
+            }
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+        }
+        let armed = Arc::new(AtomicBool::new(false));
+        let service = Service::with_audio_sink(
+            16,
+            0,
+            None,
+            Box::new(HeldOutput {
+                armed: Arc::clone(&armed),
+                context: None,
+            }),
+        )
+        .unwrap();
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "midi".into(),
+            }))
+            .unwrap();
+        let track = next_event(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(1).unwrap(),
+            }))
+            .unwrap();
+        let before = next_event(&service);
+        let clip = before.state.project.tracks()[0].midi_clips()[0].id();
+        armed.store(true, Ordering::Release);
+        service
+            .submit(Request::DuplicateClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: vec![clip],
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.request_complete);
+        assert!(!refused.duplicate_complete);
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("fresh output"))
+        );
+        assert!(refused.created.is_none());
+        assert!(refused.playback.is_none());
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert_eq!(refused.state.project, before.state.project);
+        assert_eq!(refused.state.can_undo, before.state.can_undo);
+        assert_eq!(refused.state.can_redo, before.state.can_redo);
+        armed.store(false, Ordering::Release);
+        service
+            .submit(Request::DuplicateClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: vec![clip],
+            })
+            .unwrap();
+        let retried = next_event(&service);
+        assert!(retried.request_complete);
+        assert!(retried.error.is_none(), "{:?}", retried.error);
+        assert_eq!(retried.state.project.tracks()[0].midi_clips().len(), 2);
+    }
+
+    pub(super) fn next_event(service: &Service) -> Event {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match service.try_event() {
@@ -9335,7 +10166,7 @@ mod service_tests {
     }
 
     #[test]
-    fn midi_edge_resize_compiles_before_commit_and_undo_restores_source_marker() {
+    fn midi_edge_resize_compiles_before_commit_and_undo_restores_source_window() {
         let service = Service::new(48_000, 8, 0).expect("service");
         let _initial = next_event(&service);
         let beat = |n| hex_project::BeatTime::from_quarters(n).expect("small beat");
@@ -9386,7 +10217,15 @@ mod service_tests {
         );
         let result = resized.state.project.midi_clip(clip).expect("clip");
         assert_eq!(result.start(), beat(7));
-        assert_eq!(result.source_start(), beat(3));
+        assert_eq!(result.source_start(), original.source_start());
+        assert_eq!(result.playback_offset(), beat(3));
+        assert_eq!(
+            result
+                .source_playback()
+                .unwrap()
+                .source_phase_at_elapsed(hex_project::BeatTime::ZERO),
+            Some(beat(3))
+        );
         assert_eq!(result.notes(), original.notes());
         service.submit(Request::Undo).expect("undo");
         let undone = next_event(&service);
@@ -10191,6 +11030,8 @@ mod service_tests {
 #[cfg(test)]
 #[path = "service/controller_input_tests.rs"]
 mod controller_input_tests;
+#[cfg(test)]
+mod midi_recording_tests;
 
 type TuningInputPublication = (
     Playback,

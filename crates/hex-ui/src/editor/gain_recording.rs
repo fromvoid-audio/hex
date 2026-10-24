@@ -4,8 +4,8 @@ use gpui::{Div, Entity, Subscription, div, prelude::*, px};
 use hex_audio::gain_recording::{Receipt, Target};
 use hex_session::gain_recording::{AppliedGain, GainTakeEnd};
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::sync::atomic::Ordering::Acquire;
 
@@ -53,7 +53,7 @@ impl Recorder {
     pub(super) fn blocks_edits(&self) -> bool {
         self.busy() || self.mode == Mode::Ready
     }
-    pub(super) fn numeric_editing(&self, cx: &Context<EditorView>) -> bool {
+    pub(super) fn numeric_editing(&self, cx: &gpui::App) -> bool {
         self.binding
             .as_ref()
             .is_some_and(|binding| binding.entity.read(cx).is_editing())
@@ -467,7 +467,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
             )
         });
         let config = match config {
-            Ok(value) => value.with_appearance(NumericControlAppearance::InlineValue),
+            Ok(value) => value.with_presentation(NumericControlPresentation::InlineValue),
             Err(reason) => {
                 view.error = Some(reason.to_string().into());
                 return controls;

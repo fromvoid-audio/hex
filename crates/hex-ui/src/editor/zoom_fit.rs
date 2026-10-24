@@ -17,6 +17,27 @@ struct PianoView {
     low: u8,
     rows: u8,
 }
+fn bounded_piano_view(prior: PianoView, length: u64) -> PianoView {
+    let minimum = (BeatTime::ONE.raw() / 16).max(1).min(length.max(1));
+    let span = prior
+        .span
+        .raw()
+        .clamp(minimum, super::midi_scene::zoom_limit(length));
+    PianoView {
+        start: BeatTime::from_raw(super::midi_scene::clamp_start(
+            prior.start.raw(),
+            length,
+            span,
+        )),
+        span: BeatTime::from_raw(span),
+        ..prior
+    }
+}
+pub(super) struct MidiFitBaseline {
+    owner: (u64, ClipId),
+    current: PianoView,
+    back: Option<((u64, ClipId), PianoView)>,
+}
 #[derive(Default)]
 pub(super) struct State {
     arrange: Option<(u64, Option<Viewport>)>,
@@ -27,7 +48,7 @@ impl State {
         self.midi = None;
     }
 }
-fn interval(a: u64, b: u64, horizon: u64, minimum: u64) -> Option<Viewport> {
+pub(super) fn interval(a: u64, b: u64, horizon: u64, minimum: u64) -> Option<Viewport> {
     let first = a.min(b).min(horizon);
     let last = a.max(b).min(horizon);
     (last > first && horizon > 0).then(|| {
@@ -39,6 +60,65 @@ fn interval(a: u64, b: u64, horizon: u64, minimum: u64) -> Option<Viewport> {
     })
 }
 impl EditorView {
+    pub(super) fn begin_midi_range_fit(&mut self) -> Option<MidiFitBaseline> {
+        let owner = (self.project_generation, self.detail_clip_id()?);
+        let current = PianoView {
+            start: self.piano_beat_start,
+            span: self.piano_beat_span,
+            low: self.piano_pitch_low,
+            rows: self.piano_pitch_rows,
+        };
+        let baseline = MidiFitBaseline {
+            owner,
+            current,
+            back: self.zoom_fit.midi,
+        };
+        self.zoom_fit.midi = Some((owner, current));
+        Some(baseline)
+    }
+    pub(super) fn restore_midi_range_fit(&mut self, baseline: MidiFitBaseline) {
+        if self.project_generation == baseline.owner.0
+            && self.detail_clip_id() == Some(baseline.owner.1)
+        {
+            let Some(length) = self.midi_clip().map(|clip| clip.source_length().raw()) else {
+                return;
+            };
+            let current = bounded_piano_view(baseline.current, length);
+            self.piano_beat_start = current.start;
+            self.piano_beat_span = current.span;
+            self.piano_pitch_low = baseline.current.low;
+            self.piano_pitch_rows = baseline.current.rows;
+            self.zoom_fit.midi = baseline.back;
+        }
+    }
+    /// Shared manual/Arrange fit calculation; the caller owns when to retain back state.
+    pub(super) fn fit_midi_interval(&mut self, range: (u64, u64), remember: bool) -> bool {
+        let Some(length) = self.midi_clip().map(|clip| clip.source_length().raw()) else {
+            return false;
+        };
+        let minimum = (BeatTime::ONE.raw() / 16).max(1).min(length.max(1));
+        let Some(viewport) = interval(
+            range.0,
+            range.1,
+            super::midi_scene::zoom_limit(length),
+            minimum,
+        ) else {
+            return false;
+        };
+        if (self.piano_beat_start.raw(), self.piano_beat_span.raw())
+            == (viewport.start, viewport.length)
+        {
+            return false;
+        }
+        if remember {
+            let _ = self.begin_midi_range_fit();
+        }
+        self.cancel_midi_note_gesture();
+        self.piano_zoom_wheel_accum = 0.0;
+        self.piano_beat_start = BeatTime::from_raw(viewport.start);
+        self.piano_beat_span = BeatTime::from_raw(viewport.length);
+        true
+    }
     pub(super) fn reconcile_zoom_fit(&mut self) {
         if self
             .zoom_fit
@@ -61,7 +141,7 @@ impl EditorView {
             || self.clip_name_edit.is_some()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.tuning.open
             || self.theme_settings.open
             || self.context_menu.is_some()
@@ -115,12 +195,6 @@ impl EditorView {
             let Some(length) = self.midi_clip().map(|c| c.source_length().raw()) else {
                 return false;
             };
-            let current = PianoView {
-                start: self.piano_beat_start,
-                span: self.piano_beat_span,
-                low: self.piano_pitch_low,
-                rows: self.piano_pitch_rows,
-            };
             let next = if back {
                 let Some((owner, prior)) = self.zoom_fit.midi.take() else {
                     return false;
@@ -128,36 +202,12 @@ impl EditorView {
                 if owner != (self.project_generation, clip) {
                     return false;
                 }
-                let minimum = (BeatTime::ONE.raw() / 16).max(1).min(length.max(1));
-                let span = prior
-                    .span
-                    .raw()
-                    .clamp(minimum, super::midi_scene::zoom_limit(length));
-                PianoView {
-                    start: BeatTime::from_raw(super::midi_scene::clamp_start(
-                        prior.start.raw(),
-                        length,
-                        span,
-                    )),
-                    span: BeatTime::from_raw(span),
-                    ..prior
-                }
+                bounded_piano_view(prior, length)
             } else {
-                let (a, b) = self.midi_time_selection_bounds().unwrap_or((0, length));
-                let minimum = (BeatTime::ONE.raw() / 16).max(1).min(length.max(1));
-                let Some(viewport) = interval(a, b, super::midi_scene::zoom_limit(length), minimum)
-                else {
-                    return false;
-                };
-                if (current.start.raw(), current.span.raw()) == (viewport.start, viewport.length) {
-                    return false;
-                }
-                self.zoom_fit.midi = Some(((self.project_generation, clip), current));
-                PianoView {
-                    start: BeatTime::from_raw(viewport.start),
-                    span: BeatTime::from_raw(viewport.length),
-                    ..current
-                }
+                return self.fit_midi_interval(
+                    self.midi_time_selection_bounds().unwrap_or((0, length)),
+                    true,
+                );
             };
             self.cancel_midi_note_gesture();
             self.piano_zoom_wheel_accum = 0.0;

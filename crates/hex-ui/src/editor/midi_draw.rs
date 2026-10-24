@@ -79,7 +79,7 @@ impl EditorView {
             Ok(stroke) => {
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
-                self.midi_marquee = None;
+                self.cancel_all_midi_marquees();
                 self.midi_focus.focus(window);
                 self.midi_stroke = Some(stroke);
                 true

@@ -224,7 +224,7 @@ fn copied_whole_clips_survive_destination_click_repeated_paste_undo_and_text_foc
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, cx| {
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), saved);
-            assert!(view.browser.search.read(cx).content.contains("kept text"));
+            assert!(view.browser.search.read(cx).text().contains("kept text"));
         });
         // Text copy must not replace the independent Arrangement clipboard.
         let text_destination = destination(&editor, &mut visual, target, 0.10);

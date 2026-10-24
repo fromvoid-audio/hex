@@ -1,5 +1,5 @@
 use super::*;
-use crate::{GainInterpolation, GainLane, GainPoint, MeterMap, MeterPoint, TempoMap, TempoPoint};
+use crate::{GainInterpolation, GainLane, GainPoint, MeterMap, TempoMap, TempoPoint};
 use std::collections::BTreeSet;
 
 fn boundaries(preview: &SectionReorderPreview) -> Vec<BeatTime> {
@@ -12,7 +12,9 @@ pub(super) fn tempo_map(
     old: &TempoMap,
     preview: &SectionReorderPreview,
 ) -> Result<TempoMap, Invalid> {
-    if preview.is_noop() {
+    // A single global tempo has no events to move. Keep its exact Q32 clock
+    // instead of introducing synthetic splice seams (and fractional prefixes).
+    if preview.is_noop() || old.points().len() == 1 {
         return Ok(old.clone());
     }
     let mut beats: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();
@@ -35,24 +37,14 @@ pub(super) fn tempo_map(
     TempoMap::new(old.sample_rate(), points)
 }
 fn meter_map(old: &MeterMap, preview: &SectionReorderPreview) -> Result<MeterMap, Invalid> {
-    let mut beats: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();
-    beats.extend(preview.cuts());
-    let mut points = Vec::new();
-    points
-        .try_reserve_exact(beats.len())
-        .map_err(|_| Invalid("could not reserve section meter map"))?;
-    for beat in beats {
-        let index = old
-            .points()
-            .partition_point(|p| p.beat() <= beat)
-            .saturating_sub(1);
-        points.push(MeterPoint::new(
-            preview.map_beat(beat)?,
-            old.points()[index].meter(),
-        ));
+    let mut result = meter::MeterEdit::default();
+    for point in old.points() {
+        result.original(preview.map_beat(point.beat())?, *point);
     }
-    points.sort_by_key(|p| p.beat());
-    MeterMap::new(points)
+    for beat in preview.cuts() {
+        result.seam(preview.map_beat(beat)?, old.meter_at(beat));
+    }
+    result.finish(old.meter_at(BeatTime::ZERO))
 }
 pub(super) fn base_value(
     points: &[GainPoint],

@@ -33,38 +33,51 @@ impl Pending {
         if !self.receipt.is_queued() {
             return false;
         }
-        match (&self.command, request) {
+        let command = match request {
+            Request::Edit(command) => command,
+            Request::MoveExistingClips {
+                project_generation,
+                revision,
+                command,
+            } if *project_generation == self.drag.project_generation
+                && *revision == self.drag.revision =>
+            {
+                command
+            }
+            _ => return false,
+        };
+        match (&self.command, command) {
             (
                 Command::MoveClipWithOverwrite { clip, track, start },
-                Request::Edit(Command::MoveClipWithOverwrite {
+                Command::MoveClipWithOverwrite {
                     clip: c,
                     track: t,
                     start: s,
-                }),
+                },
             ) => (clip, track, start) == (c, t, s),
             (
                 Command::CopyClipTo { clip, track, start },
-                Request::Edit(Command::CopyClipTo {
+                Command::CopyClipTo {
                     clip: c,
                     track: t,
                     start: s,
-                }),
+                },
             ) => (clip, track, start) == (c, t, s),
             (
                 Command::CopyMidiClipTo { clip, track, start },
-                Request::Edit(Command::CopyMidiClipTo {
+                Command::CopyMidiClipTo {
                     clip: c,
                     track: t,
                     start: s,
-                }),
+                },
             ) => (clip, track, start) == (c, t, s),
             (
                 Command::MoveMidiClipWithOverwrite { clip, track, start },
-                Request::Edit(Command::MoveMidiClipWithOverwrite {
+                Command::MoveMidiClipWithOverwrite {
                     clip: c,
                     track: t,
                     start: s,
-                }),
+                },
             ) => (clip, track, start) == (c, t, s),
             (
                 Command::MoveClipsWithOverwrite {
@@ -74,13 +87,13 @@ impl Pending {
                     position,
                     copy,
                 },
-                Request::Edit(Command::MoveClipsWithOverwrite {
+                Command::MoveClipsWithOverwrite {
                     clips: c,
                     anchor: a,
                     track: t,
                     position: p,
                     copy: other_copy,
-                }),
+                },
             ) => (clips, anchor, track, position, copy) == (c, a, t, p, other_copy),
             _ => false,
         }

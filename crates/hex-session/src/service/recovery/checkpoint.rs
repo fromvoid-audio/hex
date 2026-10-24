@@ -191,7 +191,7 @@ mod tests {
             ));
             std::fs::create_dir(&directory).unwrap();
             let path = directory.join("untitled.hex-journal");
-            let payload = br#"{"format":"hex-project","version":31}"#;
+            let payload = br#"{"format":"hex-project","version":0}"#;
             let name = path.file_name().unwrap().to_str().unwrap().as_bytes();
             let mut original = b"HEXJRNL\0".to_vec();
             original.extend_from_slice(&1_u32.to_le_bytes());

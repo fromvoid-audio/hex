@@ -89,6 +89,11 @@ fn fixture() -> Project {
         before: a,
     })
     .unwrap();
+    assert_eq!(
+        e.project().meter_map(),
+        &hex_project::MeterMap::common_time(),
+        "section reorder must not persist synthetic same-meter seams"
+    );
     e.project().clone()
 }
 #[test]
@@ -96,7 +101,7 @@ fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_an
     let project = fixture();
     let bytes = hex_storage::encode(&project).unwrap();
     let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 37);
+    assert_eq!(doc["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(doc["arrangement_sections"][0]["name"], "Chorus");
     assert_eq!(doc["arrangement_sections"][0]["color"], "rose");
     assert!(
@@ -124,6 +129,27 @@ fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_an
         project.snapshot()
     );
 }
+#[test]
+fn marker_move_split_roundtrips_without_changing_music_or_processing() {
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let before = editor.project().snapshot();
+    let moving = editor.project().arrangement_sections()[1].id();
+    editor
+        .execute(Command::MoveArrangementSectionMarker {
+            section: moving,
+            start: BeatTime::from_ratio(5, 2).unwrap(),
+        })
+        .unwrap();
+    let after = editor.project().snapshot();
+    assert_eq!(after.arrangement_sections.len(), 3);
+    let mut expected = before;
+    expected.arrangement_sections = after.arrangement_sections.clone();
+    expected.next_id = after.next_id;
+    assert_eq!(after, expected);
+    let bytes = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&bytes).unwrap().snapshot(), after);
+}
+
 #[test]
 fn malformed_missing_overlap_duplicate_ids_and_unbounded_residuals_are_refused() {
     let project = fixture();
@@ -337,4 +363,72 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
         assert!(editor.redo());
         assert_eq!(editor.project().snapshot(), after, "{operation} redo");
     }
+}
+
+#[test]
+fn split_markers_roundtrip_complete_current_state_and_stable_history() {
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let source = editor.project().arrangement_sections()[0].clone();
+    let before = editor.project().snapshot();
+    let at =
+        BeatTime::from_raw(source.start().raw() + (source.end().raw() - source.start().raw()) / 2);
+    let Created::ArrangementSection(right) = editor
+        .execute(Command::SplitArrangementSection {
+            section: source.id(),
+            at,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    let reopened = hex_storage::decode(&encoded).unwrap();
+    assert_eq!(reopened.snapshot(), after);
+    assert_eq!(reopened.arrangement_section(right).unwrap().start(), at);
+    assert_eq!(reopened.arrangement_section(source.id()).unwrap().end(), at);
+    assert!(editor.undo());
+    let mut undone = hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+        .unwrap()
+        .snapshot();
+    undone.next_id = before.next_id;
+    assert_eq!(undone, before);
+    assert!(editor.redo());
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+            .unwrap()
+            .snapshot(),
+        after
+    );
+}
+
+#[test]
+fn marker_resize_overlap_roundtrips_with_unchanged_music() {
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let before = editor.project().snapshot();
+    let sections = editor.project().arrangement_sections();
+    let id = sections[0].id();
+    let boundary = sections[1].end();
+    editor
+        .execute(Command::ResizeArrangementSectionMarker {
+            section: id,
+            edge: hex_project::TrimEdge::Right,
+            boundary,
+        })
+        .unwrap();
+    let after = editor.project().snapshot();
+    assert_eq!(after.arrangement_sections[0].end, boundary);
+    let mut music = after.clone();
+    music.arrangement_sections = before.arrangement_sections.clone();
+    assert_eq!(music, before);
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+            .unwrap()
+            .snapshot(),
+        after
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
 }

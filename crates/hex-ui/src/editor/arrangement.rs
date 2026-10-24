@@ -127,7 +127,7 @@ impl EditorView {
             - self.browser_content_width(window)
             - self.track_header_width())
         .max(0.0);
-        if state.project.tracks().is_empty() {
+        if self.arrangement_track_index(0).is_none() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
             let grid = super::musical_time::grid_lines(
                 &state.project,
@@ -142,7 +142,13 @@ impl EditorView {
                 self.snap_grid,
             );
             let overview = super::overview::widget(
-                super::overview::cached(&self.overview_cache, self.project_generation, &state),
+                super::overview::cached(
+                    &self.overview_cache,
+                    self.project_generation,
+                    &state,
+                    self.arrangement_focus_ranges(),
+                    self.arrangement_revealed_track(),
+                ),
                 empty_viewport,
                 self.track_header_width(),
                 cx.entity(),
@@ -184,7 +190,11 @@ impl EditorView {
                                 .justify_center()
                                 .text_xs()
                                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text("no tracks · import audio or add a track")),
+                                .child(theme::text(if self.arrangement_focus.enabled {
+                                    "no clips in selected sections · q restores all tracks"
+                                } else {
+                                    "no tracks · import audio or add a track"
+                                })),
                         ),
                     cx,
                 )]);
@@ -203,7 +213,13 @@ impl EditorView {
             self.snap_grid,
         );
         let overview = super::overview::widget(
-            super::overview::cached(&self.overview_cache, self.project_generation, &state),
+            super::overview::cached(
+                &self.overview_cache,
+                self.project_generation,
+                &state,
+                self.arrangement_focus_ranges(),
+                self.arrangement_revealed_track(),
+            ),
             viewport,
             self.track_header_width(),
             cx.entity(),
@@ -217,6 +233,9 @@ impl EditorView {
             rows_entity
                 .update(cx, |this, cx| {
                     let Some(state) = this.state.as_ref().cloned() else {
+                        return div();
+                    };
+                    let Some(index) = this.arrangement_track_index(index) else {
                         return div();
                     };
                     let Some(track) = state.project.tracks().get(index) else {
@@ -274,6 +293,7 @@ impl EditorView {
             );
         }
         content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
@@ -326,6 +346,7 @@ impl EditorView {
                             height: f32::from(bounds.size.height),
                         });
                         view.arrangement_bounds_epoch = view.drag_layout_generation;
+                        view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -439,14 +460,16 @@ impl EditorView {
                                 return (false, false);
                             }
                             if event.click_count == 2
+                                && !event.modifiers.shift
                                 && view.begin_clip_paint(x, y, event.modifiers.platform)
                             {
                                 view.focus.focus(window);
                                 cx.notify();
                                 return (true, false);
                             }
-                            let move_started = view.begin_main_time_range_move_gesture(x, y)
-                                || view.begin_time_range_move_gesture(x, y);
+                            let move_started = !event.modifiers.shift
+                                && (view.begin_main_time_range_move_gesture(x, y)
+                                    || view.begin_time_range_move_gesture(x, y));
                             let started = if move_started {
                                 view.update_time_range_copy_modifier(event.modifiers.alt);
                                 true
@@ -455,10 +478,12 @@ impl EditorView {
                                     x,
                                     y,
                                     event.modifiers.platform,
+                                    event.modifiers.shift,
                                 ) || view.begin_time_selection_gesture(
                                     x,
                                     y,
                                     event.modifiers.platform,
+                                    event.modifiers.shift,
                                 )
                             };
                             if started {
@@ -487,7 +512,7 @@ impl EditorView {
                         let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
                             if view.sections.held() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
-                                    view.update_section_pointer(x, y, event.modifiers.platform)
+                                    view.update_section_pointer(x, y, event.modifiers)
                                 } else {
                                     view.cancel_section_pointer()
                                 };
@@ -536,7 +561,7 @@ impl EditorView {
                             let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
-                            if view.finish_section_pointer(x, y, event.modifiers.platform) {
+                            if view.finish_section_pointer(x, y, event.modifiers) {
                                 cx.stop_propagation();
                                 cx.notify();
                                 return (true, false);
@@ -631,6 +656,7 @@ impl EditorView {
             .child(returns)
             .child(main)
             .child(self.track_resize_events(cx))
+            .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
                 let Some(payload) = event
                     .dragged_item()
@@ -698,7 +724,7 @@ impl EditorView {
     }
 
     fn main_track_row(
-        &self,
+        &mut self,
         viewport: Viewport,
         bands: &[super::musical_time::GridBand],
         lines: &[super::musical_time::GridLine],
@@ -784,6 +810,7 @@ impl EditorView {
                     .map(|tick| {
                         let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
                         div()
+                            .debug_selector(move || format!("ruler-tick-{}", tick.frame))
                             .absolute()
                             .top_0()
                             .bottom_0()
@@ -791,13 +818,13 @@ impl EditorView {
                             .flex()
                             .items_center()
                             .border_l_1()
-                            .border_color(rgb(if tick.meter_marker || tick.fragmentary_bar {
-                                theme::color(theme::PaletteRole::Primary)
-                            } else {
-                                theme::color(theme::PaletteRole::Grid)
-                            }))
+                            .border_color(rgb(theme::ruler_tick_color(
+                                tick.bar_start,
+                                tick.meter_marker || tick.fragmentary_bar,
+                            )))
                             .pl_1()
-                            .text_xs()
+                            .pb(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
+                            .text_size(px(10.0))
                             .text_color(rgb(if tick.meter_marker {
                                 theme::color(theme::PaletteRole::Text)
                             } else {
@@ -819,11 +846,13 @@ impl EditorView {
             .cursor_pointer()
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Help,
                     description: "drag to seek".into(),
                 })
                 .into()
             })
             .children([labels])
+            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top))
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
@@ -942,9 +971,9 @@ pub(super) fn timeline_grid_elements(
             let (color, opacity) = if line.meter_marker {
                 (theme::color(theme::PaletteRole::Primary), 0.48)
             } else if line.bar_start {
-                (theme::color(theme::PaletteRole::Grid), 0.9)
+                (theme::color(theme::PaletteRole::Border), 1.0)
             } else {
-                (theme::color(theme::PaletteRole::Grid), 0.48)
+                (theme::color(theme::PaletteRole::Border), 0.65)
             };
             Some(
                 div()
@@ -953,7 +982,11 @@ pub(super) fn timeline_grid_elements(
                     .top_0()
                     .bottom_0()
                     .left(relative(position.clamp(0.0, 1.0)))
-                    .w(px(if line.meter_marker { 1.5 } else { 1.0 }))
+                    .w(px(if line.meter_marker || line.bar_start {
+                        1.5
+                    } else {
+                        1.0
+                    }))
                     .bg(rgb(color))
                     .opacity(opacity),
             )
@@ -1016,12 +1049,7 @@ fn timeline_band_elements(
                     .bottom_0()
                     .left(relative(left as f32))
                     .w(relative(width as f32))
-                    .bg(rgb(if band.alternate {
-                        theme::color(theme::PaletteRole::Surface)
-                    } else {
-                        theme::color(theme::PaletteRole::Raised)
-                    }))
-                    .opacity(if band.alternate { 0.16 } else { 0.08 }),
+                    .bg(rgb(theme::time_grid_band_color(band.alternate))),
             )
         })
         .collect()

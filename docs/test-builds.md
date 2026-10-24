@@ -1,5 +1,10 @@
 # native macOS builds
 
+For immutable beta/nightly/stable distribution archives with notarization and
+versioned offline manuals, use the [release command](releases.md). Its explicit
+`install` command reuses this same installer, app identity and configured path.
+The local delivery below remains available for development builds.
+
 Supply optimized exact-source builds for user testing. Save and quit hex first;
 never force-quit, discard unsaved projects or claim replacing a file reloads a
 running process. Preserve projects, media, preferences and historical artifacts.

@@ -17,7 +17,7 @@ pub(crate) struct DocumentV37<'a> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Tuning {
+pub(super) struct Tuning {
     enabled: bool,
     scale: ScaleDto,
     audition: AuditionDto,

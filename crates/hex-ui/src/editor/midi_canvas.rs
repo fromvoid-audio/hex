@@ -98,7 +98,11 @@ fn pitch_at_y(y: f32, height: f32, low: u8, rows: u8) -> Option<u8> {
 }
 
 impl EditorView {
-    pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+    pub(super) fn midi_editor(
+        &mut self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let selected = self.detail_clip_id()?;
         let length = self
             .state
@@ -109,6 +113,7 @@ impl EditorView {
             .raw();
         let owner = (self.project_generation, selected);
         if self.piano_view_clip != Some(owner) {
+            self.retire_arrange_range_owner();
             self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
             self.clear_midi_time_selection();
@@ -120,10 +125,12 @@ impl EditorView {
                 self.cancel_computer_keyboard();
             }
             self.piano_zoom_wheel_accum = 0.0;
+            self.piano_pitch_wheel_accum = 0.0;
             self.piano_beat_start = BeatTime::ZERO;
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         }
+        self.reflect_arrange_clip_range(window, cx);
         let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
@@ -169,7 +176,9 @@ impl EditorView {
             None
         };
         let group_selected = self.midi_selection.len() > 1;
-        let selected_ids = self.midi_selection.shared_ids();
+        let selected_ids = self
+            .velocity_marquee_highlight()
+            .unwrap_or_else(|| self.midi_selection.shared_ids());
         let draw_primary = self.midi_selection.primary();
         let selection_epoch = self.midi_selection.epoch();
         let preview = self
@@ -226,6 +235,7 @@ impl EditorView {
         let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
+        let draw_step = self.midi_step_preview();
         let draw_playhead = self.midi_playhead_source_beat();
         let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
@@ -273,6 +283,7 @@ impl EditorView {
             && draw_stroke.is_none()
             && draw_creation.is_none()
             && draw_marquee.is_none()
+            && !self.velocity_marquee_active()
             && self.midi_time_selection.gesture.is_none()
             && self.piano_pitch_zoom.is_none()
             && !self.midi_pan.enabled
@@ -289,7 +300,13 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
-            .debug_selector(|| "midi-note-roll".into());
+            .debug_selector(|| "midi-note-roll".into())
+            .children(self.arrange_midi_highlights(
+                self.piano_beat_start.raw(),
+                self.piano_beat_span.raw(),
+                0.0,
+                "arrange-reflected-range",
+            ));
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
         roll = roll.children([canvas(
@@ -685,6 +702,35 @@ impl EditorView {
                     );
                 }
 
+                // Held chords are lines, separate from authored/selected note bodies.
+                for note in draw_step.into_iter().flatten() {
+                    if note.pitch < pitch_low
+                        || u16::from(note.pitch) >= u16::from(pitch_low) + u16::from(pitch_rows)
+                    {
+                        continue;
+                    }
+                    let first = note.start.raw().max(beat_start.raw());
+                    let last = note
+                        .start
+                        .raw()
+                        .saturating_add(note.duration.raw())
+                        .min(beat_start.raw().saturating_add(raw_span));
+                    if first >= last {
+                        continue;
+                    }
+                    let left = ((first - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    let right = ((last - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    let row = pitch_low.saturating_add(pitch_rows - 1) - note.pitch;
+                    let y = (f32::from(row) + 0.5) * height / f32::from(pitch_rows);
+                    quad(
+                        left,
+                        y - 1.0,
+                        right - left,
+                        2.0,
+                        theme::color(theme::PaletteRole::Primary),
+                    );
+                }
+
                 // Draw the insertion position last so sustained notes cannot hide it.
                 if let Some(marker) = draw_marker
                     && marker >= beat_start.raw()
@@ -758,11 +804,20 @@ impl EditorView {
                     }
                     cx.stop_propagation();
                     wheel_entity.update(cx, |view, cx| {
-                        if view.zoom_piano_wheel_at(
-                            gesture_bounds_from(bounds),
-                            f32::from(event.position.x),
-                            delta,
-                        ) {
+                        let changed = if event.modifiers.alt {
+                            view.zoom_piano_pitch_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.y),
+                                delta,
+                            )
+                        } else {
+                            view.zoom_piano_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                delta,
+                            )
+                        };
+                        if changed {
                             cx.notify();
                         }
                     });
@@ -816,6 +871,7 @@ impl EditorView {
                         {
                             return;
                         }
+                        view.cancel_all_midi_marquees();
                         view.midi_focus.focus(window);
                         let mut hit_cycle = view.midi_hit_cycle;
                         let hit = event_scene
@@ -982,6 +1038,7 @@ impl EditorView {
                                 return;
                             };
                             if event.modifiers.shift {
+                                view.cancel_midi_audition();
                                 view.clear_midi_time_selection();
                                 view.midi_time_selection.cancel();
                                 view.midi_marker = Some(local_beat.raw());
@@ -1031,7 +1088,7 @@ impl EditorView {
                         }
                         view.clear_midi_time_selection();
                         view.midi_time_selection.cancel();
-                        view.midi_marquee = None;
+                        view.cancel_all_midi_marquees();
                         view.begin_midi_creation(
                             rendered_context,
                             f32::from(event.position.x),
@@ -1060,6 +1117,9 @@ impl EditorView {
                             return;
                         }
                         mouse_move_entity.update(cx, |view, view_cx| {
+                            if view.cancel_all_midi_marquees() {
+                                view_cx.notify();
+                            }
                             if view.midi_pan.gesture.take().is_some() {
                                 view_cx.notify();
                             }
@@ -1130,18 +1190,26 @@ impl EditorView {
                                 f32::from(event.position.x - bounds.origin.x),
                                 f32::from(event.position.y - bounds.origin.y),
                             ];
-                            if let Some(context) =
-                                view.midi_marquee_context(rendered_context.bounds)
-                                && marquee.is_current(context)
-                            {
-                                match marquee.update(
-                                    context,
-                                    &view.midi_selection,
-                                    &hover_scene,
-                                    last,
-                                ) {
-                                    Ok(_) => view.midi_marquee = Some(marquee),
-                                    Err(error) => view.error = Some(error.into()),
+                            let previous = marquee.hits();
+                            let result = view
+                                .midi_marquee_context(rendered_context.bounds)
+                                .ok_or("midi marquee source changed")
+                                .and_then(|context| {
+                                    marquee.update(
+                                        context,
+                                        &view.midi_selection,
+                                        &hover_scene,
+                                        last,
+                                    )
+                                })
+                                .and_then(|_| {
+                                    view.apply_live_midi_marquee(&mut marquee, &previous)
+                                });
+                            match result {
+                                Ok(_) => view.midi_marquee = Some(marquee),
+                                Err(error) => {
+                                    view.cancel_live_midi_marquee(marquee);
+                                    view.error = Some(error.into());
                                 }
                             }
                             view_cx.notify();
@@ -1295,37 +1363,41 @@ impl EditorView {
                                 .as_ref()
                                 .is_none_or(|state| state.revision != revision)
                             || view.detail_clip_id() != Some(clip_id)
-                            || view.edit_pending()
+                            || (view.edit_pending()
+                                && view.midi_marquee.is_none()
+                                && !view.velocity_marquee_active())
                         {
                             view.midi_note_gesture = None;
                             view.midi_group_gesture = None;
-                            view.midi_marquee = None;
+                            view.cancel_all_midi_marquees();
                             view_cx.notify();
                             return;
                         }
                         if let Some(mut marquee) = view.midi_marquee.take() {
-                            if let Some(context) =
-                                view.midi_marquee_context(rendered_context.bounds)
-                                && marquee.is_current(context)
-                            {
-                                let last = [
-                                    f32::from(event.position.x - bounds.origin.x),
-                                    f32::from(event.position.y - bounds.origin.y),
-                                ];
-                                let result = marquee
-                                    .update(
+                            let last = [
+                                f32::from(event.position.x - bounds.origin.x),
+                                f32::from(event.position.y - bounds.origin.y),
+                            ];
+                            let previous = marquee.hits();
+                            let result = view
+                                .midi_marquee_context(rendered_context.bounds)
+                                .ok_or("midi marquee source changed")
+                                .and_then(|context| {
+                                    marquee.update(
                                         context,
                                         &view.midi_selection,
                                         &canvas_scene_events,
                                         last,
                                     )
-                                    .and_then(|_| {
-                                        marquee.finish(context, &mut view.midi_selection)
-                                    });
-                                match result {
-                                    Ok(_) => view.audition_midi_selection(),
-                                    Err(error) => view.error = Some(error.into()),
-                                }
+                                })
+                                .and_then(|_| {
+                                    view.apply_live_midi_marquee(&mut marquee, &previous)
+                                });
+                            // Release keeps the live membership. Only a previously
+                            // unobserved final pointer position can add an audition.
+                            if let Err(error) = result {
+                                view.cancel_live_midi_marquee(marquee);
+                                view.error = Some(error.into());
                             }
                             view_cx.notify();
                             return;
@@ -1458,7 +1530,9 @@ impl EditorView {
         .absolute()
         .inset_0()]);
         let mut panel = div()
-            .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+            .h(px((self.clip_detail_body_height
+                - self.midi_velocity.visible_height())
+            .max(64.0)))
             .flex_shrink_0()
             .flex()
             .flex_row()
@@ -1505,15 +1579,17 @@ impl EditorView {
                     .child(theme::text(format!("{displayed} {value_text}"))),
             );
             if field == super::midi_source_controls::SourceField::Looping {
-                group = group.children([self.midi_button_with_id(
-                    field.plus_id(),
-                    label,
-                    plus_tooltip,
-                    cx.listener(move |view, _, _, cx| {
-                        view.edit_midi_source(clip_id, revision, generation, field, 1);
-                        cx.notify();
-                    }),
-                )]);
+                group = group.children([self
+                    .midi_button_with_id(
+                        field.plus_id(),
+                        label,
+                        plus_tooltip,
+                        cx.listener(move |view, _, _, cx| {
+                            view.edit_midi_source(clip_id, revision, generation, field, 1);
+                            cx.notify();
+                        }),
+                    )
+                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))]);
             } else {
                 let minus_field = field;
                 let plus_field = field;
@@ -1628,10 +1704,9 @@ impl EditorView {
                     v.midi_draw_mode = !v.midi_draw_mode;
                     v.cancel_midi_note_gesture();
                     v.midi_group_gesture = None;
-                    v.midi_marquee = None;
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_draw_pitch_locked {
                     "l"
@@ -1648,17 +1723,17 @@ impl EditorView {
                     v.cancel_midi_note_gesture();
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_audition.enabled { "a+" } else { "a" },
-                "toggle note audition · selection plays up to 17 notes · physical keyboard takes priority",
+                "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
                 cx.listener(|v, _, window, cx| {
                     v.midi_audition.enabled = !v.midi_audition.enabled;
                     v.cancel_midi_audition();
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_step.enabled { "st" } else { "s" },
                 "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
@@ -1670,7 +1745,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_pan.enabled { "↔+" } else { "↔" },
                 "toggle pan mode · drag to move time and pitch · middle-drag always pans",
@@ -1681,7 +1756,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 "←",
                 "pan piano roll left",
@@ -1943,31 +2018,52 @@ impl EditorView {
         });
     }
 
-    fn midi_marquee_context(
-        &self,
-        bounds: super::midi_stroke::CanvasBounds,
-    ) -> Option<super::midi_selection::MarqueeContext> {
-        if self.edit_pending() {
-            return None;
-        }
-        Some(super::midi_selection::MarqueeContext {
-            scene: super::midi_scene::SceneKey {
-                generation: self.project_generation,
-                revision: self.state.as_ref()?.revision,
-                clip: self.detail_clip_id()?,
-                beat_start: self.piano_beat_start.raw(),
-                beat_span: self.piano_beat_span.raw(),
-                pitch_low: self.piano_pitch_low,
-                pitch_rows: self.piano_pitch_rows,
-            },
-            bounds,
-            selection_epoch: self.midi_selection.epoch(),
-        })
-    }
-
     fn cycle_midi_grid(&mut self) {
         self.midi_snap_grid = self.midi_snap_grid.next();
         self.cancel_midi_note_gesture();
+    }
+
+    pub(super) fn zoom_piano_pitch_wheel_at(
+        &mut self,
+        bounds: [f32; 4],
+        y: f32,
+        delta: f32,
+    ) -> bool {
+        if self.context_menu.is_some()
+            || self.midi_clip().is_none()
+            || !delta.is_finite()
+            || delta == 0.0
+            || !y.is_finite()
+            || !bounds.iter().all(|value| value.is_finite())
+            || bounds[2] <= 0.0
+            || bounds[3] <= 0.0
+        {
+            return false;
+        }
+        let fraction = (y - bounds[1]) / bounds[3];
+        if !(0.0..=1.0).contains(&fraction) {
+            return false;
+        }
+        self.piano_pitch_wheel_accum = (self.piano_pitch_wheel_accum + delta).clamp(-320.0, 320.0);
+        let steps = (self.piano_pitch_wheel_accum / 80.0).trunc() as i8;
+        if steps == 0 {
+            return false;
+        }
+        self.piano_pitch_wheel_accum -= f32::from(steps) * 80.0;
+        let Some(next) = super::midi_scene::wheel_pitch_zoom(
+            self.piano_pitch_low,
+            self.piano_pitch_rows,
+            fraction,
+            steps,
+        ) else {
+            return false;
+        };
+        if next == (self.piano_pitch_low, self.piano_pitch_rows) {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        (self.piano_pitch_low, self.piano_pitch_rows) = next;
+        true
     }
 
     pub(super) fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
@@ -2089,14 +2185,14 @@ impl EditorView {
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
-        let velocity = self.midi_velocity.cancel();
+        let marquee = self.cancel_all_midi_marquees();
+        let velocity = self.midi_velocity.cancel_value_state();
         let pending_selection = self.pending_created_note_selection.take().is_some();
         let pitch_zoom = self.piano_pitch_zoom.take().is_some();
         let creation = self.midi_creation.take().is_some();
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
-        let marquee = self.midi_marquee.take().is_some();
         ruler
             || pan
             || velocity
@@ -2131,6 +2227,7 @@ impl EditorView {
 
     fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> Div {
         let rows = self.piano_pitch_rows;
+        let held = self.midi_live_pitches();
         let entity = cx.entity();
         let mut keys = div()
             .relative()
@@ -2158,12 +2255,17 @@ impl EditorView {
                     .items_center()
                     .pl(px(2.0))
                     .text_size(px(7.0))
-                    .text_color(rgb(if black {
+                    .debug_selector(move || format!("midi-piano-key-{pitch}"))
+                    .text_color(rgb(if held[usize::from(pitch)] {
+                        theme::color(theme::PaletteRole::Background)
+                    } else if black {
                         theme::color(theme::PaletteRole::Muted)
                     } else {
                         theme::color(theme::PaletteRole::Text)
                     }))
-                    .bg(rgb(if black {
+                    .bg(rgb(if held[usize::from(pitch)] {
+                        theme::color(theme::PaletteRole::Primary)
+                    } else if black {
                         theme::color(theme::PaletteRole::Background)
                     } else {
                         theme::color(theme::PaletteRole::Raised)
@@ -2195,7 +2297,30 @@ impl EditorView {
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |_, _, window, _| {
+                    move |bounds, _, window, _| {
+                        let wheel_entity = entity.clone();
+                        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                            if !phase.capture()
+                                || !event.modifiers.alt
+                                || !bounds.contains(&event.position)
+                            {
+                                return;
+                            }
+                            let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
+                            if !delta.is_finite() || delta == 0.0 {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            wheel_entity.update(cx, |view, cx| {
+                                if view.zoom_piano_pitch_wheel_at(
+                                    gesture_bounds_from(bounds),
+                                    f32::from(event.position.y),
+                                    delta,
+                                ) {
+                                    cx.notify();
+                                }
+                            });
+                        });
                         let entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if !phase.capture() {
@@ -2258,6 +2383,7 @@ impl EditorView {
             .text_xs()
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: tooltip.into(),
                 })
                 .into()

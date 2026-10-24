@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const MAX_BOUNCE_FRAMES: u64 = 8_000_000;
+const MAX_BOUNCE_FRAMES: u64 = hex_engine::session_playback::MAX_FINITE_BOUNCE_FRAMES;
 static NEXT_BOUNCE: AtomicU64 = AtomicU64::new(0);
 
 impl Session {
@@ -174,14 +174,14 @@ fn isolated_source(
         .filter(|device| !device.bypassed())
         .map_or(1.0, |device| device.state().input_gain_linear().recip());
     let mut snapshot = project.snapshot();
-    let source = if let Some(item) = project.session_midi_clip(clip) {
+    let mut source = if let Some(item) = project.session_midi_clip(clip) {
         let source = item.source();
-        let end = if source.looping() {
-            source.loop_end()
-        } else {
-            source.source_length()
-        };
+        let end = source.effective_end();
         MidiClipSnapshot {
+            content_view: None,
+            active: item.active(),
+            playback_offset_raw: item.playback_offset().raw(),
+            one_shot_boundary: item.source().one_shot_boundary(),
             volume: item.volume().clone(),
             name: item.name().to_owned(),
             flavor: hex_project::ClipFlavor::default(),
@@ -192,9 +192,9 @@ fn isolated_source(
             source_start_raw: source.source_start().raw(),
             loop_start_raw: source.loop_start().raw(),
             loop_end_raw: source.loop_end().raw(),
-            // Only the first Session pass is rendered. Its finite Arrangement length
-            // already ends at the initial loop boundary; no repeated source is scheduled.
-            looping: false,
+            // The finite bounce length remains one original first-pass width.
+            // Retain repeat law so elapsed windows project the same source phase.
+            looping: source.looping(),
             notes: source
                 .notes()
                 .iter()
@@ -222,6 +222,9 @@ fn isolated_source(
             })
             .ok_or("midi clip no longer exists")?
     };
+    // Conversion writes reusable source media. Authored inactivity belongs to
+    // the replacement clip, never to the isolated synthesis pass.
+    source.active = true;
     snapshot.tracks.retain(|track| track.id == track_id.value());
     let track = snapshot
         .tracks
@@ -340,10 +343,59 @@ mod volume_tests {
                     volume: volume.clone(),
                 })
                 .unwrap();
+            editor
+                .execute(Command::SetClipActive {
+                    clip,
+                    active: false,
+                })
+                .unwrap();
             let (isolated, owner, _) = isolated_source(editor.project(), clip).unwrap();
+            assert!(!editor.project().clip_active(clip).unwrap());
+            assert!(isolated.midi_clip(clip).unwrap().active());
             assert_eq!(owner, track);
             assert_eq!(isolated.midi_clip(clip).unwrap().volume(), &volume);
             assert!(hex_engine::compile::project(&isolated, &BTreeMap::new()).is_err());
+            let mut snapshot = editor.project().snapshot();
+            if console {
+                let hex_project::SessionCellContentSnapshot::Midi(cell) =
+                    &mut snapshot.session.cells[0].content
+                else {
+                    panic!("midi")
+                };
+                cell.source.one_shot_boundary = hex_project::MidiOneShotBoundary::LoopEnd;
+                cell.source.loop_end_raw = BeatTime::ONE.raw() / 2;
+            } else {
+                let hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. } =
+                    &mut snapshot.tracks[0].content
+                else {
+                    panic!("hybrid")
+                };
+                midi_clips[0].one_shot_boundary = hex_project::MidiOneShotBoundary::LoopEnd;
+                midi_clips[0].loop_end_raw = BeatTime::ONE.raw() / 2;
+            }
+            let retained = Project::from_snapshot(snapshot).unwrap();
+            let (isolated, _, _) = isolated_source(&retained, clip).unwrap();
+            assert_eq!(
+                isolated
+                    .midi_clip(clip)
+                    .unwrap()
+                    .source()
+                    .one_shot_boundary(),
+                hex_project::MidiOneShotBoundary::LoopEnd
+            );
+            assert_eq!(
+                retained.midi_bounce_range(clip).unwrap(),
+                (0, if console { 12000 } else { 24000 })
+            );
+            assert_eq!(
+                isolated.midi_clip(clip).unwrap().length().raw(),
+                if console {
+                    BeatTime::ONE.raw() / 2
+                } else {
+                    BeatTime::ONE.raw()
+                }
+            );
+            assert_eq!(isolated.midi_clip(clip).unwrap().volume(), &volume);
         }
     }
 }

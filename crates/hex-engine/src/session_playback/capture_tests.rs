@@ -16,6 +16,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,
@@ -521,6 +522,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         midi_clips,
         audio_clips: vec![ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
@@ -1071,7 +1073,7 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
             let mut chain =
                 hex_lattice::NativeRuntimeChain::new_prepared(bus.device_chain.to_vec()).unwrap();
             chain.begin_block();
-            chain.process_block(&mut [[0.6, -0.3]; 3]);
+            chain.process_block(&mut [[0.6, -0.3]; 3]).unwrap();
             chain.commit_block();
             value.return_effect_tails.slots_mut()[0] = Some(
                 super::return_effect_tails::ReturnEffectTail::new(chain, bus),

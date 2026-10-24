@@ -88,10 +88,13 @@ fn span_roundtrip_preserves_canonical_value_through_current_writer() {
     let current = crate::encode(&restored).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
-        37
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&current).unwrap(), restored);
-    assert!(crate::decode(&crate::encode_schema22(&restored).unwrap()).is_err());
+    assert_eq!(
+        crate::decode(&crate::encode_schema22(&restored).unwrap()).unwrap(),
+        restored
+    );
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&restored).is_err());
     let lane = GainLane::new(
         snapshot.tracks[0].gain_envelope.clone(),
@@ -192,7 +195,7 @@ fn empty_spans_preserve_existing_base_and_high_water_old_writers_refuse_loss() {
     let encoded = crate::encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-        37
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&encoded).unwrap(), project);
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&project).is_err());

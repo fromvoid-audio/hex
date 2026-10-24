@@ -1,8 +1,9 @@
 //! Caller-selected local helper-build provenance, checked before every spawn.
 //! This receipt is a trust root supplied by the caller, not an attestation.
 use super::{
-    identity::{read_file, relative_file},
+    identity::{MAX_PATH_BYTES, hash_matches, read_file, relative_file},
     macho::{self, Image, Role},
+    validation::Error as ValidationError,
 };
 use crate::{MAX_BINARY, PUBLIC_SDK, SDK, hash};
 use sha2::{Digest, Sha256};
@@ -16,6 +17,12 @@ const APP: &str = "hex-vst3-host.app";
 const HELPER: &str = "hex-vst3-host.app/Contents/MacOS/hex-vst3-factory-scan";
 const INSTANCE_APP: &str = "hex-vst3-instance.app";
 const INSTANCE_HELPER: &str = "hex-vst3-instance.app/Contents/MacOS/hex-vst3-instance";
+mod inventory;
+use inventory::{MAX_MEMBERS, inventory};
+mod instance_inventory;
+pub use instance_inventory::{INSTANCE_INVENTORY_NODE_BOUND, RevalidationStorageBound};
+mod storage;
+pub use storage::BuildStorage;
 
 #[derive(Clone, Copy, Debug)]
 enum HelperRole {
@@ -144,55 +151,6 @@ fn native_source() -> String {
         .collect()
 }
 
-fn inventory(root: &Path, app: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut pending = vec![(root.join(app), 0_usize)];
-    let mut files = BTreeMap::new();
-    let mut members = 0_usize;
-    let mut total = 0_u64;
-    while let Some((path, depth)) = pending.pop() {
-        if depth != 0 {
-            members += 1;
-        }
-        if members > 256 || depth > 32 {
-            return Err("helper bundle member/depth bound".into());
-        }
-        let meta =
-            fs::symlink_metadata(&path).map_err(|e| format!("helper member missing: {e}"))?;
-        if meta.file_type().is_symlink() {
-            return Err("linked helper member refused".into());
-        }
-        if meta.is_dir() {
-            for member in
-                fs::read_dir(&path).map_err(|e| format!("helper enumeration failed: {e}"))?
-            {
-                let member = member.map_err(|e| format!("helper enumeration failed: {e}"))?;
-                if pending.len() >= 256 {
-                    return Err("helper directory bound".into());
-                }
-                pending.push((member.path(), depth + 1));
-            }
-        } else if meta.is_file() {
-            let bytes = read_file(&path, MAX_BINARY)?;
-            total = total
-                .checked_add(bytes.len() as u64)
-                .ok_or("helper size overflow")?;
-            if total > 32 * 1024 * 1024 {
-                return Err("helper bundle byte bound".into());
-            }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| "helper root mismatch")?
-                .to_str()
-                .ok_or("helper member encoding refused")?
-                .to_owned();
-            files.insert(relative, hash(&bytes));
-        } else {
-            return Err("nonregular helper member refused".into());
-        }
-    }
-    Ok(files)
-}
-
 #[derive(Clone, Debug)]
 pub struct Build {
     pub helper: PathBuf,
@@ -248,13 +206,13 @@ impl Build {
         let declared = data["bundle_files"]
             .as_object()
             .ok_or("helper inventory missing")?;
-        if declared.is_empty() || declared.len() > 256 {
+        if declared.is_empty() || declared.len() > MAX_MEMBERS {
             return Err("helper inventory bound".into());
         }
         let mut files = BTreeMap::new();
         for (name, value) in declared {
             let digest = value.as_str().ok_or("helper file digest missing")?;
-            if name.len() > 4096
+            if name.len() > MAX_PATH_BYTES
                 || digest.len() != 64
                 || !digest
                     .bytes()
@@ -310,7 +268,9 @@ impl Build {
         } else {
             return Err("unknown helper package layout".into());
         };
-        if inventory(&root, role.app())? != files {
+        if matches!(role, HelperRole::Instance) {
+            instance_inventory::verify(&root, &files)?;
+        } else if inventory(&root, role.app())? != files {
             return Err("helper bundle content changed".into());
         }
         let helper = relative_file(&root, role.helper())?;
@@ -329,10 +289,33 @@ impl Build {
         })
     }
 
+    fn instance_unchanged(&self) -> Result<(), ValidationError> {
+        // The receipt snapshot drops before fixed member I/O. No formatting,
+        // second inventory map or traversal worklist enters native custody.
+        let same = {
+            let bytes = read_file(&self.path, MAX_BINARY)?;
+            hash_matches(&bytes, &self.receipt_sha256)
+        };
+        if !same {
+            return Err("helper or build receipt changed during operation".into());
+        }
+        instance_inventory::verify(&self.root, &self.files)
+    }
+
     pub fn unchanged(&self) -> Result<(), String> {
-        if hash(&read_file(&self.path, MAX_BINARY)?) != self.receipt_sha256
-            || inventory(&self.root, self.role.app())? != self.files
-        {
+        if matches!(self.role, HelperRole::Instance) {
+            return self.instance_unchanged().map_err(String::from);
+        }
+        // One file-data buffer at a time during revalidation (<= MAX_BINARY).
+        // The bounded path/hash inventory metadata is a separate retained cost.
+        let receipt = {
+            let bytes = read_file(&self.path, MAX_BINARY)?;
+            hash(&bytes)
+        };
+        if receipt != self.receipt_sha256 {
+            return Err("helper or build receipt changed during operation".into());
+        }
+        if inventory(&self.root, self.role.app())? != self.files {
             return Err("helper or build receipt changed during operation".into());
         }
         Ok(())
@@ -357,7 +340,13 @@ impl InstanceBuild {
     pub fn receipt_sha256(&self) -> &str {
         &self.0.receipt_sha256
     }
-    pub fn unchanged(&self) -> Result<(), String> {
-        self.0.unchanged()
+    pub fn unchanged(&self) -> Result<(), ValidationError> {
+        self.0.instance_unchanged()
+    }
+    /// The fixed helper revalidator's known path/name scratch and opaque I/O
+    /// obligations. The one file snapshot is listed separately. This is not a
+    /// source/publication witness or a bound on initial JSON inspection.
+    pub fn revalidation_storage_bound(&self) -> Option<RevalidationStorageBound> {
+        instance_inventory::storage_bound(&self.0.root)
     }
 }

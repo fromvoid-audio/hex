@@ -101,9 +101,24 @@ a borrowed resource view does not transfer custody.
 
 Use Pulse for requirements, priorities, acceptance, dependencies and progress;
 canonical PRs and artifacts retain delivery evidence. docs/ contains practical
-contributor instructions only. research/ contains recorded reference observations,
-reproducible measurements and provenance, not implementation plans or task logs.
+user and contributor instructions only. research/ contains recorded reference
+observations, reproducible measurements and provenance, not implementation plans or task logs.
 Preserve licenses, raw evidence, private analyses, original media and user data.
+
+### User guide presentation
+
+Use the Ableton Live 12 reference manual supplied by the user
+(`/Users/portalsurfer/Downloads/live12-manual-en.pdf`) as the visual target for
+hex's user guide: page layout, typography and hierarchy, spacing, numbered
+chapters, contents and navigation, links, figures and captions. Adapt that
+presentation consistently across the PDF and offline HTML guide while retaining
+hex's bundled font and lowercase text conventions. Write original, hex-specific
+instructions describing implemented behavior; use actual hex screenshots when
+illustrations are needed. Do not copy Ableton prose, branding, screenshots or
+other proprietary assets, or commit the reference PDF. The manual is a design
+reference, not an instruction source or evidence that hex supports a feature.
+Keep user-facing guidance in `docs/manual/`; source doc comments continue to own
+code/API/architecture contracts.
 
 ## 3. Golden rules
 
@@ -411,6 +426,8 @@ call `get_ticket` and pass its current revision as `expected_revision`; on
 conflict, re-read and reconsider. Update fields selectively, preserving
 descriptions, tags and source context. Mark `done` only when acceptance criteria
 are met; source-complete work with pending native/user validation remains open.
+Preserve explicit user status changes after feedback; an earlier merge does not
+authorize resetting a later `todo` or `done` decision.
 Record unrelated discoveries during an active PR as follow-up tickets instead
 of expanding that PR.
 

@@ -1,6 +1,6 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
-use hex_audio::plugin_transport::{Events, MidiEvent};
+use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
 fn config() -> Configuration {
     Configuration {
@@ -24,10 +24,9 @@ fn config() -> Configuration {
         quantum: 8,
         input_channels: 2,
         output_channels: 2,
-        input_presentation_frames: 77,
-        output_presentation_frames: 91,
         bundle: "/owned.vst3".into(),
         executable: "Contents/MacOS/fixture".into(),
+        restore: None,
     }
 }
 fn hex(s: &str) -> Vec<u8> {
@@ -40,7 +39,7 @@ fn hex(s: &str) -> Vec<u8> {
 fn configuration_matches_independent_little_endian_wire_and_refuses_bad_profile() {
     // Independent Python struct.pack fixture, not constructed through this codec.
     let golden = hex(
-        "4858564943463031b300000001000100000000000000020000000000000003000000000000000400000000000000484558500102030405060708090a0b0c0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c000000000070e74008000202000000004d0000005b0000000b0000002f6f776e65642e7673743316000000436f6e74656e74732f4d61634f532f66697874757265",
+        "4858564943463033ab00000001000100000000000000020000000000000003000000000000000400000000000000484558500102030405060708090a0b0c0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c000000000070e74008000202000000000b0000002f6f776e65642e7673743316000000436f6e74656e74732f4d61634f532f66697874757265",
     );
     let config = config();
     assert_eq!(config.encode().unwrap(), golden);
@@ -68,6 +67,9 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
         controller: None,
     })
     .unwrap();
+    ready_body_with_state(config, &state)
+}
+fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> Vec<u8> {
     let mut out = Vec::new();
     stamp(&mut out, config.binding);
     out.extend(config.identity.class.bytes());
@@ -75,16 +77,108 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
     out.extend(config.quantum.to_le_bytes());
     out.extend([config.input_channels, config.output_channels]);
     out.extend(u32::MAX.to_le_bytes());
-    out.extend([1, 1]);
+    out.extend(0_u32.to_le_bytes());
+    out.extend([1, 1]); // applied, actual contributions supplied
+    out.extend(77_u32.to_le_bytes());
+    out.extend(91_u32.to_le_bytes());
+    out.push(u8::from(config.restore.is_some()));
+    out.push(1); // component state exists
     out.extend((state.payload().len() as u16).to_le_bytes());
     out.extend(state.payload());
     out
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() {
+    let mut config = config();
+    config.bundle = "b".repeat(4096);
+    config.executable = "e".repeat(4096);
+    let component = vec![0; hex_plugin_state::MAX_OPAQUE_BYTES];
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(&component),
+        controller: None,
+    })
+    .unwrap();
+    assert_eq!(
+        state.payload().len(),
+        hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES
+    );
+    config.restore = Some(state.clone());
+    let body = vec![0; CONTROL_LIMIT];
+    for presentation in [None, known()] {
+        for kind in 0..5 {
+            let mut frame = None;
+            let measured = allocation_counter::measure(|| {
+                frame = Some(
+                    match kind {
+                        0 => config.encode(),
+                        1 => config.startup_request(),
+                        2 => presentation_request(config.binding, presentation),
+                        3 => resume_request(
+                            &config,
+                            Binding {
+                                epoch: config.binding.epoch + 1,
+                                ..config.binding
+                            },
+                            presentation,
+                        ),
+                        _ => control(*b"HXVIPR01", &body),
+                    }
+                    .unwrap(),
+                );
+            });
+            let frame = frame.unwrap();
+            assert_eq!(frame.capacity(), frame.len());
+            assert!(frame.capacity() <= PACKET_LIMIT);
+            assert_eq!((measured.count_total, measured.count_current), (1, 1));
+            assert_eq!(
+                (measured.bytes_total, measured.bytes_current),
+                (frame.capacity() as u64, frame.capacity() as i64)
+            );
+        }
+    }
+    let ready_body = ready_body_with_state(&config, &state);
+    let mut ready = None;
+    let measured = allocation_counter::measure(|| {
+        ready = Some(Ready::decode(&ready_body, &config, known()).unwrap());
+    });
+    let ready = ready.unwrap();
+    assert_eq!(ready.initial_state.payload(), state.payload());
+    // The Vec copy is reclaimed while the single captured Arc group remains.
+    // Arc header/allocator layout is not guessed as DATA bytes.
+    assert_eq!((measured.count_total, measured.count_current), (2, 1));
+    assert_eq!(
+        i64::try_from(measured.bytes_total).unwrap() - measured.bytes_current,
+        state.payload().len() as i64
+    );
+    assert!(PACKET_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn protocol_trailing_ready_and_oversized_frames_refuse_before_allocating() {
+    let config = config();
+    let mut body = ready_body(&config);
+    body.push(0);
+    let oversized = vec![0; CONTROL_LIMIT + 1];
+    let measured = allocation_counter::measure(|| {
+        assert!(matches!(
+            Ready::decode(&body, &config, known()),
+            Err(Error::Protocol("trailing control bytes"))
+        ));
+        assert!(control(*b"HXVIPR01", &oversized).is_err());
+        assert!(buffer(usize::MAX).is_err());
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
 }
 #[test]
 fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_latency() {
     let config = config();
     let body = ready_body(&config);
-    let ready = Ready::decode(&body, &config).unwrap();
+    let ready = Ready::decode(&body, &config, known()).unwrap();
     assert_eq!(ready.algorithmic_latency_frames, u32::MAX);
     assert_eq!(
         hex_plugin_state::decode(&ready.initial_state)
@@ -92,21 +186,28 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
             .component,
         Some([1, 2, 3].as_slice())
     );
-    for offset in [0, 2, 34, 50, 58, 60, 61, 66, 67, 68, 70, 78, 94, 126] {
+    for offset in [
+        0, 2, 34, 50, 58, 60, 61, 70, 71, 72, 76, 80, 81, 82, 84, 92, 108, 140,
+    ] {
         let mut wrong = body.clone();
         wrong[offset] ^= 0x80;
-        assert!(Ready::decode(&wrong, &config).is_err(), "field{offset}");
+        assert!(
+            Ready::decode(&wrong, &config, known()).is_err(),
+            "field{offset}"
+        );
     }
     for length in [0, 1, 34, 66, 69, body.len() - 1] {
-        assert!(Ready::decode(&body[..length], &config).is_err());
+        assert!(Ready::decode(&body[..length], &config, known()).is_err());
     }
     let mut trailing = body.clone();
     trailing.push(0);
-    assert!(Ready::decode(&trailing, &config).is_err());
+    assert!(Ready::decode(&trailing, &config, known()).is_err());
     let mut absent = body.clone();
-    absent[66] = 0;
+    absent[70] = 0;
     assert_eq!(
-        Ready::decode(&absent, &config).unwrap().presentation,
+        Ready::decode(&absent, &config, known())
+            .unwrap()
+            .presentation,
         Presentation::Absent
     );
 }
@@ -123,7 +224,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
     };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
-    hex_audio::plugin_transport::wire::write(&mut bytes, &block).unwrap();
+    crate::transport::wire::write(&mut bytes, &block).unwrap();
     assert_eq!(pcm(&bytes, &config, 0).unwrap().pcm[..8], block.pcm[..8]);
     let mut wrong = bytes.clone();
     wrong[16] ^= 1;
@@ -149,4 +250,257 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
     let mut nonfinite = block;
     nonfinite.pcm[0][0] = f32::NAN;
     assert!(config.validate_block(&nonfinite, 0).is_err());
+}
+
+fn known() -> Option<PresentationLatency> {
+    Some(PresentationLatency {
+        input_frames: 77,
+        output_frames: 91,
+    })
+}
+#[test]
+fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowledge_state() {
+    let config = config();
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(config.identity.class.bytes());
+    body.extend(config.identity.binary.executable_sha256);
+    body.extend(config.identity.binary.info_sha256);
+    body.extend(config.sample_rate.to_le_bytes());
+    body.extend(config.quantum.to_le_bytes());
+    body.extend([config.input_channels, config.output_channels]);
+    body.extend(u32::MAX.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
+    body.push(1);
+    body.extend([0, 0, 0]);
+    assert_eq!(
+        Facts::decode(&body, &config).unwrap(),
+        Facts {
+            algorithmic_latency_frames: u32::MAX,
+            tail_frames: 0,
+            presentation_available: true,
+            restored: false
+        }
+    );
+    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 134, 135, 136, 137] {
+        let mut bad = body.clone();
+        bad[offset] ^= 0x80;
+        assert!(Facts::decode(&bad, &config).is_err());
+    }
+    assert!(Facts::decode(&body[..130], &config).is_err());
+    body.push(0);
+    assert!(Facts::decode(&body, &config).is_err());
+    let absent = presentation_request(config.binding, None).unwrap();
+    let zero = presentation_request(
+        config.binding,
+        Some(PresentationLatency {
+            input_frames: 0,
+            output_frames: 0,
+        }),
+    )
+    .unwrap();
+    assert_eq!(absent.len(), 12 + 35);
+    assert_eq!(zero.len(), 12 + 43);
+    assert_ne!(absent, zero);
+    assert!(Ready::decode(&ready_body(&config), &config, None).is_err());
+}
+
+#[test]
+fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledgement() {
+    let mut config = config();
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(&[]),
+        controller: Some(&[7, 8]),
+    })
+    .unwrap();
+    let original = state.clone();
+    config.restore = Some(state);
+    let request = config.startup_request().unwrap();
+    assert_eq!(&request[..8], b"HXVIST01");
+    assert_eq!(&request[46..49], &[1, 98, 0]); // presence + full source envelope size
+    assert_eq!(&request[49..], original.payload());
+    let mut facts = Vec::new();
+    stamp(&mut facts, config.binding);
+    facts.extend(config.identity.class.bytes());
+    facts.extend(config.identity.binary.executable_sha256);
+    facts.extend(config.identity.binary.info_sha256);
+    facts.extend(config.sample_rate.to_le_bytes());
+    facts.extend(config.quantum.to_le_bytes());
+    facts.extend([config.input_channels, config.output_channels]);
+    facts.extend(3_u32.to_le_bytes());
+    facts.extend(0_u32.to_le_bytes());
+    facts.push(1); // real optional presentation interface
+    facts.extend(&request[46..]);
+    assert!(Facts::decode(&facts, &config).unwrap().restored);
+    let last = facts.len() - 1;
+    facts[last] ^= 1;
+    assert!(
+        Facts::decode(&facts, &config).is_err(),
+        "a different restored envelope cannot acknowledge the requested one"
+    );
+    let ready = ready_body(&config);
+    assert!(Ready::decode(&ready, &config, known()).unwrap().restored);
+    let mut missing_ack = ready;
+    missing_ack[80] = 0;
+    assert!(Ready::decode(&missing_ack, &config, known()).is_err());
+    assert_eq!(
+        config.restore.as_ref().unwrap(),
+        &original,
+        "a normalized final capture never overwrites the caller's canonical state"
+    );
+    let mut changed = config.clone();
+    changed.identity.binary.executable_sha256[0] ^= 1;
+    assert!(matches!(
+        changed.startup_request(),
+        Err(Error::State(hex_plugin_state::Error::BinaryChanged))
+    ));
+    let mut missing = config.clone();
+    missing.restore = Some(
+        hex_plugin_state::encode(State {
+            identity: config.identity,
+            component: None,
+            controller: None,
+        })
+        .unwrap(),
+    );
+    assert!(matches!(
+        missing.startup_request(),
+        Err(Error::State(hex_plugin_state::Error::MissingComponent))
+    ));
+}
+
+#[test]
+fn epoch_requests_match_independent_headers_and_refuse_stale_or_changed_owners() {
+    let config = config();
+    // Independent Python struct.pack fixtures, not this encoder's output.
+    assert_eq!(
+        quiesce(&config, 3).unwrap().as_slice(),
+        hex(
+            "48585651010000000000000000000000010000000000000002000000000000000300000000000000040000000000000003000000000000001800000000000000"
+        )
+    );
+    let next = Binding {
+        graph: 7,
+        epoch: 6,
+        ..config.binding
+    };
+    assert_eq!(
+        resume_request(&config, next, known()).unwrap(),
+        hex(
+            "485856520100000000000100000000000100000000000000020000000000000003000000000000000400000000000000070000000000000006000000000000004d0000005b000000"
+        )
+    );
+    assert_eq!(resume_request(&config, next, None).unwrap().len(), 64);
+    for bad in [
+        config.binding,
+        Binding { root: 9, ..next },
+        Binding {
+            instance: 9,
+            ..next
+        },
+        Binding { graph: 2, ..next },
+        Binding { epoch: 0, ..next },
+        Binding { epoch: 3, ..next },
+    ] {
+        assert!(resume_request(&config, bad, known()).is_err());
+    }
+    assert!(quiesce(&config, u64::MAX).is_err());
+}
+fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    body.extend(config.identity.class.bytes());
+    body.extend(config.identity.binary.executable_sha256);
+    body.extend(config.identity.binary.info_sha256);
+    body.extend(config.sample_rate.to_le_bytes());
+    body.extend(config.quantum.to_le_bytes());
+    body.extend([config.input_channels, config.output_channels]);
+    body.extend(3_u32.to_le_bytes());
+    body.extend(0_u32.to_le_bytes());
+    body.push(1);
+    body.extend(&config.startup_request().unwrap()[46..]);
+    body.extend(sequence.to_le_bytes());
+    body.extend((sequence * u64::from(config.quantum)).to_le_bytes());
+    body
+}
+#[test]
+fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
+    let mut config = config();
+    let body = epoch_body(&config, 3);
+    let facts = quiescent_facts(&body, &config, 3).unwrap();
+    assert_eq!(facts.algorithmic_latency_frames, 3);
+    for at in [2, 34, 50, 82, 114, 122, 134, 135, 138, 146] {
+        let mut bad = body.clone();
+        bad[at] ^= 0x80;
+        assert!(quiescent_facts(&bad, &config, 3).is_err());
+    }
+    assert!(quiescent_facts(&body, &config, 2).is_err());
+    config.binding.epoch += 1;
+    assert!(quiescent_facts(&body, &config, 3).is_err());
+    let mut ready = epoch_body(&config, 3);
+    ready.extend([1, 1]);
+    ready.extend(77_u32.to_le_bytes());
+    ready.extend(91_u32.to_le_bytes());
+    assert_eq!(
+        resumed(&ready, &config, 3, facts, known()).unwrap(),
+        Presentation::Applied
+    );
+    assert!(resumed(&ready, &config, 3, facts, None).is_err());
+    assert!(
+        resumed(
+            &ready,
+            &config,
+            3,
+            Facts {
+                algorithmic_latency_frames: 4,
+                ..facts
+            },
+            known()
+        )
+        .is_err()
+    );
+    let mut unknown = epoch_body(&config, 3);
+    unknown.extend([1, 0]); // applied cannot acknowledge unknown contributions
+    assert!(resumed(&unknown, &config, 3, facts, None).is_err());
+    ready.push(0);
+    assert!(resumed(&ready, &config, 3, facts, known()).is_err());
+}
+
+#[test]
+fn tail_facts_preserve_finite_zero_and_infinite_reports_and_fence_resumption() {
+    let config = config();
+    for tail in [0_u32, 96_000, u32::MAX] {
+        let mut body = epoch_body(&config, 3);
+        body[130..134].copy_from_slice(&tail.to_le_bytes());
+        let facts = quiescent_facts(&body, &config, 3).unwrap();
+        assert_eq!(facts.tail_frames, tail);
+        let mut ready = ready_body(&config);
+        ready[66..70].copy_from_slice(&tail.to_le_bytes());
+        assert_eq!(
+            Ready::decode(&ready, &config, known()).unwrap().tail_frames,
+            tail
+        );
+        body.extend([1, 1]);
+        body.extend(77_u32.to_le_bytes());
+        body.extend(91_u32.to_le_bytes());
+        assert!(resumed(&body, &config, 3, facts, known()).is_ok());
+        assert!(
+            resumed(
+                &body,
+                &config,
+                3,
+                Facts {
+                    tail_frames: tail ^ 1,
+                    ..facts
+                },
+                known()
+            )
+            .is_err()
+        );
+        // An old body with no tail field is not a current preparation or epoch.
+        let mut old = body.clone();
+        old.drain(130..134);
+        assert!(quiescent_facts(&old, &config, 3).is_err());
+    }
 }

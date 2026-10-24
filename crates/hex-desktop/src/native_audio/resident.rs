@@ -24,7 +24,7 @@ pub(super) struct Pending {
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
     pub(super) current_submission: Option<(AudioSourceContext, u64)>,
-    pub(super) retired: Option<(DeviceResourcePublication, u64)>,
+    pub(super) retired: Option<DeviceResourcePublication>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
@@ -79,7 +79,7 @@ impl NativeAudioSink {
                 .resident
                 .retired
                 .as_ref()
-                .map_or(0, |(book, _)| book.unreturned_graphs_on_control());
+                .map_or(0, |book| book.unreturned_graphs_on_control());
             let owners = active.unwrap_or(0).checked_add(retired)?;
             let per_graph = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
                 .checked_add(policy.ordinary_graph_metadata_bytes)?;
@@ -120,13 +120,11 @@ impl NativeAudioSink {
         if control.unreturned_resident_graphs_on_control().is_none() {
             return false;
         }
-        let frames = control
-            .suspend_resident_forwarding_pcm()
-            .unwrap_or(u64::MAX);
+        control.suspend_resident_forwarding_pcm();
         if let Some(book) = control.take_device_resource_publication_on_shutdown() {
             // opened_output clears the prior hold only after its constructor acquires the
             // exclusive lease, before any new publication can create this retirement book.
-            self.resident.retired = Some((book, frames));
+            self.resident.retired = Some(book);
         }
         self.output_hold = Default::default();
         self.ordinary_pcm_frames = 0;
@@ -142,8 +140,8 @@ impl NativeAudioSink {
             self.resident
                 .retired
                 .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |(book, frames)| {
-                    book.admission_on_control(*frames)
+                .map_or(DeviceResourceAdmission::default(), |book| {
+                    book.admission_on_control()
                 }),
             self.resident
                 .pending
@@ -168,7 +166,7 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.poll_section_edit();
-        let section_policy = if matches!(policy, ResidentPublicationPolicy::StoppedArrangement) {
+        let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
                 Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
@@ -245,7 +243,7 @@ impl NativeAudioSink {
                 }
             };
             let policy = match policy {
-                ResidentPublicationPolicy::StoppedArrangement => {
+                ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
                         return Err(ResidentPublicationRefusal {
                             playback,
@@ -266,7 +264,10 @@ impl NativeAudioSink {
                         error: "document replacement must retain before output teardown".into(),
                     });
                 }
-                ResidentPublicationPolicy::FreshIfUnchanged(expected) => {
+                ResidentPublicationPolicy::FreshIfUnchanged(expected)
+                | ResidentPublicationPolicy::SectionWhenReady {
+                    fence: expected, ..
+                } => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
                         expected.output_identity == output_identity
                             && expected.active_audio_revision == actual.expected_active_revision()
@@ -278,15 +279,27 @@ impl NativeAudioSink {
                             error: "audio runtime changed while preparing graph".into(),
                         });
                     };
-                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntimeIfUnchanged(actual)
+                    match policy {
+                        ResidentPublicationPolicy::SectionWhenReady { quantization, .. } => {
+                            hex_audio::prepared::PublicationPolicy::InstallSectionWhenReady {
+                                fence: actual,
+                                quantization,
+                            }
+                        }
+                        _ => {
+                            hex_audio::prepared::PublicationPolicy::InstallFreshRuntimeIfUnchanged(
+                                actual,
+                            )
+                        }
+                    }
                 }
             };
             let retired = self
                 .resident
                 .retired
                 .as_ref()
-                .map_or(DeviceResourceAdmission::default(), |(book, frames)| {
-                    book.admission_on_control(*frames)
+                .map_or(DeviceResourceAdmission::default(), |book| {
+                    book.admission_on_control()
                 });
             let pending = self.resident.pending.as_ref().map_or(
                 DeviceResourceAdmission::default(),
@@ -297,10 +310,10 @@ impl NativeAudioSink {
                     )
                 },
             );
-            let result = control.publish_with_admission_on_control(
+            let result = control.publish_with_admission_and_source_on_control(
                 playback,
                 policy,
-                metadata.context.project_generation,
+                metadata.context,
                 |prospective| admit(&[prospective, retired, pending]),
             );
             return match result {
@@ -348,7 +361,11 @@ impl NativeAudioSink {
                 error: "active audio publication endpoint is closed".into(),
             });
         }
-        if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_)) {
+        if matches!(
+            policy,
+            ResidentPublicationPolicy::FreshIfUnchanged(_)
+                | ResidentPublicationPolicy::SectionWhenReady { .. }
+        ) {
             return Err(ResidentPublicationRefusal {
                 playback,
                 error: "fresh runtime publication requires its original active output".into(),

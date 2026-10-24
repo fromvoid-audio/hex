@@ -567,7 +567,9 @@ impl MidiHistoryEffect {
                             && source
                                 .midi_source(location.clip())
                                 .zip(target.midi_source(location.clip()))
-                                .is_some_and(|(a, b)| a.notes == b.notes)
+                                .is_some_and(|(a, b)| {
+                                    a.notes == b.notes && a.one_shot_boundary == b.one_shot_boundary
+                                })
                     }
                     Kind::Volume { location } => {
                         matching_clip_shell(source, target, location, false, true)
@@ -596,6 +598,7 @@ fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatT
                 && a.loop_start() == b.loop_start()
                 && a.loop_end() == b.loop_end()
                 && a.looping() == b.looping()
+                && a.one_shot_boundary() == b.one_shot_boundary()
         }
     }
 }
@@ -606,6 +609,7 @@ fn source_shell(a: &MidiSource, b: &MidiSource) -> bool {
         loop_start,
         loop_end,
         looping,
+        one_shot_boundary,
         notes: _,
     } = a;
     (
@@ -614,12 +618,14 @@ fn source_shell(a: &MidiSource, b: &MidiSource) -> bool {
         *loop_start,
         *loop_end,
         *looping,
+        *one_shot_boundary,
     ) == (
         b.source_length,
         b.source_start,
         b.loop_start,
         b.loop_end,
         b.looping,
+        b.one_shot_boundary,
     )
 }
 fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
@@ -819,6 +825,7 @@ fn birth_source(
             && source.loop_start == BeatTime::ZERO
             && source.loop_end == length
             && !source.looping
+            && source.one_shot_boundary == crate::MidiOneShotBoundary::SourceEnd
     }
 }
 fn matching_clip_shell(
@@ -837,6 +844,9 @@ fn matching_clip_shell(
                     .zip(b.midi_clips().iter().find(|c| c.id == clip))
                     .is_some_and(|(a, b)| {
                         let MidiClip {
+                            content_view,
+                            active,
+                            playback_offset,
                             name,
                             flavor,
                             id,
@@ -845,7 +855,10 @@ fn matching_clip_shell(
                             source: _,
                             volume,
                         } = a;
-                        name == &b.name
+                        content_view == &b.content_view
+                            && active == &b.active
+                            && playback_offset == &b.playback_offset
+                            && name == &b.name
                             && flavor == &b.flavor
                             && (volume_edit || volume == &b.volume)
                             && id == &b.id
@@ -858,13 +871,17 @@ fn matching_clip_shell(
             match (a.session_cell(track, scene), b.session_cell(track, scene)) {
                 (Some(SessionCellContent::Midi(a)), Some(SessionCellContent::Midi(b))) => {
                     let crate::SessionMidiClip {
+                        active,
+                        playback_offset,
                         id,
                         name,
                         flavor,
                         source: _,
                         volume,
                     } = a;
-                    *id == clip
+                    *active == b.active
+                        && *playback_offset == b.playback_offset
+                        && *id == clip
                         && b.id == clip
                         && *name == b.name
                         && *flavor == b.flavor

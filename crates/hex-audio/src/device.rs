@@ -40,9 +40,37 @@ impl PreparedOutput {
         expected_sample_rate: Option<u32>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, false)?.into_legacy()
+        open_prepared(expected_sample_rate, lease, PreparedOutputKind::Legacy)?.into_legacy()
     }
 }
+/// Explicit output construction policy. Ordinary outputs preserve the device
+/// default; only a plugin-capable open requests the bridge's finite buffer
+/// profile. This is an off-callback request, never proof of actual delivery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerOutputProfile {
+    #[default]
+    DeviceDefault,
+    PluginBridge,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedOutputKind {
+    Legacy,
+    Worker(WorkerOutputProfile),
+}
+impl PreparedOutputKind {
+    fn physical_callback_request(
+        self,
+        supported: cpal::SupportedBufferSize,
+    ) -> Result<Option<u16>, String> {
+        match self {
+            Self::Worker(WorkerOutputProfile::PluginBridge) => {
+                bridge_callback_request(supported).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 /// Worker-owned native output. Only take_client() may deliver its UI endpoint;
 /// configure the virgin publication Root before that one-way boundary.
 pub struct WorkerPreparedOutput {
@@ -56,13 +84,17 @@ pub struct WorkerPreparedOutput {
 impl WorkerPreparedOutput {
     /// Blocking device setup, intended only for the existing lifecycle worker.
     pub fn open() -> Result<Self, String> {
-        Self::open_with_lease(None, lifecycle::Lease::acquire()?)
+        Self::open_with_profile(WorkerOutputProfile::DeviceDefault)
     }
-    pub(crate) fn open_with_lease(
-        expected_sample_rate: Option<u32>,
-        lease: lifecycle::Lease,
-    ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, true)?.into_worker()
+    /// Select before opening/exposing the actual backend. Never call this as a
+    /// hidden device reconfiguration during insertion or Play.
+    pub fn open_with_profile(profile: WorkerOutputProfile) -> Result<Self, String> {
+        open_prepared(
+            None,
+            lifecycle::Lease::acquire()?,
+            PreparedOutputKind::Worker(profile),
+        )?
+        .into_worker()
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
@@ -107,13 +139,14 @@ impl Opened {
 pub(crate) fn open_prepared(
     expected_sample_rate: Option<u32>,
     lease: lifecycle::Lease,
-    worker: bool,
+    kind: PreparedOutputKind,
 ) -> Result<Opened, String> {
+    let worker = matches!(kind, PreparedOutputKind::Worker(_));
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
-    let config = supported.config();
+    let mut config = supported.config();
     validate_expected_rate(expected_sample_rate, config.sample_rate)?;
     if config.channels == 0 {
         return Err("output device has no channels".into());
@@ -124,6 +157,14 @@ pub(crate) fn open_prepared(
         cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
     ) {
         return Err(format!("unsupported output format: {sample_format:?}"));
+    }
+
+    // CPAL's CoreAudio fixed request changes a device-wide property. Make it
+    // explicit on the existing lifecycle open lane; ordinary native outputs
+    // retain Default, including devices reporting Unknown buffer ranges.
+    let physical_callback_request = kind.physical_callback_request(*supported.buffer_size())?;
+    if let Some(frames) = physical_callback_request {
+        config.buffer_size = cpal::BufferSize::Fixed(u32::from(frames));
     }
 
     let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
@@ -158,7 +199,7 @@ pub(crate) fn open_prepared(
         Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
         None => prepared::channel(config.sample_rate),
     };
-    let (control, callback) = match channel_result {
+    let (mut control, mut callback) = match channel_result {
         Ok(channel) => channel,
         Err(error) => {
             // Even pre-channel failure transfers the actual worker/lease to
@@ -170,6 +211,15 @@ pub(crate) fn open_prepared(
             return Err(error.to_string());
         }
     };
+    if let Some(frames) = physical_callback_request {
+        if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
+            drop(lifecycle::StreamOwner::failed_preparation_custody(
+                lease,
+                spectrum_reaper,
+            ));
+            return Err(error.to_string());
+        }
+    }
     let root = control.native_candidate_root();
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
         if worker {
@@ -232,6 +282,22 @@ pub(crate) fn open_prepared(
     })
 }
 
+/// Select within the device's reported finite range and the existing bridge
+/// cap. Unknown/invalid ranges refuse rather than infer a bound from scratch
+/// chunks. A backend can still refuse the fixed request during stream creation.
+fn bridge_callback_request(supported: cpal::SupportedBufferSize) -> Result<u16, String> {
+    let cpal::SupportedBufferSize::Range { min, max } = supported else {
+        return Err(
+            "output device does not report a bounded buffer range for plugin processing".into(),
+        );
+    };
+    let frames = max.min(hex_plugin_host::transport::MAX_FRAMES as u32);
+    if min == 0 || min > max || min > frames {
+        return Err("output device cannot provide a supported plugin callback size".into());
+    }
+    u16::try_from(frames).map_err(|_| "plugin callback size exceeds its supported range".into())
+}
+
 fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), String> {
     if let Some(expected) = expected {
         if expected != actual {
@@ -285,6 +351,11 @@ where
                     );
                     return;
                 }
+                if let Err(error) = callback.begin_native_effect_callback(complete / channels) {
+                    data.fill(T::from_sample(0.0));
+                    callback.report_render_fault(Some(&error), status.position.load(Relaxed));
+                    return;
+                }
                 for chunk in data[..complete].chunks_mut(channels * block.len()) {
                     let frames = chunk.len() / channels;
                     let block_start_frame = status.position.load(Relaxed);
@@ -323,13 +394,22 @@ where
     )
 }
 
-fn valid_transport_buffer(callback: &prepared::Callback, samples: usize, channels: usize) -> bool {
-    callback.output_transport_quantum().is_none_or(|quantum| {
-        channels != 0 && samples % channels == 0 && samples / channels <= quantum
-    })
+pub(crate) fn valid_transport_buffer(
+    callback: &prepared::Callback,
+    samples: usize,
+    channels: usize,
+) -> bool {
+    callback
+        .output_transport_quantum()
+        .into_iter()
+        .chain(callback.native_effect_quantum())
+        .min()
+        .is_none_or(|quantum| {
+            channels != 0 && samples % channels == 0 && samples / channels <= quantum
+        })
 }
 
-fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
+pub(crate) fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
     callback: &mut prepared::Callback,
     output: &mut [T],
     source: &mut [Frame],
@@ -357,7 +437,10 @@ where
         // Keep ordinary output on its existing direct conversion path.
         rendered.is_ok() && copy_host_chunk(output, source, channels)
     };
+    let delivery = callback.finish_native_effect_callback(valid);
+    let valid = finish_transport_copy(delivery, valid, rendered.is_ok(), output, source, channels);
     let _ = callback.finish_spectrum_block(capture_start, valid);
+    callback.finish_midi_recording_quantum(valid);
     if !valid {
         output.fill(T::from_sample(0.0));
         source.fill([0.0; 2]);
@@ -401,6 +484,9 @@ where
 
 #[cfg(test)]
 mod plugin_transport_tests;
+
+#[cfg(test)]
+mod physical_callback_tests;
 
 #[cfg(test)]
 mod handoff_profile;
@@ -476,7 +562,13 @@ pub(crate) fn headless_worker_output(
     rate: u32,
 ) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
     let lease = lifecycle::Lease::acquire()?;
-    let (control, callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    let (mut control, mut callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    control
+        .configure_physical_callback_request(
+            &mut callback,
+            hex_plugin_host::transport::MAX_FRAMES as u16,
+        )
+        .map_err(|error| error.to_string())?;
     let root = control.native_candidate_root();
     let (data, errors, terminals, client, mut publication) =
         crate::native_callback_owner::reserve_native_worker(control, callback, None);
@@ -581,8 +673,11 @@ mod tests {
                     };
                     let sample = index * channels + channel;
                     assert_eq!(floats[sample].to_bits(), expected.to_bits());
-                    assert_eq!(signed[sample], cpal::Sample::from_sample(expected));
-                    assert_eq!(unsigned[sample], cpal::Sample::from_sample(expected));
+                    assert_eq!(signed[sample], <i16 as cpal::Sample>::from_sample(expected));
+                    assert_eq!(
+                        unsigned[sample],
+                        <u16 as cpal::Sample>::from_sample(expected)
+                    );
                 }
             }
         }
@@ -903,3 +998,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "device_midi_recording_tests.rs"]
+mod midi_recording_tests;

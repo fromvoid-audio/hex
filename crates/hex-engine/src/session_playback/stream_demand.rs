@@ -89,10 +89,7 @@ impl SessionPlayback {
         if window.frames == 0 {
             return Ok(window);
         }
-        let region = (!self.linear_arrangement_export)
-            .then(|| self.revision.arrangement().loop_region())
-            .flatten()
-            .filter(|region| region.enabled());
+        let region = self.active_loop_region_at(arrangement_frame, loop_pass);
         if let Some(region) = region {
             window.arrangement_frame =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)
@@ -173,6 +170,9 @@ impl SessionPlayback {
                         .session()
                         .audio_clip(clip)
                         .ok_or(Invalid("stream demand clip missing"))?;
+                    if !clip.active {
+                        continue;
+                    }
                     if let PreparedAudioSource::Streamed(source) = clip.source() {
                         if let Some(elapsed) = performance_frame.checked_sub(launch_frame) {
                             if let Some(start) = clip

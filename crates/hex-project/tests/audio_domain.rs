@@ -434,6 +434,8 @@ fn lower_fade_resize_crops_musical_warp_events_without_changing_the_processing_r
     let fade = ClipFade::new(48_000, 0, 12_000, 10_000)
         .unwrap()
         .with_shape(1000, 2000, 700, -600)
+        .unwrap()
+        .with_curve_positions(250, 750)
         .unwrap();
     editor
         .execute(Command::SetClipFadeEnvelope { clip, fade })
@@ -496,6 +498,13 @@ fn lower_fade_resize_crops_musical_warp_events_without_changing_the_processing_r
         }
         assert_eq!(changed.retained_fade().in_curve(), 700);
         assert_eq!(changed.retained_fade().out_curve(), -600);
+        assert_eq!(
+            (
+                changed.retained_fade().in_position(),
+                changed.retained_fade().out_position()
+            ),
+            (250, 750)
+        );
         let snapshot = Project::from_snapshot(editor.project().snapshot()).unwrap();
         assert_eq!(&snapshot, editor.project());
         assert!(editor.undo());

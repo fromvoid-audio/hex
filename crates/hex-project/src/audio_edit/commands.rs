@@ -4,7 +4,10 @@ pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Inva
     let Some(edit) = &clip.edit else {
         return Ok(());
     };
-    if edit.placement.is_some() || matches!(edit.timing, AudioClipTiming::Frozen { .. }) {
+    if edit.content_view.is_some()
+        || edit.placement.is_some()
+        || matches!(edit.timing, AudioClipTiming::Frozen { .. })
+    {
         let (start, end) = AudioViewProjection::from_clip(clip, tempo)?.outer_frame_bounds();
         clip.start = start;
         clip.duration = end - start;
@@ -74,6 +77,9 @@ pub(crate) fn trim_view(
         .edit
         .as_ref()
         .ok_or(Invalid("audio crop has no domain"))?;
+    if edit.content_view.is_some() {
+        return super::content::trim_content(clip, edge, frame, tempo);
+    }
     if edit.placement.is_some() {
         return view::trim_placement(clip, edge, frame, tempo);
     }
@@ -353,6 +359,21 @@ pub(crate) fn reset_region(
     domain.warp_enabled = old.domain.warp_enabled;
     if old.live_musical_start().is_some() {
         edit.anchor(start, project.tempo_map())?;
+    }
+    if let Some(view) = old.content_view {
+        edit.content_view = Some(AudioContentView {
+            restore_plain: false,
+            base_view_start: edit.view_start,
+            base_view_end: edit.view_end,
+            base_placement: edit.placement,
+            base_start_delta: 0,
+            window: crate::ContentWindow::new(
+                0,
+                edit.placement
+                    .map_or(edit.view_end - edit.view_start, |p| p.outer_length.length()),
+                view.window.reversed,
+            )?,
+        });
     }
     clip.edit = Some(Arc::new(edit));
     project_clip(&mut clip, project.tempo_map())?;

@@ -330,6 +330,10 @@ impl EditorView {
             self.theme_settings.focus.focus(window);
             return;
         }
+        if self.controller_input_is_open() {
+            self.close_controller_input_menu(window, cx);
+        }
+        self.prepare_controller_settings(cx);
         self.theme_settings.open = true;
         if self.theme_settings.loading {
             self.theme_settings.error = Some("loading theme settings…".into());
@@ -976,6 +980,7 @@ impl EditorView {
             .text_color(rgb(style.text))
             .shadow_lg()
             .child(settings)
+            .child(self.controller_input_settings(cx))
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);
@@ -1024,6 +1029,7 @@ impl EditorView {
             div()
                 .id("theme settings backdrop")
                 .debug_selector(|| "theme settings backdrop".into())
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
@@ -1206,7 +1212,7 @@ mod tests {
             slider.origin.x + slider.size.width / 2.0,
             slider.origin.y + slider.size.height / 2.0,
         );
-        let end = point(start.x - px(12.0), start.y);
+        let end = point(start.x, start.y + px(12.0));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -1324,14 +1330,25 @@ mod tests {
             role.origin.x + role.size.width / 2.0,
             role.origin.y + role.size.height / 2.0,
         );
+        // Exercise modal occlusion independently of which settings row happens
+        // to align with the underlying ruler as sections are added or resized.
+        let overlap = point(center.x, ruler.origin.y + ruler.size.height / 2.0);
+        assert!(ruler.contains(&overlap) && panel.contains(&overlap));
+        visual.simulate_mouse_down(overlap, MouseButton::Left, Modifiers::default());
         assert!(
-            ruler.contains(&center),
-            "fixture must exercise the underlying ruler hit area"
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "the modal surface blocks the underlying ruler"
         );
+        visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         assert!(
             !editor.read_with(cx, |view, _| view.scrub_active()),
             "modal clicks must not start an underlying seek"
+        );
+        assert!(
+            editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()),
+            "modal clicks must not capture the underlying loop rail"
         );
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();

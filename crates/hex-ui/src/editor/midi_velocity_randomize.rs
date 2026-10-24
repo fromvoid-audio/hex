@@ -79,6 +79,7 @@ impl EditorView {
             });
         match result {
             Ok(Some(notes)) => {
+                self.finish_live_midi_marquees();
                 self.cancel_midi_note_gesture();
                 if self.enqueue(Request::Edit(Command::UpdateMidiNotes {
                     clip: captured.clip,

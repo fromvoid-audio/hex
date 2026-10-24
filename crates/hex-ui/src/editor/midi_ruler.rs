@@ -288,6 +288,7 @@ impl EditorView {
             .key_context("hex_midi")
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::control("clip timeline"),
                     description: "click: cue playback · drag: select time · drag marker: set start"
                         .into(),
                 })
@@ -329,6 +330,12 @@ impl EditorView {
                     ))),
             );
         }
+        ruler = ruler.children(self.arrange_midi_highlights(
+            start,
+            span,
+            0.0,
+            "arrange-reflected-ruler-range",
+        ));
         ruler = ruler.child(
             canvas(
                 |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
@@ -413,9 +420,7 @@ impl EditorView {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
-                            if view.midi_time_selection.gesture.is_some()
-                                && !view.midi_grid_time_selection_active()
-                            {
+                            if view.midi_ruler_time_selection_active() {
                                 if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_midi_time_selection(
                                         b,
@@ -457,9 +462,7 @@ impl EditorView {
                             return;
                         }
                         up_entity.update(cx, |view, cx| {
-                            if view.midi_time_selection.gesture.is_some()
-                                && !view.midi_grid_time_selection_active()
-                            {
+                            if view.midi_ruler_time_selection_active() {
                                 view.finish_midi_time_selection(
                                     b,
                                     f32::from(event.position.x),
@@ -507,7 +510,7 @@ impl EditorView {
         );
         let source_row=div().h(px(18.0)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
-                .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { description:"drag start marker · drag blank ruler to select time · cmd+d duplicate · hold cmd/control to invert snap · no seek".into() }).into()))
+                .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("clip start"), description:"drag start marker · drag blank ruler to select time · cmd+d duplicate · hold cmd/control to invert snap · no seek".into() }).into()))
             .children([ruler]);
         div()
             .flex_shrink_0()

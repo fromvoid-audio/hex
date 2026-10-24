@@ -1,6 +1,10 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 #![cfg(feature = "allocation-probe")]
 
+#[path = "callback_allocations/cursor_loop.rs"]
+mod cursor_loop;
+#[path = "callback_allocations/finite_bounce.rs"]
+mod finite_bounce;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
 #[path = "callback_allocations/project_tuning.rs"]

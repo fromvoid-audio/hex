@@ -138,6 +138,142 @@ fn global_tempo_preserves_frozen_event_and_curved_fade_pcm_through_move_split_co
 }
 
 #[test]
+fn faster_global_tempo_crops_adjacent_audio_without_changing_retained_prefix_pcm() {
+    for repeated_frozen_root in [false, true] {
+        let (mut editor, first, media) = fixture(repeated_frozen_root);
+        let track = editor.project().tracks()[0].id();
+        let asset = editor.project().clip(first).unwrap().asset();
+        if repeated_frozen_root {
+            editor
+                .execute(Command::SetAudioClipPitch {
+                    clip: first,
+                    cents: 123,
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipSourceGain {
+                    clip: first,
+                    points: vec![
+                        SourceGainPoint {
+                            frame: 0,
+                            gain_q16: 65_536,
+                        },
+                        SourceGainPoint {
+                            frame: 4_000,
+                            gain_q16: 32_768,
+                        },
+                        SourceGainPoint {
+                            frame: 8_000,
+                            gain_q16: 65_536,
+                        },
+                    ],
+                })
+                .unwrap();
+            let settings = default_audio_warp(
+                editor.project().clip(first).unwrap(),
+                editor.project().tempo_map(),
+                WarpMode::RePitch,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip: first,
+                    settings: Some(settings),
+                })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip: first,
+                    settings: None,
+                })
+                .unwrap();
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip: first,
+                    edge: hex_project::TrimEdge::Right,
+                    frame: 1_000,
+                })
+                .unwrap();
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip: first,
+                    operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                        project_frame: 8_000,
+                    },
+                })
+                .unwrap();
+        }
+        let mut ids = vec![first];
+        for start in [8_000, 16_000] {
+            let Created::Clip(id) = editor
+                .execute(Command::PlaceClip {
+                    track,
+                    asset,
+                    start,
+                    duration: 8_000,
+                    source_offset: 0,
+                    // The middle one-shot has an intentional silent tail. A
+                    // prefix crop beyond that source end must remain legal.
+                    source_length: if start == 8_000 { 1_000 } else { 8_000 },
+                    looping: false,
+                })
+                .unwrap()
+            else {
+                panic!("audio")
+            };
+            ids.push(id);
+        }
+        let before = editor.project().clone();
+        let context = AudioTransformPreparation::default();
+        let original = prepare(&editor, &media, &context);
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: Tempo::new(333_333_333).unwrap(),
+            })
+            .unwrap();
+        let changed = editor.project().clone();
+        let warm = prepare(&editor, &media, &context);
+        let cold = prepare(&editor, &media, &AudioTransformPreparation::default());
+        for (index, id) in ids.iter().copied().enumerate() {
+            let old = before.clip(id).unwrap();
+            let current = changed.clip(id).unwrap();
+            let expected_start = changed
+                .tempo_map()
+                .beat_to_frame(before.tempo_map().frame_to_beat(old.start()).unwrap())
+                .unwrap();
+            assert_eq!(current.start(), expected_start);
+            let expected_length = if let Some(next) = ids.get(index + 1) {
+                changed.clip(*next).unwrap().start() - current.start()
+            } else {
+                8_000
+            };
+            assert_eq!(current.duration(), expected_length);
+            let expected = render(&original, old.start(), expected_length as usize, 31);
+            if index == 1 {
+                assert!(expected[..1_000].iter().any(|frame| *frame != [0.0; 2]));
+                assert!(expected[1_000..].iter().all(|frame| *frame == [0.0; 2]));
+            }
+            assert_eq!(
+                render(&warm, current.start(), expected_length as usize, 257),
+                expected,
+                "warm prefix {index}, retained repeat={repeated_frozen_root}"
+            );
+            assert_eq!(
+                render(&cold, current.start(), expected_length as usize, 63),
+                expected,
+                "cold prefix {index}, retained repeat={repeated_frozen_root}"
+            );
+        }
+        // Preparation must consume the candidate without rewriting authoring data.
+        assert_eq!(editor.project(), &changed);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &changed);
+    }
+}
+
+#[test]
 fn global_tempo_warped_region_and_midi_note_edges_follow_new_clock() {
     let (mut editor, clip, media) = fixture(false);
     let fade = editor.project().clip(clip).unwrap().fade();
@@ -356,99 +492,106 @@ fn section_reorder_preserves_frozen_negative_reference_event_fade_pcm_and_both_c
 
 #[test]
 fn global_tempo_absorbs_section_projection_without_changing_fragment_pcm_or_split_history() {
-    use hex_project::AudioClipTiming;
-    let (mut editor, clip, media) = fixture(true);
-    editor
-        .execute(Command::SetAudioClipMusical {
-            clip,
-            enabled: true,
-        })
-        .unwrap();
-    let source = section(&mut editor, 1, 2);
-    let target = section(&mut editor, 3, 4);
-    editor
-        .execute(Command::ReorderSectionBefore {
-            section: source,
-            before: target,
-        })
-        .unwrap();
-    let context = AudioTransformPreparation::default();
-    let before = editor.project().clone();
-    let prepared = prepare(&editor, &media, &context);
-    let pieces: Vec<_> = before.tracks()[0]
-        .clips()
-        .iter()
-        .map(|c| {
-            (
-                c.id(),
-                c.start(),
-                render(&prepared, c.start(), c.duration() as usize, 63),
-            )
-        })
-        .collect();
-    assert!(
-        before.tracks()[0].clips().iter().all(|c| c
-            .audio_edit()
-            .unwrap()
-            .processing_projection
-            .is_some())
-    );
-    editor
-        .execute(Command::SetProjectTempo {
-            tempo: Tempo::new(60_000_000).unwrap(),
-        })
-        .unwrap();
-    let changed = editor.project().clone();
-    for (id, start, pcm) in &pieces {
-        let c = changed.clip(*id).unwrap();
-        let edit = c.audio_edit().unwrap();
-        assert_eq!(c.start(), start * 2);
-        assert_eq!(c.duration(), pcm.len() as u64);
-        assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
-        assert!(edit.processing_projection.is_none());
-        assert_eq!(
-            (edit.placement_start_offset, edit.placement_end_offset),
-            (0, 0)
+    for reversed in [false, true] {
+        use hex_project::AudioClipTiming;
+        let (mut editor, clip, media) = fixture(true);
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
+        let source = section(&mut editor, 1, 2);
+        let target = section(&mut editor, 3, 4);
+        editor
+            .execute(Command::ReorderSectionBefore {
+                section: source,
+                before: target,
+            })
+            .unwrap();
+        let context = AudioTransformPreparation::default();
+        let before = editor.project().clone();
+        let prepared = prepare(&editor, &media, &context);
+        let pieces: Vec<_> = before.tracks()[0]
+            .clips()
+            .iter()
+            .map(|c| {
+                (
+                    c.id(),
+                    c.start(),
+                    render(&prepared, c.start(), c.duration() as usize, 63),
+                    c.audio_edit().unwrap().processing_origin().unwrap(),
+                )
+            })
+            .collect();
+        assert!(
+            before.tracks()[0].clips().iter().all(|c| c
+                .audio_edit()
+                .unwrap()
+                .processing_projection
+                .is_some())
         );
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let changed = editor.project().clone();
+        for (id, start, pcm, origin) in &pieces {
+            let c = changed.clip(*id).unwrap();
+            let edit = c.audio_edit().unwrap();
+            assert_eq!(c.start(), start * 2);
+            assert_eq!(c.duration(), pcm.len() as u64);
+            assert!(matches!(edit.timing, AudioClipTiming::Frozen { .. }));
+            assert!(edit.processing_projection.is_none());
+            assert_eq!(edit.processing_origin().unwrap(), *origin);
+            assert_eq!(
+                (edit.placement_start_offset, edit.placement_end_offset),
+                (0, 0)
+            );
+            assert_eq!(
+                render(
+                    &prepare(&editor, &media, &context),
+                    c.start(),
+                    pcm.len(),
+                    257
+                ),
+                *pcm
+            );
+        }
+        let c = editor.project().clip(pieces[0].0).unwrap();
+        let (id, start, length) = (c.id(), c.start(), c.duration());
+        let all_before_split = render(&prepare(&editor, &media, &context), 0, 16000, 63);
+        editor
+            .execute(Command::SplitClip {
+                clip: id,
+                frame: start + length / 2,
+            })
+            .unwrap();
         assert_eq!(
             render(
-                &prepare(&editor, &media, &context),
-                c.start(),
-                pcm.len(),
-                257
+                &prepare(&editor, &media, &AudioTransformPreparation::default()),
+                0,
+                16000,
+                127
             ),
-            *pcm
+            all_before_split
         );
+        // IDs allocated by split retain the canonical monotonic high-water mark
+        // through Undo; all authored state and processing coordinates restore.
+        let compare = |actual: &Project, expected: &Project| {
+            let mut restored = actual.snapshot();
+            restored.next_id = expected.snapshot().next_id;
+            assert_eq!(restored, expected.snapshot());
+        };
+        assert!(editor.undo());
+        compare(editor.project(), &changed);
+        assert!(editor.undo());
+        compare(editor.project(), &before);
+        assert!(editor.redo());
+        compare(editor.project(), &changed);
     }
-    let c = editor.project().clip(pieces[0].0).unwrap();
-    let (id, start, length) = (c.id(), c.start(), c.duration());
-    let all_before_split = render(&prepare(&editor, &media, &context), 0, 16000, 63);
-    editor
-        .execute(Command::SplitClip {
-            clip: id,
-            frame: start + length / 2,
-        })
-        .unwrap();
-    assert_eq!(
-        render(
-            &prepare(&editor, &media, &AudioTransformPreparation::default()),
-            0,
-            16000,
-            127
-        ),
-        all_before_split
-    );
-    // IDs allocated by split retain the canonical monotonic high-water mark
-    // through Undo; all authored state and processing coordinates restore.
-    let compare = |actual: &Project, expected: &Project| {
-        let mut restored = actual.snapshot();
-        restored.next_id = expected.snapshot().next_id;
-        assert_eq!(restored, expected.snapshot());
-    };
-    assert!(editor.undo());
-    compare(editor.project(), &changed);
-    assert!(editor.undo());
-    compare(editor.project(), &before);
-    assert!(editor.redo());
-    compare(editor.project(), &changed);
 }

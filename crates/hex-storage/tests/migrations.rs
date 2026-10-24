@@ -33,6 +33,102 @@ fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
 
+fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    let event_fades: Vec<_> = old["audio_event_state"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let events: Vec<_> = row["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| json!({"event":event["id"],"fade":null}))
+                .collect();
+            json!({"clip":row["clip"],"events":events})
+        })
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("audio_event_fades"),
+        Some(json!(event_fades))
+    );
+    let views: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| {
+            [("audio_clips", "audio"), ("midi_clips", "midi")]
+                .into_iter()
+                .flat_map(move |(field, kind)| {
+                    track[field].as_array().unwrap().iter().map(
+                        move |clip| json!({"clip":clip["id"],"view":{"kind":kind,"view":null}}),
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("content_views"),
+        Some(json!(views))
+    );
+    let mut activation: Vec<Value> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| {
+            track["audio_clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .chain(track["midi_clips"].as_array().unwrap())
+        })
+        .map(|clip| json!({"clip":clip["id"],"active":true,"playback_offset_raw":0}))
+        .collect();
+    activation.extend(old["session"]["cells"].as_array().unwrap().iter()
+        .filter(|cell| cell["content"]["kind"] != "stop")
+        .map(|cell| json!({"clip":cell["content"]["clip"]["id"],"active":true,"playback_offset_raw":0})));
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("clip_activation"),
+        Some(json!(activation))
+    );
+
+    let mut policies: Vec<Value> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["midi_clips"].as_array().unwrap())
+        .map(|clip| json!({"clip":clip["id"],"boundary":"source_end"}))
+        .collect();
+    policies.extend(
+        old["session"]["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|cell| cell["content"]["kind"] == "midi")
+            .map(|cell| json!({"clip":cell["content"]["clip"]["id"],"boundary":"source_end"})),
+    );
+    assert_eq!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("midi_one_shot_boundaries"),
+        Some(json!(policies))
+    );
+
+    let expected: Vec<_> = old["fade_shapes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| json!({"clip":row["clip"],"in_position":500,"out_position":500}))
+        .collect();
+    assert_eq!(
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove("fade_curve_positions"),
+        Some(json!(expected))
+    );
+}
+
 #[test]
 fn historical_encoders_upgrade_without_losing_any_saved_field() {
     for original in FIXTURES {
@@ -43,6 +139,7 @@ fn historical_encoders_upgrade_without_losing_any_saved_field() {
         let mut current = value(&current_bytes);
         assert_eq!(current["version"], CURRENT_SCHEMA_VERSION);
         current["version"] = old["version"].clone();
+        assert_migrated_defaults(&mut current, &old);
         if old.get("arrangement_sections").is_none() {
             assert_eq!(
                 current
@@ -92,7 +189,8 @@ fn supplied_volume_and_section_state_survives_upgrade() {
     for row in old["midi_clip_volumes"]["clips"].as_array_mut().unwrap() {
         row["points"] = json!([{"beat_raw":0,"incoming":0.375,"value":0.375}]);
     }
-    let encoded = value(&encode(&decode(&bytes(&old)).unwrap()).unwrap());
+    let mut encoded = value(&encode(&decode(&bytes(&old)).unwrap()).unwrap());
+    assert_migrated_defaults(&mut encoded, &old);
     old["version"] = CURRENT_SCHEMA_VERSION.into();
     assert_eq!(encoded, old);
 }
@@ -230,7 +328,9 @@ fn historical_edited_audio_and_automation_keep_every_value() {
         }
         expected["version"] = CURRENT_SCHEMA_VERSION.into();
         let project = decode(fixture).unwrap();
-        assert_eq!(value(&encode(&project).unwrap()), expected);
+        let mut current = value(&encode(&project).unwrap());
+        assert_migrated_defaults(&mut current, &expected);
+        assert_eq!(current, expected);
         assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
         let mut editor = Editor::new(project.clone(), 8).unwrap();
         editor.execute(Command::MasterGain { gain: 0.25 }).unwrap();
