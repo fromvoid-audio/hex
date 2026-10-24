@@ -6,6 +6,9 @@ use std::collections::VecDeque;
 struct HistoryEntry {
     project: Project,
     midi_effect: Option<crate::MidiHistoryEffect>,
+    // Structural intent can affect only markers in an empty arrangement.
+    // Snapshot audio differences cannot recover the required publication law.
+    section_publication: bool,
     // Ephemeral history-edge custody, never saved project state. Both directions
     // replace baked/live source ownership under the stopped Arrangement gate.
     stopped_bounce: bool,
@@ -75,6 +78,17 @@ impl Editor {
         .midi_effect
     }
 
+    /// Origin of the actual adjacent structural section edge. The same flag
+    /// follows ordinary/prepared Undo and Redo; refusals and no-ops retain it.
+    pub fn next_section_history_requires_publication(&self, redo: bool) -> bool {
+        if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        }
+        .is_some_and(|entry| entry.section_publication)
+    }
+
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
         self.execute_validated(command, |_| Ok(()))
     }
@@ -124,6 +138,7 @@ impl Editor {
         require_midi: bool,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        let section_publication = command.requires_section_publication();
         let stopped_bounce = matches!(
             &command,
             Command::CommitArrangementBounce { in_place: true, .. }
@@ -168,6 +183,7 @@ impl Editor {
         self.undo.push_back(HistoryEntry {
             project: previous,
             midi_effect: effect,
+            section_publication,
             stopped_bounce,
         });
         self.redo.clear();
@@ -235,6 +251,7 @@ impl Editor {
         if commands.len() > crate::MAX_CLIPS {
             return Err(E::from(Invalid("batch command limit reached")));
         }
+        let section_publication = commands.iter().any(Command::requires_section_publication);
         let mut results = Vec::new();
         results
             .try_reserve_exact(commands.len())
@@ -266,6 +283,7 @@ impl Editor {
             self.undo.push_back(HistoryEntry {
                 project: previous,
                 midi_effect: None,
+                section_publication,
                 stopped_bounce: false,
             });
             self.redo.clear();
@@ -284,6 +302,7 @@ impl Editor {
         self.redo.push(HistoryEntry {
             project: std::mem::replace(&mut self.project, previous.project),
             midi_effect: previous.midi_effect,
+            section_publication: previous.section_publication,
             stopped_bounce: previous.stopped_bounce,
         });
         true
@@ -308,6 +327,7 @@ impl Editor {
         };
         let mut candidate = previous.project.clone();
         let effect = previous.midi_effect;
+        let section_publication = previous.section_publication;
         let stopped_bounce = previous.stopped_bounce;
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
@@ -321,6 +341,7 @@ impl Editor {
         self.redo.push(HistoryEntry {
             project: std::mem::replace(&mut self.project, candidate),
             midi_effect: effect,
+            section_publication,
             stopped_bounce,
         });
         Ok(Some(prepared))
@@ -335,6 +356,7 @@ impl Editor {
         self.undo.push_back(HistoryEntry {
             project: std::mem::replace(&mut self.project, next.project),
             midi_effect: next.midi_effect,
+            section_publication: next.section_publication,
             stopped_bounce: next.stopped_bounce,
         });
         true
@@ -359,6 +381,7 @@ impl Editor {
         };
         let mut candidate = next.project.clone();
         let effect = next.midi_effect;
+        let section_publication = next.section_publication;
         let stopped_bounce = next.stopped_bounce;
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
@@ -375,6 +398,7 @@ impl Editor {
         self.undo.push_back(HistoryEntry {
             project: std::mem::replace(&mut self.project, candidate),
             midi_effect: effect,
+            section_publication,
             stopped_bounce,
         });
         Ok(Some(prepared))
@@ -562,5 +586,82 @@ mod batch_tests {
         );
         assert_eq!(editor.project(), &before);
         assert!(editor.can_redo());
+    }
+}
+
+#[cfg(test)]
+mod section_history_tests {
+    use super::*;
+    #[test]
+    fn structural_origin_survives_batch_refusal_noop_and_both_history_paths() {
+        for batch in [false, true] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::ArrangementSection(section) = editor
+                .execute(Command::AddArrangementSection {
+                    name: "one".into(),
+                    color: crate::ElementColor::Blue,
+                    start: crate::BeatTime::ZERO,
+                    end: crate::BeatTime::from_quarters(2).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            assert!(!editor.next_section_history_requires_publication(false));
+            let command = Command::DuplicateArrangementSection(section);
+            if batch {
+                editor
+                    .execute_many_prepared(vec![command], |_, _| Ok::<(), Invalid>(()))
+                    .unwrap();
+            } else {
+                editor.execute(command).unwrap();
+            }
+            assert!(editor.next_section_history_requires_publication(false));
+            let before = editor.project().snapshot();
+            assert!(
+                editor
+                    .undo_prepared(|_| Err::<(), Invalid>(Invalid("fixture publication refusal")))
+                    .is_err()
+            );
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.next_section_history_requires_publication(false));
+            assert!(editor.undo());
+            assert!(editor.next_section_history_requires_publication(true));
+            editor
+                .execute(Command::RenameArrangementSection {
+                    section,
+                    name: "one".into(),
+                })
+                .unwrap();
+            assert!(
+                editor.next_section_history_requires_publication(true),
+                "no-op must preserve the real redo edge"
+            );
+            assert!(
+                editor
+                    .redo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(editor.next_section_history_requires_publication(false));
+            assert!(
+                editor
+                    .undo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(editor.next_section_history_requires_publication(true));
+            assert!(editor.redo());
+            editor
+                .execute(Command::RenameArrangementSection {
+                    section,
+                    name: "renamed".into(),
+                })
+                .unwrap();
+            assert!(!editor.next_section_history_requires_publication(false));
+            assert!(editor.undo());
+            assert!(editor.next_section_history_requires_publication(false));
+            assert!(!editor.next_section_history_requires_publication(true));
+        }
     }
 }

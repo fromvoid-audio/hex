@@ -908,10 +908,16 @@ impl WorkerAudioSink for NativeAudioSink {
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.advance_sampler(input);
     }
-    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        NativeAudioSink::begin_section_edit(self, context)
+    fn begin_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+        allow_playing: bool,
+    ) -> Result<(), String> {
+        NativeAudioSink::begin_section_edit(self, context, allow_playing)
     }
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
         NativeAudioSink::section_edit_ready(self)
     }
     fn cancel_section_edit(&mut self) {
