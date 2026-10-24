@@ -259,6 +259,52 @@ impl Drop for ControllerInput {
     }
 }
 impl EditorView {
+    /// Planned root replacement ends its connection before cancelling the root.
+    /// Preserve the configured port so fault detection cannot mistake this for
+    /// disappearance and silently turn hardware input off.
+    pub(super) fn reprepare_controller_for_recording(&mut self) {
+        if self.controller_wants_live_notes() {
+            self.controller_input.cancel();
+        }
+    }
+    pub(super) fn controller_capture_ready(&self) -> bool {
+        !self.controller_wants_live_notes()
+            || (self.controller_input.connected
+                && self
+                    .controller_input
+                    .note_input
+                    .as_ref()
+                    .zip(self.computer_keyboard.input.as_ref())
+                    .is_some_and(|((connected, token), input)| {
+                        Arc::ptr_eq(connected, input)
+                            && input
+                                .live_notes()
+                                .is_some_and(|live| live.same_current_activation(*token))
+                    }))
+    }
+    pub(super) fn controller_capture_activation(
+        &self,
+        input: &Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<Option<hex_engine::computer_keyboard::LiveNoteActivation>, &'static str> {
+        if !self.controller_wants_live_notes() {
+            return Ok(None);
+        }
+        let (connected, token) = self
+            .controller_input
+            .note_input
+            .as_ref()
+            .ok_or("midi controller is not connected")?;
+        if !self.controller_input.connected
+            || !Arc::ptr_eq(connected, input)
+            || input
+                .live_notes()
+                .is_none_or(|live| !live.same_current_activation(*token))
+        {
+            return Err("midi controller input changed before recording");
+        }
+        Ok(Some(*token))
+    }
+
     pub(super) fn stop_controller_notes(&mut self) {
         if self.controller_input.note_input.is_some() {
             self.controller_input.cancel();
@@ -1615,3 +1661,53 @@ fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_pitch_feedback_ui_tests.rs"]
 mod pitch_feedback_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn midi_recording_reprepare_preserves_configured_hardware_when_replacing_cancelled_root(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap(),
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+    for computer_enabled in [false, true] {
+        editor.update(&mut visual, |view, cx| {
+            let old = Arc::new(
+                hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                    .with_live_notes()
+                    .unwrap(),
+            );
+            let token = old
+                .live_notes()
+                .unwrap()
+                .current_activation_on_control()
+                .unwrap();
+            view.computer_keyboard.enabled = computer_enabled;
+            view.computer_keyboard.input = Some(Arc::clone(&old));
+            view.controller_input.selected_port = Some(hex_midi::Port {
+                id: 42,
+                name: "configured".into(),
+            });
+            view.controller_input.note_input = Some((Arc::clone(&old), token));
+            view.controller_input.connected = true;
+            view.reprepare_controller_for_recording();
+            view.cancel_computer_keyboard();
+            assert!(old.is_cancelled());
+            assert!(view.controller_input.note_input.is_none());
+            assert!(!view.controller_input.connected);
+            assert_eq!(view.controller_input.selected_port.as_ref().unwrap().id, 42);
+            view.tick_controller_input(cx);
+            assert_eq!(view.controller_input.selected_port.as_ref().unwrap().id, 42);
+            view.controller_input.cancel();
+        });
+        pump(&editor, &mut visual);
+    }
+}

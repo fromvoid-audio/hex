@@ -143,6 +143,41 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
     }
 }
 
+fn assert_action_rounding(visual: &mut VisualTestContext, device: DeviceId, remove_prefix: &str) {
+    let scale = visual.update(|window, _| window.scale_factor());
+    for prefix in ["device-preset-save", "device-preset-load", remove_prefix] {
+        let selector = Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str());
+        assert_eq!(
+            visual
+                .rendered_surface_geometry(selector)
+                .unwrap()
+                .0
+                .top_left,
+            px(hex_widgets::DEVICE_HEADER_ACTION_SIZE / 2.0).scale(scale),
+            "production one-shot header action is circular at its established density"
+        );
+    }
+}
+
+#[gpui::test]
+fn visible_production_actions_are_circular_at_existing_header_density(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    // Paint is clipped at the viewport; compact layout is checked separately.
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    assert_action_rounding(&mut visual, effect, "device-remove");
+    assert_action_rounding(&mut visual, instrument, "instrument-remove");
+}
+
 #[gpui::test]
 fn shared_header_orders_specialized_and_descriptor_panels_at_compact_widths(
     cx: &mut TestAppContext,

@@ -377,9 +377,8 @@ impl Workspace {
             .w(px(if kind == RoundActionKind::Label {
                 40.0
             } else {
-                20.0
+                ROUND_ACTION_SIZE
             }))
-            .h(px(20.0))
             .child(theme::text(if kind == RoundActionKind::Label {
                 "ext"
             } else {
@@ -997,13 +996,13 @@ mod tests {
         for kind in [RoundActionKind::Label, RoundActionKind::Icon] {
             let (mut visual, view) = fixture(cx, Kind::RoundAction(kind));
             let button = visual.debug_bounds("workspace-round-action").unwrap();
-            assert_eq!(button.size.height, px(20.0));
+            assert_eq!(button.size.height, px(ROUND_ACTION_SIZE));
             assert_eq!(
                 button.size.width,
                 px(if kind == RoundActionKind::Label {
                     40.0
                 } else {
-                    20.0
+                    ROUND_ACTION_SIZE
                 })
             );
             visual.simulate_mouse_move(point(px(500.0), px(400.0)), None, Modifiers::default());
