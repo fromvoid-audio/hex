@@ -1245,6 +1245,8 @@ impl CandidateRoot {
     }
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::OrdinaryNativeReferences;
 pub(crate) use eligible::{ActiveView as StreamActiveView, OrdinaryStreams};
 
 #[cfg(test)]

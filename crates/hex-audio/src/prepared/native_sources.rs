@@ -114,6 +114,17 @@ impl PublicationControl {
         {
             return Err("native preparation requires a vacant native output");
         }
+        if self.device_resources.is_some() {
+            let graphs = self
+                .publications
+                .buffer()
+                .capacity()
+                .checked_add(RETIRED)
+                .and_then(|n| n.checked_add(5))
+                .ok_or("ordinary native graph capacity overflow")?;
+            self.candidate_root
+                .configure_ordinary_native_references(graphs)?;
+        }
         self.candidate_root
             .configure_native_source_preparation(capacity, limits)
     }

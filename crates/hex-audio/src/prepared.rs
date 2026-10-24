@@ -235,6 +235,10 @@ pub(crate) struct Publication {
     section_launch_frame: Option<u64>,
     streams: Option<Box<crate::candidate_custody::OrdinaryStreams>>,
     playback: Box<Playback>,
+    // Field order matters: destroy the actual ordinary graph before releasing
+    // its native source references. This publication is destroyed on control.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_references: Option<crate::candidate_custody::OrdinaryNativeReferences>,
 }
 // Exactly one active musical runtime, including the constructor-owned path.
 enum ActivePublication {
@@ -1573,6 +1577,24 @@ impl PublicationControl {
         });
         let mut playback = playback;
         playback.set_device_metering(true);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_references = match self
+            .candidate_root
+            .retain_ordinary_native_sources(&playback)
+        {
+            Ok(Some(_)) if source_context.is_none() => {
+                self.status.publication_pending.store(false, Release);
+                return Err(PublishError {
+                    reason: "native graph publication requires a canonical source context",
+                    playback,
+                });
+            }
+            Ok(references) => references,
+            Err(reason) => {
+                self.status.publication_pending.store(false, Release);
+                return Err(PublishError { reason, playback });
+            }
+        };
         let streams = if self.candidate_root.ordinary_streams_configured() {
             let Some(context) = source_context else {
                 self.status.publication_pending.store(false, Release);
@@ -1606,6 +1628,8 @@ impl PublicationControl {
             section_launch_frame: None,
             streams,
             playback: Box::new(playback),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_references,
         };
         if let Err(mut publication) = enqueue_legacy(&mut self.publications, publication) {
             publication.release_streams_on_control(&self.candidate_root);
@@ -2210,6 +2234,12 @@ impl Callback {
         }
         if let Some(ActivePublication::Legacy(publication)) = self.active.as_mut() {
             publication.release_streams_on_control(&self.candidate_root);
+            // Both carriers and the actual backend are terminal here. The
+            // remaining graph is inert metadata; releasing native references
+            // cannot admit reuse because this Root is already closing. Keep
+            // the original callback Box/resources in their terminal custody.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            drop(publication.native_references.take());
         }
         true
     }
@@ -2431,6 +2461,13 @@ impl Callback {
             }
         }
         self.return_requested_domain_pages();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.native_sources.refresh_runtime_requirements(
+            self.active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .map(|active| active.playback.as_ref()),
+        );
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         self.return_requested_native_sources();
         if self.status.closing.load(Acquire) {
@@ -2993,9 +3030,18 @@ impl Callback {
                         self.return_graph(next);
                         return;
                     }
-                    if let Some(ActivePublication::Legacy(previous)) =
-                        self.active.replace(ActivePublication::Legacy(next))
-                    {
+                    let previous = self.active.replace(ActivePublication::Legacy(next));
+                    // Publish actual inherited-tail requirements before the
+                    // old graph can be destroyed on control and release its
+                    // native references. No lock/allocation/owner drop occurs.
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    self.native_sources.refresh_runtime_requirements(
+                        self.active
+                            .as_ref()
+                            .and_then(ActivePublication::legacy)
+                            .map(|active| active.playback.as_ref()),
+                    );
+                    if let Some(ActivePublication::Legacy(previous)) = previous {
                         self.return_graph(previous);
                     }
                     self.finish_pending_stream_play();
@@ -6553,6 +6599,8 @@ mod tests {
                 fresh_runtime_cancellation: None,
                 section_launch_frame: None,
                 streams: None,
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                native_references: None,
                 playback: Box::new(graph().0),
             }))
             .unwrap();
@@ -6897,6 +6945,8 @@ mod tests {
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
                     streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(graph().0),
                 }))
                 .unwrap();
@@ -7600,6 +7650,8 @@ mod tests {
             fresh_runtime_cancellation: None,
             section_launch_frame: None,
             streams: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_references: None,
             playback: Box::new(playback),
         }));
         assert!(weak_revision.upgrade().is_some());
@@ -7719,6 +7771,8 @@ mod tests {
                         fresh_runtime_cancellation: None,
                         section_launch_frame: None,
                         streams: None,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        native_references: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7798,6 +7852,8 @@ mod tests {
                         fresh_runtime_cancellation: None,
                         section_launch_frame: None,
                         streams: None,
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        native_references: None,
                         playback: Box::new(playback),
                     }))
                     .is_ok()
@@ -7816,6 +7872,8 @@ mod tests {
             fresh_runtime_cancellation: None,
             section_launch_frame: None,
             streams: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_references: None,
             playback: Box::new(held),
         }));
         let mut last_ticket = 0;
@@ -7968,6 +8026,8 @@ mod tests {
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
                     streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(queued),
                 }))
                 .is_ok()

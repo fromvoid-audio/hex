@@ -9,6 +9,7 @@ use hex_project::{Command, Created, Editor, Project};
 
 mod deadlines;
 mod epoch;
+mod ordinary;
 #[cfg(not(debug_assertions))]
 mod profile;
 mod reorder;

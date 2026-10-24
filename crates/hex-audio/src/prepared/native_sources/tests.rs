@@ -258,6 +258,8 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
                     streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(graph),
                 }))
                 .is_ok()

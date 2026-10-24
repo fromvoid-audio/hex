@@ -5,6 +5,9 @@ use super::*;
 #[derive(Clone, Copy, Default)]
 pub(in crate::candidate_custody::eligible) struct References([u64; MAX_SOURCES.div_ceil(64)]);
 impl References {
+    pub(in crate::candidate_custody::eligible) fn is_empty(self) -> bool {
+        self.0.iter().all(|word| *word == 0)
+    }
     pub(in crate::candidate_custody::eligible) fn contains(self, index: usize) -> bool {
         self.0
             .get(index / 64)
@@ -29,11 +32,20 @@ impl Bank {
         owner: &AudioCandidateOwner,
         work: &Work,
     ) -> Result<References, &'static str> {
+        self.references_for_nodes(
+            owner
+                .foreign_nodes_on_control()
+                .map_err(|_| "foreign constructor query refused")?,
+            work,
+        )
+    }
+    pub(super) fn references_for_nodes<'a>(
+        &self,
+        nodes: impl Iterator<Item = &'a hex_lattice::PreparedRuntimeInstance>,
+        work: &Work,
+    ) -> Result<References, &'static str> {
         let mut references = References::default();
-        for node in owner
-            .foreign_nodes_on_control()
-            .map_err(|_| "foreign constructor query refused")?
-        {
+        for node in nodes {
             let Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) = &node.definition
             else {
                 return Err("native graph node differs");

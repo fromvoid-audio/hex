@@ -474,6 +474,42 @@ fn effective_midi_route(
 }
 
 impl SessionPlayback {
+    pub(crate) fn visit_foreign_runtime_bindings(
+        &self,
+        visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
+    ) {
+        let chains = self
+            .device_chains
+            .iter()
+            .chain(self.return_chains.iter())
+            .chain(std::iter::once(&self.main_chain))
+            .chain(
+                self.tail_groups
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, chain)| {
+                        self.tail_output_active
+                            .get(index)
+                            .copied()
+                            .unwrap_or(false)
+                            .then_some(chain.as_ref())
+                            .flatten()
+                    }),
+            )
+            .chain(
+                self.return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .filter(|tail| tail.output_active)
+                    .map(|tail| &tail.chain),
+            );
+        for chain in chains {
+            for binding in chain.foreign_bindings() {
+                visit(binding);
+            }
+        }
+    }
     pub(crate) fn device_resource_lease_on_control(
         &self,
         track: TrackId,

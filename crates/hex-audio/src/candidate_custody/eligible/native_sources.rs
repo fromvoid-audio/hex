@@ -16,13 +16,35 @@ mod definition;
 mod effect;
 mod endpoints;
 mod epoch;
+pub(super) mod ordinary;
 mod references;
+pub(crate) use ordinary::OrdinaryNativeReferences;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) use references::References;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
+struct EndpointSignal {
+    requested: AtomicBool,
+    // Published by the owning callback before a predecessor graph can return.
+    // An ordinary successor can still own that source in an inherited tail.
+    runtime_required: AtomicBool,
+}
+impl EndpointSignal {
+    fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            runtime_required: AtomicBool::new(false),
+        }
+    }
+    fn load(&self, order: Ordering) -> bool {
+        self.requested.load(order)
+    }
+    fn store(&self, value: bool, order: Ordering) {
+        self.requested.store(value, order);
+    }
+}
 /// Per-cell allowances charged for the whole configured pool before any child
 /// or cancellation pair starts. These are reserved capacity, not allocated bytes
 /// or a producer/resource witness. The same fixed pool also reserves its
@@ -93,7 +115,7 @@ struct Slot {
     cancellation: Option<Cancellation>,
     cancellation_requested: bool,
     endpoint_loaned: bool,
-    endpoint_return: Option<Arc<AtomicBool>>,
+    endpoint_return: Option<Arc<EndpointSignal>>,
 }
 impl Slot {
     fn vacant() -> Self {
@@ -152,6 +174,7 @@ impl Bank {
             if source.retiring
                 && !publication.references_native_source(index)
                 && let Some(signal) = &source.endpoint_return
+                && !signal.runtime_required.load(Ordering::Acquire)
             {
                 signal.store(true, Ordering::Release);
             }
@@ -534,7 +557,10 @@ impl Custody {
                 return false;
             }
             slot.retiring = true;
-            if !referenced && let Some(signal) = &slot.endpoint_return {
+            if !referenced
+                && let Some(signal) = &slot.endpoint_return
+                && !signal.runtime_required.load(Ordering::Acquire)
+            {
                 signal.store(true, Ordering::Release);
             }
             if slot.processor.is_none() {

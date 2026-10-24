@@ -9,11 +9,11 @@ struct Endpoint {
     slot: usize,
     binding: Binding,
     callback: Option<NativeEffectEntry>,
-    signal: Arc<AtomicBool>,
+    signal: Arc<EndpointSignal>,
 }
 impl NativeEndpointEnvelope {
     pub(super) fn loan_data_bytes() -> Option<usize> {
-        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<AtomicBool>())
+        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<EndpointSignal>())
     }
     fn index_for(&self, root: u64) -> Option<usize> {
         (self.0.binding.root == root && self.0.slot < MAX_SOURCES && self.0.callback.is_some())
@@ -34,8 +34,46 @@ pub(crate) struct NativeEndpointBank {
     // Set only by an exact stopped active-runtime return. Consumed by the
     // first live constructor-paired endpoint after every old endpoint returned.
     epoch_returned: bool,
+    ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    pub(crate) fn refresh_runtime_requirements(
+        &mut self,
+        playback: Option<&hex_engine::playback::Playback>,
+    ) {
+        if self.routing_len == 0 || (playback.is_none() && !self.ordinary_requirements) {
+            return;
+        }
+        self.ordinary_requirements = playback.is_some();
+        let mut required = [false; MAX_SOURCES];
+        let mut matched = true;
+        if let Some(playback) = playback {
+            playback.visit_foreign_runtime_bindings(&mut |binding| {
+                let Some(binding) = binding else {
+                    matched = false;
+                    return;
+                };
+                match self.routing[..self.routing_len]
+                    .binary_search_by_key(&Some(binding), |slot| {
+                        self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+                    }) {
+                    Ok(position) => required[self.routing[position]] = true,
+                    Err(_) => matched = false,
+                }
+            });
+        }
+        // Unknown runtime facts fail closed. Never release an original source
+        // because an unmatched node could not be mapped to its actual endpoint.
+        for (index, endpoint) in self.entries.iter().enumerate() {
+            if let Some(endpoint) = endpoint {
+                endpoint
+                    .0
+                    .signal
+                    .runtime_required
+                    .store(required[index] || !matched, Ordering::Release);
+            }
+        }
+    }
     pub(crate) fn new() -> Result<Self, &'static str> {
         let mut entries = Vec::new();
         entries
@@ -51,6 +89,7 @@ impl NativeEndpointBank {
             routing_len: 0,
             cycle: NativeEffectCycle::default(),
             epoch_returned: false,
+            ordinary_requirements: false,
         })
     }
     pub(crate) fn data_quote() -> Option<usize> {
@@ -195,7 +234,7 @@ impl Custody {
                 .and_then(|s| s.data_bytes())
                 .and_then(|n| {
                     n.checked_add(std::mem::size_of::<Endpoint>())?
-                        .checked_add(std::mem::size_of::<AtomicBool>())
+                        .checked_add(std::mem::size_of::<EndpointSignal>())
                 })
                 .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES))
                 .ok_or("native endpoint data overflow")?;
@@ -212,7 +251,7 @@ impl Custody {
         cell.pending = true;
         // Allocate before extracting the unique pair. No ordinary bank barrier
         // spans allocation, construction or later endpoint destruction.
-        let signal = Arc::new(AtomicBool::new(false));
+        let signal = Arc::new(EndpointSignal::new());
         let mut envelope = NativeEndpointEnvelope(Box::new(Endpoint {
             slot: index,
             binding,
@@ -284,7 +323,7 @@ impl Custody {
             .storage()
             .data_bytes()
             .and_then(|n| n.checked_add(std::mem::size_of::<Endpoint>()))
-            .and_then(|n| n.checked_add(std::mem::size_of::<AtomicBool>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<EndpointSignal>()))
             .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if slot.binding != Some(endpoint.0.binding)
             || slot.processor != Some(control.prepared())
