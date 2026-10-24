@@ -3,6 +3,8 @@
 mod rectangle_demo;
 #[path = "response_demo.rs"]
 mod response_demo;
+#[path = "waveform_demo.rs"]
+mod waveform_demo;
 use super::catalog::{Demo, Item};
 use super::workspace::{self, Workspace};
 use crate::theme;
@@ -12,6 +14,7 @@ use gpui::{
 use hex_widgets::*;
 use rectangle_demo::RectangleDemo;
 use response_demo::ResponseDemo;
+use std::{cell::RefCell, rc::Rc};
 
 pub(super) struct Prepared {
     item: Item,
@@ -31,6 +34,7 @@ pub(super) struct Sample {
     graph: Entity<ResponseGraph>,
     response: ResponseDemo,
     rectangle: Entity<RectangleDemo>,
+    waveform_cache: Rc<RefCell<waveform_demo::Cache>>,
     bars: Entity<BarEditor>,
     values: [f32; 64],
     bars_before: Option<[f32; 64]>,
@@ -72,7 +76,11 @@ impl Sample {
         for (i, initial) in [0.0, 0.5, 1.0].into_iter().enumerate() {
             let config = NumericControlConfig::new(
                 id(&format!("sandbox-number-{i}")),
-                theme::text(["minimum", "middle", "maximum"][i]),
+                theme::text(if matches!(item.demo, Demo::Waveform(_)) {
+                    ["selection start", "amplitude", "selection end"][i]
+                } else {
+                    ["minimum", "middle", "maximum"][i]
+                }),
                 appearance,
                 spec.clone(),
                 spec.from_normalized(initial).map_err(|e| e.to_string())?,
@@ -228,6 +236,7 @@ impl Sample {
             graph,
             response,
             rectangle,
+            waveform_cache: Rc::new(RefCell::new(waveform_demo::Cache::default())),
             bars,
             values,
             bars_before: None,
@@ -593,6 +602,24 @@ impl Sample {
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
             Demo::Graph => div().w_full().h(px(220.0)).child(self.graph.clone()),
             Demo::Color => div().w(px(240.0)).h(px(220.0)).child(self.picker.clone()),
+            Demo::Waveform(stereo) => div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(180.0))
+                        .child(waveform_demo::view(
+                            self.id("sandbox-waveform"),
+                            stereo,
+                            std::array::from_fn(|index| self.numbers[index].read(cx).value()),
+                            Rc::clone(&self.waveform_cache),
+                            s,
+                        )),
+                )
+                .child(self.controls()),
             Demo::Curve | Demo::Spectrum => {
                 let amount = self.numbers[1].read(cx).value() as f32 / 100.0;
                 let points = [
@@ -687,7 +714,7 @@ impl Render for Sample {
             .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .when(!matches!(self.item.demo, Demo::Graph), |sample| sample.child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus")))
-            .child(theme::text(match self.item.demo {Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Waveform(_)=>"generated peak fixture · selection start / amplitude / selection end · silence and dc regions · read-only display, no audio",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }
@@ -696,6 +723,74 @@ impl Render for Sample {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    #[gpui::test]
+    fn waveform_fixture_edits_amplitude_reuses_range_geometry_and_obeys_disabled_state(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(bind_numeric_control_keys);
+        for stereo in [false, true] {
+            let prepared = Sample::prepare(Item {
+                name: "waveform",
+                category: "graphics",
+                demo: Demo::Waveform(stereo),
+            })
+            .unwrap();
+            let handle = cx.add_window(|_, cx| Sample::new(prepared, cx));
+            let view = handle.root(cx).unwrap();
+            let mut visual = VisualTestContext::from_window(*handle, cx);
+            visual.update(|window, _| window.activate_window());
+            visual.simulate_resize(gpui::size(px(640.0), px(720.0)));
+            visual.run_until_parked();
+            let retained = |cx: &TestAppContext| {
+                view.read_with(cx, |sample, _| {
+                    sample.waveform_cache.borrow().retained().unwrap()
+                })
+            };
+            let mut previous = retained(cx);
+            assert_eq!(previous.channels().len(), if stereo { 2 } else { 1 });
+            for index in [1, 0] {
+                let before =
+                    view.read_with(cx, |sample, cx| sample.numbers[index].read(cx).value());
+                let selector = if index == 1 {
+                    "sandbox-number-1-value"
+                } else {
+                    "sandbox-number-0-value"
+                };
+                let bounds = visual.debug_bounds(selector).unwrap();
+                visual.simulate_click(bounds.center(), Modifiers::default());
+                // Compact readouts enter text editing on click; leave that draft
+                // before exercising the control's focused numeric arrow action.
+                visual.simulate_keystrokes("escape");
+                visual.simulate_keystrokes("up");
+                visual.run_until_parked();
+                view.read_with(cx, |sample, cx| {
+                    assert!(sample.numbers[index].read(cx).value() > before)
+                });
+                let current = retained(cx);
+                assert_eq!(
+                    std::sync::Arc::ptr_eq(&previous, &current),
+                    index == 0,
+                    "range paint reuses paths; amplitude changes the actual envelope"
+                );
+                previous = current;
+            }
+            let before = view.read_with(cx, |sample, cx| sample.numbers[0].read(cx).value());
+            view.update(cx, |sample, cx| sample.set_enabled(false, cx));
+            visual.simulate_keystrokes("up");
+            visual.run_until_parked();
+            view.read_with(cx, |sample, cx| {
+                assert_eq!(sample.numbers[0].read(cx).value(), before)
+            });
+            assert!(std::sync::Arc::ptr_eq(&previous, &retained(cx)));
+            view.update(cx, |sample, cx| {
+                sample.narrow = true;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("sandbox-waveform").unwrap().size.width <= px(260.0));
+            assert!(!std::sync::Arc::ptr_eq(&previous, &retained(cx)));
+        }
+    }
     #[gpui::test]
     fn sandbox_right_drag_clears_skipped_bars_and_disable_survives_restyle(
         cx: &mut TestAppContext,
