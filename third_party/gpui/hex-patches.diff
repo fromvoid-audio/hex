@@ -629,13 +629,18 @@ diff --git a/src/platform.rs b/src/platform.rs
 +    /// macOS uses a transparent image, without changing NSCursor hide counts.
 +    Hidden,
 +
-@@ -1438,0 +1465,6 @@
-+
+@@ -1439,0 +1466,6 @@
 +    /// A bracket cursor for trimming an item from its left edge.
 +    ResizeLeftBracket,
 +
 +    /// A bracket cursor for trimming an item from its right edge.
 +    ResizeRightBracket,
++
+@@ -1442,0 +1475,4 @@
++
++    /// Repeat/loop editing cursor. macOS caches original circular-arrow artwork;
++    /// other platforms retain a horizontal resize fallback.
++    Loop,
 diff --git a/src/platform/accessibility_bridge.rs b/src/platform/accessibility_bridge.rs
 new file mode 100644
 --- /dev/null
@@ -935,18 +940,22 @@ diff --git a/src/platform/linux/platform.rs b/src/platform/linux/platform.rs
 @@ -705 +705 @@
 -            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
 +            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
-@@ -712,0 +713,2 @@
+@@ -713 +713,3 @@
+-            CursorStyle::ResizeLeftRight => &["ew-resize", "sb_h_double_arrow"],
 +            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
 +            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
++            CursorStyle::ResizeLeftRight | CursorStyle::Loop => &["ew-resize", "sb_h_double_arrow"],
 diff --git a/src/platform/linux/wayland.rs b/src/platform/linux/wayland.rs
 --- a/src/platform/linux/wayland.rs
 +++ b/src/platform/linux/wayland.rs
 @@ -17 +17 @@
 -            CursorStyle::Arrow => Shape::Default,
 +            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
-@@ -24,0 +25,2 @@
+@@ -25 +25,3 @@
+-            CursorStyle::ResizeLeftRight => Shape::EwResize,
 +            CursorStyle::ResizeLeftBracket => Shape::WResize,
 +            CursorStyle::ResizeRightBracket => Shape::EResize,
++            CursorStyle::ResizeLeftRight | CursorStyle::Loop => Shape::EwResize,
 diff --git a/src/platform/linux/wayland/client.rs b/src/platform/linux/wayland/client.rs
 --- a/src/platform/linux/wayland/client.rs
 +++ b/src/platform/linux/wayland/client.rs
@@ -2734,7 +2743,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 @@ -53 +54 @@
 -    ffi::{CStr, OsStr, c_void},
 +    ffi::{CStr, CString, OsStr, c_void},
-@@ -70,0 +72,89 @@
+@@ -70,0 +72,142 @@
 +
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
 +fn make_hidden_cursor() -> Option<StrongPtr> {
@@ -2824,11 +2833,65 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        Some(StrongPtr::new(cursor))
 +    }
 +}
-@@ -179,0 +270,3 @@
++
++/// Original high-contrast circular-arrow loop cursor artwork; cached by `MacPlatformState`.
++fn make_loop_cursor() -> Option<StrongPtr> {
++    unsafe {
++        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
++        if image == nil {
++            return None;
++        }
++        let image = StrongPtr::new(image);
++        let _: () = msg_send![*image, lockFocus];
++        let path: id = msg_send![class!(NSBezierPath), bezierPath];
++        if path == nil {
++            let _: () = msg_send![*image, unlockFocus];
++            return None;
++        }
++
++        // An open circular arc with a tangent arrowhead. Original vector
++        // artwork, centered hotspot; black stroke with white outline remains
++        // legible over both light and dark clips.
++        for index in 0..=24 {
++            let angle = (45.0 + f64::from(index) * 270.0 / 24.0).to_radians();
++            let point = NSPoint::new(12.0 + angle.cos() * 7.0, 12.0 + angle.sin() * 7.0);
++            if index == 0 {
++                let _: () = msg_send![path, moveToPoint: point];
++            } else {
++                let _: () = msg_send![path, lineToPoint: point];
++            }
++        }
++        let tip = NSPoint::new(16.95, 7.05);
++        let _: () = msg_send![path, moveToPoint: NSPoint::new(12.0, 6.5)];
++        let _: () = msg_send![path, lineToPoint: tip];
++        let _: () = msg_send![path, lineToPoint: NSPoint::new(17.5, 2.1)];
++
++        let white: id = msg_send![class!(NSColor), whiteColor];
++        let _: () = msg_send![white, setStroke];
++        let _: () = msg_send![path, setLineWidth: 4.0_f64];
++        let _: () = msg_send![path, setLineCapStyle: 1_isize];
++        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
++        let _: () = msg_send![path, stroke];
++        let black: id = msg_send![class!(NSColor), blackColor];
++        let _: () = msg_send![black, setStroke];
++        let _: () = msg_send![path, setLineWidth: 1.75_f64];
++        let _: () = msg_send![path, stroke];
++        let _: () = msg_send![*image, unlockFocus];
++
++        let allocated: id = msg_send![class!(NSCursor), alloc];
++        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
++        if cursor == nil {
++            return None;
++        }
++        Some(StrongPtr::new(cursor))
++    }
++}
+@@ -179,0 +323,4 @@
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
-@@ -188,0 +282,10 @@
++    loop_cursor: Option<StrongPtr>,
+@@ -188,0 +336,10 @@
 +    #[cfg(any(test, feature = "test-support"))]
 +    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
 +        unsafe {
@@ -2839,17 +2902,18 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        }
 +    }
 +
-@@ -199,0 +303,5 @@
+@@ -199,0 +357,5 @@
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
 +            (make_bracket_cursor(true), make_bracket_cursor(false))
 +        };
-@@ -221,0 +330,3 @@
+@@ -221,0 +384,4 @@
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
-@@ -713,0 +825,9 @@
++            loop_cursor: if headless { None } else { make_loop_cursor() },
+@@ -713,0 +880,9 @@
 +        self.prompt_for_paths_with_directory(options, None)
 +    }
 +
@@ -2859,7 +2923,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        directory: Option<&Path>,
 +    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
 +        let directory = directory.map(Path::to_owned);
-@@ -718,0 +839,9 @@
+@@ -718,0 +894,9 @@
 +                    if let Some(directory) = directory {
 +                        match ns_directory_url(&directory) {
 +                            Ok(url) => panel.setDirectoryURL(url),
@@ -2869,7 +2933,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +                            }
 +                        }
 +                    }
-@@ -772,3 +901,7 @@
+@@ -772,3 +956,7 @@
 -                    let path = ns_string(directory.to_string_lossy().as_ref());
 -                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
 -                    panel.setDirectoryURL(url);
@@ -2880,12 +2944,13 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +                            return;
 +                        }
 +                    }
-@@ -973,2 +1106,17 @@
+@@ -973,2 +1161,18 @@
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
 +                let state = self.0.lock();
 +                match style {
++                    CursorStyle::Loop => state.loop_cursor.as_ref().map(|cursor| **cursor),
 +                    CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
 +                    CursorStyle::ResizeLeftBracket => state
 +                        .resize_left_bracket_cursor
@@ -2900,13 +2965,16 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -983,0 +1132,2 @@
+@@ -980 +1184 @@
+-                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
++                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
+@@ -983,0 +1188,2 @@
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1158 @@
+@@ -1008 +1214 @@
 -            };
 +            });
-@@ -1538,0 +1689,12 @@
+@@ -1538,0 +1745,12 @@
 +// NSURL copies the filesystem representation; no lossy display conversion.
 +unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
 +    let bytes = CString::new(directory.as_os_str().as_bytes())
@@ -3151,6 +3219,8 @@ diff --git a/src/platform/windows/util.rs b/src/platform/windows/util.rs
 @@ -126,0 +127,2 @@
 +        | CursorStyle::ResizeLeftBracket
 +        | CursorStyle::ResizeRightBracket
+@@ -127,0 +130 @@
++        | CursorStyle::Loop
 diff --git a/src/scene.rs b/src/scene.rs
 --- a/src/scene.rs
 +++ b/src/scene.rs

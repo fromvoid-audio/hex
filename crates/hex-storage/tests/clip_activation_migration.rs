@@ -31,7 +31,7 @@ fn schema39_migration_defaults_activation_windows_and_preserves_complete_state()
         }
         let current = hex_storage::encode(&project).unwrap();
         let document: serde_json::Value = serde_json::from_slice(&current).unwrap();
-        assert_eq!(document["version"], 40);
+        assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
         assert_eq!(
             hex_storage::decode(&current).unwrap().snapshot(),
             project.snapshot()

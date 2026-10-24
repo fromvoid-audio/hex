@@ -247,6 +247,7 @@ pub(super) fn cursor_action(
     .when(!enabled, |button| button.cursor_default().opacity(0.4))
     .tooltip(move |_, cx| {
         cx.new(|_| crate::editor::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
             description: theme::text(if start {
                 "set sample start at cursor"
             } else {

@@ -41,6 +41,8 @@ pub enum SessionPlaybackCommand {
     Play,
     Pause,
     Stop,
+    /// Absolute first-pass cursor. At/after the loop end, retain the canonical
+    /// linear tempo/source law instead of normalizing backwards into the loop.
     Seek(u64),
     LaunchClip {
         clip: ClipId,
@@ -310,7 +312,7 @@ struct SessionContinuation {
 }
 
 /// Shared conservative owning-location count for fresh closed constructors.
-/// Playback contributes five outer locations and Session two singleton roots.
+/// Playback contributes five outer locations and Session three singleton roots.
 pub(crate) fn candidate_group_reservation(
     tracks: usize,
     returns: usize,
@@ -321,7 +323,7 @@ pub(crate) fn candidate_group_reservation(
         .and_then(|n| n.checked_add(SESSION_TAIL_GROUP_CAPACITY.checked_mul(2)?))
         .and_then(|n| n.checked_add(return_effect_tails::RETURN_EFFECT_TAIL_CAPACITY))
         .and_then(|n| n.checked_add(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS))
-        .and_then(|n| n.checked_add(7))
+        .and_then(|n| n.checked_add(8))
         .ok_or(crate::AudioStorageError::Overflow)
 }
 
@@ -330,7 +332,7 @@ const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
 
 /// Control-owned source conversion ceiling, separate from general WAV export.
-pub const MAX_FINITE_BOUNCE_FRAMES: u64 = 8_000_000;
+pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderConstruction {
@@ -758,12 +760,20 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        // Main is inline Session storage in this closed candidate class, not a
-        // separately transferable owner. Inspect prepared and actual runtime
-        // entries independently; retained empty-chain capacity stays inventoried
-        // by the existing fresh-storage walk. Ordinary Main playback is unaffected.
-        if !self.revision.arrangement().main_device_chain.is_empty()
-            || main_chain.storage_view().entries().next().is_some()
+        // Fresh Main metadata must match before any location is emitted.
+        // A real owning transfer can later leave an allocation-free empty
+        // Main field; its now-vacant group is checked against the origin book.
+        let prepared_main = &self.revision.arrangement().main_device_chain;
+        let main_matches = main_chain.len() == prepared_main.len()
+            && main_chain
+                .storage_view()
+                .entries()
+                .zip(prepared_main.iter())
+                .all(|(actual, prepared)| actual.matches_prepared_runtime_storage(prepared));
+        let main_present = main_chain.storage_view().entry_capacity_bytes() != Some(0);
+        let moved_empty_main =
+            !self.candidate_admission_open && main_chain.is_empty() && !main_present;
+        if (!main_matches && !moved_empty_main)
             || live_expression.is_some()
             || computer_keyboard.is_some()
         {
@@ -805,6 +815,7 @@ impl SessionPlayback {
         }
         visit(7, 0, true)?; // this exact Session revision handle
         visit(8, 0, compensation.is_some())?;
+        visit(14, 0, main_present)?; // actual Main backing; moved-out fields are vacant
         Ok(())
     }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
@@ -1168,6 +1179,17 @@ impl SessionPlayback {
             ));
         }
         Self::new_with_policy_scoped(revision, false, Some(resources))
+    }
+
+    /// Construct an unused interactive candidate with an existing launched loop.
+    /// Control owns construction/admission; callback inheritance supplies its actual clock.
+    pub(crate) fn new_section_candidate(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::section_runtime_allowance(&revision, region)?;
+        Self::new_with_policy_and_loop(revision, false, Some(resources), Some(region))
     }
 
     fn new_with_policy_scoped(
@@ -1649,14 +1671,24 @@ impl SessionPlayback {
     }
 
     pub(crate) fn periodic_tempo(&self) -> Option<PreparedPeriodicSessionTempo> {
-        self.periodic_tempo
+        self.periodic_tempo_at(self.arrangement_frame, self.arrangement_loop_pass)
+    }
+
+    fn periodic_tempo_at(
+        &self,
+        frame: u64,
+        loop_pass: u64,
+    ) -> Option<PreparedPeriodicSessionTempo> {
+        self.active_loop_region_at(frame, loop_pass)
+            .and(self.periodic_tempo)
     }
 
     pub fn performance_frame(&self) -> u64 {
         self.performance_frame
     }
 
-    /// One active loop law for rendering, demand, gate admission and capture.
+    /// Configured loop law for capability/admission checks. Rendering and demand
+    /// use `active_loop_region` to respect absolute cursors after the loop.
     /// A transient section loop never changes the immutable saved revision.
     pub(crate) fn loop_region(&self) -> Option<hex_project::LoopRegion> {
         if self.linear_arrangement_export {
@@ -1666,6 +1698,19 @@ impl SessionPlayback {
                 .or_else(|| self.revision.arrangement().loop_region())
                 .filter(|region| region.enabled())
         }
+    }
+
+    /// The saved/audition loop participates only when playback reaches it from
+    /// before its end. An absolute seek at or after the end begins a linear
+    /// first pass; a completed wrap retains the existing periodic loop law.
+    /// This query does not change loop settings or introduce transport state.
+    pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
+        self.active_loop_region_at(self.arrangement_frame, self.arrangement_loop_pass)
+    }
+
+    fn active_loop_region_at(&self, frame: u64, loop_pass: u64) -> Option<hex_project::LoopRegion> {
+        self.loop_region()
+            .filter(|region| loop_pass > 0 || frame < region.end())
     }
 
     /// Exact immutable graph retained by this runtime.
@@ -1740,7 +1785,7 @@ impl SessionPlayback {
         playing: bool,
     ) -> Result<(), SessionPlaybackError> {
         self.require_fresh_candidate()?;
-        self.validate_legacy_transport(performance_frame)?;
+        self.validate_legacy_transport(arrangement_frame, performance_frame)?;
         self.candidate_admission_open = false;
         self.arrangement_frame = arrangement_frame;
         self.performance_frame = performance_frame;
@@ -1750,15 +1795,19 @@ impl SessionPlayback {
 
     pub(crate) fn validate_legacy_transport(
         &self,
+        arrangement_frame: u64,
         performance_frame: u64,
     ) -> Result<(), SessionPlaybackError> {
         use crate::MidiTiming;
         // Legacy finite playback accepts frame positions beyond the Session
         // beat domain. Refuse promotion before modifying the candidate rather
         // than accepting a graph that will fail at its first render/launch.
-        base_timing_for(self.revision.session(), self.periodic_tempo)
-            .frame_to_beat(performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        base_timing_for(
+            self.revision.session(),
+            self.periodic_tempo_at(arrangement_frame, 0),
+        )
+        .frame_to_beat(performance_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
         Ok(())
     }
 
@@ -1808,6 +1857,27 @@ impl SessionPlayback {
                 .is_err()
                 || active
         })
+    }
+
+    /// Offline bounce completion after the isolated source's final gate. Checks
+    /// actual analytic releases and mutable processor state, never output silence.
+    /// The caller must exclude future source events and nonzero latency paths.
+    pub fn arrangement_bounce_is_quiescent(&self) -> bool {
+        !self.has_active_arrangement_voices()
+            && self.releases.is_empty()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|r| r.committed_is_quiescent())
+            && self
+                .device_chains
+                .iter()
+                .chain(self.return_chains.iter())
+                .chain(std::iter::once(&self.main_chain))
+                .all(|c| c.committed_range_is_quiescent(0..c.len()))
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
     }
 
     pub fn release_voice_count(&self) -> usize {
@@ -1892,7 +1962,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn timing_view(&self) -> SessionTimingView<'_> {
-        timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor)
+        timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
     }
 
     fn owner_for_target(
@@ -2068,6 +2138,8 @@ mod return_feed_tests;
 
 #[cfg(test)]
 mod compensation_tests;
+#[cfg(test)]
+mod foreign_tests;
 
 #[cfg(test)]
 mod routing_tests;

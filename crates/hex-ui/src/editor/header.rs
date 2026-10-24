@@ -77,6 +77,7 @@ pub(super) fn title_bar(
                 .cursor_pointer()
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: tooltip.into(),
                     })
                     .into()
@@ -282,6 +283,9 @@ mod ui_tests {
             let changelog = visual
                 .debug_bounds("open-changelog")
                 .expect("changelog button");
+            let help = visual
+                .debug_bounds("help-tooltip-toggle")
+                .expect("help button");
             let toolbar = visual
                 .debug_bounds("editor-toolbar")
                 .expect("compact toolbar row");
@@ -317,15 +321,14 @@ mod ui_tests {
             assert!(title_label.origin.x + title_label.size.width + px(8.0) <= version.origin.x);
             assert!(version.size.width > px(0.0));
             assert!(
-                (f32::from(
-                    window.origin.x + window.size.width - changelog.origin.x - changelog.size.width
-                ) - 8.0)
+                (f32::from(window.origin.x + window.size.width - help.origin.x - help.size.width)
+                    - 8.0)
                     .abs()
                     < 1.0
             );
             assert!(version.origin.y >= title.origin.y);
             assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
-            // Changelog is the rightmost control; Log remains its compact neighbor.
+            // Help is rightmost; Changelog and Log retain their compact neighbors.
             assert_eq!(
                 debug.origin.x - (version.origin.x + version.size.width),
                 px(4.0)
@@ -334,6 +337,13 @@ mod ui_tests {
                 changelog.origin.x - (debug.origin.x + debug.size.width),
                 px(4.0)
             );
+            assert_eq!(
+                help.origin.x - (changelog.origin.x + changelog.size.width),
+                px(4.0)
+            );
+            assert_eq!(help.size, gpui::size(px(20.0), px(20.0)));
+            assert!(help.origin.y >= title.origin.y);
+            assert!(help.bottom() <= title.bottom());
             assert!(changelog.size.width > px(0.0));
             assert_eq!(changelog.size.height, px(super::CONTROL_SIZE));
             assert!(changelog.origin.y >= title.origin.y);

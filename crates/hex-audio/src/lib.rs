@@ -5,24 +5,36 @@
 //!
 //! # Dependencies
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
-//! rtrb for bounded ownership queues.
+//! rtrb for bounded ownership queues. hex-plugin-host supplies the copied transport
+//! and source-bound native client; native ABI remains in its external helper.
+//! qos-threads provides a safe macOS scheduling request for the joining native
+//! transport worker only; it grants no real-time or physical deadline guarantee.
+//! hex-plugin-scan supplies only the checked instance-build provenance accepted by that client.
+//! hex-lattice supplies the borrowed foreign node/factory contracts; hex-plugin-state
+//! and hex-lattice-contract validate the exact native effect configuration.
 //!
 //! # Does not own
 //! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 mod device;
-pub mod plugin_transport;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod plugin_effects;
+pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
-pub use device::{PreparedOutput, WorkerPreparedOutput};
+pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen, request_initial_open,
-    request_recovery_open, request_worker_open,
+    request_recovery_open, request_worker_open, request_worker_open_with_profile,
 };
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use candidate_custody::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 pub mod gain_recording;
 mod lifecycle;
 pub mod midi_recording;

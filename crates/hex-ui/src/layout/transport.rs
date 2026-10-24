@@ -274,15 +274,10 @@ struct SmallTooltip {
 
 impl Render for SmallTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .font_family(theme::FONT_FAMILY)
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(self.description))
+        crate::tooltips::view(
+            &crate::tooltips::Kind::Identification,
+            self.description,
+            _cx,
+        )
     }
 }

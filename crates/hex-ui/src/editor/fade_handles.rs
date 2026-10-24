@@ -11,7 +11,7 @@ use hex_session::service::Request;
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Handle {
+pub(super) enum Handle {
     InTop,
     InBottom,
     InCurve,
@@ -20,7 +20,7 @@ enum Handle {
     OutCurve,
 }
 impl Handle {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::InTop => "fade-in-top",
             Self::InBottom => "fade-in-bottom",
@@ -39,7 +39,7 @@ struct FadeControls {
 }
 
 // The hit target stays square; the painted curve control is a diamond.
-fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement {
+pub(super) fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -114,7 +114,12 @@ pub(super) struct FadeDrag {
 }
 
 // Curve motion retains subframe precision; endpoint lengths still round to frames.
-fn edited_fade(fade: ClipFade, handle: Handle, frames: f64, bend: i16) -> Option<ClipFade> {
+pub(super) fn edited_fade(
+    fade: ClipFade,
+    handle: Handle,
+    frames: f64,
+    bend: i16,
+) -> Option<ClipFade> {
     if !frames.is_finite() {
         return None;
     }
@@ -195,7 +200,7 @@ fn curve_handle_gain(fade: ClipFade, out: bool) -> f64 {
     fade.curve_midpoint_gain(out).clamp(0.25, 0.75)
 }
 
-fn knots(fade: ClipFade) -> [(Handle, (u64, f64), f32); 6] {
+pub(super) fn knots(fade: ClipFade) -> [(Handle, (u64, f64), f32); 6] {
     let end = fade.span() - fade.out_end_offset() - 1;
     let in_top = fade.in_start() + fade.fade_in().saturating_sub(1);
     let out_top = (end + 1).saturating_sub(fade.fade_out()).min(end);
@@ -238,6 +243,14 @@ impl EditorView {
                 window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
                     if phase.capture() && event.button == MouseButton::Left {
                         release_entity.update(cx, |view, cx| {
+                            if view.finish_audio_event_fade_pointer(
+                                event.position,
+                                event.modifiers.platform,
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                            }
                             if view.active_fade_drag.is_some() {
                                 view.update_fade_gesture(
                                     event.position,
@@ -251,9 +264,17 @@ impl EditorView {
                     }
                 });
                 let entity = entity.clone();
-                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
                     if phase.capture() {
                         entity.update(cx, |view, cx| {
+                            if view.update_audio_event_fade_pointer(
+                                event.position,
+                                event.modifiers.platform,
+                                window,
+                                cx,
+                            ) {
+                                cx.stop_propagation();
+                            }
                             view.update_fade_gesture(event.position, event.modifiers.platform, cx)
                         });
                     }
@@ -269,6 +290,15 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.automation_view.enabled
+            && self.mode == super::EditorMode::Arrangement
+            && self.focus.is_focused(window)
+        {
+            return false;
+        }
+        if self.audio_event_focus.is_focused(window) {
+            return self.event_fade_key_down(event, window, cx);
+        }
         if event.keystroke.key == "escape" && self.active_fade_drag.take().is_some() {
             cx.stop_propagation();
             cx.notify();
@@ -726,6 +756,7 @@ impl EditorView {
                     })
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::waveform::ClipTooltip {
+                            kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: if reanchors {
                                 format!(
                                     "{} · editing fits fades to this clip",

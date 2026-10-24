@@ -4,7 +4,9 @@ use super::*;
 use gpui::{Entity, Subscription};
 use hex_engine::eq::{self, EqState, Node, NodeId, NodeParameter};
 use hex_lattice_contract::ParameterId;
-use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
+use hex_session::device_gesture::{
+    EqNodeCreationSnapshot, GestureKey, GesturePhase, GestureTarget, ParameterPairValue,
+};
 use hex_widgets::{
     ResponseGraph, ResponseGraphCreationHint, ResponseGraphEvent, ResponseGraphModel,
     ResponseGraphNode, ResponseGraphPhase,
@@ -18,6 +20,10 @@ mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
+pub(super) use spectrum::{
+    is_eq as is_spectrum_eq, result as spectrum_result, sync_visible as sync_visible_spectra,
+    toggle as spectrum_toggle,
+};
 
 // Outer five percent of the inset plot: side cuts precede bottom notches.
 // Existing node hits retain priority through the response graph owner.
@@ -70,11 +76,13 @@ pub(super) struct Panel {
     scroll_blur_subscription: Option<Subscription>,
     bank: u8,
     creation: Option<Creation>,
-    pending_creation: Option<PendingCreation>,
+    cancel_creation_capture: bool,
     response: Option<(NativeDeviceState, u32, response::Curves)>,
 }
 
 struct Creation {
+    key: GestureKey,
+    terminal: Option<(GesturePhase, u64)>,
     expected: NativeDeviceState,
     expected_variant: hex_project::DeviceVariant,
     state: EqState,
@@ -84,31 +92,29 @@ struct Creation {
     sample_rate: u32,
 }
 
-struct PendingCreation {
-    receipt: crate::editor::pending_edit::Receipt,
-    expected: NativeDeviceState,
-    expected_variant: hex_project::DeviceVariant,
-    next_id: u64,
-    preview: EqState,
-    state: NativeDeviceState,
-    id: NodeId,
-    previous: Option<NodeId>,
-    bank: u8,
-}
-
 impl Creation {
     fn update(&mut self, position: [f32; 2]) {
         if let Some(node) = self.state.nodes.iter_mut().find(|node| node.id == self.id) {
-            node.frequency_hz = frequency_from_x(position[0], self.sample_rate);
-            if matches!(
-                node.kind,
-                eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
-            ) {
-                node.q = q_from_y(position[1]);
-            } else {
-                node.gain_db = position[1] * 48.0 - 24.0;
-            }
+            update_creation_node(node, position, self.sample_rate);
         }
+    }
+    fn snapshot(&self) -> Result<EqNodeCreationSnapshot, &'static str> {
+        let node = *self
+            .state
+            .node(self.id)
+            .map_err(|_| "eq creation node is missing")?;
+        EqNodeCreationSnapshot::new(node, self.expected_variant, self.next_id)
+    }
+}
+fn update_creation_node(node: &mut Node, position: [f32; 2], sample_rate: u32) {
+    node.frequency_hz = frequency_from_x(position[0], sample_rate);
+    if matches!(
+        node.kind,
+        eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
+    ) {
+        node.q = q_from_y(position[1]);
+    } else {
+        node.gain_db = position[1] * 48.0 - 24.0;
     }
 }
 
@@ -173,17 +179,12 @@ pub(super) fn render_body(
                 scroll_blur_subscription: None,
                 bank: 0,
                 creation: None,
-                pending_creation: None,
+                cancel_creation_capture: false,
                 response: None,
             },
         );
     }
-    let next_id = view.state.as_ref().map(|s| s.project.next_identity());
-    let active_variant = view.state.as_ref().and_then(|s| {
-        s.project
-            .device(device)
-            .map(hex_project::Device::active_variant)
-    });
+    reconcile_creation(view, device, canonical);
     let creation_idle = !view.opening_project
         && !view.close_prompt_open
         && view.worker_requests_pending == 0
@@ -194,31 +195,20 @@ pub(super) fn render_body(
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return div().id("eq-unavailable");
     };
-    // Pending creation has its own ordinary-edit receipt. Queue idleness or an
-    // unrelated canonical revision cannot retire the released node's geometry.
-    if panel.pending_creation.as_ref().is_some_and(|pending| {
-        &pending.expected != canonical
-            || Some(pending.expected_variant) != active_variant
-            || Some(pending.next_id) != next_id
-    }) {
-        panel.pending_creation = None;
-    }
-    if panel.creation.as_ref().is_some_and(|creation| {
-        &creation.expected != canonical
-            || Some(creation.next_id) != next_id
-            || panel.selected != Some(creation.id)
-            || creation
-                .state
-                .node(creation.id)
-                .is_ok_and(|n| n.bank != panel.bank)
-    }) {
-        if let Some(creation) = panel.creation.take() {
-            if panel.selected == Some(creation.id) {
-                panel.selected = creation.selected_before;
-            }
+    if panel.cancel_creation_capture {
+        panel.cancel_creation_capture = false;
+        if panel
+            .creation
+            .as_ref()
+            .is_none_or(|creation| creation.terminal.is_some())
+            && panel.pair_drag.is_none()
+            && panel.slope_scroll.is_none()
+        {
+            panel.entity.update(cx, |graph, cx| graph.cancel(cx));
         }
-        panel.entity.update(cx, |graph, cx| graph.cancel(cx));
     }
+    // Canonical replacement retires held drafts through the keyed worker event.
+    // A released draft remains frozen until its exact terminal is installed.
     if &panel.authored_state != canonical {
         panel.authored_state = canonical.clone();
         // Events share this persistent mode with rendering. Repair only when
@@ -230,28 +220,13 @@ pub(super) fn render_body(
         .creation
         .as_ref()
         .map(|creation| &creation.state)
-        .or_else(|| {
-            panel
-                .pending_creation
-                .as_ref()
-                .map(|selection| &selection.preview)
-        })
         .unwrap_or(&state)
         .clone();
-    let selected = panel
-        .pending_creation
-        .as_ref()
-        .filter(|pending| panel.selected == pending.previous && panel.bank == pending.bank)
-        .map(|pending| pending.id)
-        .or(panel.selected)
-        .filter(|id| displayed.node(*id).is_ok());
-    let show_creation_hint = creation_idle
-        && displayed.nodes.len() < eq::MAX_NODES
-        && panel.creation.is_none()
-        && panel.pending_creation.is_none();
+    let selected = panel.selected.filter(|id| displayed.node(*id).is_ok());
+    let show_creation_hint =
+        creation_idle && displayed.nodes.len() < eq::MAX_NODES && panel.creation.is_none();
     let bank = panel.bank;
     let entity = panel.entity.clone();
-    spectrum::sync_selected(view, device, owner);
     let model = response_model(
         view,
         device,
@@ -337,7 +312,7 @@ pub(super) fn render_body(
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
     toolbar = {
-        let control = spectrum::toggle(view, cx, device, owner);
+        let control = spectrum::toggle(view, cx, device, owner, eq::EQ_TYPE_ID);
         toolbar.child(control)
     };
     let show_input = view
@@ -751,18 +726,7 @@ fn response_model(
         })
         .collect();
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    let spectra = view.device_panel.spectrum_result.as_ref().filter(|result| {
-        view.audio
-            .as_ref()
-            .and_then(|audio| audio.control.spectrum_desired())
-            .is_some_and(|target| {
-                target.identity == identity
-                    && target.token == result.output.stamp.target
-                    && target.project_generation == result.output.stamp.generation
-                    && target.sample_rate_hz == result.output.stamp.sample_rate_hz
-                    && result.output.stamp.applied_revision >= target.activation_floor
-            })
-    });
+    let spectra = spectrum::result(view, identity);
     let show_input = view
         .device_panel
         .eq_panels
@@ -941,6 +905,61 @@ fn creation_hint(position: [f32; 2]) -> ResponseGraphCreationHint {
     };
     ResponseGraphCreationHint { id, points }
 }
+// Input cancellation is separate from admitted preview custody. The last
+// geometry stays with its key until the terminal/canonical installation event.
+fn reconcile_creation(view: &mut EditorView, device: DeviceId, canonical: &NativeDeviceState) {
+    let Some((key, valid, finishing)) =
+        view.device_panel.eq_panels.get(&device).and_then(|panel| {
+            panel.creation.as_ref().map(|creation| {
+                (
+                    creation.key,
+                    &creation.expected == canonical
+                        && panel.selected == Some(creation.id)
+                        && view.state.as_ref().is_some_and(|state| {
+                            state.project.next_identity() == creation.next_id
+                                && state.project.device(device).is_some_and(|entry| {
+                                    entry.active_variant() == creation.expected_variant
+                                })
+                        })
+                        && creation
+                            .state
+                            .node(creation.id)
+                            .is_ok_and(|node| node.bank == panel.bank),
+                    creation.terminal.is_some(),
+                )
+            })
+        })
+    else {
+        return;
+    };
+    let owns_key = view
+        .device_gesture
+        .snapshot()
+        .is_some_and(|snapshot| snapshot.key == key);
+    if owns_key && finishing {
+        return;
+    }
+    if owns_key && valid && view.device_gesture.terminal().is_none() {
+        return;
+    }
+    if owns_key && !valid && !view.device_gesture.has_pending_terminal() {
+        let _ = view.cancel_device_gesture();
+    }
+    let terminal = view.device_gesture.terminal();
+    if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+        panel.cancel_creation_capture = true;
+        if owns_key {
+            if let Some(creation) = panel.creation.as_mut() {
+                creation.terminal = terminal;
+            }
+        } else if let Some(creation) = panel.creation.take()
+            && panel.selected == Some(creation.id)
+        {
+            panel.selected = creation.selected_before;
+        }
+    }
+}
+
 fn begin_creation(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -948,6 +967,12 @@ fn begin_creation(
     position: [f32; 2],
     bank: u8,
 ) {
+    if view.device_gesture.is_recovery_pending() && view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device)) {
+        let _ = view.cancel_eq_creation();
+        view.device_panel.message = Some("previous eq edit is canceling · retry after it finishes".into());
+        cx.notify();
+        return;
+    }
     if !ready(view, cx) {
         return;
     }
@@ -965,12 +990,29 @@ fn begin_creation(
         return;
     };
     let sample_rate = project.sample_rate();
-    let result = EqState::decode(&expected).and_then(|mut state| {
-        let id = NodeId::new(next_id.max(u64::from(state.next_node_id)))?;
-        let mut node = Node::new(id, frequency_from_x(position[0], sample_rate), 0.0, bank)?;
+    let result: Result<Creation, String> = (|| {
+        let mut state = EqState::decode(&expected).map_err(|e| e.to_string())?;
+        let id =
+            NodeId::new(next_id.max(u64::from(state.next_node_id))).map_err(|e| e.to_string())?;
+        let mut node = Node::new(id, frequency_from_x(position[0], sample_rate), 0.0, bank)
+            .map_err(|e| e.to_string())?;
         node.kind = creation_kind(position);
-        state.add(node)?;
-        let mut creation = Creation {
+        update_creation_node(&mut node, position, sample_rate);
+        state.add(node).map_err(|e| e.to_string())?;
+        state.encode().map_err(|e| e.to_string())?;
+        let snapshot =
+            EqNodeCreationSnapshot::new(node, expected_variant, next_id).map_err(str::to_owned)?;
+        let key = view
+            .device_gesture
+            .begin_eq_creation(view.project_generation, device, snapshot)
+            .map_err(str::to_owned)?;
+        if let Err(error) = view.device_gesture.change_eq_creation(snapshot) {
+            let _ = view.cancel_device_gesture();
+            return Err(error.to_owned());
+        }
+        Ok(Creation {
+            key,
+            terminal: None,
             expected,
             expected_variant,
             state,
@@ -978,30 +1020,28 @@ fn begin_creation(
             id,
             selected_before: None,
             sample_rate,
-        };
-        creation.update(position);
-        creation.state.encode()?;
-        Ok(creation)
-    });
+        })
+    })();
     match result {
         Ok(mut creation) => {
             if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
                 creation.selected_before = panel.selected;
                 panel.selected = Some(creation.id);
+                panel.cancel_creation_capture = false;
                 panel.creation = Some(creation);
             }
         }
         Err(error) => {
             view.device_panel.message = Some(format!(
                 "eq edit refused · {error} · limit: 64 nodes; identity space is finite"
-            ));
+            ))
         }
     }
     cx.notify();
 }
 
-// The widget keeps node_id zero for this entire pointer stream. It cannot turn
-// into a canonical node drag after release, publication, deletion or ID reuse.
+// Node ID zero belongs to this whole pointer stream. It can never address an
+// ordinary node drag after release, cancellation, publication or ID reuse.
 fn creation_event(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -1016,7 +1056,16 @@ fn creation_event(
     else {
         return;
     };
-    let valid = current(view, device).as_ref() == Some(&creation.expected)
+    if creation.terminal.is_some() {
+        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+            panel.creation = Some(creation);
+        }
+        return;
+    }
+    let owns_key = view.device_gesture.snapshot().is_some_and(|snapshot| snapshot.key == creation.key
+        && matches!(snapshot.target, GestureTarget::EqNodeCreation { device: target } if target == device));
+    let valid = owns_key
+        && current(view, device).as_ref() == Some(&creation.expected)
         && view.state.as_ref().is_some_and(|s| {
             s.project.next_identity() == creation.next_id
                 && s.project
@@ -1035,9 +1084,16 @@ fn creation_event(
                         .is_ok_and(|node| node.bank == panel.bank)
             });
     if !valid || event.phase == ResponseGraphPhase::Cancel {
+        if owns_key && !view.device_gesture.has_pending_terminal() {
+            let _ = view.cancel_device_gesture();
+        }
+        creation.terminal = view.device_gesture.terminal();
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             if panel.selected == Some(creation.id) {
                 panel.selected = creation.selected_before;
+            }
+            if owns_key && creation.terminal.is_some() {
+                panel.creation = Some(creation);
             }
         }
         if !valid {
@@ -1049,50 +1105,29 @@ fn creation_event(
             | ResponseGraphPhase::Release
             | ResponseGraphPhase::ReleaseOutside
     ) {
-        // Stationary releases retain the press position; dragging commits its
-        // final clamped pointer, including a release outside the graph.
-        creation.update(event.position);
-        // Restore the prior canonical selection even when admission or worker
-        // validation fails. Select the new ID only after that exact state is
-        // published, and only if the user has not changed selection meanwhile.
-        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-            panel.selected = creation.selected_before;
-        }
-        if ready(view, cx) {
-            if let Ok(state) = creation.state.encode() {
-                let reserved_ids =
-                    u64::from(creation.state.next_node_id).saturating_sub(creation.next_id);
-                if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-                    panel.pending_creation = Some(PendingCreation {
-                        receipt: crate::editor::pending_edit::Receipt::new(view.project_generation),
-                        state: state.clone(),
-                        expected: creation.expected.clone(),
-                        expected_variant: creation.expected_variant,
-                        next_id: creation.next_id,
-                        preview: creation.state,
-                        id: creation.id,
-                        previous: creation.selected_before,
-                        bank: panel.bank,
-                    });
-                }
-                let admitted = view.enqueue_device_barrier(Request::Edit(
-                    Command::ReplaceDeviceStateWithIdentityReservation {
-                        device,
-                        expected_state: creation.expected,
-                        expected_variant: creation.expected_variant,
-                        state,
-                        expected_next_id: creation.next_id,
-                        reserved_ids,
-                    },
-                ));
-                if !admitted && let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
-                    panel.pending_creation = None;
-                }
+        if !view.device_gesture.has_pending_terminal() {
+            creation.update(event.position);
+            let result = creation
+                .snapshot()
+                .and_then(|snapshot| view.device_gesture.finish_eq_creation(snapshot));
+            if let Err(error) = result {
+                view.device_panel.message = Some(error.into());
             }
         }
+        creation.terminal = view.device_gesture.terminal();
+        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+            panel.creation = Some(creation);
+        }
     } else {
-        if event.phase == ResponseGraphPhase::Change {
+        if event.phase == ResponseGraphPhase::Change && !view.device_gesture.has_pending_terminal()
+        {
             creation.update(event.position);
+            let result = creation
+                .snapshot()
+                .and_then(|snapshot| view.device_gesture.change_eq_creation(snapshot));
+            if let Err(error) = result {
+                view.device_panel.message = Some(error.into());
+            }
         }
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.creation = Some(creation);
@@ -1115,9 +1150,7 @@ fn handle_event(
     };
     let (selected, bank) = (panel.selected, panel.bank);
     if event.phase == ResponseGraphPhase::Remove {
-        if panel.creation.is_some()
-            || panel.pending_creation.is_some()
-            || current(view, device).as_ref() != Some(&panel.authored_state)
+        if panel.creation.is_some() || current(view, device).as_ref() != Some(&panel.authored_state)
         {
             return;
         }
@@ -1205,128 +1238,133 @@ pub(super) fn graph_for_test(view: &EditorView, device: DeviceId) -> Entity<Resp
 }
 
 impl EditorView {
-    pub(in crate::editor) fn pending_eq_creation_matches(
-        &self,
-        request: &Request,
-    ) -> Option<DeviceId> {
-        let Request::Edit(Command::ReplaceDeviceStateWithIdentityReservation {
-            device,
-            expected_state,
-            expected_variant,
-            state,
-            expected_next_id,
-            reserved_ids,
-        }) = request
-        else {
-            return None;
+    pub(in crate::editor) fn cancel_eq_creation(&mut self) -> bool {
+        let Some(snapshot) = self.device_gesture.snapshot() else {
+            return false;
         };
-        let panel = self.device_panel.eq_panels.get(device)?;
-        let pending = panel.pending_creation.as_ref()?;
-        (pending.receipt.is_queued()
-            && panel.generation == self.project_generation
-            && &pending.expected == expected_state
-            && pending.expected_variant == *expected_variant
-            && &pending.state == state
-            && pending.next_id == *expected_next_id
-            && u64::from(pending.preview.next_node_id).saturating_sub(pending.next_id)
-                == *reserved_ids)
-            .then_some(*device)
-    }
-
-    pub(in crate::editor) fn eq_creation_submitted(&mut self, device: DeviceId) {
-        if let Some(pending) = self
-            .device_panel
-            .eq_panels
-            .get_mut(&device)
-            .and_then(|panel| panel.pending_creation.as_mut())
+        let GestureTarget::EqNodeCreation { device } = snapshot.target else {
+            return false;
+        };
+        if !self.device_gesture.has_pending_terminal() {
+            let _ = self.cancel_device_gesture();
+        }
+        let terminal = self.device_gesture.terminal();
+        if let Some(panel) = self.device_panel.eq_panels.get_mut(&device)
+            && let Some(creation) = panel
+                .creation
+                .as_mut()
+                .filter(|creation| creation.key == snapshot.key)
         {
-            pending.receipt.submitted(self.worker_requests_pending);
+            creation.terminal = terminal;
+            panel.cancel_creation_capture = true;
+            if panel.selected == Some(creation.id) {
+                panel.selected = creation.selected_before;
+            }
         }
-    }
-
-    pub(in crate::editor) fn retire_pending_eq_creation(&mut self, device: DeviceId) {
-        if let Some(panel) = self.device_panel.eq_panels.get_mut(&device) {
-            panel.pending_creation = None;
-        }
+        true
     }
 
     pub(in crate::editor) fn eq_creation_request_complete(
         &mut self,
         event: &hex_session::service::Event,
     ) {
-        use crate::editor::pending_edit::Disposition;
+        let terminal = self.device_gesture.terminal();
+        let client_key = self.device_gesture.snapshot().map(|snapshot| snapshot.key);
         for (device, panel) in &mut self.device_panel.eq_panels {
-            let Some(pending) = panel.pending_creation.as_mut() else {
+            let Some(mut creation) = panel.creation.take() else {
                 continue;
             };
-            let disposition = pending.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            );
-            if disposition == Disposition::Waiting {
+            if event.project_replaced {
+                panel.cancel_creation_capture = true;
+                if panel.selected == Some(creation.id) {
+                    panel.selected = creation.selected_before;
+                }
                 continue;
             }
-            if disposition == Disposition::Terminal
-                && event.error.is_none()
+            let Some(ack) = event
+                .gesture_ack
+                .as_ref()
+                .filter(|ack| ack.key == creation.key)
+            else {
+                panel.creation = Some(creation);
+                continue;
+            };
+            let expected = if client_key == Some(creation.key) {
+                terminal.or(creation.terminal)
+            } else {
+                creation.terminal
+            };
+            let refused_begin = ack.phase == GesturePhase::Begin && !ack.accepted;
+            let replaced_source = event
+                .state
+                .project
+                .device(*device)
+                .is_none_or(|entry| entry.state() != &creation.expected)
+                || event.state.project.next_identity() != creation.next_id;
+            let exact_terminal = expected == Some((ack.phase, ack.sequence));
+            let retires_creation = refused_begin
+                || exact_terminal
+                || (replaced_source && ack.phase == GesturePhase::Cancel);
+            if !retires_creation {
+                panel.creation = Some(creation);
+                continue;
+            }
+            panel.cancel_creation_capture = true;
+            if ack.preview_retained {
+                let accepted = event
+                    .device_preview
+                    .as_ref()
+                    .map(|preview| &preview.state.project)
+                    .unwrap_or(&event.state.project);
+                if let Some(entry) = accepted.device(*device)
+                    && let Ok(state) = EqState::decode(entry.state())
+                {
+                    creation.state = state;
+                }
+                if panel.selected == Some(creation.id) && creation.state.node(creation.id).is_err()
+                {
+                    panel.selected = creation.selected_before;
+                }
+                creation.terminal = Some((ack.phase, ack.sequence));
+                panel.creation = Some(creation);
+                continue;
+            }
+            let committed = ack.accepted
+                && ack.phase == GesturePhase::Commit
                 && event
                     .state
                     .project
                     .device(*device)
-                    .is_some_and(|entry| entry.state() == &pending.state)
-                && panel.selected == pending.previous
-                && panel.bank == pending.bank
-            {
-                panel.selected = Some(pending.id);
+                    .and_then(|entry| EqState::decode(entry.state()).ok())
+                    .is_some_and(|state| state == creation.state);
+            if committed {
+                if panel.bank
+                    == creation
+                        .state
+                        .node(creation.id)
+                        .map_or(panel.bank, |node| node.bank)
+                    && (panel.selected == creation.selected_before
+                        || panel.selected == Some(creation.id))
+                {
+                    panel.selected = Some(creation.id);
+                }
+            } else if panel.selected == Some(creation.id) {
+                panel.selected = creation.selected_before;
             }
-            panel.pending_creation = None;
         }
     }
-
     pub(in crate::editor) fn retire_all_eq_creations(&mut self) -> bool {
         let mut retired = false;
         for panel in self.device_panel.eq_panels.values_mut() {
-            retired |= panel.pending_creation.take().is_some();
+            if let Some(creation) = panel.creation.take() {
+                panel.cancel_creation_capture = true;
+                if panel.selected == Some(creation.id) {
+                    panel.selected = creation.selected_before;
+                }
+                retired = true;
+            }
         }
         retired
-    }
-
-    pub(in crate::editor) fn retire_abandoned_eq_creation(&mut self) -> bool {
-        if !self.device_panel.eq_panels.values().any(|panel| {
-            panel
-                .pending_creation
-                .as_ref()
-                .is_some_and(|p| p.receipt.is_queued())
-        }) {
-            return false;
-        }
-        let abandoned: Vec<_> = self
-            .device_panel
-            .eq_panels
-            .keys()
-            .copied()
-            .filter(|device| {
-                let pending = self
-                    .device_panel
-                    .eq_panels
-                    .get(device)
-                    .and_then(|panel| panel.pending_creation.as_ref());
-                pending.is_some_and(|pending| {
-                    pending.receipt.is_queued()
-                        && !self
-                            .pending_requests
-                            .iter()
-                            .chain(self.device_gesture_barriers.iter())
-                            .any(|request| {
-                                self.pending_eq_creation_matches(request) == Some(*device)
-                            })
-                })
-            })
-            .collect();
-        for device in &abandoned {
-            self.retire_pending_eq_creation(*device);
-        }
-        !abandoned.is_empty()
     }
 }
 

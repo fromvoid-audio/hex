@@ -89,10 +89,7 @@ impl SessionPlayback {
         if window.frames == 0 {
             return Ok(window);
         }
-        let region = (!self.linear_arrangement_export)
-            .then(|| self.loop_region())
-            .flatten()
-            .filter(|region| region.enabled());
+        let region = self.active_loop_region_at(arrangement_frame, loop_pass);
         if let Some(region) = region {
             window.arrangement_frame =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)

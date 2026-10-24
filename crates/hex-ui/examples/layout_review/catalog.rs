@@ -17,6 +17,7 @@ pub(super) enum Demo {
     Selector(SelectorAppearance),
     Bars,
     Rectangle(bool),
+    TimeRange,
     Graph,
     Color,
     Curve,
@@ -59,6 +60,7 @@ impl Item {
             Demo::Toggle(_) => ("toggle", "discrete", "toggle"),
             Demo::Selector(_) => ("selector", "discrete", "selector"),
             Demo::Rectangle(_) => ("rectangle", "graphics", "rectangle"),
+            Demo::TimeRange => ("time selection", "graphics", "range_selection"),
             Demo::Bars => ("bar editor", "graphics", "bareditor"),
             Demo::Graph => ("response graph", "graphics", "responsegraph"),
             Demo::Color => ("color picker", "graphics", "colorpicker"),
@@ -101,6 +103,11 @@ impl Item {
             Demo::Workspace(WorkspaceKind::LevelMeter) => {
                 ("level meter", "workspace", "level_meter")
             }
+            Demo::Workspace(WorkspaceKind::TimeMarkers) => (
+                "time selection markers",
+                "workspace",
+                "time_position_marker",
+            ),
             Demo::Workspace(WorkspaceKind::ScrollingList) => (
                 "scrolling list composition",
                 "compositions",
@@ -270,6 +277,7 @@ pub(super) fn inventory() -> Vec<Item> {
         ("bar editor", Demo::Bars),
         ("clip rectangle", Demo::Rectangle(false)),
         ("section rectangle", Demo::Rectangle(true)),
+        ("time selection", Demo::TimeRange),
         ("response graph", Demo::Graph),
         ("color picker", Demo::Color),
         ("curve plot", Demo::Curve),
@@ -364,6 +372,7 @@ pub(super) fn inventory() -> Vec<Item> {
         ),
         ("popup menu · icon grid", WorkspaceKind::Menu(true)),
         ("level meter", WorkspaceKind::LevelMeter),
+        ("time selection markers", WorkspaceKind::TimeMarkers),
         (
             "meter indicator · mono",
             WorkspaceKind::MeterIndicator(MeterChannels::Mono),

@@ -466,6 +466,7 @@ impl Command {
             | Self::TrimClip { clip, .. }
             | Self::StretchAudioClipEdge { clip, .. }
             | Self::ResizeAudioClipView { clip, .. }
+            | Self::ResizeMidiClipView { clip, .. }
             | Self::NudgeClip { clip, .. }
             | Self::TrimClipEndBy { clip, .. }
             | Self::TrimMidiClipEdge { clip, .. }
@@ -504,9 +505,14 @@ impl Command {
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
             | Self::MoveClipsWithOverwrite { .. }
-            | Self::DuplicateClips(_) => ClipCommandScope::Explicit,
+            | Self::GroupAudioEventRange { .. }
+            | Self::GroupClips(_)
+            | Self::DuplicateClips(_)
+            | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
+            | Self::MoveArrangementSectionMarker { .. }
+            | Self::ResizeArrangementSectionMarker { .. }
             | Self::RenameArrangementSection { .. }
             | Self::SetArrangementSectionColor { .. }
             | Self::RemoveArrangementSection(..)
@@ -560,6 +566,7 @@ impl Command {
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
             | Self::ImportAudioTrack { .. }
+            | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }
             | Self::ImportPreparedAudioClip { .. }

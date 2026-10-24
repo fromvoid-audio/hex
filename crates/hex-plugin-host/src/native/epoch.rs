@@ -12,6 +12,12 @@ pub struct Quiescent {
     facts: Facts,
 }
 impl Prepared {
+    /// Check the actual child and cancellation state before transferring this
+    /// unique lease to a worker. This is not graph admission or a future-liveness
+    /// guarantee; subsequent exchange failures remain terminal.
+    pub fn validate_worker_transfer_on_control(&mut self) -> Result<()> {
+        self.require_live_epoch()
+    }
     fn require_live_epoch(&mut self) -> Result<()> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
@@ -22,22 +28,21 @@ impl Prepared {
         }
         Ok(())
     }
-    fn refuse_epoch(&mut self, cause: Error) -> Error {
-        self.faulted = true;
-        self.lease.cancel_native();
-        let (exit, custody_error) = match self.lease.child.reap() {
-            Ok(status) => (Some(status), None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-        Error::Preparation {
-            cause: Box::new(cause),
-            exit,
-            custody_error,
-        }
+    fn refuse_epoch_retained(self, cause: Error) -> PreparationFailure {
+        PreparationFailure::native(cause, self.lease, self.limits.retirement)
     }
     /// Consume the unique serialized owner after its last completed exchange.
     /// Neither this I/O nor actual child retirement may run on callback.
-    pub fn quiesce_on_control(mut self) -> Result<Quiescent> {
+    pub fn quiesce_on_control(self) -> Result<Quiescent> {
+        self.quiesce_retained_on_control()
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    /// Failed discontinuity keeps the exact cancelled lease in existing failure
+    /// custody. The caller must observe disposal independently before destroying
+    /// that owner; neither the error nor Drop acknowledges Root/callback return.
+    pub fn quiesce_retained_on_control(
+        mut self,
+    ) -> std::result::Result<Quiescent, PreparationFailure> {
         let result = (|| {
             self.require_live_epoch()?;
             let until = end_after(self.limits.startup)?;
@@ -55,7 +60,7 @@ impl Prepared {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIQF01" {
+            if self.packet.magic() != b"HXVIQF02" {
                 return Err(Error::Protocol("missing actual quiescent acknowledgement"));
             }
             let facts =
@@ -68,7 +73,7 @@ impl Prepared {
                 instance: self,
                 facts,
             }),
-            Err(cause) => Err(self.refuse_epoch(cause)),
+            Err(cause) => Err(self.refuse_epoch_retained(cause)),
         }
     }
 }
@@ -100,10 +105,21 @@ impl Quiescent {
     /// native ACK must succeed before the returned owner may exchange PCM.
     /// Source/rate/buses/quantum and cumulative sequence remain unchanged.
     pub fn resume_on_control(
-        mut self,
+        self,
         next: Binding,
         presentation: Option<PresentationLatency>,
     ) -> Result<Prepared> {
+        self.resume_retained_on_control(next, presentation)
+            .map_err(PreparationFailure::finish_on_control)
+    }
+    /// Same actual resumed ACK as the joined form. Every refusal retains the
+    /// original cancelled lease in PreparationFailure for control-side polling;
+    /// it cannot yield another Quiescent or a reusable Prepared instance.
+    pub fn resume_retained_on_control(
+        mut self,
+        next: Binding,
+        presentation: Option<PresentationLatency>,
+    ) -> std::result::Result<Prepared, PreparationFailure> {
         let result = (|| {
             self.instance.require_live_epoch()?;
             if self.facts.presentation_available && presentation.is_none() {
@@ -132,7 +148,7 @@ impl Quiescent {
                     .or_else(|_| protocol::error(body, self.instance.config.binding))?;
                 return Err(Error::Worker(code));
             }
-            if self.instance.packet.magic() != b"HXVIRR01" {
+            if self.instance.packet.magic() != b"HXVIRR02" {
                 return Err(Error::Protocol("missing actual resumed acknowledgement"));
             }
             let applied = protocol::resumed(
@@ -150,10 +166,11 @@ impl Quiescent {
                 self.instance.config = config;
                 self.instance.ready.algorithmic_latency_frames =
                     self.facts.algorithmic_latency_frames;
+                self.instance.ready.tail_frames = self.facts.tail_frames;
                 self.instance.ready.presentation = applied;
                 Ok(self.instance)
             }
-            Err(cause) => Err(self.instance.refuse_epoch(cause)),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
         }
     }
 }

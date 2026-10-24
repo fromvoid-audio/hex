@@ -11,7 +11,7 @@ use hex_engine::native_device_resources::{
 
 mod bounce;
 mod runtime_inputs;
-pub(super) use bounce::bounce_clip;
+pub(super) use bounce::{bounce_arrangement, bounce_clip, bounce_history};
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
@@ -235,14 +235,29 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         cursor: hex_project::BeatTime,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let destination = project.tempo_map().beat_to_frame(cursor)?;
+        self.publish_stopped_at_frame(
+            snapshot,
+            project,
+            sink,
+            context,
+            project.tempo_map().beat_to_frame(cursor)?,
+        )
+    }
+    fn publish_stopped_at_frame(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+        destination: u64,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let mut playback = if snapshot.prepared.arrangement_seek_requires_preroll() {
             let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
                 Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
                 hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
-            ).map_err(|error| SessionError::NativeAudio(format!("section stopped preparation refused: {error:?}")))?;
+            ).map_err(|error| SessionError::NativeAudio(format!("stopped arrangement preparation refused: {error:?}")))?;
             Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
-                SessionError::NativeAudio(format!("section stopped runtime refused: {error:?}"))
+                SessionError::NativeAudio(format!("stopped arrangement runtime refused: {error:?}"))
             })?
         } else {
             // Stateless arrangements need no replay. Preserve the raw stopped
@@ -258,14 +273,14 @@ impl Inputs<'_> {
                 ))
                 .map_err(|error| {
                     SessionError::NativeAudio(format!(
-                        "section stopped positioning refused: {error:?}"
+                        "stopped arrangement positioning refused: {error:?}"
                     ))
                 })?;
             playback
         };
         if playback.position() != destination || playback.playing() {
             return Err(SessionError::Invalid(
-                "section edit cannot retain the stopped musical cursor",
+                "arrangement edit cannot retain the stopped cursor",
             ));
         }
         let previous = snapshot.inputs.clone();
@@ -286,7 +301,7 @@ impl Inputs<'_> {
                 gain_recording_track: None,
                 requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
             },
-            ResidentPublicationPolicy::StoppedArrangement,
+            ResidentPublicationPolicy::ArrangementEdit,
             selected.allowance()?,
         )?;
         selected.cancel_retired_from(&previous);
@@ -316,11 +331,20 @@ impl Inputs<'_> {
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = Playback::try_from_prepared_with_device_resources(
-            Arc::clone(&snapshot.prepared),
-            &snapshot.resources,
-        )
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
+        self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, section_loop)
+    }
+    #[allow(clippy::too_many_arguments)] // One existing publication path with an optional transient clock.
+    fn publish_tagged_with_loop(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        section_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
@@ -353,17 +377,11 @@ impl Inputs<'_> {
         {
             return Err(SessionError::Invalid("resident publication cancelled"));
         }
-        let quoted = if let Some(region) = playback.section_loop() {
-            hex_engine::SessionPlayback::section_runtime_allowance(&snapshot.prepared, region)
-                .map_err(|error| SessionError::NativeAudio(error.to_string()))?
-                .checked_add(additional_runtime_bytes)
-                .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
-                .ok_or(SessionError::Invalid(
-                    "section runtime input allowance overflow",
-                ))?
-        } else {
-            runtime_allowance(&snapshot.prepared, additional_runtime_bytes)?
-        };
+        let quoted = runtime_allowance_with_loop(
+            &snapshot.prepared,
+            additional_runtime_bytes,
+            playback.section_loop(),
+        )?;
         if playback
             .accounted_session_runtime_bytes_on_control()
             .is_none_or(|bytes| bytes > quoted)
@@ -447,6 +465,65 @@ fn runtime_allowance(prepared: &PreparedRevision, extra: usize) -> Result<usize,
         .checked_add(extra)
         .map(|quote| quote.min(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
         .ok_or(SessionError::Invalid("runtime input allowance overflow"))
+}
+
+/// Capture only ordinary inheritance. Fresh seek/replacement callers own their
+/// explicit loop and discontinuity policy; unavailable output stays editable.
+fn inherited_runtime(
+    sink: &mut dyn WorkerAudioSink,
+    context: hex_engine::AudioSourceContext,
+    policy: ResidentPublicationPolicy,
+) -> Result<(ResidentPublicationPolicy, Option<hex_project::LoopRegion>), SessionError> {
+    match policy {
+        ResidentPublicationPolicy::InheritRuntime => {
+            let actual = sink
+                .resident_runtime_loop(context)
+                .map_err(SessionError::NativeAudio)?;
+            Ok(actual.map_or((policy, None), |actual| {
+                (
+                    ResidentPublicationPolicy::InheritRuntimeAt(actual),
+                    actual.section_loop,
+                )
+            }))
+        }
+        ResidentPublicationPolicy::InheritRuntimeAt(actual) => Ok((policy, actual.section_loop)),
+        _ => Ok((policy, None)),
+    }
+}
+
+fn playback_with_loop(
+    snapshot: &Snapshot,
+    section_loop: Option<hex_project::LoopRegion>,
+) -> Result<Playback, SessionError> {
+    match section_loop {
+        Some(region) => Playback::try_from_prepared_section_candidate(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+            region,
+        ),
+        None => Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+        ),
+    }
+    .map_err(|error| SessionError::NativeAudio(error.to_string()))
+}
+
+fn runtime_allowance_with_loop(
+    prepared: &PreparedRevision,
+    extra: usize,
+    section_loop: Option<hex_project::LoopRegion>,
+) -> Result<usize, SessionError> {
+    let Some(region) = section_loop else {
+        return runtime_allowance(prepared, extra);
+    };
+    hex_engine::SessionPlayback::section_runtime_allowance(prepared, region)
+        .map_err(|error| SessionError::NativeAudio(error.to_string()))?
+        .checked_add(extra)
+        .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+        .ok_or(SessionError::Invalid(
+            "section runtime input allowance overflow",
+        ))
 }
 
 /// One command seam for typed worker requests and ordinary edits. The native consumer publishes
@@ -669,6 +746,19 @@ pub(super) fn prepare_import(
     current: Option<&Snapshot>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
+    prepare_bounce_import(input, context, sink, admission, current, None, admit)
+}
+/// An in-place bounce uses the already-acquired stopped lease and a fresh
+/// reconstructed runtime, so carried live voices cannot duplicate baked tails.
+pub(super) fn prepare_bounce_import(
+    input: crate::import_batch::Preparation<'_>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+    stopped: Option<u64>,
+    admit: &mut dyn FnMut() -> Result<(), SessionError>,
+) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
@@ -691,7 +781,11 @@ pub(super) fn prepare_import(
         input.waveforms,
     )?;
     admit()?;
-    inputs.publish(&mut snapshot, input.project, sink, context)?;
+    if let Some(frame) = stopped {
+        inputs.publish_stopped_at_frame(&mut snapshot, input.project, sink, context, frame)?;
+    } else {
+        inputs.publish(&mut snapshot, input.project, sink, context)?;
+    }
     Ok(snapshot)
 }
 
@@ -766,11 +860,17 @@ enum Transition {
     MidiCommand(Box<Command>),
     SectionCommand {
         command: Box<Command>,
-        cursor: hex_project::BeatTime,
+        cursor: Option<hex_project::BeatTime>,
+        section_loop: Option<(hex_project::BeatTime, hex_project::BeatTime)>,
     },
     SectionHistory {
         redo: bool,
-        cursor: hex_project::BeatTime,
+        cursor: Option<hex_project::BeatTime>,
+        section_loop: Option<(hex_project::BeatTime, hex_project::BeatTime)>,
+    },
+    BounceHistory {
+        redo: bool,
+        frame: u64,
     },
 }
 
@@ -1039,7 +1139,9 @@ impl Session {
         SessionError,
     > {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
-        let quote = runtime_allowance(&snapshot.prepared, selected.allowance()?)?;
+        let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
+        let quote =
+            runtime_allowance_with_loop(&snapshot.prepared, selected.allowance()?, section_loop)?;
         inputs.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -1050,11 +1152,7 @@ impl Session {
                 .ok_or(SessionError::Invalid("runtime input allowance overflow"))?,
             0,
         )?;
-        let mut playback = Playback::try_from_prepared_with_device_resources(
-            Arc::clone(&snapshot.prepared),
-            &snapshot.resources,
-        )
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
         selected.attach(project, &mut playback)?;
         if required.is_some_and(|required| !selected.satisfies(&requested, required)) {
@@ -1252,20 +1350,8 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
-    pub(super) fn section_history_requires_stop(&self, redo: bool) -> bool {
-        self.editor
-            .inspect_history(redo, |source, target| {
-                source.arrangement_sections() != target.arrangement_sections()
-                    && (source.tracks() != target.tracks()
-                        || source.tempo_map() != target.tempo_map()
-                        || source.meter_map() != target.meter_map())
-            })
-            .unwrap_or(false)
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn stopped_section_snapshot(
+    pub(super) fn stopped_bounce_history_snapshot(
         &mut self,
-        command: Option<Command>,
         redo: bool,
         frame: u64,
         context: hex_engine::AudioSourceContext,
@@ -1273,13 +1359,82 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
-        let cursor = self.project().tempo_map().frame_to_beat(frame)?;
+        self.resident_transition(
+            Transition::BounceHistory { redo, frame },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )
+    }
+    /// Validate a structural no-op without invoking the resource-free legacy
+    /// compiler on private sampler sources. The existing admitted prepared owner
+    /// remains authoritative; neither publication nor history is created.
+    pub(super) fn section_noop_revision(
+        &mut self,
+        command: Command,
+        current: &Snapshot,
+    ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+        self.editor
+            .execute_prepared_transition(command, |source, target| {
+                if source != target {
+                    return Err(SessionError::Invalid(
+                        "section no-op changed canonical state",
+                    ));
+                }
+                Ok(Arc::clone(&current.prepared))
+            })
+    }
+
+    pub(super) fn section_history_requires_publication(&self, redo: bool) -> bool {
+        self.editor.next_section_history_requires_publication(redo)
+            || self
+                .editor
+                .inspect_history(redo, |source, target| {
+                    source.arrangement_sections() != target.arrangement_sections()
+                        && (source.tracks() != target.tracks()
+                            || source.tempo_map() != target.tempo_map()
+                            || source.meter_map() != target.meter_map())
+                })
+                .unwrap_or(false)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn section_snapshot(
+        &mut self,
+        command: Option<Command>,
+        redo: bool,
+        position: ArrangementEditPosition,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        let cursor = if position.playing {
+            None
+        } else {
+            Some(self.project().tempo_map().frame_to_beat(position.frame)?)
+        };
+        let section_loop = position
+            .section_loop
+            .map(|region| -> Result<_, SessionError> {
+                Ok((
+                    self.project().tempo_map().frame_to_beat(region.start())?,
+                    self.project().tempo_map().frame_to_beat(region.end())?,
+                ))
+            })
+            .transpose()?;
         let transition = match command {
             Some(command) => Transition::SectionCommand {
                 command: Box::new(command),
                 cursor,
+                section_loop,
             },
-            None => Transition::SectionHistory { redo, cursor },
+            None => Transition::SectionHistory {
+                redo,
+                cursor,
+                section_loop,
+            },
         };
         self.resident_transition(transition, context, sink, admission, current, None)
     }
@@ -1429,11 +1584,24 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
-        let stopped_cursor = match &transition {
-            Transition::SectionCommand { cursor, .. }
-            | Transition::SectionHistory { cursor, .. } => Some(*cursor),
+        let stopped_bounce_frame = match &transition {
+            Transition::BounceHistory { frame, .. } => Some(*frame),
             _ => None,
         };
+        let stopped_cursor = match &transition {
+            Transition::SectionCommand { cursor, .. }
+            | Transition::SectionHistory { cursor, .. } => *cursor,
+            _ => None,
+        };
+        let section_loop = match &transition {
+            Transition::SectionCommand { section_loop, .. }
+            | Transition::SectionHistory { section_loop, .. } => *section_loop,
+            _ => None,
+        };
+        let section_transition = matches!(
+            &transition,
+            Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
+        );
         let prepare = |source: &Project, project: &Project| {
             let mut snapshot =
                 inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
@@ -1445,8 +1613,48 @@ impl Session {
             } else {
                 context
             };
-            if let Some(cursor) = stopped_cursor {
+            if let Some(frame) = stopped_bounce_frame {
+                inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
+            } else if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
+            } else if section_transition {
+                // Existing live compensation/active-loop gates cannot rebind a
+                // changed tempo map. Refuse before canonical history/publication,
+                // rather than committing a candidate the callback must reject.
+                if !source.tempo_map().proves_same_clock(project.tempo_map()) {
+                    return Err(SessionError::Invalid(
+                        "live section edits that change the tempo map require stopped playback",
+                    ));
+                }
+                // Keep the launched loop at its musical timeline range. A section
+                // move changes the music under that range, never teleports transport.
+                let region = section_loop
+                    .map(|(start, end)| -> Result<_, SessionError> {
+                        Ok(hex_project::LoopRegion::new(
+                            project.tempo_map().beat_to_frame(start)?,
+                            project.tempo_map().beat_to_frame(end)?,
+                            true,
+                        )?)
+                    })
+                    .transpose()?;
+                let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
+                inputs.publish_tagged_with_loop(
+                    &mut snapshot,
+                    project,
+                    sink,
+                    ResidentPublicationMetadata {
+                        context,
+                        device_preview: None,
+                        tuning_preview: None,
+                        seek_request: None,
+                        stopped_restore: false,
+                        computer_keyboard_request: None,
+                        gain_recording_track: None,
+                        requires_preroll,
+                    },
+                    ResidentPublicationPolicy::ArrangementEdit,
+                    region,
+                )?;
             } else {
                 inputs.publish(&mut snapshot, project, sink, context)?;
             }
@@ -1461,7 +1669,9 @@ impl Session {
                 .editor
                 .execute_midi_prepared_transition(*command, prepare)
                 .map(Some),
-            Transition::History { redo } | Transition::SectionHistory { redo, .. } => {
+            Transition::History { redo }
+            | Transition::SectionHistory { redo, .. }
+            | Transition::BounceHistory { redo, .. } => {
                 let result = if redo {
                     self.editor.redo_prepared_transition(prepare)
                 } else {
@@ -1475,6 +1685,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    mod bounce_tests;
     mod export_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
@@ -2578,6 +2789,7 @@ mod tests {
             value: crate::device_gesture::ParameterValue::Float(0.5),
             secondary_value: None,
             parameters: None,
+            creation: None,
         };
         resident_preview::device_operation(
             &mut session,

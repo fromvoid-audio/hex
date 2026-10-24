@@ -29,6 +29,7 @@ use std::{
     sync::Arc,
 };
 
+mod arrangement_bounce;
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
@@ -228,6 +229,7 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
             | Command::ImportPreparedAudioClip { .. }
             | Command::ImportPreparedAudioClipWithOverwrite { .. }
             | Command::ImportPreparedSessionAudioClip { .. }
+            | Command::CommitArrangementBounce { .. }
             | Command::ConvertMidiClipToAudio { .. }
     ) {
         return Err(SessionError::Invalid(
@@ -1037,7 +1039,7 @@ impl Session {
         self.preview_mix_command(Command::Gain { track, gain }, previous)
     }
 
-    // Finite mixer callers only. This does not admit arbitrary UI commands.
+    // Validated finite mixer/native gesture callers only; never arbitrary UI commands.
     fn preview_mix_command(
         &self,
         command: Command,
@@ -1878,8 +1880,25 @@ fn prepare_with_waveforms_using(
         let prepared = prepare()?;
         // At most 262144 leaf bins per accepted revision (plus bounded pyramid
         // and per-root metadata). Dense projects receive coarser truthful peaks.
-        let requested_bins =
-            (262_144 / prepared.arrangement().audio_clip_views().len().max(1)).clamp(1, 1_024);
+        let preview_roots = prepared
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .filter(|view| {
+                project.clip(view.clip).is_some_and(|clip| {
+                    clip.audio_edit()
+                        .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
+                })
+            })
+            .count();
+        let requested_bins = (262_144
+            / prepared
+                .arrangement()
+                .audio_clip_views()
+                .len()
+                .saturating_add(preview_roots)
+                .max(1))
+        .clamp(1, 1_024);
         let mut roots: Vec<(Audio, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
         for view in prepared.arrangement().audio_clip_views() {
@@ -1908,12 +1927,44 @@ fn prepare_with_waveforms_using(
                 roots.push((view.audio.clone(), Arc::clone(&waveform)));
                 waveform
             };
+            let preview_root = if let Some(clip) = project.clip(view.clip)
+                && clip
+                    .audio_edit()
+                    .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
+            {
+                transforms
+                    .preview_root_with_sources(project, clip.id(), |asset| {
+                        media.resident.get(&asset)
+                    })?
+                    .map(|root| {
+                        let waveform = roots
+                            .iter()
+                            .find(|(audio, _)| audio.shares_pcm_with(&root.audio))
+                            .map(|(_, waveform)| Arc::clone(waveform))
+                            .map(Ok)
+                            .unwrap_or_else(|| {
+                                waveform::summarize(&root.audio, requested_bins)
+                                    .map(Arc::new)
+                                    .map_err(|_| {
+                                        hex_engine::Invalid("audio preview root summary failed")
+                                    })
+                            })?;
+                        Ok::<_, hex_engine::Invalid>(service::AudioPreviewWaveform {
+                            waveform,
+                            origin: root.origin,
+                        })
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             next.insert(
                 view.clip,
                 service::AudioClipWaveform {
                     waveform,
                     offset: view.offset,
                     length: view.length,
+                    preview_root,
                 },
             );
         }

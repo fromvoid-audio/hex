@@ -41,6 +41,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         waveform: Arc::clone(&peaks),
         offset: 0,
         length: 96_000,
+        preview_root: None,
     };
     let tempo = canonical.project().tempo_map().clone();
     let request = super::WaveformPreview {
@@ -257,6 +258,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                             waveform: Arc::clone(&prepared_peaks),
                             offset,
                             length: original.clip(clip).unwrap().duration(),
+                            preview_root: None,
                         },
                     );
                 }

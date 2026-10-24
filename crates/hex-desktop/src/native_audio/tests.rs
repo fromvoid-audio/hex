@@ -3,12 +3,15 @@
 use super::*;
 mod resident_authoring;
 mod resident_bounce;
+mod resident_eq_creation;
 mod resident_export;
+mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
 mod resident_routes;
 mod resident_sections;
 mod sampler;
+mod stream_export;
 mod track_clipboard;
 mod track_reorder;
 use hex_audio::worker_fixture::HeadlessBackend;
@@ -213,6 +216,16 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        self.inner.streamed_exporter()
+    }
+
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        self.inner.resident_runtime_loop(context)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
@@ -356,10 +369,16 @@ impl WorkerAudioSink for ObservedSink {
         self.inner
             .prepare_sampler_keyboard(context, output, epoch, track, device)
     }
-    fn begin_section_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        self.inner.begin_section_edit(context)
+    fn begin_section_edit(
+        &mut self,
+        context: AudioSourceContext,
+        allow_playing: bool,
+    ) -> Result<(), String> {
+        self.inner.begin_section_edit(context, allow_playing)
     }
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    fn section_edit_ready(
+        &mut self,
+    ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
         self.inner.section_edit_ready()
     }
     fn cancel_section_edit(&mut self) {

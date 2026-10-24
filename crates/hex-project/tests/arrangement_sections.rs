@@ -1294,7 +1294,7 @@ fn shared_seam_preserves_outer_span_and_markers_or_clears_only_crossed_music_ato
                 boundary,
                 marker_only,
             };
-            assert_eq!(command.requires_stopped_section_edit(), !marker_only);
+            assert_eq!(command.requires_section_publication(), !marker_only);
             let preview = editor
                 .project()
                 .preview_arrangement_section_edit(&command)
@@ -1493,7 +1493,7 @@ fn marker_split_preserves_music_and_left_identity_with_one_history_step() {
         section: id,
         at: b(3),
     };
-    assert!(!command.requires_stopped_section_edit());
+    assert!(!command.requires_section_publication());
     let preview = editor
         .project()
         .preview_arrangement_section_edit(&command)
@@ -1893,6 +1893,45 @@ fn section_splices_preserve_effective_mixed_meter_on_all_retained_content() {
                     old.meter_map().meter_at(beat),
                     "duplicated meter at {beat:?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn moving_and_duplicating_sections_preserve_a_single_global_tempo_clock() {
+    for rate in [8_000, 44_100, 48_000] {
+        for micro_bpm in [120_000_000, 143_000_000, 180_000_000] {
+            let mut editor = Editor::new(Project::new(rate).unwrap(), 32).unwrap();
+            editor
+                .execute(Command::SetProjectTempo {
+                    tempo: Tempo::new(micro_bpm).unwrap(),
+                })
+                .unwrap();
+            let first = section(&mut editor, "first", 0, 2);
+            let last = section(&mut editor, "last", 4, 7);
+            let clock = editor.project().tempo_map().clone();
+            for command in [
+                Command::ReorderSectionAfter {
+                    section: first,
+                    after: last,
+                },
+                Command::ReorderSectionBefore {
+                    section: first,
+                    before: last,
+                },
+                Command::DuplicateArrangementSection(first),
+            ] {
+                editor.execute(command).unwrap();
+                assert_eq!(
+                    editor.project().tempo_map(),
+                    &clock,
+                    "global tempo is not a splice event"
+                );
+                assert!(editor.undo());
+                assert_eq!(editor.project().tempo_map(), &clock);
+                assert!(editor.redo());
+                assert_eq!(editor.project().tempo_map(), &clock);
             }
         }
     }

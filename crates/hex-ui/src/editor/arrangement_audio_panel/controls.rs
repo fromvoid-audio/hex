@@ -537,6 +537,7 @@ pub(super) fn toggle(
             .when(warp, |owner| owner.w(px(44.0)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: theme::text(tooltip),
                 })
                 .into()

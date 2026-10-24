@@ -20,6 +20,8 @@ widgets = (
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
     'clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Loop body wrappers contain native views; marker glyphs use theme::text.
+    'loop_handles::body(', 'loop_handles::audio_markers(', 'loop_handles::midi_markers(',
     'clip_fade_layer(', 'self.clip_name_drag_header(', 'clip_name_text(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
@@ -101,6 +103,7 @@ widgets = (
     'header::title_bar(', 'header::loading_toolbar(',
     # Changelog body/group captions normalize text; the test paint probe has no label.
     'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
+    'crate::tooltips::HelpToggle)',
     'lights)', 'crate::build_info::label()', 'crate::build_info::editor_label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     # Device preset header actions reuse themed compact action buttons.

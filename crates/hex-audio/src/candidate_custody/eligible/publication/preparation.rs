@@ -35,6 +35,44 @@ pub(super) struct PreparationExecution {
     failed: bool,
     refusal: Option<&'static str>,
 }
+impl Custody {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(in crate::candidate_custody) fn with_native_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        bindings: &[hex_lattice_contract::ForeignProcessorBinding],
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<AudioCandidatePreparationProgress, &'static str> {
+        let mut guard = self
+            .work
+            .try_lock()
+            .map_err(|_| "candidate preparation is busy")?;
+        let work = &mut *guard;
+        let bank = self
+            .bank
+            .try_lock()
+            .map_err(|_| "native effect selection is busy")?;
+        if !self.enabled() || bank.closing || bank.root != token.root {
+            return Err("native effect selection is closing or differs");
+        }
+        let definition = bank
+            .sources
+            .definition(&work.sources, bindings)
+            .map_err(|_| "native effect source selection refused")?;
+        drop(bank);
+        let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeDeviceRegistry::new(&definitions)
+            .map_err(|_| "native effect registry refused")?;
+        let effects = hex_engine::AudioCandidateEffects::new(&registry);
+        self.with_runtime_preparation_locked(&mut work.publication, token, |cell| {
+            prepare(cell, &effects)
+        })
+    }
+}
+
 #[cfg(test)]
 impl PreparationExecution {
     pub(super) fn test_summary(&self) -> (bool, bool, Option<&'static str>, bool) {
@@ -110,12 +148,12 @@ impl Custody {
             let mut retained = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
                 .ok_or("candidate preparation DATA overflow")?;
             let mut peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
                 .ok_or("candidate preparation peak overflow")?;
             let mut members = reservation.member_rows;
             let mut transfers = reservation.transfer_rows;
@@ -299,14 +337,14 @@ impl Custody {
             let retained = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
                 .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
                 .and_then(|n| n.checked_add(metadata))
                 .ok_or("candidate DATA overflow")?;
             let peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
                 .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .and_then(|n| n.checked_add(metadata))
                 .ok_or("candidate peak overflow")?;
@@ -364,6 +402,16 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
+        self.with_runtime_preparation_locked(&mut work.publication, token, prepare)
+    }
+    pub(in crate::candidate_custody::eligible) fn with_runtime_preparation_locked(
+        &self,
+        work: &mut Work,
+        token: AudioCandidatePreparationToken,
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<AudioCandidatePreparationProgress, &'static str> {
         let retiring = {
             let bank = lock(&self.bank);
             let slot = bank
@@ -381,7 +429,6 @@ impl Custody {
             bank.closing || slot.preparation_retiring
         };
         let execution = work
-            .publication
             .preparations
             .get_mut(token.slot)
             .and_then(Option::as_mut)
@@ -426,7 +473,7 @@ impl Custody {
             }
             Err(payload) => {
                 execution.failed = true;
-                work.publication.failed_payloads[token.slot] = Some(payload);
+                work.failed_payloads[token.slot] = Some(payload);
                 let mut bank = lock(&self.bank);
                 bank.publication.slots[token.slot].phase = Phase::Failed;
                 self.mark_closing(&mut bank);
@@ -467,6 +514,7 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
+        let work = &mut *work;
         let (ledger, external) = {
             let bank = lock(&self.bank);
             let slot = bank
@@ -576,6 +624,8 @@ impl Custody {
             header,
             summary,
             Some(token),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            &work.sources,
         )?;
         let state = Self::publication_state(plan.stamp, &execution.domains, header);
         execution.pending = true;
@@ -831,6 +881,46 @@ mod tests {
             asset,
             hex_engine::Audio::new(48000, vec![[0.25; 2]; 8]).unwrap(),
         )
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn native_pool_allowances_are_not_available_to_runtime_preparation() {
+        let baseline = root();
+        let base = &baseline.0.eligible;
+        let token = base
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .unwrap_or_else(|refusal| panic!("baseline preparation: {}", refusal.reason));
+        assert!(base.cancel_runtime_preparation(token));
+        for _ in 0..4 {
+            base.advance_on_control(false);
+        }
+
+        let original = root();
+        let custody = &original.0.eligible;
+        custody
+            .configure_native_sources(
+                1,
+                crate::NativeSourceDataReservation {
+                    max_retained_data_bytes: 4 * 1024 * 1024,
+                    max_construction_peak_data_bytes: 48 * 1024 * 1024,
+                },
+            )
+            .unwrap();
+        let held = custody.usage();
+        let refusal = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .unwrap_err();
+        assert_eq!(refusal.reason, "candidate preparation reservation exceeded");
+        assert_eq!(custody.usage(), held);
+        let bank = lock(&custody.bank);
+        assert!(
+            bank.publication
+                .slots
+                .iter()
+                .all(|slot| slot.phase == Phase::Vacant)
+        );
+        assert!(bank.publication.archives.iter().all(|occupied| !occupied));
     }
     #[test]
     fn reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup() {

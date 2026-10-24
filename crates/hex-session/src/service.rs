@@ -26,17 +26,21 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+mod streamed_export;
+pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
+mod stopped_arrangement;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, WorkerAudioSink,
+    ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
+    NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -91,6 +95,15 @@ pub struct AudioClipWaveform {
     pub waveform: Arc<Waveform>,
     pub offset: u64,
     pub length: u64,
+    /// Original processing-root peaks for metadata-only placement gestures.
+    /// Outer waveform above continues to match actual committed playback.
+    pub preview_root: Option<AudioPreviewWaveform>,
+}
+
+#[derive(Clone)]
+pub struct AudioPreviewWaveform {
+    pub waveform: Arc<Waveform>,
+    pub origin: i128,
 }
 
 /// Read-only model and cached summaries for a single committed project revision.
@@ -202,6 +215,8 @@ pub struct Event {
     pub midi_take_complete: Option<MidiTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
+    /// Correlates the final bounce result with its shared cancellation control.
+    pub bounce_complete: Option<hex_export::ExportControl>,
     /// Correlates one final batch result; contains metadata only, never PCM.
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
@@ -426,6 +441,21 @@ pub enum Request {
         revision: u64,
         clips: Vec<hex_project::ClipId>,
     },
+    /// Captured Arrangement selection to consolidate as one clip. The project
+    /// command validates track and media-kind representability atomically.
+    GroupClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
+    },
+    /// Captured range in the focused lower audio-event editor.
+    GroupAudioEvents {
+        project_generation: u64,
+        revision: u64,
+        clip: hex_project::ClipId,
+        start: u64,
+        end: u64,
+    },
     /// Explicitly confirmed recovery storage action, scoped to one observed failure.
     RestartRecovery(RecoveryRestart),
     /// Scalar native seek; all candidate/source owners remain on control workers.
@@ -626,6 +656,17 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
+    /// Bounce selected Arrangement clips or an explicit range.
+    /// At most MAX_CLIPS captured IDs or MAX_TRACKS range rows in the existing
+    /// 32-slot FIFO. One synchronous control-worker job; Escape cancels via the
+    /// shared control without waiting for that FIFO. No audio/UI thread rendering.
+    BounceArrangement {
+        project_generation: u64,
+        revision: u64,
+        target: hex_project::BounceTarget,
+        in_place: bool,
+        control: hex_export::ExportControl,
+    },
     /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
     ConvertClip {
         project_generation: u64,
@@ -696,6 +737,7 @@ impl Request {
                 | Request::CompareDevice { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
+                | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
                 | Request::TuningLibrary { .. }
         )
@@ -812,6 +854,7 @@ type Exporter = Arc<
 
 struct ExportJob {
     job_id: u64,
+    streamed: Option<streamed_export::StreamedExportJob>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
@@ -1150,6 +1193,18 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        if let Request::BounceArrangement {
+            target: hex_project::BounceTarget::Clips(ids),
+            ..
+        } = &request
+        {
+            if ids.is_empty()
+                || ids.len() > hex_project::MAX_CLIPS
+                || ids.capacity() > hex_project::MAX_CLIPS
+            {
+                return Err(SubmitError::Busy(request));
+            }
+        }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some()
                 || self
@@ -1761,6 +1816,7 @@ fn run_worker(
                 midi_take_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
+                bounce_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
                 document_format_upgrade_required: false,
@@ -1796,6 +1852,7 @@ fn run_worker(
             midi_take_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
+            bounce_complete: None,
             audio_batch_complete: None,
             save_complete: false,
             document_format_upgrade_required: false,
@@ -1979,6 +2036,10 @@ fn run_worker(
         let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
         let mut tuning_input_publication = None;
+        let bounce_complete = match &request {
+            Request::BounceArrangement { control, .. } => Some(control.clone()),
+            _ => None,
+        };
         let mut audio_batch_complete = None;
         let mut audio_batch_failure = None;
         let mut open_complete = false;
@@ -2233,6 +2294,48 @@ fn run_worker(
                     Ok(Command::DuplicateClips(clips.clone()))
                 },
             ),
+            Request::GroupClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip grouping canceled · project changed".into())
+                } else if clips.len() < 2 || clips.len() > hex_project::MAX_CLIPS {
+                    Err("select at least two clips to group".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before grouping clips".into())
+                } else {
+                    Ok(Command::GroupClips(clips.clone()))
+                },
+            ),
+            Request::GroupAudioEvents {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clip,
+                start,
+                end,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("audio event grouping canceled · project changed".into())
+                } else if start >= end {
+                    Err("select audio events to group".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before grouping audio events".into())
+                } else {
+                    Ok(Command::GroupAudioEventRange {
+                        clip: *clip,
+                        start: *start,
+                        end: *end,
+                    })
+                },
+            ),
             _ => None,
         };
         let (request, resolution_failure) = match resolved_edit {
@@ -2244,6 +2347,31 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = resolution_failure.or_else(|| match &request {
+            Request::BounceArrangement {
+                project_generation: captured,
+                revision: captured_revision,
+                control,
+                ..
+            } => {
+                if *captured != project_generation
+                    || *captured_revision != revision
+                    || control.is_cancelled()
+                {
+                    Some("bounce cancelled · target changed".into())
+                } else if compiled
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.gain_recording_track().is_some())
+                {
+                    Some("finish gain recording before bouncing".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before bouncing".into())
+                } else {
+                    None
+                }
+            }
             Request::EditArrangementSection {
                 project_generation: captured,
                 revision: captured_revision,
@@ -2703,7 +2831,9 @@ fn run_worker(
                     let outcome = if tuning_gesture.snapshot().is_some()
                         && matches!(
                             gesture,
-                            GestureRequest::Begin { .. } | GestureRequest::BeginSnapshot { .. }
+                            GestureRequest::Begin { .. }
+                                | GestureRequest::BeginSnapshot { .. }
+                                | GestureRequest::BeginEqCreation { .. }
                         ) {
                         crate::device_gesture::GestureOutcome {
                             ack: GestureAck {
@@ -2783,6 +2913,7 @@ fn run_worker(
                             GestureRequest::Change { .. }
                                 | GestureRequest::ChangePair { .. }
                                 | GestureRequest::ChangeSnapshot { .. }
+                                | GestureRequest::ChangeEqCreation { .. }
                         ) {
                             preview_prepared = Some(prepared);
                             preview_project = outcome.preview_project;
@@ -2963,6 +3094,12 @@ fn run_worker(
                 }
                 Request::DuplicateClips { .. } => {
                     error = Some("clip duplication target was not resolved".into());
+                }
+                Request::GroupClips { .. } => {
+                    error = Some("clip grouping target was not resolved".into());
+                }
+                Request::GroupAudioEvents { .. } => {
+                    error = Some("audio event grouping target was not resolved".into());
                 }
                 Request::DropBrowserDeviceOnArrangement {
                     project_generation: expected_generation,
@@ -4687,6 +4824,77 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::BounceArrangement {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    target,
+                    in_place,
+                    control,
+                } => {
+                    let result = if captured_generation != project_generation
+                        || captured_revision != revision
+                    {
+                        Err("bounce cancelled · project changed".into())
+                    } else if control.is_cancelled() {
+                        Err("bounce cancelled".into())
+                    } else {
+                        recovery
+                            .clone()
+                            .map(Ok)
+                            .unwrap_or_else(untitled_recovery_path)
+                            .and_then(|path| {
+                                let root = path
+                                    .parent()
+                                    .and_then(Path::parent)
+                                    .ok_or("bounce media folder unavailable")?
+                                    .join("media/bounces");
+                                if let Some(sink) = events.resident_audio() {
+                                    let context = hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    };
+                                    let admission = export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| {
+                                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                                sources: current_sources.as_ref(),
+                                                prepared: Some(prepared),
+                                            }
+                                        }),
+                                        resident_seek.as_ref(),
+                                        resident_preview.as_ref(),
+                                    );
+                                    resident_audio::bounce_arrangement(
+                                        &mut session,
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        context,
+                                        sink,
+                                        admission,
+                                        &mut resident_snapshot,
+                                    )
+                                } else {
+                                    session.bounce_arrangement(
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    )
+                                }
+                            })
+                    };
+                    match result {
+                        Ok((result, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some("arrangement bounced to audio".into());
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::ConvertClip {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -4823,7 +5031,56 @@ fn run_worker(
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                         && session
-                            .section_history_requires_stop(matches!(&request, Request::Redo)) =>
+                            .editor
+                            .next_history_requires_stopped_bounce(matches!(
+                                &request,
+                                Request::Redo
+                            )) =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            resident_audio::bounce_history(
+                                &mut session,
+                                matches!(request, Request::Redo),
+                                context,
+                                sink,
+                                admission,
+                                &mut resident_snapshot,
+                            )
+                        });
+                    match result {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("bounce history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session.section_history_requires_publication(matches!(
+                            &request,
+                            Request::Redo
+                        )) =>
                 {
                     let context = hex_engine::AudioSourceContext {
                         project_generation,
@@ -5055,28 +5312,37 @@ fn run_worker(
                         .as_ref()
                         .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
                         .unwrap_or(0);
-                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-                        Err("offline export is unavailable for verified streaming".to_owned())
-                    } else {
-                        match (compiled.as_ref(), clip_end) {
-                            (_, 0) => Err("nothing to export".to_owned()),
-                            (Some((compiled_revision, prepared)), frames)
-                                if *compiled_revision == revision =>
-                            {
-                                Ok(ExportJob {
-                                    job_id: 0,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: None,
-                                })
-                            }
-                            _ => Err("latest project revision has not compiled".to_owned()),
+                    let job = match (compiled.as_ref(), clip_end) {
+                        (_, 0) => Err("nothing to export".to_owned()),
+                        (Some((compiled_revision, prepared)), frames)
+                            if *compiled_revision == revision =>
+                        {
+                            Ok(ExportJob {
+                                job_id: 0,
+                                streamed: None,
+                                sources: None,
+                                resources: None,
+                                revision,
+                                path: path.clone(),
+                                prepared: Arc::clone(prepared),
+                                frames,
+                                controlled: None,
+                            })
                         }
-                    };
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    }
+                    .and_then(|mut job| {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                &session,
+                                &state.project,
+                                project_generation,
+                                revision,
+                                events.streamed_exporter(),
+                            )?);
+                        }
+                        Ok(job)
+                    });
                     match job {
                         Ok(job) => export_job = Some(job),
                         Err(reason) => {
@@ -5096,34 +5362,41 @@ fn run_worker(
                     control,
                     overwrite,
                 } => {
-                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-                        Err("offline export is unavailable for verified streaming".to_owned())
-                    } else {
-                        match compiled.as_ref() {
-                            Some((compiled_revision, prepared))
-                                if *compiled_revision == revision =>
-                            {
-                                hex_export::controlled_frame_count(
-                                    prepared.arrangement(),
-                                    start,
-                                    frames,
-                                    &signal,
-                                )
-                                .map_err(|error| error.to_string())
-                                .map(|frames| ExportJob {
-                                    job_id: 0,
-                                    sources: None,
-                                    resources: None,
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some((start, signal, control, overwrite)),
-                                })
-                            }
-                            _ => Err("latest project revision has not compiled".to_owned()),
+                    let job = match compiled.as_ref() {
+                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
+                            hex_export::controlled_frame_count(
+                                prepared.arrangement(),
+                                start,
+                                frames,
+                                &signal,
+                            )
+                            .map_err(|error| error.to_string())
+                            .map(|frames| ExportJob {
+                                job_id: 0,
+                                streamed: None,
+                                sources: None,
+                                resources: None,
+                                revision,
+                                path: path.clone(),
+                                prepared: Arc::clone(prepared),
+                                frames,
+                                controlled: Some((start, signal, control, overwrite)),
+                            })
                         }
-                    };
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    }
+                    .and_then(|mut job| {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                &session,
+                                &state.project,
+                                project_generation,
+                                revision,
+                                events.streamed_exporter(),
+                            )?);
+                        }
+                        Ok(job)
+                    });
                     match job {
                         Ok(job) => {
                             status = Some("export queued".into());
@@ -6032,11 +6305,12 @@ fn run_worker(
             }
         }
         if let Some(job) = export_job.as_mut() {
+            let streamed = job.streamed.is_some();
             if let Err(reason) = export_lane.prepare_job(
                 job,
                 &session,
-                current_sources.as_ref(),
-                resident_snapshot.as_ref().zip(
+                current_sources.as_ref().filter(|_| !streamed),
+                resident_snapshot.as_ref().filter(|_| !streamed).zip(
                     events
                         .resident_audio()
                         .map(|sink| &*sink as &dyn WorkerAudioSink),
@@ -6068,6 +6342,7 @@ fn run_worker(
                 midi_take_complete,
                 tuning_audition_complete,
                 live_expression_complete,
+                bounce_complete,
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
@@ -6208,7 +6483,39 @@ fn run_export_worker(
         }
         let (id, mut event) = {
             let ExportWork::Render(mut job) = work;
-            let result = if job.sources.is_some() && job.resources.is_some() {
+            let result = if let Some(streamed) = job.streamed.take() {
+                if job.sources.is_some() || job.resources.is_some() {
+                    Err("export cannot combine streamed and resident source scopes".into())
+                } else {
+                    let (start, signal, control, overwrite) =
+                        job.controlled.take().unwrap_or_else(|| {
+                            (
+                                0,
+                                hex_export::ExportSignal::Main,
+                                hex_export::ExportControl::default(),
+                                false,
+                            )
+                        });
+                    let policy = if overwrite {
+                        hex_export::Publication::confirmed_save(&job.path)
+                    } else {
+                        Ok(hex_export::Publication::CreateNew)
+                    };
+                    match policy {
+                        Ok(publication) => (streamed.render)(&StreamedExportRequest {
+                            source: &streamed.source,
+                            prepared: &job.prepared,
+                            path: &job.path,
+                            start,
+                            frames: job.frames,
+                            signal: &signal,
+                            control: &control,
+                            publication: &publication,
+                        }),
+                        Err(error) => Err(error.to_string()),
+                    }
+                }
+            } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {
                 if let Some((start, signal, control, overwrite)) = job.controlled.take() {
@@ -9643,6 +9950,72 @@ mod service_tests {
         assert!(reopened.error.is_none(), "{:?}", reopened.error);
         assert!(reopened.project_replaced);
         assert_eq!(reopened.state.project, duplicated.state.project);
+    }
+
+    #[test]
+    fn selected_clip_group_refuses_stale_generation_or_revision_without_history_changes() {
+        let service = Service::new(48_000, 32, 8_000_000).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "midi".into(),
+            }))
+            .unwrap();
+        let track = next_event(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::ONE,
+            }))
+            .unwrap();
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                length: hex_project::BeatTime::ONE,
+            }))
+            .unwrap();
+        let before = next_event(&service);
+        let clips = before.state.project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .map(|clip| clip.id())
+            .collect::<Vec<_>>();
+        service
+            .submit(Request::GroupClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: clips.clone(),
+            })
+            .unwrap();
+        let grouped = next_event(&service);
+        assert!(grouped.request_complete);
+        assert!(grouped.error.is_none(), "{:?}", grouped.error);
+        assert!(matches!(grouped.created, Some(Created::Clip(_))));
+        assert_eq!(grouped.state.revision, before.state.revision + 1);
+
+        for (project_generation, revision) in
+            [(1, grouped.state.revision), (0, before.state.revision)]
+        {
+            service
+                .submit(Request::GroupClips {
+                    project_generation,
+                    revision,
+                    clips: clips.clone(),
+                })
+                .unwrap();
+            let refused = next_event(&service);
+            assert!(refused.request_complete);
+            assert!(refused.error.is_some());
+            assert!(refused.created.is_none());
+            assert!(refused.playback.is_none());
+            assert_eq!(refused.state.revision, grouped.state.revision);
+            assert_eq!(refused.state.project, grouped.state.project);
+            assert_eq!(refused.state.can_undo, grouped.state.can_undo);
+            assert_eq!(refused.state.can_redo, grouped.state.can_redo);
+        }
     }
 
     #[test]

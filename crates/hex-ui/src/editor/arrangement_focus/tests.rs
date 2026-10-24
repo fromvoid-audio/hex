@@ -149,15 +149,17 @@ fn replace(visual: &mut VisualTestContext, editor: &Entity<EditorView>, project:
     visual.run_until_parked();
 }
 
-fn select_section(visual: &mut VisualTestContext, index: u64, shift: bool) {
+// This fixture selects Q's driving section IDs; Shift alone selects time.
+fn select_section(visual: &mut VisualTestContext, index: u64, toggle_membership: bool) {
     let bounds = visual
-        .debug_bounds(selector("arrangement-section", index))
+        .debug_bounds(selector("arrangement-section-header", index))
         .unwrap();
     visual.simulate_mouse_down(
         bounds.center(),
         MouseButton::Left,
         Modifiers {
-            shift,
+            shift: toggle_membership,
+            platform: toggle_membership,
             ..Modifiers::default()
         },
     );
@@ -166,7 +168,8 @@ fn select_section(visual: &mut VisualTestContext, index: u64, shift: bool) {
         bounds.center(),
         MouseButton::Left,
         Modifiers {
-            shift,
+            shift: toggle_membership,
+            platform: toggle_membership,
             ..Modifiers::default()
         },
     );

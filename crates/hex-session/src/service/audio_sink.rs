@@ -27,11 +27,53 @@ pub struct ResidentFreshRuntimeFence {
     pub route_generation: u64,
     pub admitted_command_ticket: u64,
 }
+/// Nonowning scalar witness for the actual installed graph's audition loop.
+/// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
+/// `source_context == None` describes a cold output at audio revision zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResidentRuntimeLoop {
+    pub output_identity: u64,
+    pub audio_revision: u64,
+    pub source_context: Option<hex_engine::AudioSourceContext>,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
+/// One callback-observed source and transport witness under the arrangement gate.
+#[derive(Clone, Copy, Debug)]
+pub struct ArrangementEditPosition {
+    pub frame: u64,
+    pub playing: bool,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
+impl ArrangementEditPosition {
+    /// Validate control-side scalar observations. This grants no fence or resource custody.
+    pub fn from_frames(
+        frame: u64,
+        playing: bool,
+        section_loop: Option<(u64, u64)>,
+    ) -> Result<Self, String> {
+        let section_loop = section_loop
+            .map(|(start, end)| {
+                hex_project::LoopRegion::new(start, end, true).map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        Ok(Self {
+            frame,
+            playing,
+            section_loop,
+        })
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
+    /// Offline inheritance or an output without a transient audition loop.
     InheritRuntime,
-    /// The sink owns the shared stopped gate through exact callback installation.
-    StoppedArrangement,
+    /// Preserve this exact applied graph's loop through ordinary inheritance.
+    /// The native owner revalidates it before admission/enqueue; it grants no custody.
+    InheritRuntimeAt(ResidentRuntimeLoop),
+    /// The sink owns the shared arrangement gate through exact callback installation.
+    /// A playing witness inherits the actual boundary runtime; a stopped witness
+    /// installs its prepared musical cursor.
+    ArrangementEdit,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
     /// New/Open only: admit one exact pending owner before canonical generation replacement.
@@ -71,12 +113,30 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Optional stateless offline renderer. Query only on the Session worker;
+    /// the returned function runs on the existing export worker with an exact
+    /// canonical snapshot. It must use independent bounded pages/verification,
+    /// never borrow native output/catalog/readiness or private source custody.
+    fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
+        None
+    }
+
     /// Output ownership policy, independent of device presence or availability. A native consumer
     /// opts in only after routing every resident graph through this worker-private boundary.
     /// This capability survives document mode changes: protocol dispatch must also require
     /// Resident mode, while cross-mode admission still borrows actual resident/retired owners.
     fn resident_publication_enabled(&self) -> bool {
         false
+    }
+    /// Actual output/source/revision-bound loop, never the saved loop marker.
+    /// None means no active ordinary output; offline edits remain available.
+    /// A witness may become stale during preparation and must be revalidated by
+    /// `publish_resident` before admitting `InheritRuntimeAt`.
+    fn resident_runtime_loop(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<ResidentRuntimeLoop>, String> {
+        Ok(None)
     }
     /// Synchronously borrow actual active/retiring/unpublished owners for every precommit check.
     /// No borrow may survive this worker call; each actual root is selected once per union.
@@ -125,15 +185,17 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
-    /// A bounded control-worker handshake; source/resource custody remains here.
+    /// A bounded stopped Arrangement handshake, shared by structural edits and
+    /// in-place bounce/history. The historical method name transfers no custody.
     fn begin_section_edit(
         &mut self,
         _context: hex_engine::AudioSourceContext,
+        _allow_playing: bool,
     ) -> Result<(), String> {
-        Err("native stopped arrangement edits are unavailable".into())
+        Err("native arrangement edits are unavailable".into())
     }
-    /// Callback-observed stopped frame. None means the command prefix is pending.
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
+    /// Callback-observed transport. None means the command prefix is pending.
+    fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
         None
     }
     /// Precommit cancellation only. Accepted publication retains its gate.
@@ -242,6 +304,11 @@ impl WorkerEvents {
             }
             self.last_context = Some(source.context());
         }
+    }
+    pub(super) fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.streamed_exporter())
     }
     pub(super) fn resident_publication_enabled(&self) -> bool {
         self.audio

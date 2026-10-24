@@ -1,7 +1,7 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
-    FitTimeline, ImportAudio, InsertTimeSelection, LoopSelection, MergeSections, MidiOctaveDown,
+    FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
     MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
     PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
@@ -137,6 +137,7 @@ impl EditorView {
                         let message = self.status.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: message.clone().into(),
                             })
                             .into()
@@ -217,6 +218,7 @@ impl EditorView {
                     let description = self.audio_admission.description();
                     move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: description.clone().into(),
                         })
                         .into()
@@ -274,6 +276,7 @@ impl EditorView {
         bar = bar.child(
             crate::output_meter::render(meter_input).tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: crate::output_meter::description(meter_input).into(),
                 })
                 .into()
@@ -307,6 +310,7 @@ impl EditorView {
                         let description = diagnostic.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: description.clone().into(),
                             })
                             .into()
@@ -355,6 +359,7 @@ fn status_slot(
         slot = slot
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: full_status.clone().into(),
                 })
                 .into()
@@ -367,6 +372,9 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
@@ -386,7 +394,7 @@ impl Render for EditorView {
         self.reconcile_clip_selection();
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
-        if self.clip_view_open && self.gain_lane.track.is_some() {
+        if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
         }
@@ -472,6 +480,16 @@ impl Render for EditorView {
                 "hex_project_tempo_editor hex_text_editing"
             } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
                 "hex_gain_numeric_editor"
+            } else if self.mode == super::EditorMode::Arrangement
+                && self.automation_view.enabled
+                && self.focus.is_focused(window)
+            {
+                "hex_editor hex_arrangement_automation"
+            } else if self.mode == super::EditorMode::Arrangement
+                && self.automation_view.enabled
+                && self.track_header_focused(window)
+            {
+                "hex_editor hex_automation_track_header"
             } else {
                 self.browser_key_context(window, cx)
             })
@@ -537,6 +555,16 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.sections.held() {
+                        let position = window.mouse_position();
+                        if view.update_section_pointer(
+                            f32::from(position.x),
+                            f32::from(position.y),
+                            event.modifiers,
+                        ) {
+                            cx.notify();
+                        }
+                    }
                     if view.refresh_piano_note_modifiers(event.modifiers, window) {
                         cx.notify();
                     }
@@ -614,6 +642,11 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     cx.notify();
                 }
+                if event.keystroke.key == "f" && view.audio_event_editor.fade_key_held {
+                    view.audio_event_editor.fade_key_held = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
                 if event.keystroke.key == "f" && view.fade_key_held {
                     view.fade_key_held = false;
                     cx.notify();
@@ -629,6 +662,10 @@ impl Render for EditorView {
                     return;
                 }
                 if view.arrangement_view_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if view.reverse_clip_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -784,6 +821,16 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_eq_creation() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if view.cancel_bounce() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
@@ -1084,13 +1131,26 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &MergeSections, window, cx| {
-                if !view.merge_sections(window) {
+            .on_action(cx.listener(|view, _: &GroupSelection, window, cx| {
+                if view.audio_event_focus.is_focused(window) {
+                    view.event_group_selected();
+                } else if view.section_has_focus(window) {
+                    if !view.merge_sections(window) {
+                        cx.propagate();
+                    }
+                } else if view.mode == super::EditorMode::Arrangement
+                    && view.focus.is_focused(window)
+                {
+                    view.group_selected_clips(window);
+                } else {
                     cx.propagate();
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
+                if view.delete_automation_point(window, cx) {
+                    return;
+                }
                 if view.delete_section(window) {
                     cx.notify();
                     return;
@@ -1232,6 +1292,16 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &super::BounceInPlace, window, cx| {
+                view.bounce_arrangement_selection(true, window);
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::BounceToNewTracks, window, cx| {
+                    view.bounce_arrangement_selection(false, window);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window);
                 cx.notify();

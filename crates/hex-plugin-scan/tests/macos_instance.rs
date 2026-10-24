@@ -82,7 +82,7 @@ fn helper_roles_are_distinct_and_actual_inventory_is_bound() {
 #[test]
 #[ignore = "explicit original native instance receipt required"]
 fn stale_source_changed_receipt_and_extra_assets_refuse() {
-    for change in ["source", "receipt", "extra", "link"] {
+    for change in ["source", "receipt", "extra", "directory", "case", "link"] {
         let (copy, path) = owned();
         let build = InstanceBuild::inspect(&path).unwrap();
         match change {
@@ -105,6 +105,17 @@ fn stale_source_changed_receipt_and_extra_assets_refuse() {
                 )
                 .unwrap();
             }
+            "directory" => {
+                fs::create_dir(copy.0.join("hex-vst3-instance.app/empty-extra")).unwrap();
+            }
+            "case" => {
+                let resources = copy.0.join("hex-vst3-instance.app/Contents/Resources");
+                fs::rename(
+                    resources.join("sdk-notices.json"),
+                    resources.join("SDK-NOTICES.json"),
+                )
+                .unwrap();
+            }
             "link" => {
                 let helper = build.helper();
                 let bytes = fs::read(helper).unwrap();
@@ -115,10 +126,12 @@ fn stale_source_changed_receipt_and_extra_assets_refuse() {
             }
             _ => unreachable!(),
         }
-        assert!(build.unchanged().is_err(), "{change}");
-        if change != "receipt" {
-            assert!(InstanceBuild::inspect(&path).is_err(), "{change}");
-        }
+        let retained_refused = build.unchanged().is_err();
+        let intake_refused = change == "receipt" || InstanceBuild::inspect(&path).is_err();
+        assert!(
+            retained_refused && intake_refused,
+            "{change}: retained={retained_refused}, intake={intake_refused}"
+        );
     }
 }
 

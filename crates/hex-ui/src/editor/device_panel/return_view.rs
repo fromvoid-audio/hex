@@ -56,7 +56,8 @@ pub(super) fn render(
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
-        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device }
+        | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. }
         | GestureTarget::TrackGain { .. }
         | GestureTarget::TrackBalance { .. }
@@ -111,21 +112,6 @@ pub(super) fn render(
     view.device_panel
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
-    if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.spectrum_desired()
-        && target.identity.owner == owner.processor()
-        && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
-                && matches!(
-                    target.identity.device_type.as_str(),
-                    Ok("hex.eq8" | "hex.eq")
-                )
-        })
-    {
-        let _ = audio.control.spectrum_clear();
-        view.device_panel.spectrum_result = None;
-    }
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.audition_desired()
         && target.identity.owner == owner.processor()
@@ -184,6 +170,7 @@ pub(super) fn render(
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: "add native effect".into(),
             })
             .into()

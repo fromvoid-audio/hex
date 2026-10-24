@@ -78,6 +78,11 @@ fn fixture(
     }
     // The historical schema36 tempo lineage has this same envelope without sections.
     let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // This empty fixture also predates directed Arrangement content views.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("content_views"),
+        Some(serde_json::json!([]))
+    );
     // Schema36 also predates the complete activation/window inventory.
     assert_eq!(
         old.as_object_mut().unwrap().remove("clip_activation"),
@@ -92,6 +97,16 @@ fn fixture(
     );
     assert_eq!(
         old.as_object_mut().unwrap().remove("fade_curve_positions"),
+        Some(serde_json::json!([]))
+    );
+    // Schema42 adds event fades; the historical empty envelope has none.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("audio_event_fades"),
+        Some(serde_json::json!([]))
+    );
+    // Schema43 adds the complete grouping inventory; this fixture is empty.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("grouped_audio"),
         Some(serde_json::json!([]))
     );
     old["version"] = 36.into();

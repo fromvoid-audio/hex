@@ -2927,11 +2927,9 @@ fn assert_drag_handoff_with_pending_request(
         .zip(midi)
         .filter(|(_, midi)| **midi)
         .map(|(clip, _)| {
-            let note = selector(format!("clip-drag-note-{}-0", clip.value()));
             (
-                note,
-                visual.debug_bounds(note).expect("held note"),
-                visual.rendered_background(note).expect("held note fill"),
+                *clip,
+                super::midi_thumbnail::rendered_notes(&mut visual, *clip, true),
             )
         })
         .collect();
@@ -2977,9 +2975,12 @@ fn assert_drag_handoff_with_pending_request(
             assert_eq!(visual.rendered_background(preview), Some(*fill));
             assert_eq!(visual.rendered_background(title), Some(*title_fill));
         }
-        for (note, bounds, fill) in &held_notes {
-            assert_eq!(visual.debug_bounds(note), Some(*bounds));
-            assert_eq!(visual.rendered_background(note), Some(*fill));
+        for (clip, notes) in &held_notes {
+            assert!(!notes.is_empty(), "held production note rectangles");
+            assert_eq!(
+                super::midi_thumbnail::rendered_notes(&mut visual, *clip, true),
+                *notes
+            );
         }
         editor.read_with(&visual, |v, _| {
             let state = v.state.as_ref().unwrap();

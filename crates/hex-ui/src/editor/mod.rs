@@ -19,6 +19,8 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod automation_view;
+mod bounce;
 mod browser;
 mod browser_input;
 mod clip_action_scope;
@@ -34,6 +36,8 @@ mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod navigation_metrics;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
 mod track_header;
@@ -43,6 +47,7 @@ mod workspace_view;
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod group_selection;
 mod midi_pending_drag;
 mod pending_clip_move;
 mod pending_edit;
@@ -61,6 +66,7 @@ mod clip_detail_resize;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
+mod clip_reverse;
 mod clip_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_view_ui_test;
@@ -190,6 +196,7 @@ mod tuning;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
+mod waveform_loop;
 mod waveform_stretch;
 mod zoom_fit;
 
@@ -362,7 +369,7 @@ actions!(
         TrimRight,
         DeleteClip,
         DeleteSectionMarker,
-        MergeSections,
+        GroupSelection,
         RenameClip,
         RenameTrack,
         CommitTrackName,
@@ -377,6 +384,8 @@ actions!(
         SplitClip,
         SetLoopFromClip,
         LoopSelection,
+        BounceInPlace,
+        BounceToNewTracks,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -422,6 +431,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    crate::tooltips::bind_keys(cx);
     changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
@@ -476,7 +486,11 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("delete", DeleteClip, Some("hex_editor")),
         KeyBinding::new("alt-backspace", DeleteSectionMarker, Some("hex_editor")),
         KeyBinding::new("alt-delete", DeleteSectionMarker, Some("hex_editor")),
-        KeyBinding::new("g", MergeSections, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "g",
+            GroupSelection,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_device_selection"),
+        ),
         KeyBinding::new("cmd-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-shift-c", CopyTimeSelection, Some("hex_editor")),
         KeyBinding::new("cmd-x", CutTimeSelection, Some("hex_editor")),
@@ -487,6 +501,16 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
+        KeyBinding::new(
+            "b",
+            BounceInPlace,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
+        KeyBinding::new(
+            "cmd-b",
+            BounceToNewTracks,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
@@ -517,6 +541,44 @@ fn bind_editor_keys(cx: &mut App) {
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
+    // Background clip shortcuts have no target while the foreground gain lanes
+    // own Arrangement focus. Child text, MIDI and event contexts keep their keys.
+    cx.bind_keys(
+        [
+            "cmd-c",
+            "cmd-shift-c",
+            "cmd-x",
+            "cmd-v",
+            "cmd-shift-v",
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "cmd-r",
+            "cmd-d",
+            "cmd-e",
+            "b",
+            "cmd-b",
+            "r",
+            "g",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_arrangement_automation"))),
+    );
+    // Header commands retain track clipboard/rename semantics; these general
+    // Arrangement commands would otherwise edit the retained background clips.
+    cx.bind_keys(
+        [
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "b",
+            "cmd-b",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_automation_track_header"))),
+    );
 }
 
 fn escape_binding() -> KeyBinding {
@@ -639,6 +701,7 @@ pub(super) struct EditorView {
     selected_track: Option<TrackId>,
     track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
+    automation_view: automation_view::AutomationView,
     audio_clip_controls: arrangement_audio_panel::controls::Controls,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
@@ -744,6 +807,7 @@ pub(super) struct EditorView {
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
+    bounce_control: Option<hex_session::service::ExportControl>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1190,6 +1254,7 @@ impl EditorView {
         let audio_event_focus = cx.focus_handle();
         let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
             view.audio_event_editor.gesture = None;
+            view.audio_event_editor.fade_key_held = false;
             cx.notify();
         });
         let midi_focus = cx.focus_handle();
@@ -1222,6 +1287,7 @@ impl EditorView {
                 view.midi_step.cancel_pending();
                 view.invalidate_hardware_step();
                 view.audio_event_editor.gesture = None;
+                view.audio_event_editor.fade_key_held = false;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 let paint_cancelled = view.cancel_clip_paint()
@@ -1251,6 +1317,7 @@ impl EditorView {
             }
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
+            view.audio_event_editor.fade_key_held = false;
             if view.cancel_midi_note_gesture()
                 | view.cancel_track_reorder()
                 | view.cancel_scrub()
@@ -1299,6 +1366,7 @@ impl EditorView {
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
             gain_lane: gain_lane::GainLane::default(),
+            automation_view: automation_view::AutomationView::default(),
             audio_clip_controls: Default::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
@@ -1399,6 +1467,7 @@ impl EditorView {
             pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
+            bounce_control: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,

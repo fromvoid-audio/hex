@@ -13,10 +13,13 @@ use metronome::Metronome;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
-    /// Seek and start in one callback action, resetting the same state as Seek.
+    /// Seek and start at this absolute frame, resetting the same state as Seek.
+    /// A cursor at/after the enabled loop end continues linearly beyond it;
+    /// a cursor before the end enters/wraps the loop without changing its bounds.
     PlayFrom(u64),
     Pause,
     Stop,
+    /// Absolute content cursor; loop participation resumes only before its end.
     Seek(u64),
 }
 
@@ -300,6 +303,8 @@ pub struct Playback {
     tuning_audition: Option<Box<crate::tuning_audition::Runtime>>,
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
+    // Control-minted publication identity; no callback owner or allocation.
+    pub(crate) resident_pcm_publication: Option<std::num::NonZeroU64>,
     session_runtime: Option<Box<SessionPlayback>>,
     linear_runtime: Option<Box<RendererRuntime>>,
     session_unavailable: Option<crate::SessionPlaybackError>,
@@ -393,27 +398,34 @@ impl Playback {
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }
-    /// Conservative control-side PCM capacity of this actual immutable graph.
-    /// Shared clip leaves are counted once within the graph; no owner escapes.
+    /// Borrow actual legacy PCM leaves on control. The iterator grants no callback
+    /// or reclamation authority, and does not expose native device source banks.
+    pub(crate) fn resident_pcm_sources(&self) -> impl Iterator<Item = &crate::Audio> + Clone {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
+            .chain(self.prepared_revision.iter().flat_map(|r| {
+                r.session()
+                    .audio_clips()
+                    .iter()
+                    .filter_map(|c| c.resident_audio())
+            }))
+    }
+    /// Control-side PCM capacity of this graph, deduplicated by actual backing.
     pub fn resident_pcm_capacity_frames(&self) -> Option<u64> {
-        let sources = || {
-            self.project
-                .tracks()
-                .iter()
-                .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
-                .chain(self.prepared_revision.iter().flat_map(|r| {
-                    r.session()
-                        .audio_clips()
-                        .iter()
-                        .filter_map(|c| c.resident_audio())
-                }))
-        };
-        sources().enumerate().try_fold(0u64, |n, (i, source)| {
-            if sources().take(i).any(|old| old.shares_pcm_with(source)) {
-                return Some(n);
-            }
-            n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
-        })
+        self.resident_pcm_sources()
+            .enumerate()
+            .try_fold(0_u64, |n, (i, source)| {
+                if self
+                    .resident_pcm_sources()
+                    .take(i)
+                    .any(|old| old.shares_pcm_with(source))
+                {
+                    return Some(n);
+                }
+                n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
+            })
     }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn live_expression_supported_on_control(&self, track: hex_project::TrackId) -> bool {
@@ -689,6 +701,26 @@ impl Playback {
         self.mix_tuning_audition(output);
         Ok(())
     }
+    pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("current sampler runtime missing"))?
+            .render_current_sampler_with_foreign(output, pages, observer, project, sources, foreign)
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
+    }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
         metadata: usize,
@@ -731,6 +763,7 @@ impl Playback {
             tuning_audition,
             project: _,
             prepared_revision,
+            resident_pcm_publication,
             session_runtime,
             linear_runtime,
             session_unavailable: _,
@@ -739,7 +772,7 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
-        if tuning_audition.is_some() {
+        if tuning_audition.is_some() || resident_pcm_publication.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         visit(9, 0, true)?; // actual Project handle
@@ -766,6 +799,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: None,
+            resident_pcm_publication: None,
             session_runtime: None,
             linear_runtime,
             session_unavailable: None,
@@ -807,6 +841,25 @@ impl Playback {
     ) -> Result<Self, crate::SessionPlaybackError> {
         let runtime =
             SessionPlayback::new_with_device_resources(Arc::clone(&prepared_revision), resources)?;
+        Ok(Self::from_parts(
+            prepared_revision,
+            Some(Box::new(runtime)),
+            None,
+        ))
+    }
+
+    /// Prepare an unused interactive candidate retaining a launched section loop.
+    /// This performs no seek or replay; the ordinary callback handoff owns clock/state transfer.
+    pub fn try_from_prepared_section_candidate(
+        prepared_revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, crate::SessionPlaybackError> {
+        let runtime = SessionPlayback::new_section_candidate(
+            Arc::clone(&prepared_revision),
+            resources,
+            region,
+        )?;
         Ok(Self::from_parts(
             prepared_revision,
             Some(Box::new(runtime)),
@@ -859,6 +912,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
+            resident_pcm_publication: None,
             session_runtime: Some(Box::new(runtime)),
             linear_runtime: None,
             session_unavailable: None,
@@ -900,6 +954,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
+            resident_pcm_publication: None,
             session_runtime,
             linear_runtime,
             session_unavailable,
@@ -1092,7 +1147,7 @@ impl Playback {
                 start,
                 self.session_runtime.as_ref().map_or_else(
                     || self.project.loop_region(),
-                    |runtime| runtime.loop_region(),
+                    |runtime| runtime.active_loop_region(),
                 ),
                 output,
             );
@@ -1391,6 +1446,22 @@ impl Playback {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_swap_compensation_origins(
+        &mut self,
+        previous: &mut Self,
+        groups: &mut crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(usize, Option<usize>), crate::SessionPlaybackError> {
+        let next = self
+            .session_runtime
+            .as_mut()
+            .ok_or(crate::SessionPlaybackError::DeviceRuntime)?;
+        let old = previous
+            .session_runtime
+            .as_mut()
+            .ok_or(crate::SessionPlaybackError::DeviceRuntime)?;
+        next.test_swap_compensation_origins(old, groups)
+    }
     pub(crate) fn inherit_candidate_groups(
         &mut self,
         previous: &mut Self,
@@ -1497,7 +1568,7 @@ impl Playback {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);
                 }
-                next.validate_legacy_transport(previous.performance_frame)
+                next.validate_legacy_transport(previous.position(), previous.performance_frame)
                     .map_err(PlaybackHandoffError::Session)?;
                 if legacy_arrangement_state_cannot_be_seeded(previous) {
                     return Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured);
@@ -1681,6 +1752,41 @@ impl Playback {
 
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         self.render_with_post_node_observer(output, None)
+    }
+
+    /// The normal canonical renderer with the audio owner's already retained
+    /// foreign endpoints. No finite fallback may omit a required native effect.
+    /// Staged input is still uncommitted: only the audio owner can accept it
+    /// after final host conversion. Monitor audio remains after the project tap.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        let result = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid(
+                "foreign effects require a prepared session runtime",
+            ))
+            .and_then(|runtime| {
+                runtime
+                    .render_with_foreign_processors(output, pages, observer, project, foreign)
+                    .map_err(|error| Invalid(error.diagnostic_message()))
+            });
+        if let Err(error) = result {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(error);
+        }
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
     }
 
     /// Render while exposing bounded borrowed output from each processed
@@ -1942,7 +2048,11 @@ impl Playback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
-        let Some(region) = self.project.loop_region().filter(|region| region.enabled()) else {
+        let Some(region) = self
+            .project
+            .loop_region()
+            .filter(|region| region.enabled() && self.position < region.end())
+        else {
             return self.render_linear_with_pages(output, pages);
         };
         output.fill([0.0; 2]);
@@ -1953,10 +2063,6 @@ impl Playback {
         let start = region.start();
         let end = region.end();
         let length = end - start;
-        if self.position >= end {
-            self.position = start + (self.position - start) % length;
-        }
-
         let mut output_offset = 0_usize;
         while output_offset < output.len() {
             if self.position == end {

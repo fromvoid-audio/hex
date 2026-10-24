@@ -1,4 +1,4 @@
-//! Bounded local owner for the production rectangle primitives. Two rectangles,
+//! Bounded local owner for production rectangle and time-range policies. Two rectangles or one range,
 //! no musical model, worker, timer or resource lifecycle. Pending paint advances
 //! only through an explicit accept/refuse action, so repaints are inspectable.
 use crate::theme;
@@ -7,33 +7,45 @@ use gpui::{
     Window, div, prelude::*, px, rgb,
 };
 use hex_widgets::{
-    RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
-    rectangle_body, rectangle_edge, rectangle_surface,
+    RangeSelectionTarget, RangeSelectionZones, RectangleCapture, RectangleEdges, RectanglePart,
+    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
+    rectangle_surface,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Clip,
+    Section,
+    TimeRange,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Rectangle(usize),
+    PaintRange,
+}
 pub(super) struct RectangleDemo {
-    pub section: bool,
+    kind: Kind,
     id: String,
     focus: FocusHandle,
     blur: Option<Subscription>,
     bounds: Option<Bounds<Pixels>>,
     canonical: [[f32; 2]; 2],
     preview: [[f32; 2]; 2],
-    capture: Option<RectangleCapture<usize>>,
+    capture: Option<RectangleCapture<Target>>,
     pending: Option<[[f32; 2]; 2]>,
     selected: [bool; 2],
     enabled: bool,
     status: &'static str,
 }
 impl RectangleDemo {
-    pub fn new(section: bool, id: String, cx: &Context<Self>) -> Self {
-        let canonical = if section {
+    pub fn new(kind: Kind, id: String, cx: &Context<Self>) -> Self {
+        let canonical = if kind == Kind::Section {
             [[0.1, 0.5], [0.5, 0.9]]
         } else {
             [[0.1, 0.5], [0.7, 0.71]]
         };
         Self {
-            section,
+            kind,
             id,
             focus: cx.focus_handle(),
             blur: None,
@@ -42,15 +54,15 @@ impl RectangleDemo {
             preview: canonical,
             capture: None,
             pending: None,
-            selected: [false; 2],
+            selected: [kind == Kind::TimeRange, false],
             enabled: true,
             status: "ready",
         }
     }
     fn edges(&self) -> RectangleEdges {
         RectangleEdges {
-            width: if self.section { 5.0 } else { 4.0 },
-            minimum_body: if self.section { 0.0 } else { 1.0 },
+            width: if self.kind == Kind::Section { 5.0 } else { 4.0 },
+            minimum_body: if self.kind == Kind::Section { 0.0 } else { 1.0 },
         }
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -85,8 +97,33 @@ impl RectangleDemo {
         if y < f32::from(bounds.top()) || y >= f32::from(bounds.bottom()) {
             return false;
         }
+        if self.kind == Kind::TimeRange {
+            if !x.is_finite() || x < left || x >= left + width {
+                return false;
+            }
+            let Some(zones) = RangeSelectionZones::new(bounds.size.height.into(), 0.0) else {
+                return false;
+            };
+            let [start, end] = self.canonical[0];
+            let existing = x >= left + start * width && x < left + end * width;
+            let Some(target) = zones.target(y - f32::from(bounds.top()), existing, modifiers.shift)
+            else {
+                return false;
+            };
+            let target = match target {
+                RangeSelectionTarget::Move => Target::Rectangle(0),
+                RangeSelectionTarget::Paint => Target::PaintRange,
+            };
+            self.capture = RectangleCapture::begin(target, RectanglePart::Body, x, true);
+            self.preview = self.canonical;
+            self.selected = [true, false];
+            self.status = "held range preview";
+            self.focus.focus(window);
+            cx.notify();
+            return true;
+        }
         let mut hit = None;
-        if self.section
+        if self.kind == Kind::Section
             && self.canonical[0][1] == self.canonical[1][0]
             && RectangleEdges::seam_hit(x, left + width * self.canonical[0][1], 1.0)
         {
@@ -98,7 +135,7 @@ impl RectangleDemo {
                 let start = left + start * width;
                 let end = (left + end * width).max(start + 3.0);
                 if let Some(part) = self.edges().hit(x, start, end) {
-                    if !self.section
+                    if self.kind == Kind::Clip
                         && part == RectanglePart::Body
                         && y > f32::from(bounds.top()) + 14.0
                     {
@@ -112,7 +149,7 @@ impl RectangleDemo {
         let Some((index, part)) = hit else {
             return false;
         };
-        let policy = if self.section {
+        let policy = if self.kind == Kind::Section {
             RectangleSelectionPolicy::Toggle
         } else {
             RectangleSelectionPolicy::Range
@@ -130,7 +167,7 @@ impl RectangleDemo {
                 self.selected[index] = true;
             }
         }
-        self.capture = RectangleCapture::begin(index, part, x, true);
+        self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.preview = self.canonical;
         self.status = "held preview";
         self.focus.focus(window);
@@ -152,19 +189,30 @@ impl RectangleDemo {
             return true;
         }
         let delta = intent.delta_x / width;
-        let [start, end] = self.canonical[intent.key];
+        if intent.key == Target::PaintRange {
+            let left = f32::from(bounds.left());
+            let anchor = ((intent.origin_x - left) / width).clamp(0.0, 1.0);
+            let end = ((intent.pointer_x - left) / width).clamp(0.0, 1.0);
+            self.preview[0] = [anchor.min(end), anchor.max(end)];
+            cx.notify();
+            return true;
+        }
+        let Target::Rectangle(index) = intent.key else {
+            return true;
+        };
+        let [start, end] = self.canonical[index];
         let minimum = (1.0 / width).min(end - start);
         self.preview = self.canonical;
         match intent.part {
             RectanglePart::Body => {
                 let delta = delta.clamp(-start, 1.0 - end);
-                self.preview[intent.key] = [start + delta, end + delta];
+                self.preview[index] = [start + delta, end + delta];
             }
             RectanglePart::Leading => {
-                self.preview[intent.key][0] = (start + delta).clamp(0.0, end - minimum)
+                self.preview[index][0] = (start + delta).clamp(0.0, end - minimum)
             }
             RectanglePart::Trailing => {
-                self.preview[intent.key][1] = (end + delta).clamp(start + minimum, 1.0)
+                self.preview[index][1] = (end + delta).clamp(start + minimum, 1.0)
             }
             RectanglePart::Seam => {
                 let edge = (end + delta).clamp(start + minimum, self.canonical[1][1] - minimum);
@@ -237,6 +285,9 @@ impl Render for RectangleDemo {
                 move || format!("{id}-area")
             });
         for (index, [start, end]) in display.into_iter().enumerate() {
+            if self.kind == Kind::TimeRange && index != 0 {
+                continue;
+            }
             let part = RectanglePart::Body;
             let selected = self.selected[index];
             let mut rect = rectangle_surface(start, end - start, 3.0)
@@ -253,7 +304,7 @@ impl Render for RectangleDemo {
                 } else {
                     style.border
                 }))
-                .cursor(if self.section {
+                .cursor(if self.kind == Kind::Section {
                     part.cursor()
                 } else {
                     gpui::CursorStyle::Arrow
@@ -263,17 +314,28 @@ impl Render for RectangleDemo {
                 } else {
                     style.text
                 }))
-                .child(theme::text(if self.section { "section" } else { "clip" }));
-            if !self.section {
+                .child(theme::text(match self.kind {
+                    Kind::Section => "section",
+                    Kind::Clip => "clip",
+                    Kind::TimeRange => "time range",
+                }));
+            if self.kind == Kind::TimeRange
+                && let Some(zones) = RangeSelectionZones::new(72.0, 0.0)
+            {
+                rect = rect.child(rectangle_body(-1.0, zones.handle_height()));
+            }
+            if self.kind == Kind::Clip {
                 rect = rect.child(rectangle_body(-1.0, 14.0));
             }
             let handle = self.edges().handle_width(((end - start) * width).max(3.0));
-            for part in [RectanglePart::Leading, RectanglePart::Trailing] {
-                rect = rect.child(rectangle_edge(part, handle, -1.0));
+            if self.kind != Kind::TimeRange {
+                for part in [RectanglePart::Leading, RectanglePart::Trailing] {
+                    rect = rect.child(rectangle_edge(part, handle, -1.0));
+                }
             }
             area = area.child(rect);
         }
-        if self.section && display[0][1] == display[1][0] {
+        if self.kind == Kind::Section && display[0][1] == display[1][0] {
             area = area.child(
                 rectangle_edge(RectanglePart::Seam, 2.0, 0.0)
                     .left(gpui::relative(display[0][1]))
@@ -391,10 +453,90 @@ mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext, point};
     #[gpui::test]
+    fn time_range_body_repaints_while_upper_rail_moves_and_pending_survives_cancel(
+        cx: &mut TestAppContext,
+    ) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::TimeRange, "range-fixture".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("range-fixture-area").unwrap();
+        let at = |x, y| {
+            point(
+                area.left() + area.size.width * x,
+                area.top() + area.size.height * y,
+            )
+        };
+        let baseline = view.read_with(cx, |view, _| view.canonical);
+        for (down, up, modifiers, expected) in [
+            (
+                at(0.4, 0.75),
+                at(0.2, 0.75),
+                Modifiers::default(),
+                [0.2, 0.4],
+            ),
+            (at(0.3, 0.1), at(0.4, 0.1), Modifiers::default(), [0.2, 0.6]),
+            (
+                at(0.3, 0.1),
+                at(0.6, 0.1),
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                [0.3, 0.6],
+            ),
+        ] {
+            visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+            visual.simulate_mouse_move(up, MouseButton::Left, modifiers);
+            visual.simulate_mouse_up(up, MouseButton::Left, modifiers);
+            for _ in 0..3 {
+                view.update(cx, |_, cx| cx.notify());
+                visual.run_until_parked();
+                view.read_with(cx, |view, _| {
+                    assert_eq!(view.canonical, baseline);
+                    let actual = view.pending.unwrap()[0];
+                    for i in 0..2 {
+                        assert!(
+                            (actual[i] - expected[i]).abs() < 0.001,
+                            "{actual:?} != {expected:?}"
+                        );
+                    }
+                });
+            }
+            visual.simulate_keystrokes("escape");
+            view.update(cx, |view, cx| view.set_enabled(false, cx));
+            view.read_with(cx, |view, _| assert!(view.pending.is_some()));
+            view.update(cx, |view, cx| {
+                view.settle(false, cx);
+                view.set_enabled(true, cx);
+            });
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_down(at(0.4, 0.75), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.2, 0.75), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view.capture.is_none());
+            assert!(view.pending.is_none());
+            assert_eq!(view.preview, baseline);
+        });
+        view.update(cx, |view, cx| view.set_enabled(false, cx));
+        visual.simulate_mouse_down(at(0.3, 0.1), MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| assert!(view.capture.is_none()));
+    }
+    #[gpui::test]
     fn rectangle_fixtures_hold_pending_across_repaints_cancel_and_refuse(cx: &mut TestAppContext) {
         for section in [false, true] {
-            let handle =
-                cx.add_window(|_, cx| RectangleDemo::new(section, "rectangle-fixture".into(), cx));
+            let handle = cx.add_window(|_, cx| {
+                RectangleDemo::new(
+                    if section { Kind::Section } else { Kind::Clip },
+                    "rectangle-fixture".into(),
+                    cx,
+                )
+            });
             let view = handle.root(cx).unwrap();
             let mut visual = VisualTestContext::from_window(*handle, cx);
             visual.update(|window, _| window.activate_window());
@@ -508,8 +650,13 @@ mod tests {
                 hex_preferences::ThemePreferences::default()
             });
             for section in [false, true] {
-                let handle = cx
-                    .add_window(|_, cx| RectangleDemo::new(section, "rectangle-narrow".into(), cx));
+                let handle = cx.add_window(|_, cx| {
+                    RectangleDemo::new(
+                        if section { Kind::Section } else { Kind::Clip },
+                        "rectangle-narrow".into(),
+                        cx,
+                    )
+                });
                 let view = handle.root(cx).unwrap();
                 let mut visual = VisualTestContext::from_window(*handle, cx);
                 visual.update(|window, _| window.activate_window());

@@ -15,6 +15,12 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    CommitArrangementBounce {
+        target: crate::BounceTarget,
+        in_place: bool,
+        files: Vec<crate::BounceFile>,
+    },
     /// Set one authored clip's activation across Arrangement or Session.
     SetClipActive {
         clip: ClipId,
@@ -38,11 +44,25 @@ pub enum Command {
         start: crate::BeatTime,
         end: crate::BeatTime,
     },
-    /// Marker-only placement/resize; music is never stretched or moved.
+    /// Isolated marker range edit; overlaps are refused and music stays fixed.
     SetArrangementSectionRange {
         section: crate::SectionId,
         start: crate::BeatTime,
         end: crate::BeatTime,
+    },
+    /// Move one marker without changing its length or any musical content.
+    /// Destination overlap trims/removes other markers; an interior cut retains
+    /// their left identity and allocates a fresh right identity/name/color copy.
+    MoveArrangementSectionMarker {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+    },
+    /// Resize one marker edge, carving overlapping markers without editing music.
+    /// Surviving fragments follow the same identity law as marker movement.
+    ResizeArrangementSectionMarker {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        boundary: crate::BeatTime,
     },
     RenameArrangementSection {
         section: crate::SectionId,
@@ -523,6 +543,16 @@ pub enum Command {
     DuplicateClip(ClipId),
     /// Copy a frozen whole-clip selection after its complete extent, atomically.
     DuplicateClips(Vec<ClipId>),
+    /// Wrap one same-track, same-kind selection atomically; never replace nonselected material.
+    GroupClips(Vec<ClipId>),
+    /// Extract a selected root-local audio span into one clip, retaining outer fragments.
+    GroupAudioEventRange {
+        clip: ClipId,
+        start: u64,
+        end: u64,
+    },
+    /// Reverse finite audible content atomically, preserving sources and edit settings.
+    ReverseClips(Vec<ClipId>),
     /// Split a clip at an absolute timeline frame.
     SplitClip {
         clip: ClipId,
@@ -816,6 +846,12 @@ pub enum Command {
         loop_end: crate::BeatTime,
         looping: bool,
         length: crate::BeatTime,
+    },
+    /// Recompute a clip-local MIDI loop edit from its current source/window.
+    /// Outer growth uses the common occupancy planner; cycle edits keep length.
+    ResizeMidiClipView {
+        clip: ClipId,
+        operation: crate::MidiViewResizeOperation,
     },
     /// Replace one clip-owned source-beat volume curve in either MIDI domain.
     ReplaceMidiClipVolume {
@@ -1307,7 +1343,7 @@ pub(crate) fn split_clip_at_tempo(
     if frame <= original.start || frame >= end {
         return Err(Invalid("split cursor must be inside the clip"));
     }
-    if edit.placement.is_some() {
+    if edit.content_view.is_some() || edit.placement.is_some() {
         let left = crate::audio_edit::trim_view(original, crate::TrimEdge::Right, frame, tempo)?;
         let mut right =
             crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
@@ -1556,8 +1592,15 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::CommitArrangementBounce {
+                target,
+                in_place,
+                files,
+            } => crate::bounce::commit(self, target, in_place, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
+            | Command::MoveArrangementSectionMarker { .. }
+            | Command::ResizeArrangementSectionMarker { .. }
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
@@ -1757,6 +1800,7 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
+            | Command::ResizeMidiClipView { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::StretchMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
@@ -1808,6 +1852,11 @@ impl Project {
                 crate::session::apply(self, session_command)
             }
             Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
+            Command::GroupClips(clips) => crate::clip_consolidate::apply(self, clips),
+            Command::GroupAudioEventRange { clip, start, end } => {
+                crate::clip_consolidate::event_range(self, clip, start, end)
+            }
+            Command::ReverseClips(clips) => crate::clip_reverse::apply(self, clips),
             Command::DuplicateClip(clip) => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = original
@@ -2433,7 +2482,7 @@ impl Project {
                     .tracks
                     .iter()
                     .flat_map(Track::clips)
-                    .any(|c| c.asset == id)
+                    .any(|c| c.referenced_assets().any(|asset| asset == id))
                     || self.session.cells.iter().any(|cell| matches!(&cell.content, crate::SessionCellContent::Audio(clip) if clip.asset == id))
                 {
                     return Err(Invalid("media is still referenced by a clip"));
@@ -2746,9 +2795,9 @@ impl Project {
 }
 
 impl Command {
-    /// Structural section edits use stopped resident preparation/publication.
+    /// Structural section edits use fenced resident preparation/publication.
     /// Metadata edits and marker merging do not alter musical material.
-    pub fn requires_stopped_section_edit(&self) -> bool {
+    pub fn requires_section_publication(&self) -> bool {
         matches!(
             self,
             Self::ReorderSectionBefore { .. }

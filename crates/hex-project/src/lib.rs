@@ -25,38 +25,49 @@ pub use arrangement_sections::{
     ArrangementSection, ArrangementSectionSnapshot, MAX_ARRANGEMENT_SECTIONS,
     SectionReorderPreview, SectionSplicePreview,
 };
+mod audio_event_fade;
 mod audio_events;
+pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
+mod retained_audio;
 mod track_order;
-pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+pub use audio_events::{
+    AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
+};
 pub use track_order::TrackSelectionIds;
 mod audio_edit;
 mod clip_activation;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
+mod content_window;
 mod source_ranges;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
-    AudioImportWarp, AudioProcessingProjection, AudioViewMode, AudioViewOccurrence,
-    AudioViewPlacement, AudioViewProjection, AudioViewResize, AudioViewResizeOperation,
-    BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN,
-    ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings,
-    audio_projection_beat, audio_projection_frame, default_audio_warp, preview_audio_clip_stretch,
-    preview_audio_view_resize, preview_view_resize,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioContentView, AudioDomainClock,
+    AudioFadeProjection, AudioImportWarp, AudioProcessingProjection, AudioViewMode,
+    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
+    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
+    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
+    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
+pub use content_window::{ContentWindow, RepeatBoundaryPlan};
 mod appearance;
+mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+pub use bounce::{BounceFile, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES};
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;
 pub use track_clipboard::TrackClipboard;
 mod clip_clipboard;
+mod clip_consolidate;
 mod clip_copy;
 mod clip_duplicate;
 mod clip_group;
 mod clip_group_preview;
+mod clip_reverse;
 pub use clip_clipboard::ClipClipboard;
 pub use clip_group::{ClipGroupContent, ClipGroupPosition, ClipGroupPreview};
 pub use clip_group_preview::ClipGroupMovePreview;
@@ -132,6 +143,8 @@ pub use midi::{
     MidiClip, MidiClipTrim, MidiNote, MidiOneShotBoundary, MidiSource, MidiSourceIdentity,
     TrackContent,
 };
+mod midi_loop_resize;
+pub use midi_loop_resize::{MidiClipLoopResize, MidiViewResizeOperation};
 pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,

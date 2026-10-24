@@ -2,6 +2,92 @@ use super::*;
 use std::sync::atomic::Ordering;
 
 #[test]
+fn mixed_reverse_prepare_refusal_preserves_project_history_and_accepted_pcm() {
+    use hex_project::{BeatTime, Tempo};
+    let (mut session, audio, mut previous) = fixture();
+    let mut run = |command| {
+        let (created, prepared) = session
+            .command_prepared_revision(command, Some(&previous))
+            .unwrap();
+        previous = prepared;
+        created
+    };
+    run(Command::SetTempoPoint {
+        beat: BeatTime::ZERO,
+        tempo: Tempo::new(60_000_000).unwrap(),
+    });
+    run(Command::SetTempoPoint {
+        beat: BeatTime::ONE,
+        tempo: Tempo::new(240_000_000).unwrap(),
+    });
+    let Created::Track(track) = run(Command::AddMidiTrack {
+        name: "midi".into(),
+    }) else {
+        panic!("track")
+    };
+    run(Command::InsertInstrument {
+        track,
+        state: hex_project::default_instrument_state().unwrap(),
+    });
+    let Created::Clip(midi) = run(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(2).unwrap(),
+    }) else {
+        panic!("clip")
+    };
+    run(Command::AddMidiNote {
+        clip: midi,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 16_000).unwrap(),
+        pitch: 60,
+        channel: 2,
+        velocity: 99,
+    });
+    let before = session.project().snapshot();
+    let resident = session.resident_frames;
+    let result = session
+        .command_prepared_revision(Command::ReverseClips(vec![audio, midi]), Some(&previous));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("quantizes to zero frames")
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!(session.resident_frames, resident);
+    let undone = session
+        .undo_prepared_revision(Some(&previous))
+        .unwrap()
+        .unwrap();
+    assert!(
+        session
+            .project()
+            .midi_clip(midi)
+            .unwrap()
+            .notes()
+            .is_empty()
+    );
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot(), before);
+    let render = |revision| {
+        let mut playback =
+            hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut frames = [[0.0; 2]; 257];
+        playback.render(&mut frames).unwrap();
+        frames
+    };
+    let accepted = render(previous);
+    assert!(accepted.iter().flatten().any(|s| *s != 0.0));
+    assert_eq!(render(redone), accepted);
+}
+
+#[test]
 fn bounded_audio_placement_refusal_preserves_session_project_history_and_audio() {
     let (mut session, clip, previous) = fixture();
     let before_repeat = session.project().snapshot();
@@ -468,4 +554,155 @@ fn excessive_stretch_is_refused_before_project_or_undo_commit() {
     );
     assert_eq!(session.project().snapshot(), before);
     assert_eq!((session.can_undo(), session.can_redo()), history);
+}
+
+#[test]
+fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
+    let (mut session, first, previous) = fixture();
+    let track = session.project().tracks()[0].id();
+    let audio = Audio::new(16_000, vec![[0.25, -0.5]; 128]).unwrap();
+    let imported = PreparedImport {
+        path: "second.wav".into(),
+        source_sample_rate: 16_000,
+        source_frames: 128,
+        conversion_version: hex_project::IDENTITY_CONVERSION,
+        source_audio: audio.clone(),
+        waveform: waveform::summarize(&audio, 128).unwrap(),
+        audio,
+    };
+    let (Created::Imported { clip: second, .. }, previous) = session
+        .import_prepared_revision(imported, Some(&previous))
+        .unwrap()
+    else {
+        panic!("second import")
+    };
+    let (_, previous) = session
+        .command_prepared_revision(
+            Command::MoveClip {
+                clip: second,
+                track,
+                start: 8_064,
+            },
+            Some(&previous),
+        )
+        .unwrap();
+    let (Created::Clip(group), previous) = session
+        .command_prepared_revision(Command::GroupClips(vec![first, second]), Some(&previous))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let (_, repeated) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip: group,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 10_000,
+                },
+            },
+            Some(&previous),
+        )
+        .unwrap();
+    let (_, cropped) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip: group,
+                operation: hex_project::AudioViewResizeOperation::CycleEnd {
+                    project_frame: 4_000,
+                },
+            },
+            Some(&repeated),
+        )
+        .unwrap();
+    let views = session.audio_clip_waveforms.borrow();
+    let root = views[&group].preview_root.as_ref().unwrap();
+    assert_eq!(root.waveform.source_frames, 8_192);
+    assert_eq!(
+        root.waveform
+            .peaks_for_frames(8_000, 8_064)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.0, 0.0); 2]
+    );
+    assert_eq!(
+        root.waveform
+            .peaks_for_frames(8_064, 8_192)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.25, 0.25), (-0.5, -0.5)]
+    );
+    assert_eq!(views[&group].length, 10_000);
+    drop(views);
+    let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
+    renderer.play();
+    let mut output = [[0.0; 2]; 257];
+    renderer.render(&mut output).unwrap();
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+}
+
+#[test]
+fn directed_clip_previews_share_the_total_waveform_leaf_budget() {
+    let (session, first, _) = fixture();
+    let source = session.project().clip(first).unwrap();
+    let track = session.project().tracks()[0].id();
+    let asset = source.asset();
+    let mut editor = Editor::new(session.project().clone(), 1).unwrap();
+    let mut ids = vec![first];
+    // Every clip has distinct processed PCM and a separate full-root preview.
+    // 129 pairs exceed the cap if only output summaries are counted.
+    for index in 1..129 {
+        let Created::Clip(id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: index * 8_000,
+                duration: 8_000,
+                source_offset: 0,
+                source_length: 8_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        ids.push(id);
+    }
+    for (index, id) in ids.iter().enumerate() {
+        editor
+            .execute(Command::SetAudioClipGain {
+                clip: *id,
+                millidb: -(index as i32),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetClipFades {
+                clip: *id,
+                fade_in: 2 + index as u64,
+                fade_out: 0,
+            })
+            .unwrap();
+    }
+    editor.execute(Command::ReverseClips(ids)).unwrap();
+    let retained = std::cell::RefCell::new(BTreeMap::new());
+    prepare_with_waveforms(
+        editor.project(),
+        &session.media_bank(),
+        session.sine_table(),
+        None,
+        &session.audio_transforms,
+        &retained,
+    )
+    .unwrap();
+    let views = retained.borrow();
+    assert_eq!(views.len(), 129);
+    let total: usize = views
+        .values()
+        .map(|view| {
+            view.waveform.bins.len() + view.preview_root.as_ref().unwrap().waveform.bins.len()
+        })
+        .sum();
+    assert!(
+        total <= 262_144,
+        "directed summaries exceeded leaf budget: {total}"
+    );
 }

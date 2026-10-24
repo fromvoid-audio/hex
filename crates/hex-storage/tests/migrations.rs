@@ -34,6 +34,53 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    let groups: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| track["audio_clips"].as_array().unwrap().iter())
+        .map(|clip| json!({"clip":clip["id"],"group":null}))
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("grouped_audio"),
+        Some(json!(groups))
+    );
+    let event_fades: Vec<_> = old["audio_event_state"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let events: Vec<_> = row["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| json!({"event":event["id"],"fade":null}))
+                .collect();
+            json!({"clip":row["clip"],"events":events})
+        })
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("audio_event_fades"),
+        Some(json!(event_fades))
+    );
+    let views: Vec<_> = old["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|track| {
+            [("audio_clips", "audio"), ("midi_clips", "midi")]
+                .into_iter()
+                .flat_map(move |(field, kind)| {
+                    track[field].as_array().unwrap().iter().map(
+                        move |clip| json!({"clip":clip["id"],"view":{"kind":kind,"view":null}}),
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        current.as_object_mut().unwrap().remove("content_views"),
+        Some(json!(views))
+    );
     let mut activation: Vec<Value> = old["tracks"]
         .as_array()
         .unwrap()

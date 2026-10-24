@@ -53,6 +53,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         for chain in &mut self.device_chains {
             chain.begin_block();
@@ -76,18 +77,26 @@ impl SessionPlayback {
                     observer,
                     capture,
                     None,
+                    foreign,
                 )?;
                 self.compensation
                     .as_ref()
                     .ok_or(SessionPlaybackError::DeviceRuntime)?
-                    .process_main(&mut self.main_chain, chunk, offset, observer)
+                    .process_main_with_foreign(
+                        &mut self.main_chain,
+                        chunk,
+                        offset,
+                        foreign,
+                        observer,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 continue;
             }
             for frames in &mut self.return_scratch {
                 frames[..chunk.len()].fill([0.0; 2]);
             }
-            let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+            let timing =
+                timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
             for (index, track) in self.revision.arrangement().tracks().iter().enumerate() {
                 let mut frames = [[0.0; 2]; 256];
                 let frames = &mut frames[..chunk.len()];
@@ -159,7 +168,14 @@ impl SessionPlayback {
                     capture.add(OutputCaptureId::Track(id), offset, frames)?;
                 }
             }
-            self.render_return_buses(chunk, offset, None, observer, capture)?;
+            self.render_return_buses(
+                chunk,
+                offset,
+                None,
+                observer,
+                capture,
+                &mut hex_lattice::RefuseForeign,
+            )?;
         }
         if self.compensation.is_none() {
             let main_clock = crate::effect_clock::ArrangementEffectClock::session(

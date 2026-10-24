@@ -53,6 +53,18 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         old.as_object_mut().unwrap().remove("fade_curve_positions"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("content_views"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("grouped_audio"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("audio_event_fades"),
+        Some(serde_json::json!([]))
+    );
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();

@@ -5,16 +5,21 @@ use crate::theme;
 use gpui::{CursorStyle, Div, Stateful, Window, div, prelude::*, px, relative, rgb};
 use hex_project::{Command, TrackId};
 use hex_session::service::Request;
+use hex_widgets::{RangeSelectionTarget, RangeSelectionZones};
 use std::time::Instant;
 
-pub(super) const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
+pub(super) const SELECTION_HANDLE_FRACTION: f32 = hex_widgets::RANGE_HANDLE_FRACTION;
+
+/// Other modifier chords retain their existing section/loop editing meanings.
+pub(super) fn is_extent_selection_click(modifiers: gpui::Modifiers) -> bool {
+    modifiers.shift && !modifiers.platform && !modifiers.alt && !modifiers.control
+}
 
 /// A compact row keeps the complete title usable; larger rows retain their
 /// existing proportional move rail. Rendered affordances and hit tests agree.
 pub(super) fn header_hit_height(row_height: f32) -> f32 {
-    (row_height * SELECTION_HANDLE_FRACTION)
-        .max(super::clip_name::CLIP_NAME_HEIGHT)
-        .min(row_height)
+    RangeSelectionZones::new(row_height, super::clip_name::CLIP_NAME_HEIGHT)
+        .map_or(0.0, RangeSelectionZones::handle_height)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +141,82 @@ impl EditorView {
         })
     }
 
+    fn range_input_available(&self) -> bool {
+        self.mode == EditorMode::Arrangement
+            && !self.automation_view.enabled
+            && self.clip_name_edit.is_none()
+            && !self.sections.naming()
+            && !self.track_name.is_editing()
+            && self.context_menu.is_none()
+            && !self.opening_project
+            && !self.close_prompt_open
+            && !self.save_dialog_open
+            && !self.export_dialog_open
+            && self.active_clip_drag.is_none()
+            && self.active_browser_audio_drag.is_none()
+            && self.active_native_device_drag.is_none()
+            && self.active_trim_drag.is_none()
+            && self.active_fade_drag.is_none()
+            && self.active_midi_trim_drag.is_none()
+    }
+
+    /// Select an exact captured extent without snapping, seeking or an edit.
+    /// This is the same project-scope selection/cursor owner as Main painting;
+    /// normal tracks come from canonical order, never the focused display list.
+    pub(super) fn select_project_time_range(
+        &mut self,
+        start: u64,
+        end: u64,
+        generation: u64,
+        revision: u64,
+    ) -> bool {
+        if start >= end
+            || generation != self.project_generation
+            || !self.range_input_available()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.sections.held()
+            || self.loop_rail_gesture.is_some()
+            || self.arrangement_pan.is_some()
+        {
+            return false;
+        }
+        let Some(state) = self
+            .state
+            .as_ref()
+            .filter(|state| state.revision == revision)
+        else {
+            return false;
+        };
+        let (Some(first), Some(last)) = (
+            state.project.tracks().first(),
+            state.project.tracks().last(),
+        ) else {
+            return false;
+        };
+        let selection = TimeSelection {
+            anchor_track: first.id(),
+            end_track: last.id(),
+            anchor_frame: start,
+            end_frame: end,
+        };
+        self.advance_selection_intent();
+        self.retire_section_pointer_context_for_range();
+        self.time_selection_project_scope = true;
+        self.time_selection = Some(selection);
+        self.edit_cursor = Some(EditCursor {
+            track: selection.anchor_track,
+            frame: start,
+            generation,
+            pulse_color: theme::color(theme::PaletteRole::Text),
+            pulse_started: Instant::now(),
+        });
+        self.retain_clip_detail_for_time_selection();
+        self.selected_clip = None;
+        self.suppress_cursor_click = true;
+        true
+    }
+
     pub(super) fn begin_main_time_selection_gesture(
         &mut self,
         x: f32,
@@ -144,22 +225,7 @@ impl EditorView {
         extend: bool,
     ) -> bool {
         self.suppress_cursor_click = false;
-        if self.mode != EditorMode::Arrangement
-            || self.clip_name_edit.is_some()
-            || self.sections.naming()
-            || self.track_name.is_editing()
-            || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
-            || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
-            || self.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
-        {
+        if !self.range_input_available() {
             return false;
         }
         let Some(state) = self.state.as_ref() else {
@@ -238,7 +304,12 @@ impl EditorView {
         let lane = self.main_track_lane_bounds.filter(|lane| {
             self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
         })?;
-        if y >= lane.top + header_hit_height(lane.height) {
+        if RangeSelectionZones::new(lane.height, super::clip_name::CLIP_NAME_HEIGHT)?.target(
+            y - lane.top,
+            true,
+            false,
+        ) != Some(RangeSelectionTarget::Move)
+        {
             return None;
         }
         let frame = super::seek::pointer_to_frame(
@@ -414,7 +485,10 @@ impl EditorView {
             return false;
         };
         // The visible title/move rail is the handle; the rest reselects.
-        if y >= lane.top + header_hit_height(lane.height) {
+        if RangeSelectionZones::new(lane.height, super::clip_name::CLIP_NAME_HEIGHT)
+            .and_then(|zones| zones.target(y - lane.top, true, false))
+            != Some(RangeSelectionTarget::Move)
+        {
             return false;
         }
         let Some(track_offset) = range.tracks().iter().position(|item| *item == track) else {
@@ -1096,8 +1170,19 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end, 4.0)
-                    .map(|ordinary| (ordinary, false))
+                handle_hit(preview.frame_start, preview.frame_end, 4.0).map(|ordinary| {
+                    (
+                        ordinary
+                            || super::trim::loop_handles::midi_controls(
+                                clip,
+                                &state.project,
+                                *lane,
+                                viewport,
+                            )
+                            .is_some_and(|c| c.hit(x, y)),
+                        false,
+                    )
+                })
             })
             .or_else(|| {
                 track.clips().iter().rev().find_map(|clip| {
@@ -1107,7 +1192,14 @@ impl EditorView {
                     let end = clip.start().checked_add(clip.duration())?;
                     handle_hit(clip.start(), end, 3.0).map(|ordinary| {
                         (
-                            ordinary,
+                            ordinary
+                                || super::trim::loop_handles::audio_controls(
+                                    clip,
+                                    &state.project,
+                                    *lane,
+                                    viewport,
+                                )
+                                .is_some_and(|c| c.hit(x, y)),
                             self.fade_handle_hit(state, track.id(), clip, x, y, viewport),
                         )
                     })

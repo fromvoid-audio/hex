@@ -4,14 +4,18 @@ mod epoch;
 pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
+mod storage;
+pub use storage::{
+    PendingStorage, PreparationResourceBound, PreparationStorageBound, PreparedStorage,
+};
 
+use crate::transport::Block;
 use crate::{
     Error, Result,
     channel::{Channel, Packet, end_after, pause},
     protocol::{self, Configuration, Facts, PresentationLatency, Ready, Terminal},
 };
-use hex_audio::plugin_transport::{Binding, Block};
-use hex_lattice_contract::NativeDeviceState;
+use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_scan::macos::{
     build_identity::InstanceBuild,
     identity::{Bundle, Executable},
@@ -58,7 +62,7 @@ impl Source {
     fn unchanged(&self) -> Result<()> {
         self.bundle
             .executable_unchanged(&self.executable)
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
     }
 }
 fn digest(text: &str) -> Result<[u8; 32]> {
@@ -143,6 +147,12 @@ pub struct Cancellation {
     cancelled: Arc<AtomicBool>,
 }
 impl Cancellation {
+    /// Test-only lifetime observation; never resource provenance or admission.
+    /// A weak observer cannot keep the descriptor payload alive.
+    #[cfg(feature = "test-support")]
+    pub fn descriptor_lifetime_probe_on_control(&self) -> std::sync::Weak<UnixStream> {
+        Arc::downgrade(&self.stream)
+    }
     /// Control-only, one-shot and independent of the PCM queue. The guardian's
     /// blocking read wakes on descriptor shutdown, even during foreign entry.
     pub fn cancel_on_control(&self) {
@@ -291,22 +301,31 @@ impl Pending {
             quantum: options.quantum,
             input_channels: options.input_channels,
             output_channels: options.output_channels,
-            bundle: source
-                .bundle
-                .canonical_path
-                .to_str()
-                .ok_or(Error::Protocol("bundle path encoding"))
-                .map_err(PreparationFailure::before_native)?
-                .to_owned(),
-            executable: source.executable.relative_path.clone(),
+            bundle: storage::copy_configuration_path(
+                source
+                    .bundle
+                    .canonical_path
+                    .to_str()
+                    .ok_or(Error::Protocol("bundle path encoding"))
+                    .map_err(PreparationFailure::before_native)?,
+            )
+            .map_err(PreparationFailure::before_native)?,
+            executable: storage::copy_configuration_path(&source.executable.relative_path)
+                .map_err(PreparationFailure::before_native)?,
         };
         let request = config.encode().map_err(PreparationFailure::before_native)?;
+        // Establish the eventual Pending's bounded provenance copy before any
+        // probe or instance child starts, never through a late derived Clone.
+        let owned_build = build
+            .try_copy_on_control()
+            .map_err(Error::Validation)
+            .map_err(PreparationFailure::before_native)?;
         source
             .unchanged()
             .map_err(PreparationFailure::before_native)?;
         build
             .unchanged()
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
         // No foreign module is loaded by this exact executable's probe. A
         // missing/auto-reaped child refuses before any SDK instance starts.
@@ -330,7 +349,7 @@ impl Pending {
         }
         build
             .unchanged()
-            .map_err(Error::Source)
+            .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
         source
             .unchanged()
@@ -385,13 +404,13 @@ impl Pending {
                     config.binding,
                 )?));
             }
-            if packet.magic() != b"HXVIFA02" {
+            if packet.magic() != b"HXVIFA03" {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
             token.check()?;
             source.unchanged()?;
-            build.unchanged().map_err(Error::Source)?;
+            build.unchanged().map_err(Error::Validation)?;
             match pending.child.observe()? {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
@@ -415,7 +434,7 @@ impl Pending {
             limits: options.limits,
             packet,
             source,
-            build: build.clone(),
+            build: owned_build,
         })
     }
     pub fn facts(&self) -> Facts {
@@ -468,7 +487,7 @@ impl Pending {
         let result = (|| {
             token.check()?;
             self.source.unchanged()?;
-            self.build.unchanged().map_err(Error::Source)?;
+            self.build.unchanged().map_err(Error::Validation)?;
             if self.facts.presentation_available && presentation.is_none() {
                 return Err(Error::Protocol(
                     "actual presentation contributions are unavailable",
@@ -488,7 +507,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD03" {
+            if self.packet.magic() != b"HXVIRD04" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));
@@ -496,6 +515,7 @@ impl Pending {
             let ready = Ready::decode(self.packet.body()?, &self.config, presentation)?;
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
+                || ready.tail_frames != self.facts.tail_frames
                 || (ready.presentation == protocol::Presentation::Applied)
                     != self.facts.presentation_available
             {
@@ -504,7 +524,7 @@ impl Pending {
                 ));
             }
             self.source.unchanged()?;
-            self.build.unchanged().map_err(Error::Source)?;
+            self.build.unchanged().map_err(Error::Validation)?;
             if self.lease.child.observe()?.is_some() {
                 return Err(Error::Custody("prepared worker already exited".into()));
             }
@@ -535,6 +555,12 @@ impl Pending {
 }
 
 impl Prepared {
+    /// Cancel an instance still held by control during host preparation and
+    /// retain its actual lease for independent, nonblocking disposal observation.
+    /// This neither returns any callback endpoint nor grants graph admission.
+    pub fn cancel_retained_on_control(self) -> PreparationFailure {
+        PreparationFailure::native(Error::Cancelled, self.lease, self.limits.retirement)
+    }
     /// Off-callback preparation. The caller must not independently reap these
     /// children or change their signal disposition while they are owned here.
     pub fn prepare_on_control(
@@ -555,6 +581,10 @@ impl Prepared {
     ) -> Result<Self> {
         Pending::prepare(build, source, options.preparation, cancellation, setup)?
             .complete_on_control(Some(options.presentation))
+    }
+    /// Cumulative actual successful PCM exchanges, not callback/graph acceptance.
+    pub fn completed_blocks_on_control(&self) -> u64 {
+        self.sequence
     }
     pub fn ready(&self) -> &Ready {
         &self.ready
@@ -590,9 +620,9 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; hex_audio::plugin_transport::wire::MAX_PACKET_BYTES];
+        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
-        hex_audio::plugin_transport::wire::write(&mut cursor, &block).map_err(Error::Io)?;
+        crate::transport::wire::write(&mut cursor, &block).map_err(Error::Io)?;
         let length = cursor.position() as usize;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
@@ -694,14 +724,16 @@ struct Lease {
 enum ChildCustody {
     Owned(Child),
     Reaped(ExitStatus),
-    Lost(String),
+    Lost(Arc<std::io::Error>),
 }
 impl ChildCustody {
     fn observe(&mut self) -> Result<Option<ExitStatus>> {
         let result = match self {
             Self::Owned(child) => child.try_wait(),
             Self::Reaped(status) => return Ok(Some(*status)),
-            Self::Lost(error) => return Err(Error::Custody(error.clone())),
+            Self::Lost(error) => {
+                return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
+            }
         };
         match result {
             Ok(Some(status)) => {
@@ -710,9 +742,9 @@ impl ChildCustody {
             }
             Ok(None) => Ok(None),
             Err(error) => {
-                let message = error.to_string();
-                *self = Self::Lost(message.clone());
-                Err(Error::Custody(message))
+                let source = Arc::new(error);
+                *self = Self::Lost(Arc::clone(&source));
+                Err(Error::Custody(crate::CustodyError::Lost(source)))
             }
         }
     }
@@ -720,7 +752,9 @@ impl ChildCustody {
         let result = match self {
             Self::Owned(child) => child.wait(),
             Self::Reaped(status) => return Ok(*status),
-            Self::Lost(error) => return Err(Error::Custody(error.clone())),
+            Self::Lost(error) => {
+                return Err(Error::Custody(crate::CustodyError::Lost(Arc::clone(error))));
+            }
         };
         match result {
             Ok(status) => {
@@ -728,9 +762,9 @@ impl ChildCustody {
                 Ok(status)
             }
             Err(error) => {
-                let message = error.to_string();
-                *self = Self::Lost(message.clone());
-                Err(Error::Custody(message))
+                let source = Arc::new(error);
+                *self = Self::Lost(Arc::clone(&source));
+                Err(Error::Custody(crate::CustodyError::Lost(source)))
             }
         }
     }
