@@ -1344,3 +1344,46 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     }
     assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());
 }
+
+#[test]
+fn time_range_copy_with_leading_silence_does_not_create_zero_frame_remainders() {
+    for (note_start, selection_end, destination, remaining) in [
+        (BeatTime::ONE, 48_000, 48_000, vec![]),
+        (BeatTime::ZERO, 12_000, 36_000, vec![24_000, 36_000]),
+    ] {
+        let (mut editor, track) = setup();
+        let clip = add_clip(&mut editor, track, BeatTime::ONE, beat(4, 1));
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: note_start,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let before = editor.project().snapshot();
+        assert_eq!(midi_events(editor.project()).unwrap().len(), 2);
+        editor
+            .execute(Command::CopyTimeRangeTo {
+                range: hex_project::TimeRange::new(vec![track], 0, selection_end).unwrap(),
+                track,
+                frame: destination,
+            })
+            .unwrap();
+        let events = midi_events(editor.project())
+            .expect("frame-aligned overwrite must not invent an unplayable note gate");
+        assert_eq!(
+            events.iter().map(|event| event.frame).collect::<Vec<_>>(),
+            remaining
+        );
+        compile::project(editor.project(), &BTreeMap::new()).unwrap();
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert_eq!(midi_events(editor.project()).unwrap(), events);
+    }
+}
