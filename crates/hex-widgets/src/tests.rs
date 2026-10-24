@@ -2494,3 +2494,35 @@ fn numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_e
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     assert!(events.borrow().is_empty());
 }
+
+#[gpui::test]
+fn fixed_numeric_presentations_match_their_public_tile_dimensions(cx: &mut TestAppContext) {
+    for (kind, appearance, width, height) in [
+        (
+            NumericControlKind::Knob,
+            NumericControlAppearance::CompactDial,
+            crate::COMPACT_DIAL_WIDTH,
+            crate::COMPACT_DIAL_HEIGHT,
+        ),
+        (
+            NumericControlKind::Knob,
+            NumericControlAppearance::MicroDial,
+            crate::MICRO_DIAL_WIDTH,
+            crate::MICRO_DIAL_HEIGHT,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlAppearance::InlineValue,
+            crate::INLINE_VALUE_WIDTH,
+            crate::INLINE_VALUE_HEIGHT,
+        ),
+    ] {
+        let spec =
+            NumericSpec::new(0.0, 1.0, 0.5, NumericScale::Linear, 2, None::<String>).unwrap();
+        let (handle, _) = open_numeric_control_appearance(cx, kind, spec, 0.5, appearance);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("test-control").expect("numeric tile");
+        assert_eq!(bounds.size, size(px(width), px(height)), "{appearance:?}");
+    }
+}
