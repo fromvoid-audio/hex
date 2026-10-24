@@ -1,4 +1,4 @@
-//! Native library catalog: one page per base control, grouped live configurations.
+//! Native library catalog: control families contain pages per visual kind and live configurations.
 //! Fixtures are created lazily per page and retain local values across navigation.
 //! Device compositions retain their own bounded fixture navigation.
 #[path = "catalog.rs"]
@@ -321,6 +321,7 @@ impl Render for Sandbox {
                 );
             } else {
                 section = section
+                    .child(theme::text(item.name))
                     .child(theme::text(item.configuration()))
                     .child(self.sample_tools(index, cx))
                     .children(self.samples.get(&index).cloned());
