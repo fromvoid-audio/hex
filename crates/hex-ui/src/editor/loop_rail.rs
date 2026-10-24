@@ -378,7 +378,7 @@ pub(super) fn view(
                 .min_w_0()
                 .cursor(view.loop_rail_cursor)
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
+                    cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("loop range"),
                         description: "drag empty rail to set loop · drag bar to move · shift-click selects range · shift-drag steps loop length · cmd-click toggles · cmd-drag is free".into(),
                     })
                     .into()

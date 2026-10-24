@@ -370,6 +370,7 @@ impl EditorView {
                         )
                         .tooltip(move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: details.clone(),
                             })
                             .into()

@@ -1330,6 +1330,7 @@ impl super::EditorView {
             .opacity(if enabled { 1.0 } else { 0.45 })
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::control("cycle meter at cursor"),
                     description: description.into(),
                 })
                 .into()
