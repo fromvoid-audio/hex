@@ -19,6 +19,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod bounce;
 mod browser;
 mod browser_input;
 mod clip_action_scope;
@@ -63,6 +64,7 @@ mod clip_detail_resize;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
+mod clip_reverse;
 mod clip_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_view_ui_test;
@@ -380,6 +382,8 @@ actions!(
         SplitClip,
         SetLoopFromClip,
         LoopSelection,
+        BounceInPlace,
+        BounceToNewTracks,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -425,6 +429,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    crate::tooltips::bind_keys(cx);
     changelog::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
@@ -490,6 +495,16 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
+        KeyBinding::new(
+            "b",
+            BounceInPlace,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
+        KeyBinding::new(
+            "cmd-b",
+            BounceToNewTracks,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
@@ -747,6 +762,7 @@ pub(super) struct EditorView {
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
+    bounce_control: Option<hex_session::service::ExportControl>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1402,6 +1418,7 @@ impl EditorView {
             pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
+            bounce_control: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,

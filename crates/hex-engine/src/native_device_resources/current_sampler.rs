@@ -250,6 +250,10 @@ pub(crate) fn validate_project_with_effects(
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
+    // Finite Arrangement sources, including repeats and directed views, use
+    // the same admitted occurrence compiler and exact constructor byte quote.
+    crate::midi_compile::count_project_occurrences(project)
+        .map_err(|_| AudioStorageError::UnsupportedGraph)?;
     for track in project.tracks() {
         if !track.gain_lane().spans().is_empty()
             || track.clips().iter().any(|c| c.audio_edit().is_some())
@@ -257,7 +261,6 @@ pub(crate) fn validate_project_with_effects(
                 (!effects && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
                     || !d.state().asset_references().is_empty()
             })
-            || track.midi_clips().iter().any(|c| c.source().looping())
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }

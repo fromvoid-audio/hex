@@ -106,12 +106,20 @@ fn source_substitution_tempo_and_geometry_changes_refuse_without_consuming_the_t
             track,
             start: beat(3),
         },
+        Command::ReverseClips(vec![clip]),
     ] {
         let mut editor = Editor::new(project.clone(), 8).unwrap();
         editor.execute(command).unwrap();
         let before = editor.project().snapshot();
         assert!(finish_take(editor.project(), &binding, &captured, 12_000).is_err());
         assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.undo());
+        assert!(!editor.can_undo(), "refusal must not add a history edge");
+        assert!(
+            finish_take(editor.project(), &binding, &captured, 12_000)
+                .unwrap()
+                .is_some()
+        );
     }
     assert!(
         finish_take(&project, &binding, &captured, 12_000)

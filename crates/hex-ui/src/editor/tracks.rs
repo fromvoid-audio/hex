@@ -333,7 +333,7 @@ fn drop_overlap_spans(
 
 /// Paint-only scalar sweep: intersect unions without member × victim work.
 /// Two events per visible member/victim, one sort; no capture/update storage.
-fn group_overlap_spans(mut events: Vec<(u64, i32, i32)>) -> Vec<(u64, u64)> {
+pub(super) fn group_overlap_spans(mut events: Vec<(u64, i32, i32)>) -> Vec<(u64, u64)> {
     events.sort_unstable();
     let mut spans: Vec<(u64, u64)> = Vec::new();
     let (mut cuts, mut victims, mut previous) = (0, 0, 0);
@@ -1173,6 +1173,7 @@ impl EditorView {
             ))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     name: track_name.clone(),
                 })
                 .into()
@@ -1284,6 +1285,7 @@ impl EditorView {
                 .opacity(0.45)
                 .tooltip(|_, cx| {
                     cx.new(|_| ClipTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         name: "recording unavailable · planned for hex 0.2".into(),
                     })
                     .into()

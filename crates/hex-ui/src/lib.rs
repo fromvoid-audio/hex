@@ -26,6 +26,7 @@ pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPub
 mod layout;
 pub mod output_meter;
 mod theme;
+mod tooltips;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 use hex_audio::AudioOutput;
 

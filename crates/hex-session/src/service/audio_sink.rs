@@ -125,7 +125,8 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
-    /// A bounded control-worker handshake; source/resource custody remains here.
+    /// A bounded stopped Arrangement handshake, shared by structural edits and
+    /// in-place bounce/history. The historical method name transfers no custody.
     fn begin_section_edit(
         &mut self,
         _context: hex_engine::AudioSourceContext,

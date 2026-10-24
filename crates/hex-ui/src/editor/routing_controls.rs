@@ -252,6 +252,7 @@ fn button(label: impl Into<String>, tooltip: &'static str, key: String) -> gpui:
         .h(px(21.0))
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: tooltip.into(),
             })
             .into()

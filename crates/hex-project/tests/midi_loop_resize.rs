@@ -356,3 +356,83 @@ fn invalid_cycle_and_overflow_refuse_without_musical_or_history_changes() {
     );
     assert_eq!(e.project().snapshot(), before);
 }
+
+#[test]
+fn directed_loop_edits_match_forward_authoring_then_reverse_and_preview_commit() {
+    let (mut original, _, clip) = fixture(true, 0, 13);
+    original.execute(Command::ReverseClips(vec![clip])).unwrap();
+    original
+        .execute(Command::TrimMidiClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            beat: beat(20),
+        })
+        .unwrap();
+    let before = original.project().clone();
+    let selected = before.midi_clip(clip).unwrap();
+    let window = selected.content_view().unwrap();
+    assert_ne!(window.start, selected.playback_offset().raw());
+    for operation in [
+        Resize::RepeatOuterEnd { beat: beat(24) },
+        Resize::RepeatOuterEnd { beat: beat(17) },
+        Resize::CycleEnd { beat: beat(14) },
+    ] {
+        // Explicit loop gestures author a forward cycle, then retain direction,
+        // like audio loop edits. Trimming has its separate prefix-preserving law.
+        let mut snapshot = before.snapshot();
+        let clips = match &mut snapshot.tracks[0].content {
+            hex_project::TrackContentSnapshot::Hybrid { midi_clips, .. }
+            | hex_project::TrackContentSnapshot::Instrument(midi_clips) => midi_clips,
+            _ => panic!("midi track"),
+        };
+        clips[0].content_view = None;
+        clips[0].playback_offset_raw = window.start;
+        let mut forward = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+        resize(&mut forward, clip, operation);
+        forward.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let expected = forward.project().snapshot();
+        let mut e = Editor::new(before.clone(), 32).unwrap();
+        let preview = e
+            .project()
+            .midi_clip(clip)
+            .unwrap()
+            .preview_loop_resize(operation)
+            .unwrap();
+        let playback = preview.source_playback().unwrap();
+        resize(&mut e, clip, operation);
+        assert_eq!(e.project().snapshot(), expected);
+        let changed = e.project().midi_clip(clip).unwrap();
+        assert_eq!(changed.notes(), selected.notes());
+        assert_eq!(playback, changed.source_playback().unwrap());
+        assert!(e.undo());
+        assert_eq!(e.project(), &before);
+        assert!(e.redo());
+        assert_eq!(e.project().snapshot(), expected);
+    }
+}
+
+#[test]
+fn directed_repeat_boundaries_follow_reflected_seams_before_the_introduction_tail() {
+    let (mut e, _, clip) = fixture(true, 0, 13);
+    e.execute(Command::ReverseClips(vec![clip])).unwrap();
+    // Forward seams are6,11; reversal places them at2,7. The six-beat
+    // introduction becomes a tail and must not acquire another repeat marker.
+    assert_eq!(
+        e.project().midi_clip(clip).unwrap().first_repeat_boundary(),
+        Some(beat(12))
+    );
+    let plan = e
+        .project()
+        .midi_clip(clip)
+        .unwrap()
+        .source_playback()
+        .unwrap()
+        .repeat_boundaries()
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.count(), 2);
+    assert_eq!(
+        (plan.boundary(0), plan.boundary(1), plan.boundary(2)),
+        (Some(beat(2).raw()), Some(beat(7).raw()), None)
+    );
+}

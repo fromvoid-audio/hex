@@ -15,6 +15,12 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    CommitArrangementBounce {
+        target: crate::BounceTarget,
+        in_place: bool,
+        files: Vec<crate::BounceFile>,
+    },
     /// Set one authored clip's activation across Arrangement or Session.
     SetClipActive {
         clip: ClipId,
@@ -523,6 +529,8 @@ pub enum Command {
     DuplicateClip(ClipId),
     /// Copy a frozen whole-clip selection after its complete extent, atomically.
     DuplicateClips(Vec<ClipId>),
+    /// Reverse finite audible content atomically, preserving sources and edit settings.
+    ReverseClips(Vec<ClipId>),
     /// Split a clip at an absolute timeline frame.
     SplitClip {
         clip: ClipId,
@@ -1313,7 +1321,7 @@ pub(crate) fn split_clip_at_tempo(
     if frame <= original.start || frame >= end {
         return Err(Invalid("split cursor must be inside the clip"));
     }
-    if edit.placement.is_some() {
+    if edit.content_view.is_some() || edit.placement.is_some() {
         let left = crate::audio_edit::trim_view(original, crate::TrimEdge::Right, frame, tempo)?;
         let mut right =
             crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
@@ -1562,6 +1570,11 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::CommitArrangementBounce {
+                target,
+                in_place,
+                files,
+            } => crate::bounce::commit(self, target, in_place, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::RenameArrangementSection { .. }
@@ -1815,6 +1828,7 @@ impl Project {
                 crate::session::apply(self, session_command)
             }
             Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
+            Command::ReverseClips(clips) => crate::clip_reverse::apply(self, clips),
             Command::DuplicateClip(clip) => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = original

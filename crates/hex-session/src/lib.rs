@@ -29,6 +29,7 @@ use std::{
     sync::Arc,
 };
 
+mod arrangement_bounce;
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
@@ -228,6 +229,7 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
             | Command::ImportPreparedAudioClip { .. }
             | Command::ImportPreparedAudioClipWithOverwrite { .. }
             | Command::ImportPreparedSessionAudioClip { .. }
+            | Command::CommitArrangementBounce { .. }
             | Command::ConvertMidiClipToAudio { .. }
     ) {
         return Err(SessionError::Invalid(
@@ -1928,7 +1930,7 @@ fn prepare_with_waveforms_using(
             let preview_root = if let Some(clip) = project.clip(view.clip)
                 && clip
                     .audio_edit()
-                    .is_some_and(|edit| edit.placement.is_some())
+                    .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
             {
                 let source = media
                     .resident

@@ -2,7 +2,6 @@
 //! The short, bounded native handshake runs only on the control worker. It never
 //! waits for UI delivery, and priority Stop remains on the native command path.
 use super::*;
-use std::time::{Duration, Instant};
 
 pub(super) fn is_command(command: &Command) -> bool {
     matches!(
@@ -22,32 +21,6 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)
     )
-}
-fn stopped_frame(
-    sink: &mut dyn WorkerAudioSink,
-    context: hex_engine::AudioSourceContext,
-    shutdown: &AtomicBool,
-) -> Result<u64, SessionError> {
-    sink.begin_section_edit(context)
-        .map_err(SessionError::NativeAudio)?;
-    let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        if shutdown.load(Ordering::Acquire) || Instant::now() >= deadline {
-            sink.cancel_section_edit();
-            return Err(SessionError::Invalid(
-                "stopped section edit cancelled or timed out",
-            ));
-        }
-        if let Some(result) = sink.section_edit_ready() {
-            return result.map_err(|reason| {
-                sink.cancel_section_edit();
-                SessionError::NativeAudio(reason)
-            });
-        }
-        // No project mutation can interleave on this sole worker. Device and UI
-        // threads remain independent; there is no async runtime or callback wait.
-        thread::sleep(Duration::from_millis(2));
-    }
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn command(
@@ -105,7 +78,7 @@ pub(super) fn command(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let frame = stopped_frame(sink, source_context, &shutdown)?;
+    let frame = super::stopped_arrangement::acquire(sink, source_context, &shutdown, None)?;
     let result = session.stopped_section_snapshot(
         Some(command),
         false,
@@ -148,7 +121,7 @@ pub(super) fn history(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let frame = stopped_frame(sink, source_context, &shutdown)?;
+    let frame = super::stopped_arrangement::acquire(sink, source_context, &shutdown, None)?;
     match session.stopped_section_snapshot(
         None,
         redo,
@@ -177,6 +150,7 @@ pub(super) fn history(
 #[cfg(test)]
 mod split_tests {
     use super::*;
+    use std::time::{Duration, Instant};
     fn next(service: &Service) -> Event {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {

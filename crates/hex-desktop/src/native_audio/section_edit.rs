@@ -60,7 +60,7 @@ impl NativeAudioSink {
         match control.stopped_edit_fence_state(pending.fence) {
             StoppedEditFenceState::Pending => None,
             StoppedEditFenceState::Refused => {
-                Some(Err("stop playback before reordering sections".into()))
+                Some(Err("stop playback before editing the arrangement".into()))
             }
             StoppedEditFenceState::Ready => Some(
                 control

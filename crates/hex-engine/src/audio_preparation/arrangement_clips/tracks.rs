@@ -1042,7 +1042,7 @@ impl TrackAssembly {
                 } = t;
                 if (!sampler.present() && (instrument.is_some() || *mutable_instrument))
                     || instrument_state.is_some()
-                    || *mutable_looping_source
+                    || (!sampler.present() && *mutable_looping_source)
                     || midi_source_index.is_some()
                 {
                     return Err(AudioStorageError::UnknownStorage);

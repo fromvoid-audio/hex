@@ -2,6 +2,92 @@ use super::*;
 use std::sync::atomic::Ordering;
 
 #[test]
+fn mixed_reverse_prepare_refusal_preserves_project_history_and_accepted_pcm() {
+    use hex_project::{BeatTime, Tempo};
+    let (mut session, audio, mut previous) = fixture();
+    let mut run = |command| {
+        let (created, prepared) = session
+            .command_prepared_revision(command, Some(&previous))
+            .unwrap();
+        previous = prepared;
+        created
+    };
+    run(Command::SetTempoPoint {
+        beat: BeatTime::ZERO,
+        tempo: Tempo::new(60_000_000).unwrap(),
+    });
+    run(Command::SetTempoPoint {
+        beat: BeatTime::ONE,
+        tempo: Tempo::new(240_000_000).unwrap(),
+    });
+    let Created::Track(track) = run(Command::AddMidiTrack {
+        name: "midi".into(),
+    }) else {
+        panic!("track")
+    };
+    run(Command::InsertInstrument {
+        track,
+        state: hex_project::default_instrument_state().unwrap(),
+    });
+    let Created::Clip(midi) = run(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(2).unwrap(),
+    }) else {
+        panic!("clip")
+    };
+    run(Command::AddMidiNote {
+        clip: midi,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_ratio(1, 16_000).unwrap(),
+        pitch: 60,
+        channel: 2,
+        velocity: 99,
+    });
+    let before = session.project().snapshot();
+    let resident = session.resident_frames;
+    let result = session
+        .command_prepared_revision(Command::ReverseClips(vec![audio, midi]), Some(&previous));
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("quantizes to zero frames")
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!(session.resident_frames, resident);
+    let undone = session
+        .undo_prepared_revision(Some(&previous))
+        .unwrap()
+        .unwrap();
+    assert!(
+        session
+            .project()
+            .midi_clip(midi)
+            .unwrap()
+            .notes()
+            .is_empty()
+    );
+    let redone = session
+        .redo_prepared_revision(Some(&undone))
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project().snapshot(), before);
+    let render = |revision| {
+        let mut playback =
+            hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut frames = [[0.0; 2]; 257];
+        playback.render(&mut frames).unwrap();
+        frames
+    };
+    let accepted = render(previous);
+    assert!(accepted.iter().flatten().any(|s| *s != 0.0));
+    assert_eq!(render(redone), accepted);
+}
+
+#[test]
 fn bounded_audio_placement_refusal_preserves_session_project_history_and_audio() {
     let (mut session, clip, previous) = fixture();
     let before_repeat = session.project().snapshot();
