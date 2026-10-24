@@ -4,6 +4,46 @@
 use super::*;
 use hex_project::{AssetId, Project};
 
+/// Control-only borrowed compiler context. The host retains the actual source
+/// owners behind these definitions; this view grants no native admission and
+/// never escapes into the prepared graph. Session consumers use the Engine
+/// contract without acquiring a device registry or native lifecycle of their own.
+pub struct AudioCandidateEffects<'a, 'definitions> {
+    registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>,
+}
+impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
+    pub fn new(registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>) -> Self {
+        Self { registry }
+    }
+    pub fn quote(
+        &self,
+        project: &Project,
+        sources: usize,
+    ) -> Result<super::AudioCandidateReservationQuote, AudioStorageError> {
+        super::AudioCandidateReservationQuote::for_project_with_effect_registry(
+            project,
+            sources,
+            self.registry,
+        )
+    }
+    pub fn prepare(
+        &self,
+        destination: &mut AudioCandidatePreparation,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+    ) -> Result<(), AudioStorageError> {
+        destination.prepare_with_effect_registry_on_control(
+            project,
+            source_generation,
+            context,
+            self.registry,
+            sampler,
+        )
+    }
+}
+
 pub struct AudioCandidatePreparation {
     sources: Vec<(AssetId, crate::OwnedAudioSource)>,
     resident_draft: Vec<crate::Frame>,

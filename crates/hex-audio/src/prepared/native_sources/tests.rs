@@ -64,8 +64,10 @@ fn setup_for_identity(
             receipt_rows: 4,
             data_rows: 4096,
             handle_rows: 4096,
-            max_retained_data_bytes: 96 * 1024 * 1024,
-            max_construction_peak_data_bytes: 96 * 1024 * 1024,
+            // Two original native-source peak reservations coexist with the
+            // full effect-aware revision quote during rooted preparation.
+            max_retained_data_bytes: 192 * 1024 * 1024,
+            max_construction_peak_data_bytes: 192 * 1024 * 1024,
         })
         .unwrap();
     control

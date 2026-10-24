@@ -649,51 +649,89 @@ fn cancelled_actual_native_graph_holds_endpoint_until_original_report_recovery()
     finish(&mut retirement);
 }
 
-fn replacement_owner(
-    control: &Control,
+fn replacement_preparation(
+    control: &mut Control,
     binding: Binding,
     project: &Project,
     samples: &[[f32; 2]],
-) -> hex_engine::AudioCandidateOwner {
-    let asset = project.assets().next().unwrap().id();
-    let bank = hex_engine::OwnedAudioInputs::try_new(
-        vec![(
-            asset,
-            hex_engine::OwnedAudioSource::try_resident(48_000, samples.to_vec())
-                .ok()
-                .unwrap(),
-        )],
-        hex_engine::AudioStorageReservation {
-            allocation_items: 1024,
-            handle_obligations: 256,
-            max_prepared_data_bytes: usize::MAX,
-            max_construction_data_bytes: usize::MAX,
-            caller_retained_bytes: 0,
-            caller_construction_bytes: 0,
-        },
-    )
-    .ok()
-    .unwrap();
-    control
+) -> crate::AudioCandidateTicket {
+    let quote = control
         .with_native_effect_definition(&[binding], |definition| {
             let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
             let registry = NativeDeviceRegistry::new(&definitions).unwrap();
-            let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
-            let token = custody
-                .begin_input_on_control(
-                    hex_engine::AudioArrangementInput::new(project, 12, bank)
-                        .with_audio_prepared_revision()
-                        .with_effect_registry(&registry),
-                )
-                .ok()
-                .unwrap();
-            Ok(
-                hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
-                    .ok()
-                    .unwrap(),
-            )
+            Ok(hex_engine::AudioCandidateEffects::new(&registry)
+                .quote(project, 1)
+                .unwrap())
         })
-        .unwrap()
+        .unwrap();
+    let token = control
+        .reserve_audio_candidate_preparation(
+            crate::AudioCandidatePreparationReservation {
+                source_capacity: 1,
+                member_rows: quote.member_rows,
+                transfer_rows: quote.transfer_rows,
+                handle_rows: quote.handle_rows,
+                storage: quote
+                    .storage_reservation(std::mem::size_of_val(samples))
+                    .unwrap(),
+            },
+            vec![],
+        )
+        .unwrap_or_else(|refusal| {
+            panic!("reserved replacement: {} quote {quote:?}", refusal.reason)
+        });
+    // A binding with a different epoch cannot select the original source. The
+    // refusal must not consume the reserved destination or invoke its compiler.
+    let stale = Binding {
+        epoch: binding.epoch + 1,
+        ..binding
+    };
+    assert!(
+        control
+            .prepare_audio_candidate_with_native_sources_on_control(token, &[stale], |_, _| {
+                panic!("stale source must not compile")
+            })
+            .is_err()
+    );
+    let asset = project.assets().next().unwrap().id();
+    let source = hex_engine::Audio::new(48_000, samples.to_vec()).unwrap();
+    let mut preparation_error = None;
+    assert_eq!(
+        control
+            .prepare_audio_candidate_with_native_sources_on_control(
+                token,
+                &[binding],
+                |cell, effects| {
+                    cell.copy_resident_source_on_control(asset, &source)?;
+                    effects
+                        .prepare(
+                            cell,
+                            project,
+                            12,
+                            hex_engine::AudioSourceContext {
+                                project_generation: 41,
+                                editor_revision: 1,
+                            },
+                            None,
+                        )
+                        .inspect_err(|error| preparation_error = Some(*error))
+                }
+            )
+            .unwrap(),
+        crate::AudioCandidatePreparationProgress::Ready,
+        "actual reserved preparation: {preparation_error:?}"
+    );
+    let ticket = control
+        .stage_audio_candidate_preparation(token, 41)
+        .unwrap();
+    assert!(
+        control
+            .prepare_audio_candidate_with_native_sources_on_control(token, &[binding], |_, _| {
+                panic!("staged token must not compile again")
+            })
+            .is_err()
+    );
+    ticket
 }
 
 #[test]
@@ -734,17 +772,12 @@ fn actual_native_track_return_main_bypass_handoff_keeps_original_endpoint_and_cl
                         bypassed: true,
                     })
                     .unwrap();
-                let next = replacement_owner(&control, binding, editor.project(), &samples);
-                second = Some(
-                    control
-                        .stage_eligible_audio_candidate(
-                            next,
-                            vec![],
-                            PublicationPolicy::InheritRuntime,
-                            41,
-                        )
-                        .unwrap_or_else(|r| panic!("replacement graph: {}", r.reason)),
-                );
+                second = Some(replacement_preparation(
+                    &mut control,
+                    binding,
+                    editor.project(),
+                    &samples,
+                ));
             }
             let mut host = [0.0_f32; 16];
             allocation_free(|| {

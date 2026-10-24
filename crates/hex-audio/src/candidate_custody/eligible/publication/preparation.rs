@@ -35,6 +35,44 @@ pub(super) struct PreparationExecution {
     failed: bool,
     refusal: Option<&'static str>,
 }
+impl Custody {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(in crate::candidate_custody) fn with_native_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        bindings: &[hex_lattice_contract::ForeignProcessorBinding],
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<AudioCandidatePreparationProgress, &'static str> {
+        let mut guard = self
+            .work
+            .try_lock()
+            .map_err(|_| "candidate preparation is busy")?;
+        let work = &mut *guard;
+        let bank = self
+            .bank
+            .try_lock()
+            .map_err(|_| "native effect selection is busy")?;
+        if !self.enabled() || bank.closing || bank.root != token.root {
+            return Err("native effect selection is closing or differs");
+        }
+        let definition = bank
+            .sources
+            .definition(&work.sources, bindings)
+            .map_err(|_| "native effect source selection refused")?;
+        drop(bank);
+        let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeDeviceRegistry::new(&definitions)
+            .map_err(|_| "native effect registry refused")?;
+        let effects = hex_engine::AudioCandidateEffects::new(&registry);
+        self.with_runtime_preparation_locked(&mut work.publication, token, |cell| {
+            prepare(cell, &effects)
+        })
+    }
+}
+
 #[cfg(test)]
 impl PreparationExecution {
     pub(super) fn test_summary(&self) -> (bool, bool, Option<&'static str>, bool) {
@@ -364,6 +402,16 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
+        self.with_runtime_preparation_locked(&mut work.publication, token, prepare)
+    }
+    pub(in crate::candidate_custody::eligible) fn with_runtime_preparation_locked(
+        &self,
+        work: &mut Work,
+        token: AudioCandidatePreparationToken,
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<AudioCandidatePreparationProgress, &'static str> {
         let retiring = {
             let bank = lock(&self.bank);
             let slot = bank
@@ -381,7 +429,6 @@ impl Custody {
             bank.closing || slot.preparation_retiring
         };
         let execution = work
-            .publication
             .preparations
             .get_mut(token.slot)
             .and_then(Option::as_mut)
@@ -426,7 +473,7 @@ impl Custody {
             }
             Err(payload) => {
                 execution.failed = true;
-                work.publication.failed_payloads[token.slot] = Some(payload);
+                work.failed_payloads[token.slot] = Some(payload);
                 let mut bank = lock(&self.bank);
                 bank.publication.slots[token.slot].phase = Phase::Failed;
                 self.mark_closing(&mut bank);

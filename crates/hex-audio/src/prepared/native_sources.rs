@@ -98,6 +98,24 @@ impl PublicationControl {
         self.candidate_root
             .with_native_effect_definition(bindings, prepare)
     }
+    /// Borrow selected actual Root source definitions while preparing inside
+    /// this same Root's reserved cell. One Work guard covers both sides; no
+    /// nested acquisition, source extraction or independent lifecycle exists.
+    pub fn prepare_audio_candidate_with_native_sources_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        bindings: &[Binding],
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native effect output is closing");
+        }
+        self.candidate_root
+            .with_native_runtime_preparation(token, bindings, prepare)
+    }
     /// Copy the original restored envelope, or actual initial capture for a
     /// fresh source. Read-only state is never Root/graph admission authority.
     pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {

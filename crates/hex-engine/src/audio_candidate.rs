@@ -12,7 +12,7 @@ mod draft;
 mod preparation;
 mod reservation;
 pub use draft::AudioCandidateDraft;
-pub use preparation::AudioCandidatePreparation;
+pub use preparation::{AudioCandidateEffects, AudioCandidatePreparation};
 pub use reservation::AudioCandidateReservationQuote;
 mod storage;
 pub use storage::AudioCandidateConstructorSummary;

@@ -10,9 +10,6 @@ impl Custody {
         bindings: &[Binding],
         prepare: impl FnOnce(&NativeEffectDefinition<'_>) -> Result<R, String>,
     ) -> Result<R, String> {
-        if bindings.len() > MAX_SOURCES {
-            return Err("native effect selection capacity exceeded".into());
-        }
         let work = self
             .work
             .try_lock()
@@ -24,16 +21,28 @@ impl Custody {
         if !self.enabled() || bank.closing {
             return Err("native effect selection is closing".into());
         }
+        let definition = bank.sources.definition(&work.sources, bindings)?;
+        drop(bank);
+        prepare(&definition)
+    }
+}
+
+impl Bank {
+    pub(in crate::candidate_custody::eligible) fn definition<'a>(
+        &self,
+        work: &'a Work,
+        bindings: &[Binding],
+    ) -> Result<NativeEffectDefinition<'a>, String> {
+        if bindings.len() > MAX_SOURCES {
+            return Err("native effect selection capacity exceeded".into());
+        }
         let mut selected = Vec::new();
         selected
             .try_reserve_exact(bindings.len())
             .map_err(|_| "native effect selection allocation refused")?;
         for binding in bindings {
-            let index = bank
-                .sources
-                .index(*binding)
-                .ok_or("native effect source differs")?;
-            let slot = &bank.sources.slots[index];
+            let index = self.index(*binding).ok_or("native effect source differs")?;
+            let slot = &self.slots[index];
             if slot.phase != Phase::Accepted
                 || slot.retiring
                 || slot.starting
@@ -41,7 +50,7 @@ impl Custody {
             {
                 return Err("native effect source is not constructed".into());
             }
-            let effect = match work.sources.cells[index].owner.as_ref() {
+            let effect = match work.cells[index].owner.as_ref() {
                 Some(Owner::Effect(effect)) => {
                     crate::plugin_effects::NativeEffectReference::Unsplit(effect)
                 }
@@ -55,10 +64,28 @@ impl Custody {
             }
             selected.push(effect);
         }
-        drop(bank);
-        let definition = NativeEffectDefinition::from_root_sources(selected)
-            .map_err(|error| format!("native effect definition refused: {error}"))?;
-        prepare(&definition)
+        NativeEffectDefinition::from_root_sources(selected)
+            .map_err(|error| format!("native effect definition refused: {error}"))
+    }
+}
+
+impl CandidateRoot {
+    pub(crate) fn with_native_runtime_preparation(
+        &self,
+        token: publication::AudioCandidatePreparationToken,
+        bindings: &[Binding],
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<publication::AudioCandidatePreparationProgress, &'static str> {
+        self.require_native_source_control_open()?;
+        let result = self
+            .0
+            .eligible
+            .with_native_runtime_preparation(token, bindings, prepare);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
     }
 }
 
