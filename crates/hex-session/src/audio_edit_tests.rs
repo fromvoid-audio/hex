@@ -469,3 +469,87 @@ fn excessive_stretch_is_refused_before_project_or_undo_commit() {
     assert_eq!(session.project().snapshot(), before);
     assert_eq!((session.can_undo(), session.can_redo()), history);
 }
+
+#[test]
+fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
+    let (mut session, first, previous) = fixture();
+    let track = session.project().tracks()[0].id();
+    let audio = Audio::new(16_000, vec![[0.25, -0.5]; 128]).unwrap();
+    let imported = PreparedImport {
+        path: "second.wav".into(),
+        source_sample_rate: 16_000,
+        source_frames: 128,
+        conversion_version: hex_project::IDENTITY_CONVERSION,
+        source_audio: audio.clone(),
+        waveform: waveform::summarize(&audio, 128).unwrap(),
+        audio,
+    };
+    let (Created::Imported { clip: second, .. }, previous) = session
+        .import_prepared_revision(imported, Some(&previous))
+        .unwrap()
+    else {
+        panic!("second import")
+    };
+    let (_, previous) = session
+        .command_prepared_revision(
+            Command::MoveClip {
+                clip: second,
+                track,
+                start: 8_064,
+            },
+            Some(&previous),
+        )
+        .unwrap();
+    let (Created::Clip(group), previous) = session
+        .command_prepared_revision(Command::GroupClips(vec![first, second]), Some(&previous))
+        .unwrap()
+    else {
+        panic!("group")
+    };
+    let (_, repeated) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip: group,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: 10_000,
+                },
+            },
+            Some(&previous),
+        )
+        .unwrap();
+    let (_, cropped) = session
+        .command_prepared_revision(
+            Command::ResizeAudioClipView {
+                clip: group,
+                operation: hex_project::AudioViewResizeOperation::CycleEnd {
+                    project_frame: 4_000,
+                },
+            },
+            Some(&repeated),
+        )
+        .unwrap();
+    let views = session.audio_clip_waveforms.borrow();
+    let root = views[&group].preview_root.as_ref().unwrap();
+    assert_eq!(root.waveform.source_frames, 8_192);
+    assert_eq!(
+        root.waveform
+            .peaks_for_frames(8_000, 8_064)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.0, 0.0); 2]
+    );
+    assert_eq!(
+        root.waveform
+            .peaks_for_frames(8_064, 8_192)
+            .unwrap()
+            .map(|peak| (peak.min, peak.max)),
+        [(0.25, 0.25), (-0.5, -0.5)]
+    );
+    assert_eq!(views[&group].length, 10_000);
+    drop(views);
+    let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
+    renderer.play();
+    let mut output = [[0.0; 2]; 257];
+    renderer.render(&mut output).unwrap();
+    assert!(output.iter().any(|frame| *frame != [0.0; 2]));
+}

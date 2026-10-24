@@ -113,7 +113,39 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(reopened.state.project, redone.state.project);
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
-    h.applied(0);
+    let (applied, _) = h.applied(0);
+    assert_eq!(replay(&mut h), expected);
+    let group = reopened
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|clip| clip.has_retained_audio_roots())
+        .unwrap()
+        .id();
+    let looped = h.run(Request::Edit(Command::ResizeAudioClipView {
+        clip: group,
+        operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: 200 },
+    }));
+    let (applied, _) = h.applied(applied);
+    let preview = looped
+        .state
+        .audio_clip_waveforms
+        .get(&group)
+        .unwrap()
+        .preview_root
+        .as_ref()
+        .unwrap();
+    assert_eq!(preview.waveform.source_frames, 144);
+    let mut repeated = expected.clone();
+    for (index, frame) in repeated.iter_mut().take(200).enumerate() {
+        *frame = expected[index % 144];
+    }
+    assert_eq!(replay(&mut h), repeated);
+    h.run(Request::Undo);
+    h.applied(applied);
     assert_eq!(replay(&mut h), expected);
 }
 

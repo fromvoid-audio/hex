@@ -38,6 +38,11 @@ impl AudioTransformPreparation {
         let Some(edit) = clip.audio_edit().filter(|edit| edit.placement.is_some()) else {
             return Ok(None);
         };
+        if clip.has_retained_audio_roots() {
+            return Err(Invalid(
+                "grouped audio preview requires every retained source",
+            ));
+        }
         let asset = project
             .asset(clip.asset())
             .ok_or(Invalid("audio preview asset is missing"))?;
@@ -54,6 +59,67 @@ impl AudioTransformPreparation {
         if audio.frames().len() as u64 != root.projected_domain(project.tempo_map())?.1 {
             return Err(Invalid(
                 "audio preview root differs from canonical projection",
+            ));
+        }
+        Ok(Some(AudioPreviewRoot { audio, origin }))
+    }
+
+    /// Resolve every original resident dependency for a finite-placement root
+    /// preview. Grouped clips use the same bounded composite renderer as their
+    /// playback; holes, retained processing and fades survive outside the visible
+    /// crop. The returned root omits outer clip gain, like `preview_root`.
+    pub fn preview_root_with_sources<'a>(
+        &self,
+        project: &CanonicalProject,
+        clip: hex_project::ClipId,
+        mut source: impl FnMut(hex_project::AssetId) -> Option<&'a Audio>,
+    ) -> Result<Option<AudioPreviewRoot>, Invalid> {
+        let canonical = project
+            .clip(clip)
+            .ok_or(Invalid("audio preview clip is missing"))?;
+        let Some(edit) = canonical
+            .audio_edit()
+            .filter(|edit| edit.placement.is_some())
+        else {
+            return Ok(None);
+        };
+        let Some(events) = edit
+            .domain
+            .events
+            .as_ref()
+            .filter(|events| !events.sources.is_empty())
+        else {
+            let audio = source(canonical.asset())
+                .ok_or(Invalid("audio preview requires resident source"))?;
+            return self.preview_root(project, clip, audio);
+        };
+        let asset = project
+            .asset(canonical.asset())
+            .ok_or(Invalid("audio preview asset is missing"))?;
+        edit.validate(canonical, project.tempo_map(), asset.playback_frames())?;
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(events.sources.len())
+            .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
+        for root in &events.sources {
+            let asset = project
+                .asset(root.clip.asset())
+                .ok_or(Invalid("audio preview asset is missing"))?;
+            let audio = source(asset.id()).ok_or(Invalid(
+                "grouped audio preview requires every resident source",
+            ))?;
+            if audio.sample_rate() != project.sample_rate()
+                || audio.frames().len() as u64 != asset.playback_frames()
+            {
+                return Err(Invalid("audio preview source differs from project media"));
+            }
+            sources.push(GroupSource { root, asset, audio });
+        }
+        let audio = self.prepare_group_root(canonical, &sources)?;
+        let origin = AudioViewProjection::new(canonical, project.tempo_map())?.root_origin();
+        if audio.frames().len() as u64 != edit.domain.clock.length() {
+            return Err(Invalid(
+                "grouped audio preview root differs from canonical domain",
             ));
         }
         Ok(Some(AudioPreviewRoot { audio, origin }))

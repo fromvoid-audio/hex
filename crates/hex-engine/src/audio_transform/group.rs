@@ -16,6 +16,26 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Clip, Invalid> {
+        let audio = self.prepare_group_audio(clip, sources, false)?;
+        super::view::placed_clip(audio, clip)
+    }
+
+    /// The full composite processing domain, before finite crop/repeat and
+    /// outer clip gain. Preview and playback share this exact composition law.
+    pub(super) fn prepare_group_root(
+        &self,
+        clip: &hex_project::Clip,
+        sources: &[GroupSource<'_>],
+    ) -> Result<Audio, Invalid> {
+        self.prepare_group_audio(clip, sources, true)
+    }
+
+    fn prepare_group_audio(
+        &self,
+        clip: &hex_project::Clip,
+        sources: &[GroupSource<'_>],
+        root_only: bool,
+    ) -> Result<Audio, Invalid> {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
@@ -100,14 +120,14 @@ impl AudioTransformPreparation {
         // source's immutable PCM and conversion identity participates explicitly.
         let anchor = &sources[0];
         if let Some(audio) = self.lookup_key(anchor.audio, anchor.asset, |key| {
-            matches!(key, EntryKey::Group { edit: old, start, duration, sources: old_sources }
-                if old == edit && *start == clip.start() && *duration == clip.duration()
+            matches!(key, EntryKey::Group { root_only: old_root_only, edit: old, start, duration, sources: old_sources }
+                if *old_root_only == root_only && old == edit && *start == clip.start() && *duration == clip.duration()
                 && old_sources.len() == sources.len()
                 && old_sources.iter().zip(sources).all(|((pcm, conversion, rate), source)|
                     pcm.shares_pcm_with(source.audio) && pcm.sample_rate() == source.audio.sample_rate()
                     && *conversion == source.asset.conversion_version()
                     && *rate == source.asset.source_sample_rate()))
-        })? { return super::view::placed_clip(audio, clip); }
+        })? { return Ok(audio); }
         let bytes_for = |length: u64| {
             usize::try_from(length)
                 .ok()
@@ -116,7 +136,11 @@ impl AudioTransformPreparation {
         };
         let root_bytes = bytes_for(edit.domain.clock.length())?;
         let root_charge = self.reserve_with_eviction(root_bytes)?;
-        let reservation = self.reserve_with_eviction(bytes_for(clip.duration())?)?;
+        let output_reservation = if root_only {
+            None
+        } else {
+            Some(self.reserve_with_eviction(bytes_for(clip.duration())?)?)
+        };
         let mut root_pcm = Vec::new();
         root_pcm
             .try_reserve_exact(root_bytes / std::mem::size_of::<crate::Frame>())
@@ -169,28 +193,32 @@ impl AudioTransformPreparation {
             }
         }
         mapping::apply_fade(&mut root_pcm, edit, tempo, &self.shutdown)?;
-        let mut output = Vec::new();
-        output
-            .try_reserve_exact(clip.duration() as usize)
-            .map_err(|_| Invalid("grouped audio placement allocation failed"))?;
-        output.resize(clip.duration() as usize, [0.0; 2]);
-        for index in 0..projection.occurrence_count() {
-            if self.cancelled() {
-                return Err(Invalid("audio preparation cancelled"));
+        let audio = if let Some(reservation) = output_reservation {
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(clip.duration() as usize)
+                .map_err(|_| Invalid("grouped audio placement allocation failed"))?;
+            output.resize(clip.duration() as usize, [0.0; 2]);
+            for index in 0..projection.occurrence_count() {
+                if self.cancelled() {
+                    return Err(Invalid("audio preparation cancelled"));
+                }
+                let occurrence = projection.occurrence(index)?;
+                let from = root_pcm
+                    .get(occurrence.root_start as usize..occurrence.root_end as usize)
+                    .ok_or(Invalid("grouped audio crop exceeds root"))?;
+                let start = (occurrence.destination_start - clip.start()) as usize;
+                let to = output
+                    .get_mut(start..start + from.len())
+                    .ok_or(Invalid("grouped audio placement exceeds output"))?;
+                to.copy_from_slice(from);
             }
-            let occurrence = projection.occurrence(index)?;
-            let from = root_pcm
-                .get(occurrence.root_start as usize..occurrence.root_end as usize)
-                .ok_or(Invalid("grouped audio crop exceeds root"))?;
-            let start = (occurrence.destination_start - clip.start()) as usize;
-            let to = output
-                .get_mut(start..start + from.len())
-                .ok_or(Invalid("grouped audio placement exceeds output"))?;
-            to.copy_from_slice(from);
-        }
-        drop(root_pcm);
-        drop(root_charge);
-        let audio = Audio::from_derived(anchor.audio.sample_rate(), output, reservation)?;
+            drop(root_pcm);
+            drop(root_charge);
+            Audio::from_derived(anchor.audio.sample_rate(), output, reservation)?
+        } else {
+            Audio::from_derived(anchor.audio.sample_rate(), root_pcm, root_charge)?
+        };
         let mut identities = Vec::new();
         identities
             .try_reserve_exact(sources.len())
@@ -209,6 +237,7 @@ impl AudioTransformPreparation {
         self.retain(Entry {
             source: anchor.audio.clone(),
             key: EntryKey::Group {
+                root_only,
                 edit: edit.clone(),
                 start: clip.start(),
                 duration: clip.duration(),
@@ -218,9 +247,9 @@ impl AudioTransformPreparation {
             conversion: anchor.asset.conversion_version(),
             source_rate: anchor.asset.source_sample_rate(),
             prepared: audio.clone(),
-            bytes: bytes_for(clip.duration())?,
+            bytes: std::mem::size_of_val(audio.frames()),
             source_bytes,
         })?;
-        super::view::placed_clip(audio, clip)
+        Ok(audio)
     }
 }

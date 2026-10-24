@@ -111,6 +111,7 @@ enum EntryKey {
         origin: i128,
     },
     Group {
+        root_only: bool,
         edit: AudioClipEdit,
         start: u64,
         duration: u64,

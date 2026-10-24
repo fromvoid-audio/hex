@@ -508,3 +508,81 @@ fn grouped_audio_event_range_preserves_remainders_holes_pcm_and_one_history_edge
         expected
     );
 }
+
+#[test]
+fn grouped_finite_preview_keeps_complete_composite_root_and_separate_placement_cache() {
+    let (mut editor, ids, mut media) = group_fixture();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let expected = render(&prepare(&editor, &media, &context), 0, 15_000, 127);
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group")
+    };
+    let Created::Clip(tail) = editor
+        .execute(Command::SplitClip {
+            clip: group,
+            frame: 5_500,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    editor.execute(Command::RemoveClip(tail)).unwrap();
+    editor
+        .execute(Command::ResizeAudioClipView {
+            clip: group,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 12_100,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: group,
+            millidb: -6_000,
+        })
+        .unwrap();
+    let root = context
+        .preview_root_with_sources(editor.project(), group, |asset| media.get(&asset))
+        .unwrap()
+        .unwrap();
+    assert_eq!(root.audio.frames(), expected);
+    assert!(
+        root.audio.frames()[8_000..11_000]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    let again = context
+        .preview_root_with_sources(editor.project(), group, |asset| media.get(&asset))
+        .unwrap()
+        .unwrap();
+    assert!(root.audio.shares_pcm_with(&again.audio));
+    let gain = editor.project().clip(group).unwrap().gain().linear();
+    let repeated = render(&prepare(&editor, &media, &context), 0, 12_100, 257);
+    for (index, actual) in repeated.iter().enumerate() {
+        assert_eq!(*actual, expected[index % 5_500].map(|sample| sample * gain));
+    }
+    let anchor = editor.project().clip(group).unwrap().asset();
+    assert!(
+        context
+            .preview_root(editor.project(), group, &media[&anchor])
+            .is_err()
+    );
+    let second = *media.keys().find(|asset| **asset != anchor).unwrap();
+    assert!(
+        context
+            .preview_root_with_sources(editor.project(), group, |asset| {
+                (asset != second).then(|| &media[&asset])
+            })
+            .is_err()
+    );
+    media.insert(second, Audio::new(16_000, vec![[0.2; 2]; 6_000]).unwrap());
+    let changed = context
+        .preview_root_with_sources(editor.project(), group, |asset| media.get(&asset))
+        .unwrap()
+        .unwrap();
+    assert!(!changed.audio.shares_pcm_with(&root.audio));
+    assert_ne!(
+        &changed.audio.frames()[11_000..15_000],
+        &expected[11_000..15_000]
+    );
+}
