@@ -1375,6 +1375,15 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
     ) -> Result<(), PlaybackHandoffError> {
+        if previous
+            .session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.midi_capture_active())
+        {
+            return Err(PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::DeviceRuntime,
+            ));
+        }
         let rebind_keyboard = same_control_context && self.can_rebind_keyboard_input(previous);
         let continued_audition = match (&self.tuning_audition, &previous.tuning_audition) {
             (Some(next), Some(old)) if next.shares_live_lease(old) => {
@@ -1555,6 +1564,42 @@ impl Playback {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.set_device_metering(enabled);
         }
+    }
+
+    /// Admit capture against the installed engine graph. The caller still owns
+    /// output/source/transport authority and must confirm delivered host output.
+    pub fn arm_midi_capture(
+        &mut self,
+        binding: crate::midi_capture::MidiCaptureBinding,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("midi capture session runtime is unavailable"))?
+            .arm_midi_capture(binding, clock)
+    }
+    pub fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.session_runtime.as_ref()?.midi_capture_fault(take_id)
+    }
+    pub fn finish_midi_capture(
+        &mut self,
+        take_id: u64,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("midi capture session runtime is unavailable"))?
+            .finish_midi_capture(take_id)
+    }
+    pub fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<crate::midi_capture::MidiCaptureRender<'_>>, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .map_or(Ok(None), |runtime| runtime.midi_capture_render(take_id))
     }
 
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {

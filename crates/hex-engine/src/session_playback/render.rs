@@ -100,6 +100,7 @@ impl SessionPlayback {
             self.revision.contains_streamed_sources()
         };
         if self.playing && !output.is_empty() && contains_streamed_sources {
+            self.fail_midi_capture_render();
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
         let capture = project
@@ -267,9 +268,11 @@ impl SessionPlayback {
         mut capture: Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        self.begin_midi_capture_render(output.len());
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
         {
+            self.fail_midi_capture_render();
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "sampler requires its exact source scope",
             ));
@@ -322,10 +325,10 @@ impl SessionPlayback {
         }
         let mut observer = observer;
         if let Some(compensation) = self.compensation.as_mut() {
-            compensation
-                .delays
-                .begin_transaction()
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            if compensation.delays.begin_transaction().is_err() {
+                self.fail_midi_capture_render();
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
         }
         if let Some(keyboard) = &mut self.computer_keyboard {
             keyboard.begin_block();
@@ -339,6 +342,7 @@ impl SessionPlayback {
             self.render_keyboard_monitor(output, &mut observer, &mut capture, sources)
         };
         if result.is_err() {
+            self.fail_midi_capture_render();
             for chain in self
                 .device_chains
                 .iter_mut()
@@ -371,17 +375,24 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
+            if let Some(compensation) = self.compensation.as_mut() {
+                if compensation.delays.commit_transaction().is_err() {
+                    self.fail_midi_capture_render();
+                    if let Some(keyboard) = &mut self.computer_keyboard {
+                        keyboard.rollback();
+                    }
+                    for keyboard in &mut self.current_sampler_keyboards {
+                        keyboard.rollback();
+                    }
+                    output.fill([0.0; 2]);
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+            }
             if let Some(keyboard) = &mut self.computer_keyboard {
                 keyboard.commit();
             }
             for keyboard in &mut self.current_sampler_keyboards {
                 keyboard.commit();
-            }
-            if let Some(compensation) = self.compensation.as_mut() {
-                compensation
-                    .delays
-                    .commit_transaction()
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
             // The ordinary current context already owns the target endpoint.
             // Retire only after the whole block commits; detached voices retain
@@ -398,6 +409,9 @@ impl SessionPlayback {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
             }
+        }
+        if result.is_ok() {
+            self.seal_midi_capture_render();
         }
         result
     }
