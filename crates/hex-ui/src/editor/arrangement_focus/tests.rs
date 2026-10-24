@@ -151,7 +151,7 @@ fn replace(visual: &mut VisualTestContext, editor: &Entity<EditorView>, project:
 
 fn select_section(visual: &mut VisualTestContext, index: u64, shift: bool) {
     let bounds = visual
-        .debug_bounds(selector("arrangement-section", index))
+        .debug_bounds(selector("arrangement-section-header", index))
         .unwrap();
     visual.simulate_mouse_down(
         bounds.center(),
