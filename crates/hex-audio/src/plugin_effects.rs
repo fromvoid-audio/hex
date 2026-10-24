@@ -152,6 +152,14 @@ impl NativeEffect {
         self.worker
             .transport_storage_on_control(&self.callback.transport)
     }
+    /// Immutable source backing from this exact unsplit constructor pair.
+    /// Other worker/dry/error resources and preparation peaks remain separate.
+    pub fn retained_source_storage_on_control(
+        &self,
+    ) -> Option<hex_plugin_host::native::PreparedStorage> {
+        self.worker
+            .retained_source_storage_on_control(&self.callback.transport)
+    }
     /// Unique owner transfer, never a source/Root/publication ACK. The caller
     /// retains worker control custody until its actual callback carrier returns.
     pub fn into_parts(self) -> (NativeWorker, NativeEffectCallback) {

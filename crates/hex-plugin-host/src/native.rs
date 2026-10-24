@@ -4,6 +4,8 @@ mod epoch;
 pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
+mod storage;
+pub use storage::PreparedStorage;
 
 use crate::transport::Block;
 use crate::{

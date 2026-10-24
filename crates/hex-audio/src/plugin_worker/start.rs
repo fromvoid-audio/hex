@@ -124,6 +124,12 @@ impl NativeWorker {
                 cause, instance,
             ));
         }
+        let Some(source_storage) = instance.retained_storage_on_control() else {
+            return Err(NativeWorkerStartFailure::retain_source_on_control(
+                Error::Protocol("native source backing is unavailable"),
+                instance,
+            ));
+        };
         let binding = instance.configuration().binding;
         let quantum = instance.configuration().quantum;
         let prefix = instance.completed_blocks_on_control();
@@ -150,6 +156,7 @@ impl NativeWorker {
                     binding,
                     quantum,
                     retirement_requested: false,
+                    source_storage: Some(source_storage),
                 },
                 callback,
             )),

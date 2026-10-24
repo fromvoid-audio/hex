@@ -88,6 +88,27 @@ fn actual_guarded_client_prepares_persistent_pcm_and_normal_direct_reap() {
         TrustUserCode::Acknowledged,
     )
     .unwrap();
+    let initial_storage = instance.retained_storage_on_control().unwrap();
+    assert_eq!(initial_storage.shared_groups, 3);
+    assert_eq!(initial_storage.shared_handle_bound, 3);
+    assert_eq!(initial_storage.ipc_handle_bound, 2);
+    assert_eq!(initial_storage.native_child_lifetime_bound, 1);
+    let original_capacity = instance.config.bundle.capacity();
+    instance.config.bundle.reserve_exact(1024);
+    let storage = instance.retained_storage_on_control().unwrap();
+    assert_eq!(
+        storage.data_bytes - initial_storage.data_bytes,
+        instance.config.bundle.capacity() - original_capacity,
+        "wire path length must not hide retained String capacity"
+    );
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(instance.retained_storage_on_control(), Some(storage));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
     let state = decode(&instance.ready().initial_state).unwrap();
     assert_eq!(state.identity, identity);
     assert_eq!(state.component.unwrap().len(), 32);
@@ -139,6 +160,7 @@ fn actual_guarded_client_prepares_persistent_pcm_and_normal_direct_reap() {
         }
     );
     assert!(instance.child_id_on_control().is_none());
+    assert_eq!(instance.retained_storage_on_control(), Some(storage));
     assert!(
         instance
             .exchange_on_worker(request(instance.configuration(), 4))
@@ -1134,6 +1156,17 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
         .unwrap();
     assert!(instance.ready().restored);
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
+    let storage = instance.retained_storage_on_control().unwrap();
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (4, 4));
+    assert_eq!(
+        storage.data_bytes,
+        instance.config.bundle.capacity()
+            + instance.config.executable.capacity()
+            + instance.ready.initial_state.payload().len()
+            + saved.payload().len()
+            + std::mem::size_of::<UnixStream>()
+            + std::mem::size_of::<AtomicBool>()
+    );
     assert_ne!(
         instance.ready().initial_state,
         saved,

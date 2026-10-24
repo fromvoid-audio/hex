@@ -63,9 +63,14 @@ pub(crate) fn original_instance_for_binding(binding: Binding) -> hex_plugin_host
 fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap() {
     for cancelled in 0..3 {
         let instance = original_instance();
+        let source_storage = instance.retained_storage_on_control().unwrap();
         let cancel = instance.cancellation_on_control();
         let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
         let storage = worker.transport_storage_on_control(&callback).unwrap();
+        assert_eq!(
+            worker.retained_source_storage_on_control(&callback),
+            Some(source_storage)
+        );
         if cancelled == 0 {
             for block in 0..4 {
                 callback
@@ -121,6 +126,10 @@ fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap(
         // native retirement completed. Its matching worker retains the queues.
         assert!(worker.owns_callback(&callback));
         assert_eq!(
+            worker.retained_source_storage_on_control(&callback),
+            Some(source_storage)
+        );
+        assert_eq!(
             worker.transport_storage_on_control(&callback),
             Some(storage)
         );
@@ -145,6 +154,12 @@ fn actual_native_worker_returns_same_instance_for_fresh_epoch() {
         assert!(owner.owns_callback(&callback));
         assert!(!owner.owns_callback(&unrelated));
         assert_eq!(owner.transport_storage_on_control(&unrelated), None);
+        assert_eq!(owner.retained_source_storage_on_control(&unrelated), None);
+        assert!(
+            owner
+                .retained_source_storage_on_control(&callback)
+                .is_some()
+        );
         for n in 0..4_u64 {
             let mut output = [[9.0; 2]; 8];
             callback
@@ -167,6 +182,8 @@ fn actual_native_worker_returns_same_instance_for_fresh_epoch() {
             );
         }
         let stopped = owner.quiesce_on_control().unwrap();
+        assert_eq!(owner.retained_source_storage_on_control(&callback), None);
+        assert!(owner.transport_storage_on_control(&callback).is_some());
         assert_eq!(stopped.completed_blocks(), (epoch + 1) * 4);
         assert_eq!(stopped.child_id_on_control(), child);
         assert!(owner.quiesce_on_control().is_err());

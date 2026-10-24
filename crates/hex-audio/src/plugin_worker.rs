@@ -207,6 +207,7 @@ pub struct NativeWorker {
     binding: Binding,
     quantum: u16,
     retirement_requested: bool,
+    source_storage: Option<hex_plugin_host::native::PreparedStorage>,
 }
 /// Actual native process retirement after joining its transport worker. A
 /// processing/stop failure remains explicit even when cancellation reaps the
@@ -242,6 +243,18 @@ impl NativeWorker {
     /// terminal and thread resources require their own constructor accounting.
     pub fn transport_storage_on_control(&self, callback: &Callback) -> Option<ConstructorStorage> {
         callback.constructor_storage_on_control(&self.reaper.control)
+    }
+    /// Original native instance's immutable backing, inspected before transfer
+    /// into this worker's actual State. Requires the constructor-paired callback
+    /// and a still-retained source; quiescent handoff clears the receipt. This
+    /// excludes the source Box, worker/terminal, diagnostics and temporaries and
+    /// cannot establish complete resource/publication admission.
+    pub fn retained_source_storage_on_control(
+        &self,
+        callback: &Callback,
+    ) -> Option<hex_plugin_host::native::PreparedStorage> {
+        self.owns_callback(callback).then_some(())?;
+        self.source_storage
     }
     pub fn revoke_on_control(&self) {
         self.reaper.revoke();
@@ -287,7 +300,10 @@ impl NativeWorker {
             return Err(error);
         }
         match state.processor.take() {
-            Some(Processor::Native(instance)) => (*instance).quiesce_on_control(),
+            Some(Processor::Native(instance)) => {
+                self.source_storage = None;
+                (*instance).quiesce_on_control()
+            }
             other => {
                 state.processor = other;
                 Err(hex_plugin_host::Error::Protocol(
