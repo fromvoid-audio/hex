@@ -160,12 +160,14 @@ impl Project {
                     .0;
                 }
                 fragment.start = start - range.start;
-                if !result.assets.iter().any(|(id, _)| *id == clip.asset()) {
-                    let asset = self
-                        .asset(clip.asset())
-                        .ok_or(Invalid("selected media no longer exists"))?;
-                    reserve(&mut result.assets, 1)?;
-                    result.assets.push((clip.asset(), asset.clone()));
+                for id in clip.referenced_assets() {
+                    if !result.assets.iter().any(|(asset, _)| *asset == id) {
+                        let asset = self
+                            .asset(id)
+                            .ok_or(Invalid("selected media no longer exists"))?;
+                        reserve(&mut result.assets, 1)?;
+                        result.assets.push((id, asset.clone()));
+                    }
                 }
                 reserve(&mut result.audio, 1)?;
                 result.audio.push((row, fragment));

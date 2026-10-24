@@ -2552,6 +2552,7 @@ impl EditorView {
                 self.selected_track = Some(track);
                 self.retained_clip_detail = None;
                 self.selected_clip = Some(clip);
+                self.clip_selection.only(track, clip);
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
                 self.midi_hit_cycle = None;
                 self.midi_selection.clear();
@@ -3096,6 +3097,8 @@ impl EditorView {
                 | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
+                | Request::GroupClips { .. }
+                | Request::GroupAudioEvents { .. }
                 | Request::Edit(_)
                 | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
