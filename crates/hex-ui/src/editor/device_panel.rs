@@ -14,9 +14,9 @@ use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
 use hex_widgets::{
     ControlStyle, DialLayout, NumericControl, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
-    Selector, SelectorAppearance, SelectorChanged, SelectorConfig, Toggle, ToggleAppearance,
-    ToggleChanged, ToggleConfig, device_frame,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec, Selector,
+    SelectorAppearance, SelectorChanged, SelectorConfig, Toggle, ToggleAppearance, ToggleChanged,
+    ToggleConfig, device_frame,
 };
 use std::{
     collections::{HashMap, HashSet},
