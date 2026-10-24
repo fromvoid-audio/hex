@@ -4,6 +4,9 @@ use super::*;
 use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
 use std::collections::BTreeMap;
 
+mod pressure;
+mod sampler;
+
 fn limits() -> hex_engine::AudioStorageLedgerReservation {
     hex_engine::AudioStorageLedgerReservation {
         data_rows: 4096,
