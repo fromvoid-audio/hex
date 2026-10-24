@@ -48,6 +48,9 @@ mod pending_edit;
 #[cfg(test)]
 mod test_environment;
 
+mod activation;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod activation_ui_test;
 mod audio_import_settings;
 pub(crate) mod changelog;
 mod clip_paint;
@@ -83,9 +86,6 @@ mod fades;
 mod gain_lane;
 mod gain_recording;
 mod header;
-mod activation;
-#[cfg(all(test, feature = "ui-test-support"))]
-mod activation_ui_test;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
