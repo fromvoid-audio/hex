@@ -296,6 +296,16 @@ impl EditorView {
             .snap_frame(&state.project, frame, viewport, width)?;
         self.event_position_from_project_frame(&root, frame)
     }
+    // Releasing outside the waveform ends the same edit as releasing
+    // inside it. Only explicit cancellation discards held input.
+    fn event_release_pointer(&mut self, x: f32, platform: bool) {
+        self.event_update_pointer(x, platform);
+        if let Some(gesture) = self.audio_event_editor.gesture.take()
+            && let Some(operation) = gesture.operation
+        {
+            self.event_commit(operation);
+        }
+    }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
         if !self.event_context_current() || self.edit_pending() {
             self.audio_event_editor.gesture = None;
