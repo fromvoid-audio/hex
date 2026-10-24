@@ -78,15 +78,12 @@ fn inspect(
     // This local scalar identifies explicit allowances, never PCM provenance.
     let allowance_anchor = 0usize;
     let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
-    let mut frames = 0_u64;
     ledger.mutate(|ledger| {
         for store in phase.stores {
             ledger.root(*store, crate::AudioStorageRole::Current)?;
             if let Some(stage) = staged.filter(|s| std::ptr::eq(*store, s.store)) {
                 ledger.vec(&stage.staged.destination)?;
-                frames = frames
-                    .checked_add(stage.staged.asset.1.visit(ledger)?)
-                    .ok_or(AudioStorageError::Overflow)?;
+                stage.staged.asset.1.visit(ledger)?;
                 if construction {
                     ledger.growth(
                         store
@@ -106,21 +103,15 @@ fn inspect(
                 ledger.vec(&store.assets)?;
             }
             for (_, source) in &store.assets {
-                frames = frames
-                    .checked_add(source.visit(ledger)?)
-                    .ok_or(AudioStorageError::Overflow)?;
+                source.visit(ledger)?;
             }
         }
         for registered in phase.registered {
-            frames = frames
-                .checked_add(registered.visit(ledger)?)
-                .ok_or(AudioStorageError::Overflow)?;
+            registered.visit(ledger)?;
         }
         for selection in phase.selections {
             if let Some(sources) = selection.sources {
-                frames = frames
-                    .checked_add(sources.visit(ledger)?)
-                    .ok_or(AudioStorageError::Overflow)?;
+                sources.visit(ledger)?;
                 if let Some(prepared) = selection.prepared {
                     if prepared.resource_scope != Some(sources.id()) {
                         return Err(AudioStorageError::SourceMismatch);
@@ -147,40 +138,13 @@ fn inspect(
             }
         }
         for outbound in phase.outbound {
-            frames = frames
-                .checked_add(outbound.anchor.visit_dispatched(
-                    ledger,
-                    outbound.obligation,
-                    outbound.job,
-                )?)
-                .ok_or(AudioStorageError::Overflow)?;
+            outbound
+                .anchor
+                .visit_dispatched(ledger, outbound.obligation, outbound.job)?;
         }
-        let mut legacy_bytes = 0usize;
-        for (index, audio) in legacy(phase).enumerate() {
-            if legacy(phase)
-                .take(index)
-                .any(|prior| audio.shares_pcm_with(prior))
-            {
-                continue;
-            }
-            let capacity = audio.pcm_capacity_frames();
-            legacy_bytes = legacy_bytes
-                .checked_add(
-                    capacity
-                        .checked_mul(std::mem::size_of::<crate::Frame>())
-                        .ok_or(AudioStorageError::Overflow)?,
-                )
-                .ok_or(AudioStorageError::Overflow)?;
-            frames = frames
-                .checked_add(u64::try_from(capacity).map_err(|_| AudioStorageError::Overflow)?)
-                .ok_or(AudioStorageError::Overflow)?;
+        for audio in legacy(phase) {
+            ledger.resident_capacity(audio)?;
         }
-        // Legacy DATA allowance remains separate from native constructor proof.
-        ledger.bytes(
-            Owner::exclusive(&allowance_anchor),
-            Location("selected-legacy-pcm", 0),
-            legacy_bytes,
-        )?;
         ledger.bytes(
             Owner::exclusive(&allowance_anchor),
             Location("checked-control-runtime", 0),
@@ -189,7 +153,7 @@ fn inspect(
         ledger.growth(phase.construction_bytes)?;
         Ok(())
     })?;
-    Ok((ledger.summary()?, frames))
+    Ok((ledger.summary()?, ledger.resident_capacity_frames()?))
 }
 pub fn inspect_device_resource_union(
     retained: &DeviceResourcePhase<'_>,

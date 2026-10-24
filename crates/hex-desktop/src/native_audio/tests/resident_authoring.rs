@@ -10,7 +10,7 @@ fn global_bpm_publishes_with_original_and_predecessor_pcm_still_retained() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     for rate in [44_100, 48_000] {
         let file = Files::new();
-        let mut h = ResidentHarness::with_frame_limit_at_rate(MAX_RESIDENT_FRAMES, rate);
+        let mut h = ResidentHarness::with_frame_limit_at_rate(8_000_000, rate);
         assert!(h.next().error.is_none());
         let (mut applied, _) = h.applied(0);
         let imported = h.run(Request::Import(file.wav(rate, 2_000_000)));
