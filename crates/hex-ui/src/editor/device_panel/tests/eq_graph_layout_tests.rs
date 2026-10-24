@@ -732,7 +732,7 @@ fn both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing(
             .iter()
             .map(|graph| {
                 graph.read_with(cx, |g, _| {
-                    let (output, input) = g.analyzer_layers();
+                    let [output, input] = g.analyzer_layers();
                     let output = output.expect("fresh output survived completed repaint");
                     assert_eq!(
                         Some(output),
@@ -761,7 +761,7 @@ fn both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing(
         visual.run_until_parked();
         for graph in &graphs {
             graph.read_with(cx, |graph, _| {
-                assert_eq!(graph.analyzer_layers(), (None, None), "stale curves clear");
+                assert_eq!(graph.analyzer_layers(), [None, None], "stale curves clear");
             });
         }
         editor.read_with(cx, |v, _| {
