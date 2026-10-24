@@ -19,6 +19,7 @@ mod device_parts;
 pub use device_parts::{
     DEVICE_HEADER_ACTION_SIZE, device_action, device_badge, device_caption, device_divider,
     device_focus_target, device_identity_marker, device_inline_caption, device_segment,
+    device_state_indicator,
 };
 mod dial;
 mod discrete;

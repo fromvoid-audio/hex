@@ -13,20 +13,13 @@ impl Gallery {
             ))
         };
         let body = body.debug_selector(|| "fixture-body".into());
-        let actions = hex_widgets::device_action(
-            theme::text(if self.bypassed { "⊘" } else { "●" }),
-            theme::device_header_action_style(
-                self.selected,
-                if self.bypassed {
-                    theme::DeviceActionRole::Bypassed
-                } else {
-                    theme::DeviceActionRole::Enabled
-                },
-            ),
+        let (on_color, off_color) = theme::device_enable_colors();
+        let actions = hex_widgets::device_state_indicator(
+            "fixture-header-bypass".into(),
+            !self.bypassed,
+            on_color,
+            off_color,
         )
-        .id("fixture-header-bypass")
-        .debug_selector(|| "fixture-header-bypass".into())
-        .cursor_pointer()
         .on_click(cx.listener(|view, _, _, cx| {
             if !view.disabled {
                 view.bypassed = !view.bypassed;
