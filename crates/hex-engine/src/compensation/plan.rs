@@ -187,9 +187,15 @@ impl LatencyPlan {
         self.max_latency_frames
     }
     pub fn storage_bytes(&self) -> Result<usize, CompensationError> {
+        let Self {
+            nodes,
+            edges,
+            topological_order,
+            max_latency_frames: _,
+        } = self;
         add_bytes(
-            add_bytes(vector_bytes(&self.nodes)?, vector_bytes(&self.edges)?)?,
-            vector_bytes(&self.topological_order)?,
+            add_bytes(vector_bytes(nodes)?, vector_bytes(edges)?)?,
+            vector_bytes(topological_order)?,
         )
     }
 }
