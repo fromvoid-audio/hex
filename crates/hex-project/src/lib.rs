@@ -49,8 +49,10 @@ pub use audio_edit::{
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 pub use content_window::{ContentWindow, RepeatBoundaryPlan};
 mod appearance;
+mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+pub use bounce::{BounceFile, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES};
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;
 pub use track_clipboard::TrackClipboard;

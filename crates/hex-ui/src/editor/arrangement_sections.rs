@@ -626,19 +626,6 @@ impl EditorView {
             } else if marker_only {
                 Mode::Move(id)
             } else {
-                if !launch_eligible
-                    && self
-                        .audio
-                        .as_ref()
-                        .and_then(|audio| audio.control.status())
-                        .is_some_and(|status| {
-                            status.playing.load(std::sync::atomic::Ordering::Acquire)
-                        })
-                {
-                    self.select_section_metadata(Some(id));
-                    self.error = Some("stop playback before reordering sections".into());
-                    return true;
-                }
                 Mode::Reorder(id)
             }
         } else {
@@ -754,15 +741,6 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
-                if g.capture.displaced(4.0)
-                    && self.audio_status().is_some_and(|status| {
-                        status.playing.load(std::sync::atomic::Ordering::Acquire)
-                    })
-                {
-                    self.error = Some("stop playback before reordering sections".into());
-                    self.sections.gesture = Some(g);
-                    return true;
-                }
                 // Structural destinations are fixed edges, independent of grid snap.
                 // A click must never move music, even when it snaps outside its marker.
                 let raw_beat = self.section_pointer(x, y, true).unwrap_or(beat);
@@ -793,6 +771,30 @@ impl EditorView {
                         }
                         Ok(_) => {}
                         Err(error) => self.error = Some(error.to_string().into()),
+                    }
+                }
+            }
+            Mode::Move(id) => {
+                if g.capture.displaced(4.0)
+                    && let Some(marker) = &g.original
+                {
+                    let delta = i128::from(beat.raw()) - i128::from(g.anchor.raw());
+                    let Ok(start) = u64::try_from(i128::from(marker.start.raw()) + delta) else {
+                        self.sections.gesture = Some(g);
+                        return true;
+                    };
+                    let start = BeatTime::from_raw(start);
+                    if start != marker.start {
+                        let command = Command::MoveArrangementSectionMarker { section: id, start };
+                        match state.project.preview_arrangement_section_edit(&command) {
+                            Ok(preview) => {
+                                g.display.markers =
+                                    preview.sections().iter().map(Marker::from).collect();
+                                g.display.tempo = preview.tempo_map().clone();
+                                g.command = Some(command);
+                            }
+                            Err(error) => self.error = Some(error.to_string().into()),
+                        }
                     }
                 }
             }
@@ -879,17 +881,6 @@ impl EditorView {
                     }
                     (Mode::Start(id), Some(m)) => (Some(id), beat, m.end),
                     (Mode::End(id), Some(m)) => (Some(id), m.start, beat),
-                    (Mode::Move(id), Some(m)) => {
-                        let delta = i128::from(beat.raw()) - i128::from(g.anchor.raw());
-                        let (Ok(start), Ok(end)) = (
-                            u64::try_from(i128::from(m.start.raw()) + delta),
-                            u64::try_from(i128::from(m.end.raw()) + delta),
-                        ) else {
-                            self.sections.gesture = Some(g);
-                            return true;
-                        };
-                        (Some(id), BeatTime::from_raw(start), BeatTime::from_raw(end))
-                    }
                     _ => {
                         self.sections.gesture = Some(g);
                         return true;
@@ -1739,6 +1730,16 @@ fn same_command(a: &Command, b: &Command) -> bool {
             },
         ) => (a, as_, ae) == (b, bs, be),
         (
+            Command::MoveArrangementSectionMarker {
+                section: a,
+                start: as_,
+            },
+            Command::MoveArrangementSectionMarker {
+                section: b,
+                start: bs,
+            },
+        ) => (a, as_) == (b, bs),
+        (
             Command::ReorderSectionBefore {
                 section: a,
                 before: at,
@@ -1939,6 +1940,143 @@ mod tests {
             .expect("painted section")
     }
     #[gpui::test]
+    fn option_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let before = editor.read_with(cx, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        let (from, to) = editor.read_with(cx, |view, _| (position(view, 2), position(view, 9)));
+        let option = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(from, MouseButton::Left, option);
+        visual.simulate_mouse_move(to, MouseButton::Left, option);
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let display = &view.sections.gesture.as_ref().unwrap().display;
+            let moved = display
+                .markers
+                .iter()
+                .find(|m| m.id == Some(ids[0]))
+                .unwrap();
+            let remaining = display
+                .markers
+                .iter()
+                .find(|m| m.id == Some(ids[1]))
+                .unwrap();
+            assert_eq!(
+                (moved.start, moved.end),
+                (
+                    BeatTime::from_quarters(7).unwrap(),
+                    BeatTime::from_quarters(11).unwrap()
+                )
+            );
+            assert_eq!(
+                (remaining.start, remaining.end),
+                (
+                    BeatTime::from_quarters(11).unwrap(),
+                    BeatTime::from_quarters(12).unwrap()
+                )
+            );
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        let preview = [bounds(&mut visual, 0), bounds(&mut visual, 1)];
+        visual.simulate_mouse_up(to, MouseButton::Left, option);
+        let terminal = editor.update(cx, |view, _| {
+            let pending = view
+                .sections
+                .pending
+                .as_ref()
+                .expect("released marker preview");
+            assert!(
+                !pending.receipt.is_queued(),
+                "the exact move command was admitted"
+            );
+            next(&view.service)
+        });
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
+        }
+        editor.update(cx, |view, cx| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            view.receive(terminal);
+            assert!(view.sections.pending.is_none());
+            let after = view.state.as_ref().unwrap().project.snapshot();
+            let mut expected = before.clone();
+            expected.arrangement_sections = after.arrangement_sections.clone();
+            assert_eq!(after, expected, "only section marker geometry changes");
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
+    }
+
+    #[gpui::test]
+    fn option_move_latches_marker_mode_and_preserves_command_snap_inversion(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let before = editor.read_with(cx, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        for free in [false, true] {
+            let (from, to) = editor.read_with(cx, |view, _| {
+                let a = position(view, 6);
+                let b = position(view, 7);
+                (position(view, 2), point(a.x + (b.x - a.x) * 0.37, a.y))
+            });
+            visual.simulate_mouse_down(
+                from,
+                MouseButton::Left,
+                Modifiers {
+                    alt: true,
+                    ..Modifiers::default()
+                },
+            );
+            // Releasing Option during capture must not turn this into a music edit.
+            visual.simulate_mouse_move(
+                to,
+                MouseButton::Left,
+                Modifiers {
+                    platform: free,
+                    ..Modifiers::default()
+                },
+            );
+            editor.read_with(cx, |view, _| {
+                let Some(Command::MoveArrangementSectionMarker { section, start }) =
+                    &view.sections.gesture.as_ref().unwrap().command
+                else {
+                    panic!("expected latched marker move")
+                };
+                assert_eq!(*section, ids[0]);
+                let four = BeatTime::from_quarters(4).unwrap();
+                if free {
+                    assert!(*start > four && *start < BeatTime::from_quarters(5).unwrap());
+                } else {
+                    assert_eq!(*start, four);
+                }
+            });
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+            editor.read_with(cx, |view, _| {
+                assert!(view.sections.gesture.is_none());
+                assert!(view.sections.pending.is_none());
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            });
+        }
+    }
+
+    #[gpui::test]
     fn paint_and_resize_main_sections_preview_without_project_writes(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -2018,13 +2156,13 @@ mod tests {
         visual.simulate_mouse_down(anchor, MouseButton::Left, alt);
         visual.simulate_mouse_move(destination, MouseButton::Left, alt);
         visual.run_until_parked();
-        editor.read_with(cx,|v,_|{
+        editor.read_with(cx, |v, _| {
             assert!(matches!(
                 v.sections.gesture.as_ref().unwrap().command,
-                Some(Command::SetArrangementSectionRange { section, start, end })
-                    if section == ids[0] && start == BeatTime::ONE && end == BeatTime::from_quarters(5).unwrap()
+                Some(Command::MoveArrangementSectionMarker { section, start })
+                    if section == ids[0] && start == BeatTime::ONE
             ));
-            assert_eq!(v.state.as_ref().unwrap().project,original);
+            assert_eq!(v.state.as_ref().unwrap().project, original);
         });
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         visual.simulate_keystrokes("escape");
@@ -2541,6 +2679,44 @@ mod tests {
             assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
             assert!(view.latched_seek_intent.is_none());
             assert!(!view.section_autoplay);
+        });
+        // Turning autoplay off must still leave ordinary section dragging
+        // available on an actually playing output.
+        editor.update(cx, |view, _| {
+            view.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(hex_engine::PlaybackCommand::Play)
+                .unwrap();
+        });
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let end = editor.read_with(cx, |view, _| position(view, 11));
+        visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.audio_status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+            );
+            let gesture = view
+                .sections
+                .gesture
+                .as_ref()
+                .expect("live reorder capture");
+            assert!(matches!(
+                gesture.command,
+                Some(Command::ReorderSectionAfter { .. })
+                    | Some(Command::ReorderSectionBefore { .. })
+            ));
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert_eq!(view.state.as_ref().unwrap().project, source);
+        });
+        editor.update(cx, |view, _| {
+            view.cancel_section_pointer();
         });
     }
 
