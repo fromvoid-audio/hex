@@ -11,6 +11,7 @@ mod workflow_tests;
 use super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
+use hex_session::service::Request;
 pub(super) use view::view;
 
 #[derive(Default)]
@@ -93,6 +94,28 @@ impl EditorView {
             .iter()
             .find(|e| e.id == selected)
             .map(|e| (e.start, e.end))
+    }
+    pub(super) fn event_group_selected(&mut self) {
+        if self.audio_event_editor.source_view
+            || !self.event_context_current()
+            || self.edit_pending()
+            || self.audio_event_editor.pending.is_some()
+        {
+            return;
+        }
+        let Some((clip, _, revision)) = self.event_context() else {
+            return;
+        };
+        let Some((start, end)) = self.event_range().filter(|(start, end)| start < end) else {
+            return;
+        };
+        self.enqueue(Request::GroupAudioEvents {
+            project_generation: self.project_generation,
+            revision,
+            clip,
+            start,
+            end,
+        });
     }
     fn event_copy(&mut self, cut: bool) {
         if self.edit_pending()

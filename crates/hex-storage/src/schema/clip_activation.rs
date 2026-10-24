@@ -118,6 +118,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
     }
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::grouped_audio::require_legacy_compatible(project)?;
     super::content_views::require_legacy_compatible(project)?;
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
@@ -259,7 +260,7 @@ mod tests {
     #[test]
     fn activation40_complete_roundtrip_and_historical39_defaults() {
         let project = fixture();
-        let bytes = crate::encode_document(&super::encode(&project).unwrap()).unwrap();
+        let bytes = crate::encode_document(&encode(&project).unwrap()).unwrap();
         assert_eq!(crate::decode(&bytes).unwrap(), project);
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["version"], 40);

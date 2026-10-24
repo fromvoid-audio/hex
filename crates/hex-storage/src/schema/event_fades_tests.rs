@@ -64,14 +64,17 @@ fn fixture() -> (Project, ClipId) {
 #[test]
 fn schema42_roundtrips_complete_fades_and_both_directed_clip_families() {
     let (project, clip) = fixture();
-    let bytes = crate::encode(&project).unwrap();
+    let bytes = crate::encode_document(&super::encode(&project).unwrap()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
         42
     );
-    let restored = crate::decode(&bytes).unwrap();
+    let restored = super::decode(&bytes).unwrap();
     assert_eq!(restored.snapshot(), project.snapshot());
-    assert_eq!(crate::encode(&restored).unwrap(), bytes);
+    assert_eq!(
+        crate::encode_document(&super::encode(&restored).unwrap()).unwrap(),
+        bytes
+    );
     let fades: Vec<_> = restored
         .clip(clip)
         .unwrap()

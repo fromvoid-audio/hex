@@ -68,7 +68,12 @@ impl CanonicalAudioSourceSnapshot {
     ) -> impl Iterator<Item = (hex_project::AssetId, &crate::AudioSourceBinding)> {
         self.sources.iter().filter_map(|(id, binding)| {
             let arrangement = self.project.tracks().iter()
-                .any(|track| track.clips().iter().any(|clip| clip.asset() == *id));
+                .any(|track| {
+                    track
+                        .clips()
+                        .iter()
+                        .any(|clip| clip.referenced_assets().any(|asset| asset == *id))
+                });
             let session = self.project.session_cells().iter().any(|cell| {
                 matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == *id)
             });

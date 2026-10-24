@@ -463,6 +463,62 @@ impl AudioClipEdit {
             placement: None,
         }
     }
+    /// Source zero uses this root's declared clock. A grouped source reads its
+    /// independently retained finite output in frames, even beyond the containing
+    /// root's destination length. This query transfers no source custody.
+    pub fn event_source_clock(&self, source: u64) -> Result<AudioDomainClock, Invalid> {
+        if source == 0 {
+            if self
+                .domain
+                .events
+                .as_ref()
+                .is_some_and(|events| !events.sources.is_empty())
+            {
+                return Err(Invalid("grouped audio requires a retained event source"));
+            }
+            return Ok(self.domain.clock);
+        }
+        if !matches!(self.domain.clock, AudioDomainClock::Frames(_)) {
+            return Err(Invalid("grouped event sources require a frame clock"));
+        }
+        self.domain
+            .events
+            .as_ref()
+            .and_then(|events| events.source_length(source, self.domain.clock.length()))
+            .map(AudioDomainClock::Frames)
+            .ok_or(Invalid("audio event source is missing"))
+    }
+    /// Map an event's source-clock boundary to its processed source frame.
+    pub fn event_source_frame_at(
+        &self,
+        source: u64,
+        position: u64,
+        tempo: &TempoMap,
+    ) -> Result<u64, Invalid> {
+        let clock = self.event_source_clock(source)?;
+        if position > clock.length() {
+            return Err(Invalid("audio event position exceeds its source"));
+        }
+        if source == 0 {
+            self.root_frame_at(position, tempo)
+        } else {
+            Ok(position)
+        }
+    }
+    /// Inverse source query; grouped PCM is already in finite output frames.
+    pub fn event_source_position_at(
+        &self,
+        source: u64,
+        frame: u64,
+        tempo: &TempoMap,
+    ) -> Result<u64, Invalid> {
+        if source == 0 {
+            self.event_source_clock(source)?;
+            self.root_position_at(frame, tempo)
+        } else {
+            self.event_source_frame_at(source, frame, tempo)
+        }
+    }
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
         let tempo = self.processing_tempo(tempo);
         if position > self.domain.clock.length() {
@@ -589,6 +645,22 @@ impl AudioClipEdit {
                 ));
             }
             audio_projection_frame(frozen, *reference_start_raw)?;
+        }
+        if domain
+            .events
+            .as_ref()
+            .is_some_and(|events| !events.sources.is_empty())
+            && (!matches!(domain.clock, AudioDomainClock::Frames(_))
+                || !matches!(self.timing, AudioClipTiming::Frames)
+                || domain.pitch_cents != 0
+                || domain.warp_enabled
+                || !domain.source_gain.is_empty()
+                || domain.looping
+                || domain.source_phase != 0)
+        {
+            return Err(Invalid(
+                "grouped audio retains independent processing roots; musical anchoring, pitch and source processing are unsupported",
+            ));
         }
         if let Some(events) = &domain.events {
             events.validate(domain.clock.length())?;

@@ -186,11 +186,13 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                     "audio events require a retained processing root",
                 ))?;
                 let events = AudioEvents {
+                    sources: Vec::new(),
                     next_id,
                     events: state
                         .events
                         .into_iter()
                         .map(|e| AudioEvent {
+                            source: 0,
                             id: e.id,
                             start: e.start,
                             end: e.end,

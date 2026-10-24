@@ -830,3 +830,110 @@ impl crate::AudioCandidateOwner {
         owner
     }
 }
+
+#[test]
+fn grouped_faded_pcm_preserves_closed_foreign_track_return_and_main_roots() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    for location in 0..3 {
+        let (project, bank, facts) = setup(location);
+        let original_bank = bank.sources.as_ptr();
+        let mut editor = Editor::new(project, 16).unwrap();
+        let clips = editor.project().tracks()[0]
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .collect();
+        let Created::Clip(group) = editor.execute(Command::GroupClips(clips)).unwrap() else {
+            panic!("group")
+        };
+        editor
+            .execute(Command::EditAudioEvents {
+                clip: group,
+                operation: hex_project::AudioEventEdit::SetFade {
+                    event: 1,
+                    fade: Some(
+                        hex_project::AudioEventFade::new(
+                            0,
+                            hex_project::ClipFade::new(8, 0, 3, 3).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                },
+            })
+            .unwrap();
+        let defs: [&dyn NativeDeviceDefinition; 1] = [&facts];
+        let registry = NativeDeviceRegistry::new(&defs).unwrap();
+        let quote = crate::AudioCandidateReservationQuote::for_project_with_effect_registry(
+            editor.project(),
+            1,
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(quote.prepared_pcm_frames, 16);
+        let mut inputs = Some(bank);
+        let mut custody = crate::AudioPreparationCustody::try_new_on_control().unwrap();
+        let token = custody
+            .begin_effect_revision_in_place_on_control(
+                editor.project(),
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                &mut inputs,
+                None,
+                &registry,
+            )
+            .unwrap();
+        assert!(inputs.is_none());
+        let mut owner = crate::AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                data_rows: 8192,
+                handle_rows: 2048,
+                root_rows: 8,
+                max_retained_bytes: usize::MAX,
+                max_construction_peak_bytes: usize::MAX,
+            })
+            .unwrap();
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut actual = [[0.0; 2]; 64];
+        let mut foreign = Borrowed {
+            expected: &facts,
+            configuration_address: None,
+            ring: [[0.0; 2]; 19],
+            cursor: 0,
+            visited: 0,
+        };
+        for block in actual.chunks_mut(8) {
+            owner.test_render_with_foreign(block, &mut foreign).unwrap();
+        }
+        let mut expected = [[0.0; 2]; 64];
+        for i in 0..16 {
+            let fade = if i < 8 {
+                (i as f32 / 2.0).min(1.0) * ((7 - i) as f32 / 2.0).min(1.0)
+            } else {
+                1.0
+            };
+            let route = if location == 1 { 1.25 } else { 0.25 };
+            expected[19 + i] = [0.25 * fade * route; 2];
+        }
+        assert_eq!(
+            actual, expected,
+            "grouped processed source remains upstream of original effect owner {location}"
+        );
+        owner.dispose_on_control().unwrap();
+        assert_eq!(
+            owner.recover_inputs_on_control().unwrap().sources.as_ptr(),
+            original_bank
+        );
+    }
+}
