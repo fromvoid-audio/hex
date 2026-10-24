@@ -38,12 +38,15 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             let imported = h.run(Request::Import(periodic_source(&files)));
             (applied, _) = h.applied(applied);
             let track = imported.state.project.tracks()[0].id();
-            h.run(Request::Edit(Command::SetLoopRegion {
-                start: 0,
-                end: 4096,
-                enabled: true,
-            }));
-            (applied, _) = h.applied(applied);
+            let transient = owner == 0 && kind != NodeKind::LowCut;
+            if !transient {
+                h.run(Request::Edit(Command::SetLoopRegion {
+                    start: 0,
+                    end: 4096,
+                    enabled: true,
+                }));
+                (applied, _) = h.applied(applied);
+            }
             let state = EqState::default().encode().unwrap();
             let command = match owner {
                 0 => Command::InsertDevice {
@@ -82,6 +85,20 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 panic!("eq")
             };
             let before = added.state.project.snapshot();
+            if transient {
+                // A real section-launch loop is absent from saved project state.
+                let mut intent = h.seek_intent(1, added.state.revision, None, None);
+                intent.destination_frame = 0;
+                intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+                    region: hex_project::LoopRegion::new(0, 4096, true).unwrap(),
+                    quantization: hex_engine::LaunchQuantization::Immediate,
+                });
+                h.service.submit_resident_arrangement_seek(intent).unwrap();
+                assert!(h.next().error.is_none());
+                assert!(h.seek_result().result.is_ok());
+                (applied, _) = h.applied(applied);
+                assert!(added.state.project.loop_region().is_none());
+            }
             h.audio
                 .as_mut()
                 .unwrap()
@@ -111,6 +128,19 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 snapshot: draft,
             }));
             assert!(begin.gesture_ack.unwrap().accepted);
+            if owner == 0 && kind == NodeKind::Bell {
+                h.refuse.store(true, Ordering::Release);
+                let refused = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
+                    key,
+                    sequence: 1,
+                    snapshot: draft,
+                }));
+                assert!(!refused.gesture_ack.unwrap().accepted);
+                assert_eq!(refused.state.project.snapshot(), before);
+                assert!(refused.device_preview.is_none());
+                assert!((level(&h) - dry).abs() < dry * 0.05);
+                h.refuse.store(false, Ordering::Release);
+            }
             let preview = h.run(Request::DeviceGesture(GestureRequest::ChangeEqCreation {
                 key,
                 sequence: 1,
@@ -136,6 +166,9 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 vec![node]
             );
             let held = level(&h);
+            if transient {
+                assert_runtime_loop(&h);
+            }
             if kind == NodeKind::Bell {
                 assert!(held > dry * 1.5, "owner={owner} held={held} dry={dry}");
             } else {
@@ -168,6 +201,7 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 (applied, _) = h.applied(preview_audio);
                 assert_eq!(cancelled.state.project.snapshot(), before);
                 assert!((level(&h) - dry).abs() < dry * 0.05);
+                assert_runtime_loop(&h);
                 // The cancelled creation consumed no history: undo removes the EQ.
                 h.run(Request::Undo);
                 h.applied(applied);
@@ -179,6 +213,9 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
                 snapshot: draft,
             }));
             (applied, _) = h.applied(preview_audio);
+            if transient {
+                assert_runtime_loop(&h);
+            }
             assert_eq!(committed.state.project.next_identity(), before.next_id + 1);
             assert_eq!(
                 EqState::decode(committed.state.project.device(device).unwrap().state())
@@ -192,10 +229,25 @@ fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
             assert!((level(&h) - dry).abs() < dry * 0.05);
+            if transient {
+                assert_runtime_loop(&h);
+            }
             let redone = h.run(Request::Redo);
             h.applied(applied);
             assert_eq!(redone.state.project, committed.state.project);
+            if transient {
+                assert_runtime_loop(&h);
+            }
             assert!(h.publication_refusals.is_empty());
         }
     }
+}
+
+fn assert_runtime_loop(h: &ResidentHarness) {
+    for _ in 0..70 {
+        h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Ordering::Acquire));
+    assert!(status.position.load(Ordering::Acquire) < 4096);
 }
