@@ -71,6 +71,19 @@ fn actual_native_ordinary_graph_callback_profile() {
                         *actual == expected
                     });
                     if !delivered || !correct || reply.is_none() {
+                        // A normal headless thread can itself start late. Keep
+                        // that observation separate from callback CPU and the
+                        // actual paired worker's publication/transport state.
+                        let mut fault = None;
+                        let mut pending = None;
+                        f.data.owner_mut().unwrap().run(|callback, _| {
+                            fault = callback.native_sources.test_transport_fault(f.binding);
+                            pending = callback.native_sources.test_pending_requests(f.binding);
+                        });
+                        println!("ordinary native failure location={location} block={block_index} start_lateness_ns={} wall_ns={elapsed} cpu_ns={cpu_elapsed} dispatch_margin_ns={:?} published={:?} pending={pending:?} fault={fault:?}",
+                            start.saturating_duration_since(target).as_nanos(),
+                            next_target.checked_duration_since(dispatched).map(|duration| duration.as_nanos()),
+                            crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, f.binding));
                         failure = Some((block_index, delivered, correct, reply));
                         break;
                     }
