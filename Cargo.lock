@@ -2615,6 +2615,7 @@ dependencies = [
  "hex-audio",
  "hex-diagnostics",
  "hex-engine",
+ "hex-export",
  "hex-media",
  "hex-midi",
  "hex-mts",

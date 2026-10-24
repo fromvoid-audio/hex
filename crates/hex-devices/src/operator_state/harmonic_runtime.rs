@@ -437,8 +437,20 @@ impl PreparedMutableInstrumentRuntime for Factory {
             256
         }
     }
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
     fn max_active_occurrences(&self) -> usize {
-        self.capacity()
+        // Stolen held notes can resume in mono mode; their identities remain
+        // live independently of the audible voice count.
+        if self.settings.global.active {
+            VOICES
+        } else {
+            self.capacity()
+        }
     }
     fn max_release_tail_frames(&self) -> u64 {
         if self.settings.companion.requires_runtime() {
@@ -568,6 +580,39 @@ impl Runtime {
     }
 }
 impl MutableInstrumentRuntime for Runtime {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(
+        &self,
+        output: &mut [u64],
+    ) -> Result<usize, hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::active_ids(
+            self.voices
+                .iter()
+                .map(|v| v.id)
+                .chain(self.ledger.held.iter().map(|v| v.id)),
+            output,
+        )
+    }
+    fn preflight_occurrence_gains(
+        &self,
+        events: &[NativeInstrumentEvent],
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+    ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        super::occurrence_gain::preflight(
+            self.voices
+                .iter()
+                .map(|v| v.id)
+                .chain(self.ledger.held.iter().map(|v| v.id)),
+            events,
+            gains,
+        )
+    }
+
     fn can_import_analytic_history(
         &self,
         history: &hex_lattice::AnalyticInstrumentHistory<'_>,
@@ -756,6 +801,18 @@ impl MutableInstrumentRuntime for Runtime {
             }
             proof.advance(at - offset)?;
             proof.apply(&self.factory, *event)?;
+            if self.factory.settings.global.active {
+                let mut ids = [0; VOICES];
+                super::occurrence_gain::active_ids(
+                    proof
+                        .voices
+                        .iter()
+                        .map(|v| v.id)
+                        .chain(proof.ledger.held.iter().map(|v| v.id)),
+                    &mut ids,
+                )
+                .map_err(|_| Error::EventCapacityExceeded)?;
+            }
             offset = at;
         }
         proof.advance(frames - offset)
@@ -816,6 +873,16 @@ impl MutableInstrumentRuntime for Runtime {
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        self.process_block_with_clock_and_occurrence_gains(events, frames, clock, &[], _resources);
+    }
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut cursor = 0;
@@ -1002,21 +1069,23 @@ impl MutableInstrumentRuntime for Runtime {
                         voice.phases[i] = voice.phases[i].wrapping_add(step);
                     }
                 }
-                let gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
-                frame[0] += rendered
-                    * gains[0]
+                let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
+                let left = rendered
+                    * pan_gains[0]
                     * if quality {
                         voice.effective.gain as f32
                     } else {
                         1.0
                     };
-                frame[1] += rendered
-                    * gains[1]
+                let right = rendered
+                    * pan_gains[1]
                     * if quality {
                         voice.effective.gain as f32
                     } else {
                         1.0
                     };
+                frame[0] += super::occurrence_gain::sample(left, voice.id, offset, gains);
+                frame[1] += super::occurrence_gain::sample(right, voice.id, offset, gains);
                 if law.active() {
                     let next = voice.lfo_fraction
                         + delta
