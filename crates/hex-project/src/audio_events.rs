@@ -69,6 +69,67 @@ pub enum AudioEventEdit {
     },
 }
 impl AudioEvents {
+    /// Re-express frame events in Q32.32 beats using the retained root origin.
+    /// Both source endpoints must retain the destination span to within one
+    /// raw beat tick of independent rounding. Unequal tempo segments may need
+    /// a non-affine source program which this interval format cannot represent;
+    /// refuse those atomically rather than trim or reinterpret source content.
+    pub(crate) fn reproject_to_beats(
+        &self,
+        length: u64,
+        mut position: impl FnMut(u64) -> Result<u64, Invalid>,
+    ) -> Result<Self, Invalid> {
+        if self.events.len() > MAX_AUDIO_EVENTS {
+            return Err(Invalid("audio event timing projection exceeds event limit"));
+        }
+        let mut events = Vec::new();
+        events
+            .try_reserve_exact(self.events.len())
+            .map_err(|_| Invalid("audio event timing projection allocation failed"))?;
+        for event in &self.events {
+            let mut projected = AudioEvent {
+                id: event.id,
+                start: position(event.start)?,
+                end: position(event.end)?,
+                source_start: position(event.source_start)?,
+            };
+            let source_end = position(
+                event
+                    .source_start
+                    .checked_add(event.length())
+                    .ok_or(Invalid("audio event source interval overflow"))?,
+            )?;
+            let span = projected
+                .end
+                .checked_sub(projected.start)
+                .ok_or(Invalid("audio event timing projection is reversed"))?;
+            let projected_end = projected
+                .source_start
+                .checked_add(span)
+                .ok_or(Invalid("audio event source projection overflow"))?;
+            if projected_end.abs_diff(source_end) > 1 {
+                return Err(Invalid(
+                    "audio event timing crosses unequal tempo segments; set one global tempo before enabling warp",
+                ));
+            }
+            // One Q32.32 beat tick is smaller than a prepared sample at every
+            // supported rate/tempo. Normalize only an endpoint rounding overrun;
+            // the projected source start still resolves to its original frame.
+            if projected_end > length && projected_end - length == 1 {
+                projected.source_start = projected
+                    .source_start
+                    .checked_sub(1)
+                    .ok_or(Invalid("audio event source projection precedes its root"))?;
+            }
+            events.push(projected);
+        }
+        let projected = Self {
+            next_id: self.next_id,
+            events,
+        };
+        projected.validate(length)?;
+        Ok(projected)
+    }
     pub fn identity(length: u64) -> Self {
         Self {
             next_id: 2,
