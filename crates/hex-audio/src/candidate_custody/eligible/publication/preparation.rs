@@ -467,6 +467,7 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
+        let work = &mut *work;
         let (ledger, external) = {
             let bank = lock(&self.bank);
             let slot = bank
@@ -576,6 +577,8 @@ impl Custody {
             header,
             summary,
             Some(token),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            &work.sources,
         )?;
         let state = Self::publication_state(plan.stamp, &execution.domains, header);
         execution.pending = true;

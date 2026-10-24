@@ -43,6 +43,15 @@ impl NativeEffectControl {
     pub(crate) fn storage(&self) -> NativeEffectStorage {
         self.storage
     }
+    pub(crate) fn constructor_storage_on_control(&self) -> Option<NativeEffectStorage> {
+        // Only loan_on_control constructs this unique control, after inspecting
+        // the original paired callback. Its backing cannot resize while loaned;
+        // no worker extraction or source handoff is exposed from this owner.
+        (self.worker.retains_original_source_on_control()
+            && self.worker.binding() == self.binding()
+            && self.worker.quantum_frames() == self.prepared().quantum_frames())
+        .then_some(self.storage)
+    }
     pub(crate) fn matches_callback(&self, callback: &NativeEffectCallback) -> bool {
         callback.matches_worker(&self.worker)
             && callback.binding() == self.binding()
@@ -68,6 +77,19 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    pub(crate) fn matches_prepared(&self, node: &hex_lattice::PreparedRuntimeInstance) -> bool {
+        let config = self.configuration();
+        node.owner == config.identity.owner()
+            && node.device_id == config.identity.device_id()
+            && node.device_type == config.state.type_id()
+            && node.sample_rate == config.sample_rate
+            && matches!(&node.definition,
+                Some(hex_lattice::PreparedProcessorFactory::Foreign(prepared)) if *prepared == config.prepared)
+            && node
+                .configuration
+                .as_deref()
+                .is_some_and(|state| state.processing_eq(&config.state))
+    }
     pub(crate) fn binding(&self) -> Binding {
         self.configuration().binding
     }

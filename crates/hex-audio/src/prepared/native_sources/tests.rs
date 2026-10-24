@@ -33,12 +33,34 @@ fn setup_for_identity(
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
     let retirement = NativeRetirement::new(terminals, control.native_candidate_root());
     control.enable_native_custody().unwrap();
+    // Use the public constructor row quote for this fixture's one-source,
+    // one-track topology (with a return only for the actual Return owner).
+    // These are caller capacities; stage still validates the sealed summary.
+    let mut topology =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+    topology
+        .execute(hex_project::Command::AddTrack {
+            name: "source".into(),
+        })
+        .unwrap();
+    if matches!(
+        source_identity.owner(),
+        hex_lattice::ProcessorChainOwner::Return(_)
+    ) {
+        topology
+            .execute(hex_project::Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap();
+    }
+    let rows =
+        hex_engine::AudioCandidateReservationQuote::for_project(topology.project(), 1).unwrap();
     control
         .configure_audio_candidate_publication(crate::AudioCandidatePublicationReservation {
             runtime_slots: 3,
             archive_slots: 3,
-            member_rows: 128,
-            transfer_rows: 128,
+            member_rows: rows.member_rows.checked_mul(3).unwrap(),
+            transfer_rows: rows.transfer_rows.checked_mul(3).unwrap(),
             receipt_rows: 4,
             data_rows: 4096,
             handle_rows: 4096,

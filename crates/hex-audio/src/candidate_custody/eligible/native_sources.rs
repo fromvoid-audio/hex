@@ -1,9 +1,8 @@
-//! Actual native preparation custody in the existing Root, before endpoint
-//! admission. Fixed cells and caller-finite DATA allowances are reserved before
-//! helper start. Variable native/provenance resources remain UNSEALED: occupied
-//! cells cannot close a graph/publication resource witness. Final completion
-//! performs native startup/capture in the helper, but no PCM exchange, callback
-//! loan, source reload or canonical acceptance occurs here.
+//! Actual native sources in the existing Root. Fixed cells and per-source DATA
+//! capacity are reserved before helper start. Preparation alone grants no graph
+//! authority: accepted original worker/callback construction, unique endpoint
+//! loans, actual node matching and original graph references close that witness.
+//! Source reports retain custody through native disposal and recovery.
 use super::*;
 use hex_lattice::ProcessorInstanceIdentity;
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
@@ -16,8 +15,10 @@ mod completion;
 mod definition;
 mod effect;
 mod endpoints;
+mod references;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
+pub(super) use references::References;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
@@ -72,7 +73,7 @@ pub enum NativeSourcePreparationProgress {
 /// Original construction outcome after actual native disposal AND normal
 /// control-side source-owner destruction. Report metadata remains until
 /// recovery. Original typed diagnostics move with their backing; presentation
-/// is caller-owned. No endpoint was ever loaned by this path.
+/// is caller-owned. Any unique endpoint loan must have returned first.
 pub struct NativeSourcePreparationReturn {
     pub binding: Binding,
     pub disposal: PreparationDisposal,
@@ -134,13 +135,26 @@ impl Bank {
     pub(super) fn occupied(&self) -> bool {
         self.slots.iter().any(|s| s.phase != Phase::Vacant)
     }
-    pub(super) fn has_work(&self, abandoned: bool) -> bool {
-        self.slots.iter().any(|s| {
+    pub(super) fn has_work(&self, abandoned: bool, publication: &publication::Bank) -> bool {
+        self.slots.iter().enumerate().any(|(index, s)| {
             s.phase == Phase::Failed
                 || s.phase == Phase::Cleaning
-                || (s.retiring && s.phase != Phase::Vacant && s.phase != Phase::Complete)
+                || (s.retiring
+                    && s.phase != Phase::Vacant
+                    && s.phase != Phase::Complete
+                    && !publication.references_native_source(index))
                 || (abandoned && s.phase == Phase::Complete)
         })
+    }
+    pub(super) fn request_unreferenced_returns(&self, publication: &publication::Bank) {
+        for (index, source) in self.slots.iter().enumerate() {
+            if source.retiring
+                && !publication.references_native_source(index)
+                && let Some(signal) = &source.endpoint_return
+            {
+                signal.store(true, Ordering::Release);
+            }
+        }
     }
     pub(super) fn close(&mut self, cancellations: &mut Cancellations) {
         for (slot, target) in self.slots.iter_mut().zip(cancellations) {
@@ -502,17 +516,23 @@ impl Custody {
         })
     }
     pub(in crate::candidate_custody) fn retire_native_source(&self, binding: Binding) -> bool {
+        // The original Work guard also spans graph preflight/split/commit.
+        // A busy control request refuses without requesting endpoint return.
+        let Ok(_work) = self.work.try_lock() else {
+            return false;
+        };
         let cancellation = {
             let mut bank = lock(&self.bank);
             let Some(index) = bank.sources.index(binding) else {
                 return false;
             };
+            let referenced = bank.publication.references_native_source(index);
             let slot = &mut bank.sources.slots[index];
             if matches!(slot.phase, Phase::Complete | Phase::Failed) {
                 return false;
             }
             slot.retiring = true;
-            if let Some(signal) = &slot.endpoint_return {
+            if !referenced && let Some(signal) = &slot.endpoint_return {
                 signal.store(true, Ordering::Release);
             }
             if slot.processor.is_none() {
@@ -547,6 +567,7 @@ impl Custody {
                 let bank = lock(&self.bank);
                 let slot = &bank.sources.slots[index];
                 !slot.starting
+                    && !bank.publication.references_native_source(index)
                     && !slot.endpoint_loaned
                     && slot.retiring
                     && slot.phase != Phase::Vacant
@@ -659,7 +680,9 @@ impl Custody {
         let mut work = self.work.try_lock().ok()?;
         let mut bank = lock(&self.bank);
         let index = bank.sources.index(binding)?;
-        if bank.sources.slots[index].phase != Phase::Complete {
+        if bank.publication.references_native_source(index)
+            || bank.sources.slots[index].phase != Phase::Complete
+        {
             return None;
         }
         let cell = &mut work.sources.cells[index];

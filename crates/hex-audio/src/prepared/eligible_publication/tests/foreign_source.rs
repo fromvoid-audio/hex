@@ -125,6 +125,9 @@ fn empty_native_pool_refuses_actual_foreign_constructor_before_queue_or_ack() {
         .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
         .err()
         .expect("no original native source exists");
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    assert_eq!(refused.reason, "native graph source differs");
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     assert_eq!(
         refused.reason,
         "effect graph source and runtime witness is not sealed"

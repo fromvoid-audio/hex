@@ -260,6 +260,12 @@ impl NativeWorker {
     pub fn binding(&self) -> Binding {
         self.binding
     }
+    /// The unique loan control retains this worker while its paired callback
+    /// is elsewhere. Source handoff clears the original constructor receipt.
+    /// This observation alone is not callback pairing or publication authority.
+    pub(crate) fn retains_original_source_on_control(&self) -> bool {
+        self.source_storage.is_some() && self.reaper.storage.is_some()
+    }
     pub fn quantum_frames(&self) -> u16 {
         self.quantum
     }

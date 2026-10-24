@@ -1,6 +1,6 @@
 //! Actual Root source -> original queued endpoint -> closed claimed rendering
-//! -> device host-format completion. The claimed graph stays local: this does
-//! not forge or claim the still-gated native graph-publication witness.
+//! -> device host-format completion. Local claimed-render fixtures and actual
+//! queue/ACK admission fixtures share original constructors and SDK owners.
 use super::*;
 use hex_lattice::{
     NativeDeviceDefinition, NativeDeviceRegistry, ProcessorChainOwner, ProcessorInstanceIdentity,
@@ -18,7 +18,35 @@ struct Fixture {
     anchors: [Option<hex_engine::AudioCandidateAnchors>; 1],
     samples: Vec<[f32; 2]>,
 }
+struct PreparedFixture {
+    control: Control,
+    data: Guard<NativeCallbackOwner>,
+    errors: Guard<ErrorCallbackOwner>,
+    retirement: NativeRetirement,
+    binding: Binding,
+    unused: Option<Binding>,
+    owner: hex_engine::AudioCandidateOwner,
+    samples: Vec<[f32; 2]>,
+}
 fn fixture(location: usize, bypassed: bool) -> Fixture {
+    let f = prepared_fixture(location, bypassed);
+    let (mut runtime, anchor) = f.owner.split_constructor_on_control().ok().unwrap();
+    runtime
+        .apply_action(hex_engine::PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    Fixture {
+        control: f.control,
+        data: f.data,
+        errors: f.errors,
+        retirement: f.retirement,
+        binding: f.binding,
+        unused: f.unused,
+        runtime,
+        anchors: [Some(anchor)],
+        samples: f.samples,
+    }
+}
+fn prepared_fixture(location: usize, bypassed: bool) -> PreparedFixture {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddTrack {
@@ -120,7 +148,7 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
     )
     .ok()
     .unwrap();
-    let (mut runtime, anchor) = control
+    let owner = control
         .with_native_effect_definition(&[binding], |definition| {
             let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
             let registry = NativeDeviceRegistry::new(&definitions).unwrap();
@@ -147,12 +175,18 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
                 })
                 .unwrap();
             assert_eq!(summary.data.unknown_storage, 0);
-            Ok(owner.split_constructor_on_control().ok().unwrap())
+            Ok(owner)
         })
         .unwrap();
-    runtime
-        .apply_action(hex_engine::PlaybackAction::Transport(PlaybackCommand::Play))
-        .unwrap();
+    let original = owner.identity();
+    let refused = control
+        .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
+        .err()
+        .expect("unsplit source cannot publish a graph without its endpoint");
+    assert_eq!(refused.reason, "native graph source is unavailable");
+    assert_eq!(refused.owner.identity(), original);
+    assert_eq!(control.submitted_revision(), 0);
+    let owner = refused.owner;
     // Install the greater binding first, then insert the real graph's source
     // before it. The retained source must stay unvisited and return with0 DSP.
     let unused = (location == 2 && !bypassed).then(|| {
@@ -174,15 +208,14 @@ fn fixture(location: usize, bypassed: bool) -> Fixture {
             callback.begin_block();
         })
     });
-    Fixture {
+    PreparedFixture {
         control,
         data,
         errors,
         retirement,
         binding,
         unused,
-        runtime,
-        anchors: [Some(anchor)],
+        owner,
         samples,
     }
 }
@@ -424,4 +457,191 @@ fn actual_root_endpoint_bank_refuses_final_conversion_and_late_stop_without_disp
         );
         dispose(f, 0);
     }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_native_graph_admission_retains_original_source_until_anchor_recovery() {
+    let _serial = serial();
+    for location in 0..3 {
+        for bypassed in [false, true] {
+            let PreparedFixture {
+                mut control,
+                mut data,
+                errors,
+                mut retirement,
+                binding,
+                unused,
+                owner,
+                samples,
+            } = prepared_fixture(location, bypassed);
+            let root = control.native_candidate_root();
+            let ticket = control
+                .stage_eligible_audio_candidate(
+                    owner,
+                    vec![],
+                    PublicationPolicy::InheritRuntime,
+                    41,
+                )
+                .unwrap_or_else(|r| panic!("actual native graph admission: {}", r.reason));
+            assert_eq!(control.status.applied_revision.load(Acquire), 0);
+            // Retirement refuses new graph uses, but the accepted original
+            // anchors retain the actual endpoint and worker through rendering.
+            assert!(control.retire_native_source_preparation(binding));
+            control.command(PlaybackCommand::Play).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            let mut committed = 0;
+            for chunk in output.chunks_mut(8) {
+                let mut host = [0.0_f32; 16];
+                allocation_free(|| {
+                    data.owner_mut().unwrap().run(|callback, _| {
+                        callback.begin_block();
+                        assert_eq!(callback.native_effect_quantum(), Some(8));
+                        callback.begin_native_effect_callback(chunk.len()).unwrap();
+                        let rendered = callback.render(chunk);
+                        assert!(rendered.is_ok(), "actual installed graph: {rendered:?}");
+                        assert!(crate::device::finish_host_chunk(
+                            callback,
+                            &mut host[..chunk.len() * 2],
+                            chunk,
+                            2,
+                            &rendered,
+                            committed,
+                            Instant::now()
+                        ));
+                    })
+                });
+                assert_eq!(control.status.applied_revision.load(Acquire), 1);
+                committed += chunk.len() as u64;
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() < committed / 8 {
+                    assert!(Instant::now() < deadline, "actual Root worker completion");
+                    std::thread::yield_now();
+                }
+                control.reclaim();
+                assert!(control.recover_native_source_preparation(binding).is_none());
+            }
+            let mut expected = [[0.0; 2]; 64];
+            for (index, frame) in samples.iter().enumerate() {
+                let gain = (if bypassed {
+                    1.0
+                } else {
+                    0.5 + (index / 8) as f32 * 0.125
+                }) + if location == 1 { 1.0 } else { 0.0 };
+                expected[index + 16] = [frame[0] * gain, frame[1] * gain];
+            }
+            assert_eq!(
+                output, expected,
+                "admitted original graph location {location}, bypass {bypassed}"
+            );
+            drop(data);
+            drop(errors);
+            // Both original carriers and the existing completed-backend test
+            // frontier are required before extracting the original active graph.
+            assert!(!retirement.advance().unwrap());
+            retirement = std::thread::spawn(move || {
+                let mut backend = Some(());
+                let mut pending = false;
+                let mut disposed = false;
+                let _ = crate::lifecycle::test_dispose_backend(
+                    &mut backend,
+                    &mut pending,
+                    &mut disposed,
+                    &mut retirement,
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert!(disposed && backend.is_none());
+                retirement
+            })
+            .join()
+            .unwrap();
+            let recovered = crate::prepared::candidate_tests::recover(&mut control, &ticket);
+            assert_eq!(
+                recovered.return_kind,
+                crate::AudioCandidateReturnKind::FinalActive
+            );
+            drop(recovered);
+            let returned = recover(&mut control, binding);
+            assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+            let native::PreparationDisposal::Reaped(terminal) = returned.disposal else {
+                panic!("original native disposal")
+            };
+            assert!(terminal.status.success());
+            let terminal = terminal.terminal.unwrap();
+            assert_eq!((terminal.blocks, terminal.frames), (8, 64));
+            if let Some(unused) = unused {
+                // The actual completed-backend frontier already closes Root
+                // and requests retirement of every retained source.
+                let returned = recover(&mut control, unused);
+                assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+                let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+                    panic!("original unvisited source disposal")
+                };
+                let terminal = disposal.terminal.unwrap();
+                assert_eq!((terminal.blocks, terminal.frames), (0, 0));
+            }
+            drop(control);
+            finish(&mut retirement);
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn cancelled_actual_native_graph_holds_endpoint_until_original_report_recovery() {
+    let _serial = serial();
+    let PreparedFixture {
+        mut control,
+        mut data,
+        errors,
+        mut retirement,
+        binding,
+        unused,
+        owner,
+        ..
+    } = prepared_fixture(0, false);
+    assert!(unused.is_none());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
+        .unwrap_or_else(|r| panic!("actual native graph: {}", r.reason));
+    assert!(control.retire_native_source_preparation(binding));
+    assert_eq!(
+        control.cancel_audio_candidate(&ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
+    allocation_free(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            assert_eq!(
+                callback.native_effect_quantum(),
+                Some(8),
+                "original anchors still hold the endpoint"
+            );
+        })
+    });
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    let recovered = crate::prepared::candidate_tests::recover(&mut control, &ticket);
+    assert_eq!(
+        recovered.return_kind,
+        crate::AudioCandidateReturnKind::NeverInstalled
+    );
+    drop(recovered);
+    allocation_free(|| {
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    let returned = recover(&mut control, binding);
+    assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+    let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
+        panic!("actual native disposal")
+    };
+    assert!(disposal.status.success());
+    let terminal = disposal.terminal.unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (0, 0));
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
 }

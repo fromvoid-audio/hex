@@ -89,6 +89,8 @@ struct RuntimeSlot {
     anchors: Option<AudioCandidateAnchors>,
     domains: Vec<AudioCandidateDomainToken>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_refs: native_sources::References,
     streaming: Option<streaming::Workspace>,
     summary: Option<AudioCandidateConstructorSummary>,
     context_generation: u64,
@@ -118,6 +120,8 @@ impl RuntimeSlot {
             anchors: None,
             domains: Vec::new(),
             domain_refs: [None; 2],
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs: native_sources::References::default(),
             streaming: None,
             summary: None,
             context_generation: 0,
@@ -193,6 +197,8 @@ struct StagePlan {
     retained: usize,
     peak: usize,
     resources: Option<RootResourceWitness>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_refs: native_sources::References,
 }
 struct State {
     stamp: Stamp,
@@ -551,7 +557,27 @@ impl super::Custody {
         header: Header,
         summary: AudioCandidateConstructorSummary,
     ) -> Result<(Queued, AudioCandidateTicket), AudioCandidateEligibleStageRefusal> {
-        let plan = match self.preflight_stage(root, &owner, &domains, header, summary, None) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let work = match self.work.try_lock() {
+            Ok(work) => work,
+            Err(_) => {
+                return Err(AudioCandidateEligibleStageRefusal {
+                    reason: "native source preparation is busy",
+                    owner,
+                    domains,
+                });
+            }
+        };
+        let plan = match self.preflight_stage(
+            root,
+            &owner,
+            &domains,
+            header,
+            summary,
+            None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            &work.sources,
+        ) {
             Ok(plan) => plan,
             Err(reason) => {
                 return Err(AudioCandidateEligibleStageRefusal {
@@ -585,6 +611,7 @@ impl super::Custody {
             },
         ))
     }
+    #[allow(clippy::too_many_arguments)] // Borrows the already-held original source Work; prepared callers must not relock it.
     fn preflight_stage(
         &self,
         root: &CandidateRoot,
@@ -593,6 +620,8 @@ impl super::Custody {
         header: Header,
         summary: AudioCandidateConstructorSummary,
         preparation: Option<AudioCandidatePreparationToken>,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        source_work: &native_sources::Work,
     ) -> Result<StagePlan, &'static str> {
         let Header {
             revision: _,
@@ -707,13 +736,22 @@ impl super::Custody {
             .iter()
             .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
             .ok_or("constructor domain construction overflow")?;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let native_refs = bank.sources.graph_references(owner, source_work)?;
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         if owner
             .requires_effect_graph_custody_on_control()
             .map_err(|_| "foreign constructor query refused")?
         {
             return Err("effect graph source and runtime witness is not sealed");
         }
-        let resources = resources::for_candidate(&bank, summary, reserved_slot)?;
+        let resources = resources::for_candidate(
+            &bank,
+            summary,
+            reserved_slot,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            source_work,
+        )?;
         let mut members = summary.member_rows;
         let mut transfers = summary.transfer_rows;
         for (index, slot) in bank.publication.slots.iter().enumerate() {
@@ -816,6 +854,8 @@ impl super::Custody {
             retained,
             peak,
             resources,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs,
         })
     }
     fn publication_state(
@@ -870,6 +910,8 @@ impl super::Custody {
             retained,
             peak,
             resources,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_refs,
         } = plan;
         let matched = anchors
             .constructor_claims(&runtime)
@@ -890,6 +932,10 @@ impl super::Custody {
         slot.archive = archive;
         slot.domain_refs = std::array::from_fn(|index| domains.get(index).copied());
         slot.domains = domains;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            slot.native_refs = native_refs;
+        }
         state.streaming = slot.streaming.take();
         slot.summary = Some(summary);
         slot.context_generation = context_generation;
@@ -936,6 +982,12 @@ impl super::Custody {
 }
 
 impl Bank {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn references_native_source(&self, index: usize) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.phase != Phase::Vacant && slot.native_refs.contains(index))
+    }
     pub(super) fn occupied(&self) -> Option<usize> {
         self.reservation?;
         Some(

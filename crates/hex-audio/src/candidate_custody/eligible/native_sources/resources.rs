@@ -29,30 +29,43 @@ impl PoolResources {
         })
     }
 }
+#[derive(Default)]
+pub(in crate::candidate_custody::eligible) struct Inventory {
+    pub data: usize,
+    pub groups: usize,
+    pub workers: usize,
+    pub children: usize,
+    pub ipc: usize,
+}
 impl Bank {
     pub(in crate::candidate_custody::eligible) fn reserved_shared_handles(&self) -> usize {
         self.resources
             .map_or(0, |resources| resources.shared_handles)
     }
-    /// Actual stable unsplit constructor DATA, never a scalar allowance. Every
-    /// occupied source must be the exact accepted effect in its original cell.
-    /// Pending/refused/retiring/unwound work has no such declaration. Callback
-    /// publication remains separately refused until its unique loan closes.
+    /// Actual constructor DATA from each retained original source/control.
+    /// Unique callback loans retain their constructor backing while Root keeps
+    /// the paired worker. Pending/refused/unwound work has no declaration.
+    /// Graph references and endpoint availability are validated separately.
     pub(in crate::candidate_custody::eligible) fn actual_data_bytes(
         &self,
         work: &Work,
     ) -> Option<usize> {
+        self.inventory(work).map(|inventory| inventory.data)
+    }
+    pub(in crate::candidate_custody::eligible) fn inventory(
+        &self,
+        work: &Work,
+    ) -> Option<Inventory> {
         let Some(resources) = self.resources else {
-            return self.slots.is_empty().then_some(0);
+            return self.slots.is_empty().then_some(Inventory::default());
         };
         if self.slots.len() != resources.capacity || work.cells.len() != resources.capacity {
             return None;
         }
         let limits = self.limits?;
-        self.slots
-            .iter()
-            .zip(&work.cells)
-            .try_fold(0usize, |sum, (slot, cell)| {
+        self.slots.iter().zip(&work.cells).try_fold(
+            Inventory::default(),
+            |mut sum, (slot, cell)| {
                 if slot.phase == Phase::Vacant {
                     return (cell.owner.is_none()
                         && !cell.pending
@@ -65,7 +78,6 @@ impl Bank {
                 }
                 if slot.phase != Phase::Accepted
                     || slot.starting
-                    || slot.retiring
                     || cell.pending
                     || cell.first_panic.is_some()
                     || cell.error.is_some()
@@ -76,22 +88,48 @@ impl Bank {
                 {
                     return None;
                 }
-                let Some(Owner::Effect(effect)) = cell.owner.as_ref() else {
-                    return None;
+                let (binding, identity, prepared, inventory) = match cell.owner.as_ref()? {
+                    Owner::Effect(effect)
+                        if !slot.endpoint_loaned && slot.endpoint_return.is_none() =>
+                    {
+                        (
+                            effect.binding(),
+                            effect.identity(),
+                            effect.prepared(),
+                            effect.constructor_storage_on_control()?,
+                        )
+                    }
+                    Owner::Loaned(control)
+                        if slot.endpoint_loaned && slot.endpoint_return.is_some() =>
+                    {
+                        (
+                            control.binding(),
+                            control.identity(),
+                            control.prepared(),
+                            control.constructor_storage_on_control()?,
+                        )
+                    }
+                    _ => return None,
                 };
-                if slot.binding != Some(effect.binding())
-                    || slot.identity != Some(effect.identity())
-                    || slot.processor != Some(effect.prepared())
+                if slot.binding != Some(binding)
+                    || slot.identity != Some(identity)
+                    || slot.processor != Some(prepared)
                 {
                     return None;
                 }
-                let inventory = effect.constructor_storage_on_control()?;
-                let data = inventory.data_bytes()?;
+                let loan_data = if slot.endpoint_loaned {
+                    NativeEndpointEnvelope::loan_data_bytes()?
+                } else {
+                    0
+                };
+                let data = inventory.data_bytes()?.checked_add(loan_data)?;
                 let reserved = resources.per_source;
                 if data.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES)?
                     > limits.max_retained_data_bytes
                     || inventory.worker.shared_groups > reserved.shared_groups
-                    || inventory.shared_handle_bound()?.checked_add(2)?
+                    || inventory
+                        .shared_handle_bound()?
+                        .checked_add(if slot.endpoint_loaned { 5 } else { 2 })?
                         > reserved.shared_handle_bound
                     || inventory.worker.ipc_handle_bound > reserved.source.ipc_handle_bound
                     || inventory.worker.native_child_lifetime_bound
@@ -101,7 +139,20 @@ impl Bank {
                 {
                     return None;
                 }
-                sum.checked_add(data)
-            })
+                sum.data = sum.data.checked_add(data)?;
+                sum.groups = sum
+                    .groups
+                    .checked_add(inventory.worker.shared_groups)?
+                    .checked_add(usize::from(slot.endpoint_loaned))?;
+                sum.workers = sum
+                    .workers
+                    .checked_add(inventory.worker.joining_thread_lifetime_bound)?;
+                sum.children = sum
+                    .children
+                    .checked_add(inventory.worker.native_child_lifetime_bound)?;
+                sum.ipc = sum.ipc.checked_add(inventory.worker.ipc_handle_bound)?;
+                Some(sum)
+            },
+        )
     }
 }

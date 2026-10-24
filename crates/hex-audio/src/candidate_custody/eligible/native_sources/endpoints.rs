@@ -12,6 +12,9 @@ struct Endpoint {
     signal: Arc<AtomicBool>,
 }
 impl NativeEndpointEnvelope {
+    pub(super) fn loan_data_bytes() -> Option<usize> {
+        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<AtomicBool>())
+    }
     fn index_for(&self, root: u64) -> Option<usize> {
         (self.0.binding.root == root && self.0.slot < MAX_SOURCES && self.0.callback.is_some())
             .then_some(self.0.slot)

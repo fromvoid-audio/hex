@@ -467,7 +467,7 @@ impl Custody {
     pub(super) fn has_work(&self, abandoned: bool) -> bool {
         let guard = lock(&self.bank);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if guard.sources.has_work(abandoned) {
+        if guard.sources.has_work(abandoned, &guard.publication) {
             return true;
         }
         guard.publication.has_work(abandoned || guard.closing)
