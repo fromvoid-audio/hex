@@ -26,7 +26,23 @@ pub(super) struct WaveformPreview<'a> {
     pub(super) prepared: Option<&'a hex_session::service::AudioClipWaveform>,
 }
 
+/// Keep inactive clip peaks readable but subordinate to active material.
+pub(super) fn clip_waveform_activity(body: Div, active: bool) -> Div {
+    body.opacity(if active { 1.0 } else { 0.4 })
+}
+
 pub(super) fn preview_waveform_view_cached(
+    request: WaveformPreview<'_>,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
+) -> Option<Div> {
+    preview_waveform_view_cached_inner(request, visible_start, visible_end, cache, grid)
+        .map(|body| clip_waveform_activity(body, request.preview.active()))
+}
+
+fn preview_waveform_view_cached_inner(
     request: WaveformPreview<'_>,
     visible_start: u64,
     visible_end: u64,
@@ -189,17 +205,20 @@ pub(super) fn prepared_waveform_view_cached(
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
-    waveform_canvas(
-        Arc::clone(&prepared.waveform),
-        WaveformMapping::Prepared {
-            timeline_origin: clip.start(),
-            root_offset: prepared.offset,
-            gain: clip.gain(),
-        },
-        visible_start,
-        visible_end,
-        Some(cache),
-        None,
+    clip_waveform_activity(
+        waveform_canvas(
+            Arc::clone(&prepared.waveform),
+            WaveformMapping::Prepared {
+                timeline_origin: clip.start(),
+                root_offset: prepared.offset,
+                gain: clip.gain(),
+            },
+            visible_start,
+            visible_end,
+            Some(cache),
+            None,
+        ),
+        clip.active(),
     )
 }
 
@@ -230,16 +249,19 @@ pub(super) fn waveform_view_cached(
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
-    waveform_canvas(
-        Arc::clone(waveform),
-        WaveformMapping::Clip {
-            clip: clip.clone(),
-            timeline_origin: clip.start(),
-        },
-        visible_start,
-        visible_end,
-        Some(cache),
-        None,
+    clip_waveform_activity(
+        waveform_canvas(
+            Arc::clone(waveform),
+            WaveformMapping::Clip {
+                clip: clip.clone(),
+                timeline_origin: clip.start(),
+            },
+            visible_start,
+            visible_end,
+            Some(cache),
+            None,
+        ),
+        clip.active(),
     )
 }
 
