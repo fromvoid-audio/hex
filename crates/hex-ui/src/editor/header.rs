@@ -142,7 +142,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        .gap(px(1.0))
+        // Contiguous compact controls keep the audio status readable at minimum width.
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
