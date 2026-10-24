@@ -171,6 +171,36 @@ pub(super) fn view(
         view.audio_event_editor.source_view = false;
     }
     let source_view = view.audio_event_editor.source_view;
+    let control = if grouped_audio {
+        div()
+            .id("audio-source-tab")
+            .w(px(56.0))
+            .h(px(20.0))
+            .text_xs()
+            .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+            .tooltip(|_, cx| {
+                cx.new(|_| super::waveform::ClipTooltip {
+                    name: "source view unavailable for grouped audio".into(),
+                })
+                .into()
+            })
+            .child(theme::text("n/a"))
+            .debug_selector(|| "audio-source-tab-unavailable".into())
+    } else {
+        super::waveform::button(
+            "source",
+            "inspect original source and warp markers",
+            ("audio-source-tab", 0),
+        )
+        .w(px(56.0))
+        .debug_selector(|| "audio-source-tab".into())
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.audio_event_editor.gesture = None;
+            view.audio_event_editor.source_view = true;
+            view.focus.focus(window);
+            cx.notify();
+        }))
+    };
     waveform_panel = waveform_panel.child(
         div()
             .h(px(20.0))
@@ -187,36 +217,7 @@ pub(super) fn view(
                         cx.notify();
                     })),
             )
-            .child(if grouped_audio {
-                div()
-                    .id("audio-source-tab")
-                    .w(px(56.0))
-                    .h(px(20.0))
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::waveform::ClipTooltip {
-                            name: "source view unavailable for grouped audio".into(),
-                        })
-                        .into()
-                    })
-                    .child(theme::text("n/a"))
-                    .debug_selector(|| "audio-source-tab-unavailable".into())
-            } else {
-                super::waveform::button(
-                    "source",
-                    "inspect original source and warp markers",
-                    ("audio-source-tab", 0),
-                )
-                .w(px(56.0))
-                .debug_selector(|| "audio-source-tab".into())
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.audio_event_editor.gesture = None;
-                    view.audio_event_editor.source_view = true;
-                    view.focus.focus(window);
-                    cx.notify();
-                }))
-            }),
+            .child(control),
     );
     if !source_view {
         waveform_panel =
