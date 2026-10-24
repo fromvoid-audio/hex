@@ -166,7 +166,7 @@ impl NativeAudioSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.poll_section_edit();
-        let section_policy = if matches!(policy, ResidentPublicationPolicy::StoppedArrangement) {
+        let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
                 Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
@@ -243,7 +243,7 @@ impl NativeAudioSink {
                 }
             };
             let policy = match policy {
-                ResidentPublicationPolicy::StoppedArrangement => {
+                ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
                         return Err(ResidentPublicationRefusal {
                             playback,

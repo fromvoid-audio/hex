@@ -92,7 +92,7 @@ impl WorkerAudioSink for Sink {
                     _ => PublicationPolicy::InstallFreshRuntimeIfUnchanged(actual),
                 }
             }
-            ResidentPublicationPolicy::StoppedArrangement => {
+            ResidentPublicationPolicy::ArrangementEdit => {
                 return Err(ResidentPublicationRefusal {
                     playback,
                     error: "fixture does not publish stopped arrangement replacements".into(),

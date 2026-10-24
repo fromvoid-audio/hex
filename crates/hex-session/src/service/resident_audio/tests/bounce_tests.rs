@@ -26,15 +26,20 @@ impl WorkerAudioSink for FenceSink {
     fn close(&mut self) {
         self.inner.close();
     }
-    fn begin_section_edit(&mut self, _: hex_engine::AudioSourceContext) -> Result<(), String> {
+    fn begin_section_edit(
+        &mut self,
+        _: hex_engine::AudioSourceContext,
+        allow_playing: bool,
+    ) -> Result<(), String> {
+        assert!(!allow_playing);
         if self.playing.load(Ordering::Acquire) {
             Err("stop playback before bouncing in place".into())
         } else {
             Ok(())
         }
     }
-    fn section_edit_ready(&mut self) -> Option<Result<u64, String>> {
-        Some(Ok(1))
+    fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
+        Some(ArrangementEditPosition::from_frames(1, false, None))
     }
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     fn publish_resident(
@@ -47,7 +52,7 @@ impl WorkerAudioSink for FenceSink {
         limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
-        if matches!(policy, ResidentPublicationPolicy::StoppedArrangement) {
+        if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             assert_eq!(playback.position(), 1, "keep the exact stopped cursor");
             assert!(!playback.playing());
         }
@@ -157,7 +162,7 @@ fn arrangement_bounce_admits_native_candidate_once_and_refusals_preserve_history
     }
     assert!(matches!(
         observed.publications.lock().unwrap().last().unwrap().1,
-        ResidentPublicationPolicy::StoppedArrangement
+        ResidentPublicationPolicy::ArrangementEdit
     ));
     playing.store(true, Ordering::Release);
     service.submit(Request::Undo).unwrap();
@@ -174,7 +179,7 @@ fn arrangement_bounce_admits_native_candidate_once_and_refusals_preserve_history
     );
     assert!(matches!(
         observed.publications.lock().unwrap().last().unwrap().1,
-        ResidentPublicationPolicy::StoppedArrangement
+        ResidentPublicationPolicy::ArrangementEdit
     ));
     playing.store(true, Ordering::Release);
     service.submit(Request::Redo).unwrap();
@@ -188,6 +193,6 @@ fn arrangement_bounce_admits_native_candidate_once_and_refusals_preserve_history
     assert!(redo.state.project.clip(clip).is_none());
     assert!(matches!(
         observed.publications.lock().unwrap().last().unwrap().1,
-        ResidentPublicationPolicy::StoppedArrangement
+        ResidentPublicationPolicy::ArrangementEdit
     ));
 }
