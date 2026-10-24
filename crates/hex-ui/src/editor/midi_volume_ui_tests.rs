@@ -258,3 +258,40 @@ fn envelope_shows_interior_source_beat_guides(cx: &mut TestAppContext) {
         assert_eq!(v.piano_beat_span, BeatTime::from_quarters(2).unwrap());
     });
 }
+
+#[gpui::test]
+fn envelope_fit_and_back_restore_view_without_musical_edits(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    let original = editor.update(&mut visual, |v, cx| {
+        v.midi_volume.enabled = true;
+        v.piano_beat_start = BeatTime::ONE;
+        v.piano_beat_span = BeatTime::ONE;
+        cx.notify();
+        let s = v.state.as_ref().unwrap();
+        (s.project.snapshot(), s.can_undo, s.can_redo)
+    });
+    visual.run_until_parked();
+    let fit = visual
+        .debug_bounds("midi-zoom-fit")
+        .expect("envelope view must retain fit navigation");
+    visual.simulate_click(fit.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (v.piano_beat_start, v.piano_beat_span),
+            (BeatTime::ZERO, BeatTime::from_quarters(4).unwrap())
+        );
+    });
+    let back = visual.debug_bounds("midi-zoom-back").unwrap();
+    visual.simulate_click(back.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            (v.piano_beat_start, v.piano_beat_span),
+            (BeatTime::ONE, BeatTime::ONE)
+        );
+        assert!(!v.edit_pending());
+        let s = v.state.as_ref().unwrap();
+        assert_eq!((s.project.snapshot(), s.can_undo, s.can_redo), original);
+    });
+}

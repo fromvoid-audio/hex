@@ -339,6 +339,8 @@ impl EditorView {
                     cx.notify();
                 }),
             )])
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, true, cx))
             .child(theme::text(format!("{} points", volume.points().len())))
             .children(
                 point_values(&volume, self.midi_volume.selected).map(|values| {
