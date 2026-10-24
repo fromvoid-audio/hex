@@ -179,6 +179,9 @@ impl WaveformGeometryCache {
         mask: Bounds<Pixels>,
         geometry: &WaveformGeometry,
     ) {
+        let _navigation_timer = super::navigation_metrics::Timer::start(
+            super::navigation_metrics::Stage::PaintObservation,
+        );
         if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
             self.painted.pop_front();
         }
@@ -200,6 +203,12 @@ impl WaveformGeometryCache {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn painted_waveforms(&self) -> &VecDeque<WaveformPaintSample> {
         &self.painted
+    }
+
+    /// Reset diagnostic observations without invalidating retained geometry.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn clear_paint_samples(&mut self) {
+        self.painted.clear();
     }
 
     /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
@@ -296,6 +305,9 @@ pub(super) fn cached_waveform_geometry(
     waveform: &Arc<CachedWaveform>,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<Arc<WaveformGeometry>> {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    let _navigation_timer =
+        super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformLookup);
     let mut key = waveform_geometry_key(
         request.mapping,
         request.visible_start,
@@ -396,6 +408,9 @@ pub(super) fn prepare_waveform_geometry(
     columns: usize,
     grid: Option<WaveformGrid>,
 ) -> Option<WaveformGeometry> {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    let _navigation_timer =
+        super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::WaveformBuild);
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
     let grid = grid.unwrap_or(WaveformGrid {
