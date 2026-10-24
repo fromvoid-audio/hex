@@ -222,6 +222,10 @@ fn envelope_shows_interior_source_beat_guides(cx: &mut TestAppContext) {
     // the headless window's frame clock.
     editor.update(&mut visual, |_, cx| cx.notify());
     visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("midi-volume-axis-x-0").is_some(),
+        "the first source beat label has no preceding label to collide with"
+    );
     let plot = visual.debug_bounds("midi-volume-plot").unwrap();
     let beat = visual
         .debug_bounds("midi-volume-axis-x-4")
