@@ -89,6 +89,7 @@ fn inventory_shape(
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    content_view: None,
                     active: true,
                     playback_offset_raw: 0,
                     one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,

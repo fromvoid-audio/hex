@@ -129,10 +129,14 @@ pub(in crate::editor) fn audio_controls(
         hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame: end },
     )
     .ok()?;
-    let boundary = audio_repeats(clip)
-        .then(|| hex_project::AudioViewProjection::new(clip, project.tempo_map()).ok())
-        .flatten()
-        .and_then(|p| u64::try_from(p.logical_first_boundary()).ok());
+    // CycleEnd authors a forward base boundary. A directed finite seam has no
+    // general one-to-one inverse, so retain the outer handle without exposing
+    // a first-seam drag that cannot follow its pointer. Authored settings remain.
+    let boundary = (audio_repeats(clip)
+        && clip.audio_edit().is_none_or(|e| e.content_view.is_none()))
+    .then(|| hex_project::AudioViewProjection::new(clip, project.tempo_map()).ok())
+    .flatten()
+    .and_then(|p| u64::try_from(p.logical_first_boundary()).ok());
     geometry(clip.start(), end, boundary, lane, viewport, 3.0)
 }
 pub(in crate::editor) fn midi_controls(
@@ -148,7 +152,10 @@ pub(in crate::editor) fn midi_controls(
     geometry(
         tempo.beat_to_frame(clip.start()).ok()?,
         tempo.beat_to_frame(end).ok()?,
-        clip.first_repeat_boundary()
+        clip.content_view()
+            .is_none()
+            .then(|| clip.first_repeat_boundary())
+            .flatten()
             .and_then(|b| tempo.beat_to_frame(b).ok()),
         lane,
         viewport,
@@ -199,6 +206,11 @@ pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> 
         .hover(|s| s.bg(rgba(0xffffff22)))
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::control(if control.kind == LoopHandleKind::Outer {
+                    "repeat clip"
+                } else {
+                    "first repeat boundary"
+                }),
                 description: if control.kind == LoopHandleKind::Outer {
                     "drag to repeat clip · cmd: invert snapping"
                 } else {
@@ -317,18 +329,17 @@ pub(in crate::editor) fn audio_markers(
     let Ok(projection) = hex_project::AudioViewProjection::new(clip, project.tempo_map()) else {
         return div();
     };
+    let Ok(plan) = projection.repeat_boundaries() else {
+        return div();
+    };
+    let frame = |index| projection.frame_at_elapsed(plan?.boundary(index)?).ok();
     markers(
         start,
         end,
-        projection.occurrence_count().saturating_sub(1),
-        u64::try_from(projection.logical_first_boundary()).ok(),
-        |index| {
-            projection
-                .occurrence(index.checked_add(1)?)
-                .ok()
-                .map(|o| o.destination_start)
-        },
-        end == projection.outer_frame_bounds().1,
+        plan.map_or(0, |plan| plan.count()),
+        frame(0),
+        frame,
+        clip.start().checked_add(clip.duration()) == Some(end),
     )
 }
 
@@ -349,23 +360,13 @@ pub(in crate::editor) fn midi_markers(
     let Ok(playback) = playback else {
         return div();
     };
-    let Some((a, b)) = playback.loop_range() else {
-        return div();
-    };
-    let Some(period) = b.raw().checked_sub(a.raw()).filter(|n| *n > 0) else {
-        return div();
-    };
-    let Some(first) = playback.first_repeat_boundary() else {
+    let Ok(plan) = playback.repeat_boundaries() else {
         return div();
     };
     let origin = preview.map_or(clip.start(), |p| p.start());
     let length = preview.map_or(clip.length(), |p| p.length());
-    let count = length.raw().saturating_sub(first.raw()) / period + 1;
     let frame = |index: u64| {
-        let beat = origin
-            .raw()
-            .checked_add(first.raw())?
-            .checked_add(index.checked_mul(period)?)?;
+        let beat = origin.raw().checked_add(plan?.boundary(index)?)?;
         project
             .tempo_map()
             .beat_to_frame(BeatTime::from_raw(beat))
@@ -377,7 +378,14 @@ pub(in crate::editor) fn midi_markers(
             .beat_to_frame(BeatTime::from_raw(b))
             .ok()
     });
-    markers(start, end, count, frame(0), frame, outer == Some(end))
+    markers(
+        start,
+        end,
+        plan.map_or(0, |plan| plan.count()),
+        frame(0),
+        frame,
+        outer == Some(end),
+    )
 }
 
 #[cfg(test)]

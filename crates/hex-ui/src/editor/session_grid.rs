@@ -1481,6 +1481,7 @@ impl EditorView {
             .text_xs()
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: label.into(),
                 })
                 .into()
@@ -1551,6 +1552,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: label.into(),
                 })
                 .into()

@@ -1545,7 +1545,7 @@ impl EditorView {
                 .hover(move |style| style.bg(section_fill(hover.0)).text_color(rgb(hover.1)).border_color(rgb(hover.2)))
                 .text_xs()
                 .tooltip(|_, cx| {
-                    cx.new(|_| super::waveform::ClipTooltip {
+                    cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
                         name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: markers only · command: snap · shift-click: range · cmd-shift-click: select · g: merge · cmd-d: duplicate · cmd-e: split"
                             .into(),
                     })

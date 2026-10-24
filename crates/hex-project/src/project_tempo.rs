@@ -73,10 +73,8 @@ pub(crate) fn retime_track(
             if let Some(edit) = clip.edit.as_mut() {
                 let edit = Arc::make_mut(edit);
                 if let Some(projection) = edit.processing_projection.as_ref() {
-                    let reference_start_raw = projection
-                        .origin_beat_raw
-                        .checked_add(i128::from(edit.view_start))
-                        .ok_or(Invalid("retained audio reference start overflow"))?;
+                    let reference_start_raw =
+                        edit.reference_for_processing_origin(projection.origin_beat_raw)?;
                     edit.timing = AudioClipTiming::Frozen {
                         reference_start_raw,
                         tempo: Arc::clone(&projection.tempo),

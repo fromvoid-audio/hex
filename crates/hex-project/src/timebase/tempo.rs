@@ -265,6 +265,13 @@ impl TempoMap {
         }
     }
 
+    /// Fractional project frames with 32 fraction bits, using the same stored
+    /// segment prefixes as beat_to_frame. Control-side map preparation can keep
+    /// sample phase until its final quantization; this is not a callback clock.
+    pub fn beat_to_frame_q32(&self, beat: BeatTime) -> Result<u128, Invalid> {
+        self.frame_q32_at(beat)
+    }
+
     fn frame_q32_at(&self, beat: BeatTime) -> Result<u128, Invalid> {
         let index = self.segment_for_beat(beat);
         let point = self.points[index];

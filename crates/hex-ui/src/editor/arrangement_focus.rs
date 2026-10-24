@@ -317,6 +317,7 @@ impl EditorView {
             .children(self.arrangement_focus.toggle.clone())
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: "focus selected sections · q".into(),
                 })
                 .into()

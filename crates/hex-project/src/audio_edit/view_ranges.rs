@@ -16,10 +16,53 @@ impl AudioViewProjection<'_> {
         if range.start > range.end {
             return Err(Invalid("audio selection range is reversed"));
         }
-        let first = range.start.max(self.outer_frames.0);
-        let last = range.end.min(self.outer_frames.1);
+        let first = range.start.max(self.placed_frames.0);
+        let last = range.end.min(self.placed_frames.1);
         if first >= last || self.count == 0 {
             return Ok([None, None]);
+        }
+        if let Some((window, _, _)) = self.content {
+            let first = self.elapsed_at_frame(first)?.min(window.length()?);
+            let last = self.elapsed_at_frame(last)?.min(window.length()?);
+            let read = window.read_range(first..last)?;
+            if let Some(edit) = self
+                .clip
+                .audio_edit()
+                .filter(|e| e.processing_projection.is_some())
+            {
+                let occurrence = self.occurrence(0)?;
+                let position = |elapsed| -> Result<u64, Invalid> {
+                    let frame = occurrence
+                        .root_start
+                        .checked_add(
+                            self.base_frame_at_elapsed(elapsed)?
+                                .saturating_sub(occurrence.destination_start),
+                        )
+                        .ok_or(Invalid("directed retained source range overflow"))?;
+                    edit.root_position_at(frame, self.tempo)
+                };
+                let a = position(read.start)?;
+                let b = position(read.end)?;
+                return Ok([(a < b).then_some(a..b), None]);
+            }
+            let end = self
+                .view_start
+                .checked_add(self.cycle)
+                .ok_or(Invalid("audio source selection overflow"))?;
+            let looping = self
+                .clip
+                .audio_edit()
+                .and_then(|e| e.content_view)
+                .and_then(|v| v.base_placement)
+                .filter(|p| p.mode == AudioViewMode::Repeat)
+                .map(|_| (self.view_start, end));
+            return crate::source_ranges::source_ranges(
+                u128::from(self.phase) + u128::from(read.start),
+                u128::from(self.phase) + u128::from(read.end),
+                self.view_start,
+                end,
+                looping,
+            );
         }
         if let Some(edit) = self
             .clip

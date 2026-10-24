@@ -1,5 +1,5 @@
 use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
 use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
@@ -71,6 +71,71 @@ pub(super) fn preview_waveform_view_cached(
         // A crop shares the immutable full processing root. A changed root must
         // supply its own validated preview projection, never raw-asset peaks.
         if !Arc::ptr_eq(&old.domain, &edit.domain) {
+            return None;
+        }
+        if let (Some(before), Some(after)) = (old.content_view, edit.content_view) {
+            let prepared = prepared?;
+            if prepared.offset != 0
+                || prepared.length != original.duration()
+                || u64::try_from(prepared.waveform.source_frames).ok()? != original.duration()
+                || before.window.reversed != after.window.reversed
+            {
+                return None;
+            }
+            let a = hex_project::AudioViewProjection::new(original, tempo).ok()?;
+            let b = hex_project::AudioViewProjection::new(preview, tempo).ok()?;
+            // Retain accepted finite output. Never treat its already-directed
+            // PCM peaks as the full forward processing root a second time.
+            let same_base = before.base_view_start == after.base_view_start
+                && before.base_view_end == after.base_view_end
+                && before.base_placement == after.base_placement;
+            let linear = before.base_placement.is_none() && after.base_placement.is_none();
+            if !(same_base || linear) || a.root_origin() != b.root_origin() {
+                return None;
+            }
+            let displacement = b.base_reference_start() - a.base_reference_start();
+            let elapsed = if before.window.reversed {
+                i128::from(before.window.end) - i128::from(after.window.end) - displacement
+            } else {
+                i128::from(after.window.start) + displacement - i128::from(before.window.start)
+            };
+            let current = |clip: &Clip, edit: &hex_project::AudioClipEdit| {
+                edit.reference_start_raw()
+                    .unwrap_or(i128::from(clip.start()))
+            };
+            if current(preview, edit) - current(original, old) != elapsed {
+                return None;
+            }
+            let (timeline_origin, root_offset) = if elapsed >= 0 {
+                let elapsed = u64::try_from(elapsed).ok()?;
+                if elapsed >= before.window.length().ok()? {
+                    return None;
+                }
+                (
+                    preview.start(),
+                    a.frame_at_elapsed(elapsed)
+                        .ok()?
+                        .checked_sub(original.start())?,
+                )
+            } else {
+                // Outward extension has no accepted peaks outside this range.
+                // Keep the known finite PCM visible at its existing position.
+                (original.start(), 0)
+            };
+            return Some(timeline_waveform_view_cached(
+                Arc::clone(&prepared.waveform),
+                WaveformMapping::Prepared {
+                    timeline_origin,
+                    root_offset,
+                    gain: preview.gain(),
+                },
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            ));
+        }
+        if old.content_view.is_some() || edit.content_view.is_some() {
             return None;
         }
         let (old_origin, old_length, old_offset, _) = old.projected_domain(tempo).ok()?;
@@ -656,6 +721,7 @@ fn button_surface(
         .text_xs()
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 name: tooltip.to_string(),
             })
             .into()
@@ -663,21 +729,13 @@ fn button_surface(
 }
 
 pub(super) struct ClipTooltip {
+    pub(super) kind: crate::tooltips::Kind,
     pub(super) name: String,
 }
 
 impl Render for ClipTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .font_family(theme::FONT_FAMILY)
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(&self.name))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::tooltips::view(&self.kind, &self.name, cx)
     }
 }
 
@@ -696,7 +754,7 @@ mod tests {
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
-        use gpui::{IntoElement, point, size};
+        use gpui::{IntoElement, div, point, size};
         use std::{cell::Cell, rc::Rc};
 
         let visual = cx.add_empty_window();
