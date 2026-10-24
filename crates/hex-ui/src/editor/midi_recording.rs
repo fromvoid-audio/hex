@@ -710,6 +710,109 @@ mod lifecycle_tests {
         }
     }
     #[gpui::test]
+    fn midi_recording_captures_input_quantization_before_worker_preparation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (mut visual, editor, _environment, clip) = fixture(cx);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap(),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let (project, generation, revision) = editor.read_with(&visual, |view, _| {
+            (
+                Arc::clone(&view.state.as_ref().unwrap().project),
+                view.project_generation,
+                view.state.as_ref().unwrap().revision,
+            )
+        });
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &Default::default(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let (mut output, mut backend) = open_output();
+        let client = output.take_client().unwrap();
+        let mut playback =
+            hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        output
+            .publication
+            .control()
+            .unwrap()
+            .publish_with_admission_and_source_on_control(
+                playback,
+                hex_audio::prepared::PublicationPolicy::InheritRuntime,
+                hex_engine::AudioSourceContext {
+                    project_generation: generation,
+                    editor_revision: revision,
+                },
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        backend
+            .render_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
+            .unwrap();
+        editor.update(&mut visual, |view, _| {
+            view.audio = Some(audio(client));
+            view.computer_keyboard.enabled = true;
+            view.set_input_quantization(hex_project::InputQuantization::Eighth);
+            view.toggle_midi_recording();
+            assert!(
+                view.midi_recorder.mode == Mode::Preparing,
+                "{:?}",
+                view.error
+            );
+            view.set_input_quantization(hex_project::InputQuantization::Quarter);
+            assert_eq!(
+                view.input_quantization,
+                hex_project::InputQuantization::Eighth
+            );
+            let binding = Arc::clone(view.midi_recorder.binding.as_ref().unwrap());
+            // Later display state cannot reinterpret the retained admission.
+            view.input_quantization = hex_project::InputQuantization::Off;
+            view.snap_grid = super::super::musical_time::SnapGrid::Off;
+            let command = hex_session::midi_recording::finish_take(
+                &project,
+                &binding,
+                &[RecordedMidiNote {
+                    start_frame: 13_000,
+                    end_frame: 14_000,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                }],
+                14_000,
+            )
+            .unwrap()
+            .unwrap();
+            let Command::AddMidiNotes {
+                clip: target,
+                notes,
+            } = command
+            else {
+                panic!("take")
+            };
+            assert_eq!(target, clip);
+            assert_eq!(
+                notes[0].start,
+                hex_project::BeatTime::from_ratio(1, 2).unwrap()
+            );
+            view.finish_midi_recording(); // cancel preparation, without a completed take
+            view.cancel_computer_keyboard();
+            view.audio.as_mut().unwrap().control.close();
+            view.audio = None;
+        });
+        backend.close();
+    }
+
+    #[gpui::test]
     fn midi_recording_waits_for_its_root_installation_and_retains_take_on_same_tick_output_replacement(
         cx: &mut gpui::TestAppContext,
     ) {
