@@ -183,7 +183,6 @@ fn parameter_style(presentation: ControlPresentation) -> ControlStyle {
 pub(super) enum ControlPresentation {
     Standard,
     CompactDial,
-    MiniDial,
     MicroDial,
     InlineValue,
     DeviceMeters,
@@ -383,7 +382,7 @@ pub(super) fn render_parameter(
             }
             let (width, height) = match presentation {
                 ControlPresentation::CompactDial => (64.0, 52.0),
-                ControlPresentation::MiniDial | ControlPresentation::MicroDial => (
+                ControlPresentation::MicroDial => (
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
@@ -568,15 +567,14 @@ fn create_parameter_control(
                 spec = codec.apply(spec);
             }
             let kind = match presentation {
-                ControlPresentation::CompactDial
-                | ControlPresentation::MiniDial
-                | ControlPresentation::MicroDial => NumericControlKind::Knob,
+                ControlPresentation::CompactDial | ControlPresentation::MicroDial => {
+                    NumericControlKind::Knob
+                }
                 ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
                 _ => NumericControlKind::HorizontalSlider,
             };
             let appearance = match presentation {
                 ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
-                ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
                 ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
                 ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
                 ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,

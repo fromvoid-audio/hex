@@ -36,14 +36,13 @@ pub(super) struct Sample {
 impl Sample {
     pub fn prepare(item: Item) -> Result<Prepared, String> {
         let style = theme::control_style();
-        let (kind, appearance, layout, scale, axis) = match item.demo {
-            Demo::Numeric(k, a, l, s, axis) => (k, a, l, s, axis),
+        let (kind, appearance, layout, scale) = match item.demo {
+            Demo::Numeric(k, a, l, s) => (k, a, l, s),
             _ => (
                 NumericControlKind::HorizontalSlider,
                 NumericControlAppearance::CompactSlider,
                 DialLayout::ReadoutGap,
                 NumericScale::Linear,
-                NumericDragAxis::Horizontal,
             ),
         };
         let (min, max, default, unit) = match scale {
@@ -66,8 +65,7 @@ impl Sample {
             )
             .map_err(|e| e.to_string())?
             .with_appearance(appearance)
-            .with_dial_layout(layout)
-            .with_drag_axis(axis);
+            .with_dial_layout(layout);
             numbers.push(config);
         }
         let toggle_config =
@@ -207,7 +205,7 @@ impl Sample {
     fn refresh_meters(&mut self, cx: &mut Context<Self>) {
         if !matches!(
             self.item.demo,
-            Demo::Numeric(_, NumericControlAppearance::DeviceMeters, _, _, _)
+            Demo::Numeric(_, NumericControlAppearance::DeviceMeters, _, _)
         ) {
             return;
         }
@@ -488,8 +486,8 @@ impl Sample {
     fn content(&self, cx: &mut Context<Self>) -> Div {
         let s = theme::control_style();
         match self.item.demo {
-            Demo::Numeric(kind, appearance, _, _, _) => device_layout(DeviceLayout::Wrapped)
-                .children(self.numbers.iter().map(|n| {
+            Demo::Numeric(kind, appearance, _, _) => {
+                device_layout(DeviceLayout::Wrapped).children(self.numbers.iter().map(|n| {
                     div()
                         .w(px(
                             if appearance == NumericControlAppearance::WideMicroDial {
@@ -505,7 +503,8 @@ impl Sample {
                         }))
                         .flex_shrink_0()
                         .child(n.clone())
-                })),
+                }))
+            }
             Demo::Toggle(_) => div().w(px(180.0)).h(px(28.0)).child(self.toggle.clone()),
             Demo::Selector(_) => div().w(px(220.0)).h(px(28.0)).child(self.selector.clone()),
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
