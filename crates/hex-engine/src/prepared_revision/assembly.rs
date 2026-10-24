@@ -124,13 +124,11 @@ impl RevisionAssembly {
         Ok(owner.arc())
     }
 
-    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
-        self.reserve_with_sampler(project, None)
-    }
-    pub(crate) fn reserve_with_sampler(
+    pub(crate) fn reserve_with_sampler_and_effects(
         &mut self,
         project: &hex_project::Project,
         scope: Option<u64>,
+        effects: bool,
     ) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
@@ -147,24 +145,25 @@ impl RevisionAssembly {
             return Err(Error::Capacity);
         }
         if scope.is_some() {
-            if !crate::native_device_resources::current_sampler::validate_project(project)? {
+            if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+                project, effects,
+            )? {
                 return Err(Error::UnsupportedGraph);
             }
         } else {
             // Empty mutable descriptors are permitted only for this exhaustive class.
             for track in project.tracks() {
                 if track.instrument().is_some()
-                    || track
-                        .devices()
-                        .iter()
-                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                    || track.devices().iter().any(|d| {
+                        !effects && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                    })
                     || !track.midi_clips().is_empty()
                 {
                     return Err(Error::UnsupportedGraph);
                 }
             }
             for bus in project.return_tracks() {
-                if !bus.devices().is_empty() {
+                if !effects && !bus.devices().is_empty() {
                     return Err(Error::UnsupportedGraph);
                 }
             }

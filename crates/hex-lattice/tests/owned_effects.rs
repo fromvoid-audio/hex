@@ -90,7 +90,7 @@ fn long_transactions_multiple_wraps_and_late_abort_match_shift_oracle()
     let mut abandoned = input.clone();
     actual.begin_block();
     for part in abandoned.chunks_mut(113) {
-        actual.process_block(part);
+        actual.process_block(part).unwrap();
     }
     actual.rollback_block();
     assert!(actual.committed_range_is_quiescent(0..1));
@@ -98,7 +98,7 @@ fn long_transactions_multiple_wraps_and_late_abort_match_shift_oracle()
     let mut output = input.clone();
     actual.begin_block();
     for part in output.chunks_mut(257) {
-        actual.process_block(part);
+        actual.process_block(part).unwrap();
     }
     actual.commit_block();
     for (i, frame) in output.iter().enumerate() {
@@ -106,7 +106,7 @@ fn long_transactions_multiple_wraps_and_late_abort_match_shift_oracle()
     }
     let mut drain = [[0.0; 2]; 17];
     actual.begin_block();
-    actual.process_block(&mut drain);
+    actual.process_block(&mut drain).unwrap();
     actual.commit_block();
     assert_eq!(&drain[..], &input[input.len() - 17..]);
     assert!(actual.committed_range_is_quiescent(0..1));
@@ -114,7 +114,7 @@ fn long_transactions_multiple_wraps_and_late_abort_match_shift_oracle()
     let mut impulse = [[0.0; 2]; 35];
     impulse[0] = [1.0, -0.5];
     actual.begin_block();
-    actual.process_block(&mut impulse);
+    actual.process_block(&mut impulse).unwrap();
     actual.commit_block();
     assert_eq!(impulse[17], [1.0, -0.5]);
     assert_eq!(impulse[0], [0.0; 2]);
@@ -126,14 +126,14 @@ fn owned_open_history_cannot_be_adopted_until_abort_and_oversize_stays_refused()
     let mut current = chain(17, false)?;
     let candidate = chain(17, false)?;
     current.begin_block();
-    current.process_block(&mut [[1.0, -0.5]; 7]);
+    current.process_block(&mut [[1.0, -0.5]; 7]).unwrap();
     assert!(!candidate.can_inherit_from(&current));
     current.rollback_block();
     assert!(candidate.can_inherit_from(&current));
     let mut bypass = chain(17, true)?;
     let mut dry = [[1.0, -1.0]; 43];
     bypass.begin_block();
-    bypass.process_block(&mut dry);
+    bypass.process_block(&mut dry).unwrap();
     bypass.commit_block();
     assert_eq!(dry, [[1.0, -1.0]; 43]);
     assert!(!bypass.committed_range_is_quiescent(0..1));

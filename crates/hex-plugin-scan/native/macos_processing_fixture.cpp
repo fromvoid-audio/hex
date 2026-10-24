@@ -15,6 +15,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include "pluginterfaces/base/ibstream.h"
+#ifndef HEX_FIXTURE_RESIDUAL_ECHO
+#define HEX_FIXTURE_RESIDUAL_ECHO 0
+#endif
+#ifndef HEX_FIXTURE_INFINITE_TAIL
+#define HEX_FIXTURE_INFINITE_TAIL 0
+#endif
 #ifndef HEX_INSTANCE_VARIANT
 #define HEX_INSTANCE_VARIANT 0
 #endif
@@ -167,6 +173,9 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     float gain=1;
     uint32 input_latency=0,output_latency=0,restored_latency=0;
     std::array<std::array<double,2>,32> delay{};uint32 delay_cursor=0;
+#if HEX_FIXTURE_RESIDUAL_ECHO
+    std::array<std::array<double,2>,3> residual{};uint32 residual_cursor=0;
+#endif
     IBStream* retained_stream=nullptr;
     pthread_t worker{};
     bool same_worker() const { return !thread_bound || pthread_equal(worker,pthread_self()); }
@@ -192,6 +201,19 @@ public:
         trace(presentation_calls?15:14); // actual facts phase versus applied presentation
         if(fault==68 && observed.stops && presentation_calls>2) return restored_latency+1;
         return fault==36 && presentation_calls?7:(fault>=37?restored_latency:0);
+    }
+    uint32 PLUGIN_API getTailSamples() override {
+        if(!control()) return kInfiniteTail;
+        const auto* value=std::getenv(presentation_calls?"HEX_ORIGINAL_TAIL_AFTER_PRESENTATION":"HEX_ORIGINAL_TAIL_FRAMES");
+        if(observed.stops && std::getenv("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT"))
+            value=std::getenv("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT");
+        if(presentation_calls>2 && std::getenv("HEX_ORIGINAL_TAIL_AFTER_RESUME"))
+            value=std::getenv("HEX_ORIGINAL_TAIL_AFTER_RESUME");
+        if(!value) value=std::getenv("HEX_ORIGINAL_TAIL_FRAMES");
+        if(!value) return HEX_FIXTURE_INFINITE_TAIL?kInfiniteTail:(HEX_FIXTURE_RESIDUAL_ECHO?3:kNoTail);
+        char* end=nullptr;const auto frames=std::strtoull(value,&end,10);
+        if(!*value || !end || *end || frames>std::numeric_limits<uint32>::max()) return kInfiniteTail;
+        return static_cast<uint32>(frames);
     }
     tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
         if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
@@ -377,6 +399,13 @@ public:
             const double right=mode==1?0.25:(input && inputs==2?(precision==kSample32?data.inputs[0].channelBuffers32[1][frame]:data.inputs[0].channelBuffers64[1][frame]):left);
             if (output) for (int32 channel=0;channel<outputs;++channel) {
                 double value=(channel?right:left)*scale*gain;
+#if HEX_FIXTURE_RESIDUAL_ECHO
+                // Original three-frame FIR echo. Store the immediate sample,
+                // not the summed result: zero input has a genuinely finite tail.
+                const auto immediate=value;
+                value+=residual[residual_cursor][channel]*0.25;
+                residual[residual_cursor][channel]=immediate;
+#endif
                 if(fault>=37 && restored_latency) {
                     std::swap(value,delay[delay_cursor][channel]);
                 }
@@ -390,6 +419,9 @@ public:
                 silent=silent && value==0;
             }
             if(fault>=37 && restored_latency)delay_cursor=(delay_cursor+1)%restored_latency;
+#if HEX_FIXTURE_RESIDUAL_ECHO
+            residual_cursor=(residual_cursor+1)%residual.size();
+#endif
         }
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
         if (fault==8 && output) data.outputs[0].numChannels=3;

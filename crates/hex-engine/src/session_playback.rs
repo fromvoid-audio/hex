@@ -312,7 +312,7 @@ struct SessionContinuation {
 }
 
 /// Shared conservative owning-location count for fresh closed constructors.
-/// Playback contributes five outer locations and Session two singleton roots.
+/// Playback contributes five outer locations and Session three singleton roots.
 pub(crate) fn candidate_group_reservation(
     tracks: usize,
     returns: usize,
@@ -323,7 +323,7 @@ pub(crate) fn candidate_group_reservation(
         .and_then(|n| n.checked_add(SESSION_TAIL_GROUP_CAPACITY.checked_mul(2)?))
         .and_then(|n| n.checked_add(return_effect_tails::RETURN_EFFECT_TAIL_CAPACITY))
         .and_then(|n| n.checked_add(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS))
-        .and_then(|n| n.checked_add(7))
+        .and_then(|n| n.checked_add(8))
         .ok_or(crate::AudioStorageError::Overflow)
 }
 
@@ -760,12 +760,20 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        // Main is inline Session storage in this closed candidate class, not a
-        // separately transferable owner. Inspect prepared and actual runtime
-        // entries independently; retained empty-chain capacity stays inventoried
-        // by the existing fresh-storage walk. Ordinary Main playback is unaffected.
-        if !self.revision.arrangement().main_device_chain.is_empty()
-            || main_chain.storage_view().entries().next().is_some()
+        // Fresh Main metadata must match before any location is emitted.
+        // A real owning transfer can later leave an allocation-free empty
+        // Main field; its now-vacant group is checked against the origin book.
+        let prepared_main = &self.revision.arrangement().main_device_chain;
+        let main_matches = main_chain.len() == prepared_main.len()
+            && main_chain
+                .storage_view()
+                .entries()
+                .zip(prepared_main.iter())
+                .all(|(actual, prepared)| actual.matches_prepared_runtime_storage(prepared));
+        let main_present = main_chain.storage_view().entry_capacity_bytes() != Some(0);
+        let moved_empty_main =
+            !self.candidate_admission_open && main_chain.is_empty() && !main_present;
+        if (!main_matches && !moved_empty_main)
             || live_expression.is_some()
             || computer_keyboard.is_some()
         {
@@ -807,6 +815,7 @@ impl SessionPlayback {
         }
         visit(7, 0, true)?; // this exact Session revision handle
         visit(8, 0, compensation.is_some())?;
+        visit(14, 0, main_present)?; // actual Main backing; moved-out fields are vacant
         Ok(())
     }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
@@ -2129,6 +2138,8 @@ mod return_feed_tests;
 
 #[cfg(test)]
 mod compensation_tests;
+#[cfg(test)]
+mod foreign_tests;
 
 #[cfg(test)]
 mod routing_tests;

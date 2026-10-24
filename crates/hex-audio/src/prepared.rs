@@ -42,7 +42,11 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+mod native_effects;
+pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native_sources;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -243,12 +247,16 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
@@ -967,7 +975,8 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
-    output_transport_reaper: Option<crate::plugin_transport::Reaper>,
+    requested_physical_callback_frames: Option<u16>,
+    output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1006,7 +1015,10 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
-    output_transport: Option<Box<crate::plugin_transport::Callback>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: crate::candidate_custody::NativeEndpointBank,
+    requested_physical_callback_frames: Option<u16>,
+    output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
@@ -1050,6 +1062,17 @@ pub struct Callback {
     test_after_fresh_runtime_apply_decision: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
     test_after_spectrum_target_boundary: Option<std::sync::Arc<std::sync::Barrier>>,
+}
+
+pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::candidate_custody::NativeEndpointBank::data_quote()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Some(0)
+    }
 }
 
 /// Allocate channels/telemetry on the control side. Initial graph must be
@@ -1096,6 +1119,7 @@ pub fn channel_with_spectrum(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                requested_physical_callback_frames: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
@@ -1115,6 +1139,9 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
+            requested_physical_callback_frames: None,
             output_transport: None,
             output_transport_cancelled: false,
             transport_setup_open: true,
@@ -1281,6 +1308,40 @@ impl PublicationControl {
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
+    }
+    /// The fixed device buffer requested by this output's actual constructor.
+    /// This is not proof of delivered callback shape or a physical deadline;
+    /// every foreign callback must still validate its real complete extent.
+    pub fn requested_physical_callback_frames_on_control(&self) -> Option<u16> {
+        self.requested_physical_callback_frames
+    }
+    /// Bind only while both exact constructor endpoints remain unexposed.
+    /// Device construction requests this fixed size before backend creation;
+    /// headless constructor fixtures may use the same finite delivery profile.
+    pub(crate) fn configure_physical_callback_request(
+        &mut self,
+        callback: &mut Callback,
+        frames: u16,
+    ) -> Result<(), Invalid> {
+        if frames == 0
+            || usize::from(frames) > hex_plugin_host::transport::MAX_FRAMES
+            || self.requested_physical_callback_frames.is_some()
+            || callback.requested_physical_callback_frames.is_some()
+            || self.revision != 0
+            || self.native_custody
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || !callback.transport_setup_open
+            || !callback.belongs_to_candidate_root(&self.candidate_root)
+            || !callback.matches_native_status(&self.status)
+        {
+            return Err(Invalid(
+                "physical callback request requires its vacant constructor",
+            ));
+        }
+        self.requested_physical_callback_frames = Some(frames);
+        callback.requested_physical_callback_frames = Some(frames);
+        Ok(())
     }
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
@@ -1649,6 +1710,13 @@ impl PublicationControl {
                 break;
             };
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.candidate_root.ingest_native_endpoint(endpoint) {
+                        self.held_control_return = Some(ReturnedPublication::Native(endpoint));
+                        break;
+                    }
+                }
                 ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.candidate_root.ingest_pages(pages) {
                         self.held_control_return = Some(ReturnedPublication::Domain(pages));
@@ -1923,13 +1991,14 @@ impl PublicationControl {
     pub fn prepare_output_transport_worker_on_control(
         &mut self,
         callback: &mut Callback,
-        binding: crate::plugin_transport::Binding,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
         quantum: u16,
         process: impl FnMut(
-            crate::plugin_transport::Block,
-        )
-            -> Result<crate::plugin_transport::Block, crate::plugin_transport::Fault>
-        + Send
+            hex_plugin_host::transport::Block,
+        ) -> Result<
+            hex_plugin_host::transport::Block,
+            hex_plugin_host::transport::Fault,
+        > + Send
         + 'static,
     ) -> Result<(), Invalid> {
         if self.native_custody
@@ -1948,7 +2017,7 @@ impl PublicationControl {
             binding.epoch,
             quantum,
         )?;
-        match crate::plugin_transport::spawn(control, worker, process) {
+        match crate::plugin_worker::spawn(control, worker, process) {
             Ok(reaper) => {
                 self.output_transport_reaper = Some(reaper);
                 Ok(())
@@ -1965,7 +2034,7 @@ impl PublicationControl {
     pub fn output_transport_completed_blocks_on_control(&self) -> Option<u64> {
         self.output_transport_reaper
             .as_ref()
-            .map(crate::plugin_transport::Reaper::completed_blocks)
+            .map(crate::plugin_worker::Reaper::completed_blocks)
     }
 }
 
@@ -1983,8 +2052,8 @@ impl Callback {
         quantum: u16,
     ) -> Result<
         (
-            crate::plugin_transport::Control,
-            crate::plugin_transport::Worker,
+            hex_plugin_host::transport::Control,
+            hex_plugin_host::transport::Worker,
         ),
         Invalid,
     > {
@@ -2000,13 +2069,13 @@ impl Callback {
                 "output transport requires an unexposed empty callback",
             ));
         }
-        let binding = crate::plugin_transport::Binding {
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
             root: self.candidate_root.root_id(),
             instance,
             graph: graph_revision,
             epoch,
         };
-        let (control, callback, worker) = crate::plugin_transport::channel(binding, quantum)
+        let (control, callback, worker) = hex_plugin_host::transport::channel(binding, quantum)
             .map_err(|_| Invalid("invalid output transport configuration"))?;
         self.output_transport = Some(Box::new(callback));
         Ok((control, worker))
@@ -2019,6 +2088,7 @@ impl Callback {
     }
 
     pub(crate) fn revoke_output_transport(&mut self) {
+        self.revoke_native_effects();
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -2033,7 +2103,7 @@ impl Callback {
             frames.fill([0.0; 2]);
             if self.status.playing.load(Relaxed) {
                 if let Some(transport) = self.output_transport.as_mut() {
-                    transport.reject(crate::plugin_transport::Fault::Revoked);
+                    transport.reject(hex_plugin_host::transport::Fault::Revoked);
                 }
                 return false;
             }
@@ -2045,14 +2115,14 @@ impl Callback {
         if transport.binding().graph != self.status.applied_revision.load(Acquire)
             || transport.binding().epoch != self.status.transport_epoch.load(Acquire)
         {
-            transport.reject(crate::plugin_transport::Fault::Identity);
+            transport.reject(hex_plugin_host::transport::Fault::Identity);
             return false;
         }
-        if self.gain_recording.has_take() || frames.len() > crate::plugin_transport::MAX_FRAMES {
-            transport.reject(crate::plugin_transport::Fault::Protocol);
+        if self.gain_recording.has_take() || frames.len() > hex_plugin_host::transport::MAX_FRAMES {
+            transport.reject(hex_plugin_host::transport::Fault::Protocol);
             return false;
         }
-        let mut input = [[0.0; 2]; crate::plugin_transport::MAX_FRAMES];
+        let mut input = [[0.0; 2]; hex_plugin_host::transport::MAX_FRAMES];
         input[..frames.len()].copy_from_slice(frames);
         // This finite stereo-output profile has no MIDI destination. Refuse
         // output events rather than silently claiming they reached a device.
@@ -2068,7 +2138,7 @@ impl Callback {
         };
         if transport
             .fault()
-            .is_some_and(|fault| fault != crate::plugin_transport::Fault::Revoked)
+            .is_some_and(|fault| fault != hex_plugin_host::transport::Fault::Revoked)
         {
             return Refused;
         }
@@ -2098,9 +2168,13 @@ impl Callback {
     }
     pub(crate) fn output_transport_error(&self) -> Option<Invalid> {
         self.output_transport
-            .as_ref()?
-            .fault()
+            .as_ref()
+            .and_then(|transport| transport.fault())
             .map(|fault| Invalid(fault.message()))
+            .or_else(|| {
+                self.native_effects_revoked()
+                    .then_some(Invalid("native effect callback refused"))
+            })
     }
 
     pub(crate) fn native_spectrum_receipt(
@@ -2147,6 +2221,16 @@ impl Callback {
         self.active = Some(ActivePublication::Candidate(active));
         self.status.publication_pending.store(false, Release);
         Ok(())
+    }
+    pub(crate) fn native_endpoint_bank_data_bytes(&self) -> Option<usize> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.native_sources.data_bytes()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            Some(0)
+        }
     }
     pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
@@ -2257,6 +2341,10 @@ impl Callback {
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
                         self.publications.pop().ok().map(|queued| match queued {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            QueuedPublication::Native(endpoint) => {
+                                ReturnedPublication::Native(endpoint)
+                            }
                             QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
                             QueuedPublication::Eligible(value) => {
                                 ReturnedPublication::Eligible(value.reject_before_install())
@@ -2277,6 +2365,12 @@ impl Callback {
                 self.terminal_disposal_pending = false;
             } else if let Some(value) = self.held_retirement.take() {
                 let refused = match value {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    ReturnedPublication::Native(endpoint) => self
+                        .candidate_root
+                        .ingest_native_endpoint(endpoint)
+                        .err()
+                        .map(ReturnedPublication::Native),
                     ReturnedPublication::Domain(pages) => {
                         if let Some(index) = pages.index_for(self.candidate_root.root_id())
                             && self.domain_pages[index].is_none()
@@ -2351,6 +2445,8 @@ impl Callback {
             }
         }
         self.return_requested_domain_pages();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.return_requested_native_sources();
         if self.status.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
@@ -2394,6 +2490,11 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::Native(endpoint) => {
+                            self.return_publication(ReturnedPublication::Native(endpoint));
+                            return;
+                        }
                         QueuedPublication::Domain(pages) => {
                             self.return_publication(ReturnedPublication::Domain(pages));
                             return;
@@ -2452,6 +2553,17 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                QueuedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self
+                        .native_sources
+                        .install(self.candidate_root.root_id(), endpoint)
+                    {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                    }
+                    self.consume_commands();
+                    return;
+                }
                 QueuedPublication::Domain(pages) => {
                     if let Some(index) = pages.index_for(self.candidate_root.root_id())
                         && self.domain_pages[index].is_none()
@@ -3027,6 +3139,14 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.native_effects_revoked() {
+            output.fill([0.0; 2]);
+            return if self.status.playing.load(Relaxed) {
+                Err(Invalid("native effect callback is revoked"))
+            } else {
+                Ok(())
+            };
+        }
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.status.closing.load(Acquire) {
@@ -3109,16 +3229,24 @@ impl Callback {
         } else {
             None
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed_with_project(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 node,
                 project.as_mut(),
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3132,9 +3260,12 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active
-                .playback
-                .render_with_signal_observers(output, node, project.as_mut())?;
+            active.playback.render_with_signal_observers(
+                output,
+                node,
+                project.as_mut(),
+                foreign,
+            )?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -3148,15 +3279,24 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 None,
+                None,
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3199,7 +3339,9 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.render(output)?;
+            active
+                .playback
+                .render_with_signal_observers(output, None, None, foreign)?;
         } else {
             output.fill([0.0; 2]);
         }

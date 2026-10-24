@@ -22,6 +22,37 @@ pub(super) fn preview(
         .checked_add(length)
         .map(BeatTime::from_raw)
         .ok_or(Invalid("section end overflow"))?;
+    preview_range(project, section, start, end)
+}
+
+pub(super) fn preview_resize(
+    project: &Project,
+    section: SectionId,
+    edge: crate::TrimEdge,
+    boundary: BeatTime,
+) -> Result<SectionSplicePreview, Invalid> {
+    let source = project
+        .arrangement_section(section)
+        .ok_or(Invalid("arrangement section no longer exists"))?;
+    let (start, end) = match edge {
+        crate::TrimEdge::Left => (boundary, source.end),
+        crate::TrimEdge::Right => (source.start, boundary),
+    };
+    preview_range(project, section, start, end)
+}
+
+fn preview_range(
+    project: &Project,
+    section: SectionId,
+    start: BeatTime,
+    end: BeatTime,
+) -> Result<SectionSplicePreview, Invalid> {
+    if start >= end {
+        return Err(Invalid("arrangement section range must be positive"));
+    }
+    let source = project
+        .arrangement_section(section)
+        .ok_or(Invalid("arrangement section no longer exists"))?;
     project.tempo_map().beat_to_frame(start)?;
     project.tempo_map().beat_to_frame(end)?;
     let mut sections = Vec::new();
@@ -80,7 +111,21 @@ pub(super) fn apply(
 ) -> Result<Created, Invalid> {
     // Editor calls this only on its private candidate; allocation refusal cannot
     // consume live IDs, discard redo or publish a partly carved marker set.
-    let mut result = preview(project, section, start)?;
+    let result = preview(project, section, start)?;
+    install(project, result)
+}
+
+pub(super) fn resize(
+    project: &mut Project,
+    section: SectionId,
+    edge: crate::TrimEdge,
+    boundary: BeatTime,
+) -> Result<Created, Invalid> {
+    let result = preview_resize(project, section, edge, boundary)?;
+    install(project, result)
+}
+
+fn install(project: &mut Project, mut result: SectionSplicePreview) -> Result<Created, Invalid> {
     for marker in &mut result.sections {
         if marker.id.value() == 0 {
             marker.id = SectionId(project.allocate_id()?);

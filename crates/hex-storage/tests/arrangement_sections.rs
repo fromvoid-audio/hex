@@ -401,3 +401,34 @@ fn split_markers_roundtrip_complete_current_state_and_stable_history() {
         after
     );
 }
+
+#[test]
+fn marker_resize_overlap_roundtrips_with_unchanged_music() {
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let before = editor.project().snapshot();
+    let sections = editor.project().arrangement_sections();
+    let id = sections[0].id();
+    let boundary = sections[1].end();
+    editor
+        .execute(Command::ResizeArrangementSectionMarker {
+            section: id,
+            edge: hex_project::TrimEdge::Right,
+            boundary,
+        })
+        .unwrap();
+    let after = editor.project().snapshot();
+    assert_eq!(after.arrangement_sections[0].end, boundary);
+    let mut music = after.clone();
+    music.arrangement_sections = before.arrangement_sections.clone();
+    assert_eq!(music, before);
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+            .unwrap()
+            .snapshot(),
+        after
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}

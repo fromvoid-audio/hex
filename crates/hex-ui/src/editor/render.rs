@@ -550,6 +550,16 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.sections.held() {
+                        let position = window.mouse_position();
+                        if view.update_section_pointer(
+                            f32::from(position.x),
+                            f32::from(position.y),
+                            event.modifiers,
+                        ) {
+                            cx.notify();
+                        }
+                    }
                     if view.refresh_piano_note_modifiers(event.modifiers, window) {
                         cx.notify();
                     }

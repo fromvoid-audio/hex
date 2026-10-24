@@ -176,8 +176,11 @@ impl SessionSourceConstruction {
         generation: u64,
         bank: &OwnedAudioInputs,
         arrangement_handles: usize,
+        effects: bool,
     ) -> Result<(), AudioStorageError> {
-        if !crate::native_device_resources::current_sampler::validate_project(project)? {
+        if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+            project, effects,
+        )? {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         self.reserve_scoped(project, generation, bank, arrangement_handles, true)

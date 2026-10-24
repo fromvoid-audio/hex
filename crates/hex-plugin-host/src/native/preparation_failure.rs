@@ -77,6 +77,16 @@ impl PreparationFailure {
     pub fn cause(&self) -> &Error {
         &self.cause
     }
+    /// Move the original diagnostic into enclosing control custody without
+    /// formatting or copying its backing. The failure retains all native and
+    /// endpoint owners; taking a cause proves no disposal or callback return.
+    /// A repeated take returns only the static transferred-cause marker.
+    pub fn take_cause_on_control(&mut self) -> Error {
+        std::mem::replace(
+            &mut self.cause,
+            Error::Protocol("native preparation cause transferred"),
+        )
+    }
     /// One nonblocking child observation. Cancellation has already targeted
     /// this exact lease. Timeout preserves it for subsequent reap observation;
     /// lost OS custody is sticky and never retries a numeric process wait.
@@ -109,7 +119,7 @@ impl PreparationFailure {
         };
         let (exit, custody_error) = match child.reap() {
             Ok(status) => (Some(status), None),
-            Err(error) => (None, Some(error.to_string())),
+            Err(error) => (None, Some(Box::new(error))),
         };
         Error::Preparation {
             cause: Box::new(self.cause),

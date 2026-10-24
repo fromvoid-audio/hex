@@ -12,6 +12,12 @@ pub struct Quiescent {
     facts: Facts,
 }
 impl Prepared {
+    /// Check the actual child and cancellation state before transferring this
+    /// unique lease to a worker. This is not graph admission or a future-liveness
+    /// guarantee; subsequent exchange failures remain terminal.
+    pub fn validate_worker_transfer_on_control(&mut self) -> Result<()> {
+        self.require_live_epoch()
+    }
     fn require_live_epoch(&mut self) -> Result<()> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
@@ -27,7 +33,7 @@ impl Prepared {
         self.lease.cancel_native();
         let (exit, custody_error) = match self.lease.child.reap() {
             Ok(status) => (Some(status), None),
-            Err(error) => (None, Some(error.to_string())),
+            Err(error) => (None, Some(Box::new(error))),
         };
         Error::Preparation {
             cause: Box::new(cause),
@@ -55,7 +61,7 @@ impl Prepared {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIQF01" {
+            if self.packet.magic() != b"HXVIQF02" {
                 return Err(Error::Protocol("missing actual quiescent acknowledgement"));
             }
             let facts =
@@ -132,7 +138,7 @@ impl Quiescent {
                     .or_else(|_| protocol::error(body, self.instance.config.binding))?;
                 return Err(Error::Worker(code));
             }
-            if self.instance.packet.magic() != b"HXVIRR01" {
+            if self.instance.packet.magic() != b"HXVIRR02" {
                 return Err(Error::Protocol("missing actual resumed acknowledgement"));
             }
             let applied = protocol::resumed(
@@ -150,6 +156,7 @@ impl Quiescent {
                 self.instance.config = config;
                 self.instance.ready.algorithmic_latency_frames =
                     self.facts.algorithmic_latency_frames;
+                self.instance.ready.tail_frames = self.facts.tail_frames;
                 self.instance.ready.presentation = applied;
                 Ok(self.instance)
             }

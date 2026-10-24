@@ -452,10 +452,16 @@ fn release_slot(bank: &mut NativeBank, stamp: Stamp, phase: Phase) -> bool {
     slot.retained = 0;
     slot.peak = 0;
     slot.domain_refs = [None; 2];
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        slot.native_refs = native_sources::References::default();
+    }
     bank.publication.archives[archive] = false;
     for token in domains.into_iter().flatten() {
         // All counts and exact associations were checked together before moves.
         bank.domains[token.slot].uses -= 1;
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    bank.sources.request_unreferenced_returns(&bank.publication);
     true
 }
