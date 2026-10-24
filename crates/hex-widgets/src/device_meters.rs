@@ -1,4 +1,8 @@
 //! Compact device meter gain controls; all labels and tooltip text come from the host.
+//! The clipped 8px signal well sits inside a 10px interactive surface. The gain
+//! handle occupies the extra 2px without expanding the host's compact meter strip.
+//! Its 2px height remains inside the well at both gain endpoints; read-only level
+//! meters retain their own clipped presentation and have no gain handle.
 use crate::ControlStyle;
 use gpui::{
     Context, Div, IntoElement, Render, SharedString, Window, div, prelude::*, px, relative, rgb,
@@ -29,7 +33,13 @@ pub(crate) fn well(
     let peak_height = fraction(held);
     let tooltip = readout.tooltips[index].clone();
     let selector = format!("{id}-{}-meter", if index == 0 { "input" } else { "output" });
-    crate::level_meter(
+    let gain = if readout.gain_db.is_finite() {
+        ((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)
+    } else {
+        60.0 / 84.0
+    };
+    let handle_selector = format!("{selector}-gain-handle");
+    let well = crate::level_meter(
         selector.clone().into(),
         height,
         false,
@@ -45,7 +55,6 @@ pub(crate) fn well(
             above: readout.clipping,
         },
     )
-    .id(SharedString::from(selector))
     .w(px(8.0))
     .h_full()
     .when(held > 0.0, |well| {
@@ -70,16 +79,33 @@ pub(crate) fn well(
             .h(px(1.0))
             .bg(rgb(style.text))
             .opacity(0.35),
-    )
-    .child(
-        div()
-            .absolute()
-            .bottom(relative(((readout.gain_db + 60.0) / 84.0).clamp(0.0, 1.0)))
-            .w_full()
-            .h(px(2.0))
-            .bg(rgb(readout.warning)),
-    )
-    .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
+    );
+    div()
+        .id(SharedString::from(selector))
+        .relative()
+        .w(px(10.0))
+        .h_full()
+        .flex_shrink_0()
+        .child(well)
+        .child(
+            // Travel excludes the handle's height, so neither endpoint clips.
+            div()
+                .absolute()
+                .top_0()
+                .bottom(px(2.0))
+                .left_0()
+                .w_full()
+                .child(
+                    div()
+                        .debug_selector(move || handle_selector.clone())
+                        .absolute()
+                        .top(relative(1.0 - gain))
+                        .w_full()
+                        .h(px(2.0))
+                        .bg(rgb(readout.warning)),
+                ),
+        )
+        .tooltip(move |_, cx| cx.new(|_| MeterTooltip(tooltip.clone(), style)).into())
 }
 fn fraction(amplitude: f32) -> f32 {
     if !amplitude.is_finite() || amplitude <= 0.0 {
