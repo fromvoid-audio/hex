@@ -1518,7 +1518,9 @@ impl EditorView {
         .absolute()
         .inset_0()]);
         let mut panel = div()
-            .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+            .h(px((self.clip_detail_body_height
+                - self.midi_velocity.visible_height())
+            .max(64.0)))
             .flex_shrink_0()
             .flex()
             .flex_row()
