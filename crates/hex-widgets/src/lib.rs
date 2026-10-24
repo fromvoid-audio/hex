@@ -9,7 +9,7 @@
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
 mod action;
-pub use action::{action, action_surface, round_action_surface};
+pub use action::{ROUND_ACTION_SIZE, action, action_surface, round_action_surface};
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 mod color_picker;

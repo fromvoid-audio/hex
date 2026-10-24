@@ -166,7 +166,7 @@ impl EditorView {
             || self.close_prompt_open
             || self.saving_project
             || self.save_dialog_open
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             self.error =
                 Some("finish the current project action before opening another project".into());
@@ -213,7 +213,7 @@ impl EditorView {
             || self.close_prompt_open
             || self.saving_project
             || self.save_dialog_open
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             return;
         }
