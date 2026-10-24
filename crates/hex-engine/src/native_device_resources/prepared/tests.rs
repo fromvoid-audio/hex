@@ -212,13 +212,13 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
             );
         }
         assert!(inline_resource_factory_bytes(factory, bound - 1).is_err());
-        let mut book = DeviceResourcePublication::reserve_on_control(limits, 8).unwrap();
+        let mut book = DeviceResourcePublication::reserve_on_control(limits, 8, 8).unwrap();
         let first = crate::playback::Playback::try_from_prepared_with_device_resources(
             Arc::clone(&revision),
             &resources,
         )
         .unwrap();
-        let first = match book.publish_on_control(first, 8, Ok::<_, ()>) {
+        let first = match book.publish_on_control(first, Ok::<_, ()>) {
             Ok(first) => first,
             Err(DeviceResourcePublishError::Resources { reason, .. }) => {
                 panic!("initial publication: {reason:?}")
@@ -231,7 +231,7 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
             &foreign,
         )
         .unwrap();
-        let refused = book.publish_admitted_on_control(next, 16, |candidate, prospective| {
+        let refused = book.publish_admitted_on_control(next, |candidate, prospective| {
             let sets = [&resources, &foreign];
             let revisions = [revision.as_ref(), next_revision.as_ref()];
             let registered = [
@@ -249,8 +249,9 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
                 construction_bytes: 0,
             };
             let inventory = inspect_device_resource_union(&phase, &phase, limits).unwrap();
-            assert_eq!(inventory.retained_frames, 4 + 16);
-            assert_eq!(inventory.construction_frames, 4 + 16);
+            // Two graphs share the same eight-frame derivative; the original is distinct.
+            assert_eq!(inventory.retained_frames, 4 + 8);
+            assert_eq!(inventory.construction_frames, 4 + 8);
             let too_small = AudioStorageLedgerReservation {
                 max_retained_bytes: inventory.retained.retained_bytes - 1,
                 ..limits
@@ -277,7 +278,7 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         let revisions = [revision.as_ref()];
         let registered = [
             DeviceResourceAdmission::new(&sets, &[]).with_prepared_revisions(&revisions),
-            book.admission_on_control(8),
+            book.admission_on_control(),
             DeviceResourceAdmission::unpublished_on_control(&next, Some(&captured)),
         ];
         let stores = [&store];
@@ -294,10 +295,10 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
             inspect_device_resource_union(&phase, &phase, limits)
                 .unwrap()
                 .retained_frames,
-            4 + 16
+            4 + 8
         );
         drop(next);
-        book.retire_on_control(Box::new(first));
+        assert!(book.retire_on_control(Box::new(first)).is_ok());
         assert_eq!(book.outstanding_leases(), 0);
     }
     let source_weak = Arc::downgrade(store.assets[0].1.owner.arc());
@@ -450,4 +451,109 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for FactoryDeclaration<'_> {
     fn as_any(&self) -> &dyn std::any::Any {
         self.original.as_any()
     }
+}
+
+fn pcm_playback(audio: Audio) -> crate::playback::Playback {
+    let clip = crate::Clip::new(audio, 0, 4, false).unwrap();
+    let track = crate::Track::new(vec![clip], 1.0, false).unwrap();
+    crate::playback::Playback::new(crate::Project::new(48_000, vec![track]).unwrap())
+}
+fn pcm_limits() -> AudioStorageLedgerReservation {
+    AudioStorageLedgerReservation {
+        data_rows: 256,
+        handle_rows: 256,
+        root_rows: 64,
+        max_retained_bytes: 2_000_000,
+        max_construction_peak_bytes: 2_000_000,
+    }
+}
+fn pcm_inventory(registered: &[DeviceResourceAdmission<'_>], originals: &[&Audio]) -> u64 {
+    let phase = DeviceResourcePhase {
+        stores: &[],
+        registered,
+        selections: &[],
+        outbound: &[],
+        legacy: originals,
+        checked_runtime_bytes: 0,
+        construction_bytes: 0,
+    };
+    let inventory = inspect_device_resource_union(&phase, &phase, pcm_limits()).unwrap();
+    assert_eq!(inventory.retained_frames, inventory.construction_frames);
+    inventory.retained_frames
+}
+#[test]
+fn pcm_union_counts_capacity_once_across_original_and_unpublished_aliases() {
+    let mut frames = Vec::with_capacity(37);
+    frames.resize(4, [0.25; 2]);
+    let audio = Audio::new(48_000, frames).unwrap();
+    let capacity = audio.pcm_capacity_frames() as u64;
+    let candidate = pcm_playback(audio.clone());
+    let views = [DeviceResourceAdmission::unpublished_on_control(
+        &candidate, None,
+    )];
+    assert_eq!(pcm_inventory(&views, &[&audio, &audio]), capacity);
+    // Content equality never deduplicates an independently allocated buffer.
+    let distinct = Audio::new(48_000, audio.frames().to_vec()).unwrap();
+    assert_eq!(
+        pcm_inventory(&views, &[&audio, &distinct]),
+        capacity + distinct.pcm_capacity_frames() as u64
+    );
+}
+#[test]
+fn pcm_publication_refusal_retirement_and_output_custody_keep_exact_backing_union() {
+    let audio = Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap();
+    let other = Audio::new(48_000, vec![[0.5; 2]; 4]).unwrap();
+    let mut book = DeviceResourcePublication::reserve_on_control(pcm_limits(), 8, 2).unwrap();
+    let accept = |result| match result {
+        Ok(playback) => playback,
+        Err(_) => panic!("publication refused"),
+    };
+    let first = accept(book.publish_on_control(pcm_playback(audio.clone()), Ok::<_, ()>));
+    let second = accept(book.publish_on_control(pcm_playback(audio.clone()), Ok::<_, ()>));
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[&audio]), 4);
+    // Full graph-record capacity refuses before invoking the enqueue closure.
+    assert!(matches!(
+        book.publish_on_control(pcm_playback(other.clone()), |_| -> Result<(), ()> {
+            panic!("enqueue called at capacity")
+        }),
+        Err(DeviceResourcePublishError::Resources { .. })
+    ));
+    assert!(
+        book.retire_on_control(Box::new(pcm_playback(other.clone())))
+            .is_err()
+    );
+    assert_eq!(book.unreturned_graphs_on_control(), 2);
+    assert!(book.retire_on_control(Box::new(first)).is_ok());
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 4);
+    let refused = book.publish_on_control(pcm_playback(other.clone()), Err::<(), _>);
+    let Err(DeviceResourcePublishError::Publication(returned)) = refused else {
+        panic!("queue refusal")
+    };
+    assert_eq!(book.unreturned_graphs_on_control(), 1);
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 4);
+    // Retry the exact returned owner; the refused capture committed no record.
+    let third = accept(book.publish_on_control(returned, Ok::<_, ()>));
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 8);
+    assert!(book.retire_on_control(Box::new(second)).is_ok());
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 4);
+    assert!(book.retire_on_control(Box::new(third)).is_ok());
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 0);
+}
+
+#[test]
+fn pcm_retired_output_book_retains_backing_until_control_releases_custody() {
+    let audio = Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap();
+    let weak = Arc::downgrade(&audio.frames);
+    let mut book = DeviceResourcePublication::reserve_on_control(pcm_limits(), 8, 2).unwrap();
+    let graph = match book.publish_on_control(pcm_playback(audio), Ok::<_, ()>) {
+        Ok(graph) => graph,
+        Err(_) => panic!("publication"),
+    };
+    // Shutdown can destroy the output graph before exclusive fresh-output custody.
+    // Its detached book still accounts for and retains the old PCM on control.
+    drop(graph);
+    assert!(weak.upgrade().is_some());
+    assert_eq!(pcm_inventory(&[book.admission_on_control()], &[]), 4);
+    drop(book);
+    assert!(weak.upgrade().is_none());
 }
