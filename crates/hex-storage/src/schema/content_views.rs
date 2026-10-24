@@ -306,6 +306,67 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
 mod tests {
     use hex_project::{Command, Editor};
     #[test]
+    fn schema41_refuses_unbounded_negative_frame_base_before_projection_math() {
+        use hex_project::{
+            AudioDomainClock, AudioViewMode, AudioViewPlacement, Created, Project,
+            TrackContentSnapshot,
+        };
+        let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "original".into(),
+                path: "Original.wav".into(),
+                sample_rate: 8_000,
+                frames: 8_000,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture")
+        };
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let mut snapshot = editor.project().snapshot();
+        let clips = match &mut snapshot.tracks[0].content {
+            TrackContentSnapshot::Audio(clips)
+            | TrackContentSnapshot::Hybrid {
+                audio_clips: clips, ..
+            } => clips,
+            _ => panic!("audio fixture"),
+        };
+        let view = clips[0]
+            .edit
+            .as_mut()
+            .unwrap()
+            .content_view
+            .as_mut()
+            .unwrap();
+        view.base_view_start = 1_000;
+        view.base_view_end = 2_000;
+        view.base_placement = Some(AudioViewPlacement {
+            mode: AudioViewMode::Once,
+            outer_length: AudioDomainClock::Frames(8_000),
+            cycle_phase: 0,
+        });
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let original = crate::encode(&project).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        for delta in [i128::MIN + 1, -2 * i128::from(u64::MAX) - 1, i128::MAX] {
+            let mut invalid = document.clone();
+            invalid["content_views"][0]["view"]["view"]["base_start_delta"] =
+                delta.to_string().into();
+            assert!(crate::decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+        }
+        let mut negative = document;
+        negative["content_views"][0]["view"]["view"]["base_start_delta"] = "-1000".into();
+        assert!(
+            crate::decode(&serde_json::to_vec(&negative).unwrap()).is_ok(),
+            "a retained base before zero remains legal"
+        );
+        assert_eq!(
+            crate::decode(&original).unwrap().snapshot(),
+            project.snapshot()
+        );
+    }
+    #[test]
     fn schema41_migrates_genuine40_and_roundtrips_complete_directed_state() {
         for bytes in [
             include_bytes!("../../tests/fixtures/content-views/schema40-audio-4c66f735.json")

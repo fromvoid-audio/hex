@@ -104,6 +104,12 @@ impl<'a> AudioViewProjection<'a> {
             let base = current
                 .checked_add(content.base_start_delta)
                 .ok_or(Invalid("audio content base overflow"))?;
+            // Use the same bounded signed context as musical projection. Frame
+            // bases may be virtual and negative, but must leave room for the
+            // retained u64 crop/phase arithmetic before applying displacement.
+            if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&base) {
+                return Err(Invalid("audio content base exceeds bounded clock context"));
+            }
             let beat = matches!(clock, AudioDomainClock::Beats(_));
             let base_frame = if beat {
                 audio_projection_frame(tempo, base)?
