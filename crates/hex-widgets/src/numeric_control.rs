@@ -103,6 +103,8 @@ pub enum NumericControlAppearance {
     InlineValue,
     /// A compact filled rectangle with an internal editable readout.
     CompactSlider,
+    /// A centered label above a thin horizontal fill with an editable readout.
+    LabeledSlider,
     /// One filled mixer field with centered editable text and upward scrubbing.
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
@@ -111,6 +113,7 @@ pub enum NumericControlAppearance {
 
 #[cfg(test)]
 mod compact_slider_tests;
+mod vertical_fader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericEventPhase {
@@ -1282,7 +1285,6 @@ impl NumericControl {
     fn slider_element(
         &self,
         value: f32,
-        vertical: bool,
         text: NumericTextElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1291,7 +1293,6 @@ impl NumericControl {
             text,
             SliderPresentation {
                 value,
-                vertical,
                 bipolar: self.spec.scale() == crate::NumericScale::Bipolar,
                 field: ValueFieldPresentation {
                     invalid: self.invalid_text,
@@ -1634,6 +1635,37 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::LabeledSlider) => {
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .min_w(px(60.0))
+                    .h(px(32.0))
+                    .gap(px(1.0))
+                    .items_center()
+                    .track_focus(&self.focus)
+                    .key_context(key_context)
+                    .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(14.0))
+                            .text_center()
+                            .overflow_hidden()
+                            .text_size(px(style.font_size))
+                            .text_color(rgb(if enabled { style.muted } else { style.border }))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .w_full()
+                            .h(px(14.0))
+                            .child(self.slider_element(value, value_text, cx)),
+                    )
+            }
             (
                 NumericControlKind::HorizontalSlider,
                 NumericControlAppearance::FilledSlider | NumericControlAppearance::CompactSlider,
@@ -1653,7 +1685,7 @@ impl gpui::Render for NumericControl {
                 .track_focus(&self.focus)
                 .key_context(key_context)
                 .on_mouse_down(MouseButton::Left, self.value_mouse_down_listener(cx))
-                .child(self.slider_element(value, false, value_text, cx)),
+                .child(self.slider_element(value, value_text, cx)),
             (NumericControlKind::HorizontalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1673,7 +1705,7 @@ impl gpui::Render for NumericControl {
                         .text_color(rgb(if enabled { style.muted } else { style.border }))
                         .child(label),
                 )
-                .child(self.slider_element(value, false, value_text, cx)),
+                .child(self.slider_element(value, value_text, cx)),
             (NumericControlKind::VerticalSlider, _) => div()
                 .id(self.id.clone())
                 .flex()
@@ -1694,7 +1726,16 @@ impl gpui::Render for NumericControl {
                         .text_center()
                         .child(label),
                 )
-                .child(self.slider_element(value, true, value_text, cx)),
+                .child(self.vertical_fader(value, cx))
+                .child(value_field(
+                    self.id.clone(),
+                    value_text,
+                    self.invalid_text,
+                    self.editing,
+                    enabled,
+                    style,
+                    self.value_mouse_down_listener(cx),
+                )),
         };
 
         let selected =
@@ -1999,10 +2040,9 @@ fn value_field_sized(
         .child(child)
 }
 
-/// One rectangular field for both orientations; only fill geometry changes.
+/// Horizontal filled field; vertical controls use their separate fader geometry.
 struct SliderPresentation {
     value: f32,
-    vertical: bool,
     bipolar: bool,
     field: ValueFieldPresentation,
 }
@@ -2015,7 +2055,6 @@ fn filled_slider(
 ) -> impl IntoElement {
     let SliderPresentation {
         value,
-        vertical,
         bipolar,
         field,
     } = presentation;
@@ -2026,16 +2065,9 @@ fn filled_slider(
     let fill = div()
         .debug_selector(move || fill_id.clone())
         .absolute()
-        .when(vertical, |fill| {
-            fill.bottom(relative(value.min(origin)))
-                .h(relative((value - origin).abs()))
-                .w_full()
-        })
-        .when(!vertical, |fill| {
-            fill.left(relative(value.min(origin)))
-                .w(relative((value - origin).abs()))
-                .h_full()
-        })
+        .left(relative(value.min(origin)))
+        .w(relative((value - origin).abs()))
+        .h_full()
         .bg(rgb(if field.enabled {
             field.style.accent
         } else {
@@ -2048,9 +2080,8 @@ fn filled_slider(
         .flex()
         .flex_1()
         .min_w(px(46.0))
-        .when(vertical, |bar| bar.w_full().min_h(px(32.0)))
         // Keep the surrounding row's hit area while thinning the painted field.
-        .when(!vertical, |bar| bar.h(px(14.0)))
+        .h(px(14.0))
         .overflow_hidden()
         .bg(rgb(field.style.rail))
         .child(fill)
@@ -2059,12 +2090,9 @@ fn filled_slider(
                 div()
                     .debug_selector(move || center_id.clone())
                     .absolute()
-                    .when(vertical, |mark| {
-                        mark.bottom(relative(0.5)).h(px(1.0)).w_full()
-                    })
-                    .when(!vertical, |mark| {
-                        mark.left(relative(0.5)).w(px(1.0)).h_full()
-                    })
+                    .left(relative(0.5))
+                    .w(px(1.0))
+                    .h_full()
                     .bg(rgb(field.style.muted))
                     .opacity(0.6),
             )
