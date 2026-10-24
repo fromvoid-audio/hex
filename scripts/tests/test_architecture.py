@@ -48,6 +48,8 @@ class ArchitectureDocumentationTests(unittest.TestCase):
                 self.assertIn("crate doc comments must define", output)
 
     def test_documented_crate_still_refuses_forbidden_platform_dependency(self):
-        code, output = self.run_guard(dependencies=[{"name": "cpal", "kind": None}])
-        self.assertEqual(code, 1)
-        self.assertIn("cpal belongs in its declared platform/UI boundary", output)
+        for name in ("cpal", "qos-threads"):
+            with self.subTest(dependency=name):
+                code, output = self.run_guard(dependencies=[{"name": name, "kind": None}])
+                self.assertEqual(code, 1)
+                self.assertIn(f"{name} belongs in its declared platform/UI boundary", output)
