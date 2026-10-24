@@ -1265,6 +1265,9 @@ impl EditorView {
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path.with_file_name("audio-import.json"),
         );
+        let controller_input = controller_input::ControllerInput::new(
+            theme_preferences_path.with_file_name("midi-input.json"),
+        );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -1396,7 +1399,7 @@ impl EditorView {
             recovery_failure: None,
             recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
-            controller_input: controller_input::ControllerInput::default(),
+            controller_input,
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             audio_event_editor: audio_event_editor::State::default(),
@@ -1516,6 +1519,7 @@ impl EditorView {
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
+        view.start_controller_preferences_load(cx);
         view
     }
 
