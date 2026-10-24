@@ -292,6 +292,7 @@ impl gpui::Render for Toggle {
                 self.style.surface
             }))
             .track_focus(&self.focus)
+            .when(self.enabled, |root| root.hover(|hover| hover.opacity(0.8)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_key_down(cx.listener(Self::key_down))
             .cursor(if self.enabled {

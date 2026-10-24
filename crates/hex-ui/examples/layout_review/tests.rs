@@ -148,9 +148,9 @@ fn selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footpri
     );
     assert_eq!(
         visual.rendered_background("fixture-header-bypass-indicator"),
-        Some(gpui::Background::from(rgb(theme::color(
-            theme::PaletteRole::Border
-        ))))
+        Some(gpui::Background::from(
+            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Border))).opacity(0.8)
+        ))
     );
 }
 
@@ -182,7 +182,7 @@ fn header_power_toggle_keeps_owner_state_when_disabled_and_has_a_full_hit_target
     visual.simulate_mouse_move(target.center(), None, Modifiers::default());
     visual.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    assert_eq!(
+    assert_ne!(
         visual.rendered_background("fixture-header-bypass-indicator"),
         on
     );
@@ -214,6 +214,12 @@ fn header_power_toggle_keeps_owner_state_when_disabled_and_has_a_full_hit_target
     );
     visual.run_until_parked();
     view.read_with(cx, |v, _| assert!(!v.bypassed));
+    visual.simulate_mouse_move(
+        gpui::point(px(500.0), px(500.0)),
+        None,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
     assert_eq!(
         visual.rendered_background("fixture-header-bypass-indicator"),
         on
