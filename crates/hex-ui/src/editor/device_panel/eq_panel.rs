@@ -20,6 +20,10 @@ mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
+pub(super) use spectrum::{
+    is_eq as is_spectrum_eq, result as spectrum_result, sync_visible as sync_visible_spectra,
+    toggle as spectrum_toggle,
+};
 
 // Outer five percent of the inset plot: side cuts precede bottom notches.
 // Existing node hits retain priority through the response graph owner.
@@ -223,7 +227,6 @@ pub(super) fn render_body(
         creation_idle && displayed.nodes.len() < eq::MAX_NODES && panel.creation.is_none();
     let bank = panel.bank;
     let entity = panel.entity.clone();
-    spectrum::sync_selected(view, device, owner);
     let model = response_model(
         view,
         device,
@@ -309,7 +312,7 @@ pub(super) fn render_body(
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
     toolbar = {
-        let control = spectrum::toggle(view, cx, device, owner);
+        let control = spectrum::toggle(view, cx, device, owner, eq::EQ_TYPE_ID);
         toolbar.child(control)
     };
     let show_input = view
@@ -723,18 +726,7 @@ fn response_model(
         })
         .collect();
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    let spectra = view.device_panel.spectrum_result.as_ref().filter(|result| {
-        view.audio
-            .as_ref()
-            .and_then(|audio| audio.control.spectrum_desired())
-            .is_some_and(|target| {
-                target.identity == identity
-                    && target.token == result.output.stamp.target
-                    && target.project_generation == result.output.stamp.generation
-                    && target.sample_rate_hz == result.output.stamp.sample_rate_hz
-                    && result.output.stamp.applied_revision >= target.activation_floor
-            })
-    });
+    let spectra = spectrum::result(view, identity);
     let show_input = view
         .device_panel
         .eq_panels

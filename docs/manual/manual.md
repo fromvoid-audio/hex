@@ -364,6 +364,11 @@ release to keep the band as one undoable edit. vertical movement changes q for a
 cut or notch, or the gain of a bell. existing
 nodes keep their own selection and drag targets. press **escape** to cancel.
 
+each visible eq has its own live spectrum, including eqs on return and main
+tracks. selecting another device keeps these spectra running. use **spectrum**
+on an eq to turn only its analyzer off or on. a hidden device panel stops its
+analyzer; missing or stale audio clears the live curve.
+
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual
 does not promise a complete third-party plugin-hosting workflow.

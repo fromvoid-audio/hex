@@ -113,21 +113,6 @@ pub(super) fn render(
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
     if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.spectrum_desired()
-        && target.identity.owner == owner.processor()
-        && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
-                && matches!(
-                    target.identity.device_type.as_str(),
-                    Ok("hex.eq8" | "hex.eq")
-                )
-        })
-    {
-        let _ = audio.control.spectrum_clear();
-        view.device_panel.spectrum_result = None;
-    }
-    if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.audition_desired()
         && target.identity.owner == owner.processor()
         && !devices.iter().any(|device| {
