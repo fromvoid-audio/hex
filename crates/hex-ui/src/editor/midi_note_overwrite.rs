@@ -1,4 +1,4 @@
-//! Thin held-paint adapter for canonical per-source note overwrite geometry.
+//! Thin held/released-paint adapter for canonical per-source note overwrite geometry.
 use super::{
     EditorView,
     midi_scene::{MidiScene, NoteGeometry},
@@ -13,7 +13,7 @@ impl EditorView {
         &self,
         source: &MidiSource,
     ) -> Result<Option<MidiNoteOverwritePreview>, Invalid> {
-        if let Some(gesture) = self.midi_note_gesture {
+        if let Some(gesture) = self.displayed_midi_note_gesture() {
             return source
                 .preview_note_overwrite(
                     &[gesture.note],
@@ -27,7 +27,7 @@ impl EditorView {
                 )
                 .map(Some);
         }
-        if let Some(gesture) = &self.midi_group_gesture {
+        if let Some(gesture) = self.displayed_midi_group_gesture() {
             let originals = gesture.shared_originals();
             let mut removed = Vec::new();
             let mut authored = Vec::new();

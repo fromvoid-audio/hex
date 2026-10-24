@@ -158,6 +158,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
 
     let clips = (3..3 + MAX_CLIPS as u64)
         .map(|id| ClipSnapshot {
+            active: true,
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             edit: None,
@@ -174,6 +175,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),

@@ -251,6 +251,7 @@ enum Disposal {
 // One exact handle location per Arrangement clip, not a content/key identity.
 // Geometry is a compiler intermediate; no source owner escapes through views.
 struct SourceSlot {
+    active: bool,
     track: hex_project::TrackId,
     clip: hex_project::ClipId,
     source: usize,
@@ -1328,6 +1329,7 @@ impl AudioPreparationCustody {
                     .validate_segment(clip.duration())
                     .map_err(|_| AudioStorageError::SourceMismatch)?;
                 slots.push(SourceSlot {
+                    active: clip.active(),
                     track: track.id(),
                     clip: clip.id(),
                     source,

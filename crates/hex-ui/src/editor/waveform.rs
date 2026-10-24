@@ -1,7 +1,8 @@
 use crate::theme;
-use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
+use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
@@ -11,7 +12,6 @@ use super::waveform_geometry::{
 
 pub(super) use super::waveform_geometry::WaveformGrid;
 
-const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
@@ -44,6 +44,17 @@ pub(super) fn preview_waveform_view_cached(
         return None;
     }
     if let Some(edit) = preview.audio_edit() {
+        // Placement sampling owns repeat wraps for both ordinary crop/loop
+        // changes and canonical Shift-Warp root retiming.
+        if edit.placement.is_some() {
+            return super::waveform_loop::loop_waveform_view(
+                request,
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            );
+        }
         if original
             .audio_edit()
             .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
@@ -60,6 +71,71 @@ pub(super) fn preview_waveform_view_cached(
         // A crop shares the immutable full processing root. A changed root must
         // supply its own validated preview projection, never raw-asset peaks.
         if !Arc::ptr_eq(&old.domain, &edit.domain) {
+            return None;
+        }
+        if let (Some(before), Some(after)) = (old.content_view, edit.content_view) {
+            let prepared = prepared?;
+            if prepared.offset != 0
+                || prepared.length != original.duration()
+                || u64::try_from(prepared.waveform.source_frames).ok()? != original.duration()
+                || before.window.reversed != after.window.reversed
+            {
+                return None;
+            }
+            let a = hex_project::AudioViewProjection::new(original, tempo).ok()?;
+            let b = hex_project::AudioViewProjection::new(preview, tempo).ok()?;
+            // Retain accepted finite output. Never treat its already-directed
+            // PCM peaks as the full forward processing root a second time.
+            let same_base = before.base_view_start == after.base_view_start
+                && before.base_view_end == after.base_view_end
+                && before.base_placement == after.base_placement;
+            let linear = before.base_placement.is_none() && after.base_placement.is_none();
+            if !(same_base || linear) || a.root_origin() != b.root_origin() {
+                return None;
+            }
+            let displacement = b.base_reference_start() - a.base_reference_start();
+            let elapsed = if before.window.reversed {
+                i128::from(before.window.end) - i128::from(after.window.end) - displacement
+            } else {
+                i128::from(after.window.start) + displacement - i128::from(before.window.start)
+            };
+            let current = |clip: &Clip, edit: &hex_project::AudioClipEdit| {
+                edit.reference_start_raw()
+                    .unwrap_or(i128::from(clip.start()))
+            };
+            if current(preview, edit) - current(original, old) != elapsed {
+                return None;
+            }
+            let (timeline_origin, root_offset) = if elapsed >= 0 {
+                let elapsed = u64::try_from(elapsed).ok()?;
+                if elapsed >= before.window.length().ok()? {
+                    return None;
+                }
+                (
+                    preview.start(),
+                    a.frame_at_elapsed(elapsed)
+                        .ok()?
+                        .checked_sub(original.start())?,
+                )
+            } else {
+                // Outward extension has no accepted peaks outside this range.
+                // Keep the known finite PCM visible at its existing position.
+                (original.start(), 0)
+            };
+            return Some(timeline_waveform_view_cached(
+                Arc::clone(&prepared.waveform),
+                WaveformMapping::Prepared {
+                    timeline_origin,
+                    root_offset,
+                    gain: preview.gain(),
+                },
+                visible_start,
+                visible_end,
+                cache,
+                grid,
+            ));
+        }
+        if old.content_view.is_some() || edit.content_view.is_some() {
             return None;
         }
         let (old_origin, old_length, old_offset, _) = old.projected_domain(tempo).ok()?;
@@ -218,22 +294,26 @@ pub(super) fn waveform_canvas(
     grid: Option<WaveformGrid>,
 ) -> Div {
     let mapping = mapping.clone();
-    waveform_surface(canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
+    waveform_plot(
+        move |paint| {
+            #[cfg(all(test, feature = "ui-test-support"))]
+            let _navigation_timer = super::navigation_metrics::Timer::start(
+                super::navigation_metrics::Stage::WaveformProvider,
+            );
+            let bounds = paint.bounds;
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
             if visible_start >= visible_end || width <= 0.0 || height <= 0.0 {
-                return;
+                return None;
             }
-            let columns = waveform_column_count(width, window.scale_factor());
+            let columns = waveform_column_count(width, paint.scale);
             let geometry = cache.as_ref().and_then(|cache| {
                 let request = WaveformGeometryRequest {
                     mapping: &mapping,
                     visible_start,
                     visible_end,
                     bounds,
-                    scale: window.scale_factor(),
+                    scale: paint.scale,
                     columns,
                     grid,
                 };
@@ -251,30 +331,23 @@ pub(super) fn waveform_canvas(
                 )
                 .map(Arc::new)
             });
-            if let Some(geometry) = geometry {
-                #[cfg(all(test, feature = "ui-test-support"))]
+            #[cfg(all(test, feature = "ui-test-support"))]
+            if let Some(geometry) = &geometry {
                 if let Some(cache) = &cache
                     && let Ok(mut cache) = cache.try_borrow_mut()
                 {
-                    cache.record_paint(bounds, window.content_mask().bounds, &geometry);
-                }
-                for channel in &geometry.channels {
-                    window.paint_path(
-                        channel.centerline.clone(),
-                        rgb(theme::color(theme::PaletteRole::Border)),
-                    );
-                    window.paint_path(channel.waveform.clone(), rgb(0x000000));
+                    cache.record_paint(bounds, paint.mask, geometry);
                 }
             }
+            geometry
         },
-    ))
-}
-
-fn waveform_surface<T: 'static>(canvas: gpui::Canvas<T>) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .children([canvas.absolute().inset_0()])
+        WaveformColors {
+            waveform: 0x000000,
+            inactive: 0x000000,
+            centerline: theme::color(theme::PaletteRole::Border),
+        },
+        WaveformEmphasis::Uniform,
+    )
 }
 
 pub(super) fn waveform_column_count(width: f32, scale: f32) -> usize {
@@ -293,19 +366,20 @@ pub(super) fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32
 // Sample inside each fade as well as across the viewport, so a short curved fade
 // on a long clip never collapses to a straight line between its endpoint knots.
 fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
-    // Invert the rational law only to choose drawing coordinates. The canonical
-    // gain_at method still supplies every ordinate. Uniform gain spacing keeps
-    // even extreme bends accurate near their steep endpoint.
-    let at_gain = |length: u64, index: usize, curve: i16| {
-        let gain = index as f64 / 32.0;
-        let c = f64::from(curve);
-        let fraction = gain * (1001.0 + c) / (1001.0 - c + 2.0 * c * gain);
+    // Invert the canonical two-axis law for drawing coordinates only. Uniform
+    // gain spacing resolves steep bends; playback still uses gain_at directly.
+    let at_gain = move |length: u64, index: usize, out: bool| {
+        let fraction = fade
+            .position_at_gain(out, index as f64 / 32.0)
+            .unwrap_or(0.5);
         ((fraction * length.saturating_sub(1) as f64).round() as u64).min(length.saturating_sub(1))
     };
     let out_end = fade.span() - fade.out_end_offset();
     let midpoints = [
-        (fade.in_curve() != 0).then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
-        (fade.out_curve() != 0).then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
+        (fade.in_curve() != 0 || fade.in_position() != 500)
+            .then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
+        (fade.out_curve() != 0 || fade.out_position() != 500)
+            .then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
     ];
     fade.breakpoints()
         .into_iter()
@@ -315,12 +389,13 @@ fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
             (1..32)
                 .flat_map(move |index| {
                     [
-                        (fade.in_curve() != 0 && fade.fade_in() > 1).then_some(
-                            fade.in_start() + at_gain(fade.fade_in(), index, fade.in_curve()),
-                        ),
-                        (fade.out_curve() != 0 && fade.fade_out() > 1).then_some(
-                            out_end - 1 - at_gain(fade.fade_out(), index, fade.out_curve()),
-                        ),
+                        ((fade.in_curve() != 0 || fade.in_position() != 500) && fade.fade_in() > 1)
+                            .then(|| fade.in_start() + at_gain(fade.fade_in(), index, false)),
+                        ((fade.out_curve() != 0 || fade.out_position() != 500)
+                            && fade.fade_out() > 1)
+                            .then(|| {
+                                out_end - fade.fade_out() + at_gain(fade.fade_out(), index, true)
+                            }),
                     ]
                 })
                 .flatten(),
@@ -612,43 +687,55 @@ pub(super) fn button(
     tooltip: &'static str,
     id: (&'static str, u64),
 ) -> gpui::Stateful<Div> {
-    div()
+    button_surface(
+        hex_widgets::action(theme::text(label), theme::action_style()),
+        tooltip,
+        id,
+    )
+}
+
+/// Tooltip/identity adapter; stateful callers resolve their hover colors before
+/// the shared widget is built, rather than installing a second GPUI hover style.
+pub(super) fn toggle_button_with_style(
+    label: &'static str,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+    style: hex_widgets::ActionStyle,
+) -> gpui::Stateful<Div> {
+    button_surface(
+        hex_widgets::toggle_action(theme::text(label), style),
+        tooltip,
+        id,
+    )
+}
+
+fn button_surface(
+    surface: Div,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+) -> gpui::Stateful<Div> {
+    surface
         .id(id)
         .w(px(19.0))
         .h(px(21.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 name: tooltip.to_string(),
             })
             .into()
         })
-        .child(theme::text(label))
 }
 
 pub(super) struct ClipTooltip {
+    pub(super) kind: crate::tooltips::Kind,
     pub(super) name: String,
 }
 
 impl Render for ClipTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .font_family(theme::FONT_FAMILY)
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(&self.name))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::tooltips::view(&self.kind, &self.name, cx)
     }
 }
 
@@ -667,7 +754,7 @@ mod tests {
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
-        use gpui::{IntoElement, point, size};
+        use gpui::{IntoElement, div, point, size};
         use std::{cell::Cell, rc::Rc};
 
         let visual = cx.add_empty_window();
@@ -682,12 +769,18 @@ mod tests {
                         .w(px(width))
                         .h(px(44.0))
                         .relative()
-                        .children([waveform_surface(canvas(
-                            |_, _, _| (),
-                            move |bounds, _, _, _| {
-                                result.set(Some(bounds));
+                        .children([waveform_plot(
+                            move |paint| {
+                                result.set(Some(paint.bounds));
+                                None::<Rc<hex_widgets::WaveformGeometry>>
                             },
-                        ))])
+                            WaveformColors {
+                                waveform: 0,
+                                inactive: 0,
+                                centerline: 0,
+                            },
+                            WaveformEmphasis::Uniform,
+                        )])
                         .into_element()
                 },
             );
@@ -911,6 +1004,23 @@ mod tests {
             .expect("short curve interior survives zoom out");
         assert_eq!(midpoint.1, curved.gain_at(120));
         assert!(midpoint.1 < 0.2);
+        for (horizontal, knot) in [
+            (fade.with_curve_positions(250, 500).unwrap(), 60),
+            (
+                ClipFade::new(1_000_000, 0, 0, 241)
+                    .unwrap()
+                    .with_curve_positions(500, 750)
+                    .unwrap(),
+                999_939,
+            ),
+        ] {
+            let samples = fade_envelope_samples(horizontal, 0, 0, 1_000_000);
+            let anchor = samples
+                .iter()
+                .find(|(x, _)| (*x - knot as f32 / 999_999.0).abs() < f32::EPSILON)
+                .expect("horizontal-only curve anchor survives zoom out");
+            assert_eq!(anchor.1, 0.5);
+        }
     }
 
     #[test]

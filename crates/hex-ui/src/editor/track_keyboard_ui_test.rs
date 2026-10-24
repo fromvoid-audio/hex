@@ -67,7 +67,7 @@ fn editor_window(
 }
 
 #[gpui::test]
-fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppContext) {
+fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let directory = TrackTestDirectory::new();
     let (project, _, _, _) = audio_project();
@@ -79,7 +79,7 @@ fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppCont
     visual.simulate_keystrokes("cmd-t");
     let command = editor.read_with(&visual, |view, _| {
         assert!(
-            matches!(&view.last_enqueued_edit, Some(Command::AddTrack {name}) if name == "audio 3")
+            matches!(&view.last_enqueued_edit, Some(Command::InsertTrack {name, before_track: None}) if name == "audio 3")
         );
         view.last_enqueued_edit.clone().unwrap()
     });

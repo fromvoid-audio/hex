@@ -27,9 +27,39 @@ pub struct ResidentFreshRuntimeFence {
     pub route_generation: u64,
     pub admitted_command_ticket: u64,
 }
+/// One callback-observed source and transport witness under the arrangement gate.
+#[derive(Clone, Copy, Debug)]
+pub struct ArrangementEditPosition {
+    pub frame: u64,
+    pub playing: bool,
+    pub section_loop: Option<hex_project::LoopRegion>,
+}
+impl ArrangementEditPosition {
+    /// Validate control-side scalar observations. This grants no fence or resource custody.
+    pub fn from_frames(
+        frame: u64,
+        playing: bool,
+        section_loop: Option<(u64, u64)>,
+    ) -> Result<Self, String> {
+        let section_loop = section_loop
+            .map(|(start, end)| {
+                hex_project::LoopRegion::new(start, end, true).map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        Ok(Self {
+            frame,
+            playing,
+            section_loop,
+        })
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
     InheritRuntime,
+    /// The sink owns the shared arrangement gate through exact callback installation.
+    /// A playing witness inherits the actual boundary runtime; a stopped witness
+    /// installs its prepared musical cursor.
+    ArrangementEdit,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
     /// New/Open only: admit one exact pending owner before canonical generation replacement.
@@ -37,6 +67,10 @@ pub enum ResidentPublicationPolicy {
     /// This never converts ordinary queue pressure into offline acceptance.
     ReplaceDocument,
     FreshIfUnchanged(ResidentFreshRuntimeFence),
+    SectionWhenReady {
+        fence: ResidentFreshRuntimeFence,
+        quantization: hex_engine::LaunchQuantization,
+    },
 }
 /// Successful worker acceptance is either an actual queue submission or explicit offline custody.
 /// Only the callback's exact output/revision observation establishes application.
@@ -119,6 +153,21 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    /// A bounded stopped Arrangement handshake, shared by structural edits and
+    /// in-place bounce/history. The historical method name transfers no custody.
+    fn begin_section_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _allow_playing: bool,
+    ) -> Result<(), String> {
+        Err("native arrangement edits are unavailable".into())
+    }
+    /// Callback-observed transport. None means the command prefix is pending.
+    fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
+        None
+    }
+    /// Precommit cancellation only. Accepted publication retains its gate.
+    fn cancel_section_edit(&mut self) {}
     fn begin_sampler_edit(
         &mut self,
         _context: hex_engine::AudioSourceContext,

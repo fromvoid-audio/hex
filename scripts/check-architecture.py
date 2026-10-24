@@ -14,6 +14,9 @@ ALLOWED = {
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
     'hex-plugin-catalog': {'hex-plugin-scan'},
+    'hex-plugin-state': {'hex-lattice-contract'},
+    # Ordinary control/worker client; never callback, process-global signals or graph authority.
+    'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract', 'hex-audio'},
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract', 'hex-tuning'},
@@ -41,6 +44,8 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Real generic project/file/history round trips, never runtime state I/O.
+    'hex-storage': {'hex-plugin-state'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     # Verified-mode source limits for real worker/key-handler failure fixtures only.
@@ -61,8 +66,8 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
-              # Safe publication and standalone child ownership only.
-              'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Safe publication/standalone child ownership; host event-only socket readiness.
+              'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan', 'hex-plugin-host'},
               # Advisory document/catalog locks stay on their storage/control boundaries.
               'fs2': {'hex-storage', 'hex-plugin-catalog'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does

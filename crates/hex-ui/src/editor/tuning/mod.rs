@@ -20,8 +20,8 @@ use hex_session::{
 };
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform, nearest_lattice};
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{
     collections::HashMap,
@@ -93,7 +93,7 @@ pub(super) struct TuningState {
     last_variations: Instant,
     pub(super) error: Option<String>,
     pub(super) slot: usize,
-    pub(super) name: Option<Entity<super::browser_input::BrowserSearch>>,
+    pub(super) name: Option<Entity<hex_widgets::TextInput>>,
     pub library_pending: Option<u64>,
     library_terminal: Option<library::DeviceTerminalContext>,
     pub library_next: u64,
@@ -394,7 +394,7 @@ impl EditorView {
             if let Some(control) = self.tuning.controls.get(&field) {
                 control.entity.update(cx, |input, cx| {
                     let _ = input.set_external_value(value, cx);
-                    let _ = input.set_external_style(super::device_panel::control_style(), cx);
+                    let _ = input.set_external_style(theme::control_style(), cx);
                 });
                 continue;
             }
@@ -404,19 +404,19 @@ impl EditorView {
                 NumericControlKind::HorizontalSlider,
                 spec,
                 value,
-                super::device_panel::control_style(),
+                theme::control_style(),
             );
             let Ok(config) = config else { continue };
             let appearance = if matches!(
                 field,
                 Field::Hz(_) | Field::Cents(_) | Field::Count | Field::RootKey | Field::RootDegree
             ) {
-                NumericControlAppearance::InlineValue
+                NumericControlPresentation::InlineValue
             } else {
-                NumericControlAppearance::Standard
+                NumericControlPresentation::HorizontalSlider
             };
             let entity =
-                cx.new(|cx| NumericControl::from_config(cx, config.with_appearance(appearance)));
+                cx.new(|cx| NumericControl::from_config(cx, config.with_presentation(appearance)));
             entity.update(cx, |input, cx| input.set_tab_navigation(true, cx));
             let generation = self.project_generation;
             let epoch = self.tuning.control_epoch.clone();

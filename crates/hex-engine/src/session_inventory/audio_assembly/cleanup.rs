@@ -147,6 +147,7 @@ impl SessionAssembly {
                 self.pairs[index].clip.take()
             };
             if let Some(PreparedSessionAudioClip {
+                active: _,
                 id: _,
                 track: _,
                 scene: _,

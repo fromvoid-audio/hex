@@ -1,4 +1,5 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
+use super::console_columns::ColumnFrame;
 use super::session_route_view::cell_route_markers;
 use super::{EditorMode, EditorView, PendingPlaybackAction};
 use crate::theme;
@@ -7,7 +8,9 @@ use hex_audio::prepared::{
     SessionRouteEntry, SessionRouteOwner, SessionRouteSnapshot, SessionRouteTarget,
 };
 use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
-use hex_project::{BeatTime, ClipId, Command, Project, SceneId, SessionCellContent, TrackId};
+use hex_project::{
+    BeatTime, ClipId, Command, Project, SceneId, SessionCellContent, SessionSceneTarget, TrackId,
+};
 use hex_session::{import_batch::ConsoleDestination, service::Request};
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
@@ -32,6 +35,7 @@ fn session_scenes_header() -> Div {
 
 #[derive(Clone, Copy)]
 struct SessionRowContext {
+    frame: ColumnFrame,
     revision: u64,
     generation: u64,
     column_start: usize,
@@ -136,13 +140,6 @@ fn with_quantization(
             SessionPlaybackCommand::BackToArrangement { quantization }
         }
         command => command,
-    }
-}
-
-fn next_quantization(quantization: LaunchQuantization) -> LaunchQuantization {
-    match quantization {
-        LaunchQuantization::Immediate => LaunchQuantization::FourQuarter,
-        LaunchQuantization::FourQuarter => LaunchQuantization::Immediate,
     }
 }
 
@@ -364,7 +361,7 @@ impl EditorView {
     }
 
     pub(super) fn session_grid(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.state.clone() else {
             return div().flex_1().min_h_0();
         };
         let revision = state.revision;
@@ -395,7 +392,8 @@ impl EditorView {
         });
         let visible_columns = ((f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
-            - SCENE_HEADER_WIDTH)
+            - SCENE_HEADER_WIDTH
+            - 12.0)
             / TRACK_COLUMN_WIDTH)
             .floor()
             .max(1.0) as usize;
@@ -403,7 +401,9 @@ impl EditorView {
         let columns = visible_track_range(tracks.len(), self.session_track_start, visible_columns);
         let column_start = columns.start;
         let column_end = columns.end;
+        let frame = ColumnFrame::capture(self, window, revision);
         let row_context = SessionRowContext {
+            frame,
             revision,
             generation,
             column_start,
@@ -426,8 +426,19 @@ impl EditorView {
                     .iter()
                     .map(|track| {
                         let track_id = track.id();
-                        div()
+                        let header_focus = self.track_header_focus(track_id, cx);
+                        let click_focus = header_focus.clone();
+                        let header = div()
                             .id(("session-track", track.id().value()))
+                            .track_focus(&header_focus)
+                            .key_context("hex_track_header")
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.select_track(track_id, window);
+                                view.selected_cell = None;
+                                view.selected_scene = None;
+                                click_focus.focus(window);
+                                cx.notify();
+                            }))
                             .debug_selector(move || format!("session-track-{}", track_id.value()))
                             .relative()
                             .child(
@@ -478,10 +489,33 @@ impl EditorView {
                                 route_snapshot,
                                 routes_ready,
                                 transport_playing,
-                            ))
+                            ));
+                        let header = self.device_drop_header(track_id, header, cx);
+                        header.child(self.console_column_edge(
+                            Some(track_id),
+                            SessionSceneTarget::Insert { before: None },
+                            frame,
+                            true,
+                            format!("console-column-header-before-{}", track_id.value()),
+                            cx,
+                        ))
                     }),
             )
-            .child(div().flex_1().min_w_0())
+            .child(
+                self.console_column_surface(
+                    div()
+                        .id("console-column-header-tail")
+                        .debug_selector(|| "console-column-header-tail".into())
+                        .flex_1()
+                        .min_w(px(12.0))
+                        .h_full(),
+                    tracks.get(column_end).map(|track| track.id()),
+                    SessionSceneTarget::Insert { before: None },
+                    frame,
+                    true,
+                    cx,
+                ),
+            )
             .child(session_scenes_header());
 
         let scene_rows = uniform_list(
@@ -537,7 +571,6 @@ impl EditorView {
             .selected_cell
             .map(|cell| cell.0)
             .or(self.selected_track);
-        let quantization = self.session_quantization;
         let mut row = div()
             .h(px(26.0))
             .flex_shrink_0()
@@ -728,42 +761,6 @@ impl EditorView {
                     .opacity(if can_move_down { 1.0 } else { 0.45 }),
                 );
         }
-        let (quantization_label, quantization_tooltip) = match quantization {
-            LaunchQuantization::Immediate => (
-                "none",
-                "launch quantization: none · launches start immediately",
-            ),
-            LaunchQuantization::FourQuarter => (
-                "4 qn",
-                "launch quantization: 4 quarters · fixed quarter-note timing, not meter-aware bars",
-            ),
-        };
-        row = row.child(
-            div()
-                .id("session-launch-quantization")
-                .h(px(22.0))
-                .w(px(42.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Border))))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
-                        description: quantization_tooltip.into(),
-                    })
-                    .into()
-                })
-                .child(theme::text(quantization_label))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.session_quantization = next_quantization(view.session_quantization);
-                    cx.notify();
-                })),
-        );
         row = row.child(self.session_icon(
             "×",
             "cancel queued session launches",
@@ -911,6 +908,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let SessionRowContext {
+            frame,
             revision,
             generation,
             column_start,
@@ -923,7 +921,7 @@ impl EditorView {
             return div().id(("session-scene-row-empty", index));
         };
         let Some(scene) = state.project.scenes().get(index) else {
-            return self.console_append_row(column_start, column_end, cx);
+            return self.console_append_row(column_start, column_end, frame, cx);
         };
         let scene_id = scene.id();
         let next_scene = state
@@ -980,17 +978,30 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
                             selected_cell,
+                            clip.active(),
                         )))
-                        .text_color(rgb(match clip.flavor() {
-                            hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
-                            }
-                            hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                        .text_color(rgb(if !clip.active() {
+                            theme::readable_text(
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    false,
+                                ),
+                                theme::color(theme::PaletteRole::Text),
+                            )
+                        } else {
+                            match clip.flavor() {
+                                hex_project::ClipFlavor::Muted => {
+                                    theme::element_colors(track.color()).muted_text
+                                }
+                                hex_project::ClipFlavor::Accent => {
+                                    theme::element_colors(track.color()).accent_text
+                                }
                             }
                         }))
                         .on_mouse_down(
@@ -1076,17 +1087,30 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
+                        .bg(rgb(theme::clip_activity_fill(
                             track.color(),
                             clip.flavor(),
                             selected_cell,
+                            clip.active(),
                         )))
-                        .text_color(rgb(match clip.flavor() {
-                            hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
-                            }
-                            hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                        .text_color(rgb(if !clip.active() {
+                            theme::readable_text(
+                                theme::clip_activity_fill(
+                                    track.color(),
+                                    clip.flavor(),
+                                    selected_cell,
+                                    false,
+                                ),
+                                theme::color(theme::PaletteRole::Text),
+                            )
+                        } else {
+                            match clip.flavor() {
+                                hex_project::ClipFlavor::Muted => {
+                                    theme::element_colors(track.color()).muted_text
+                                }
+                                hex_project::ClipFlavor::Accent => {
+                                    theme::element_colors(track.color()).accent_text
+                                }
                             }
                         }))
                         .on_mouse_down(
@@ -1227,6 +1251,18 @@ impl EditorView {
                 },
                 cx,
             );
+            let cell = cell.child(self.console_column_edge(
+                Some(track_id),
+                SessionSceneTarget::Existing(scene_id),
+                frame,
+                false,
+                format!(
+                    "console-column-before-{}-{}",
+                    track_id.value(),
+                    scene_id.value()
+                ),
+                cx,
+            ));
             row = row.child(cell);
         }
         let scene_column = div()
@@ -1293,7 +1329,24 @@ impl EditorView {
             ));
         #[cfg(feature = "ui-test-support")]
         let scene_column = scene_column.debug_selector(|| "session-scene-column".into());
-        row = row.child(div().flex_1().min_w_0()).child(scene_column);
+        let tail = self.console_column_surface(
+            div()
+                .id(("console-column-tail", scene_id.value()))
+                .debug_selector(move || format!("console-column-tail-{}", scene_id.value()))
+                .flex_1()
+                .min_w(px(12.0))
+                .h_full(),
+            state
+                .project
+                .tracks()
+                .get(column_end)
+                .map(|track| track.id()),
+            SessionSceneTarget::Existing(scene_id),
+            frame,
+            false,
+            cx,
+        );
+        row = row.child(tail).child(scene_column);
         row
     }
 
@@ -1329,6 +1382,7 @@ impl EditorView {
         &self,
         start: usize,
         end: usize,
+        frame: ColumnFrame,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let mut row = div()
@@ -1352,6 +1406,7 @@ impl EditorView {
                 let id = track.id();
                 let cell = div()
                     .id(("console-append-track", id.value()))
+                    .relative()
                     .debug_selector(move || format!("console-append-track-{}", id.value()))
                     .w(px(TRACK_COLUMN_WIDTH))
                     .h(px(SCENE_ROW_HEIGHT))
@@ -1372,10 +1427,36 @@ impl EditorView {
                     },
                     cx,
                 );
+                let cell = cell.child(self.console_column_edge(
+                    Some(id),
+                    SessionSceneTarget::Insert { before: None },
+                    frame,
+                    false,
+                    format!("console-column-append-before-{}", id.value()),
+                    cx,
+                ));
                 row = row.child(cell);
             }
         }
-        row.child(div().flex_1().min_w_0()).child(
+        let before = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.tracks().get(end))
+            .map(|track| track.id());
+        let tail = self.console_column_surface(
+            div()
+                .id("console-column-append-tail")
+                .debug_selector(|| "console-column-append-tail".into())
+                .flex_1()
+                .min_w(px(12.0))
+                .h_full(),
+            before,
+            SessionSceneTarget::Insert { before: None },
+            frame,
+            false,
+            cx,
+        );
+        row.child(tail).child(
             div()
                 .w(px(SCENE_HEADER_WIDTH))
                 .px_2()
@@ -1394,24 +1475,17 @@ impl EditorView {
         id: impl Into<ElementId>,
         listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        let icon = div()
+        let icon = hex_widgets::action(theme::text(glyph), theme::action_style())
             .id(id)
             .size(px(23.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
             .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: label.into(),
                 })
                 .into()
             })
-            .child(theme::text(glyph))
             .on_click(listener);
         #[cfg(feature = "ui-test-support")]
         let icon = icon.debug_selector(move || label.into());
@@ -1478,6 +1552,7 @@ impl EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: label.into(),
                 })
                 .into()
@@ -1801,7 +1876,7 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeleteTarget, action_is_current, action_matches_project, launch_action, next_quantization,
+        DeleteTarget, action_is_current, action_matches_project, launch_action,
         resolve_delete_target, visible_track_range, with_quantization,
     };
     use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
@@ -1912,14 +1987,6 @@ mod tests {
 
     #[test]
     fn quantization_is_captured_by_each_session_command_and_queued_launch() {
-        assert_eq!(
-            next_quantization(LaunchQuantization::Immediate),
-            LaunchQuantization::FourQuarter
-        );
-        assert_eq!(
-            next_quantization(LaunchQuantization::FourQuarter),
-            LaunchQuantization::Immediate
-        );
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 3).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddMidiTrack {

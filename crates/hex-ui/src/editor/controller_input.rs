@@ -1,5 +1,8 @@
 //! Optional controller selection and physical-note capture for step entry.
-//! Expression uses the existing host lease; capture does not monitor, record or sustain notes.
+//! Expression and ordered hardware notes use the existing prepared host leases.
+//! Held snapshots remain a separate step-entry query, never a live-note scheduler.
+mod monitoring;
+mod preferences;
 use super::EditorView;
 use crate::theme;
 use gpui::{
@@ -9,8 +12,140 @@ use hex_engine::live_expression::LiveExpressionInput;
 use hex_widgets::{Selector, SelectorChanged, SelectorConfig};
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn configured_hardware_defers_selection_audition_without_retiring_the_live_input(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    use hex_project::{BeatTime, Command};
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(hex_session::service::Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 37,
+            }))
+        );
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        let note = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes()[0]
+            .id();
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        view.computer_keyboard.input = Some(Arc::clone(&input));
+        view.controller_input.selected_port = Some(hex_midi::Port {
+            id: 1,
+            name: "synthetic input".into(),
+        });
+        view.midi_audition.enabled = true;
+        view.audition_midi_notes(&[note]);
+        assert_eq!(view.tick_midi_audition(), None);
+        assert!(Arc::ptr_eq(
+            view.computer_keyboard.input.as_ref().unwrap(),
+            &input
+        ));
+        assert!(!input.is_cancelled());
+        assert!(view.controller_input.selected_port.is_some());
+    });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn settings_uses_stable_port_identity_preserves_missing_choice_and_saves_explicit_selection(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::fixture;
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        assert!(!view.controller_input.preferences.loading);
+        view.controller_input.preferences.value = hex_preferences::MidiInputPreferences {
+            port: Some(hex_preferences::MidiInputPort {
+                id: 42,
+                name: "Original Name".into(),
+            }),
+            channel: 3,
+        };
+        view.controller_input.channel = 3;
+        view.install_controller_selectors(
+            vec![
+                hex_midi::Port {
+                    id: 7,
+                    name: "Original Name".into(),
+                },
+                hex_midi::Port {
+                    id: 42,
+                    name: "Renamed Device".into(),
+                },
+            ],
+            cx,
+        );
+        assert_eq!(view.controller_input.selected_port.as_ref().unwrap().id, 42);
+        view.install_controller_selectors(
+            vec![hex_midi::Port {
+                id: 7,
+                name: "Other Device".into(),
+            }],
+            cx,
+        );
+        assert!(view.controller_input.selected_port.is_none());
+        assert_eq!(
+            view.controller_input
+                .preferences
+                .value
+                .port
+                .as_ref()
+                .unwrap()
+                .id,
+            42
+        );
+    });
+    visual.simulate_keystrokes("cmd-,");
+    visual.run_until_parked();
+    let panel = visual.debug_bounds("theme settings panel").unwrap();
+    for id in [
+        "midi-input-settings",
+        "controller-input-port",
+        "controller-input-channel",
+    ] {
+        let bounds = visual.debug_bounds(id).unwrap();
+        assert!(bounds.origin.y >= panel.origin.y);
+        assert!(bounds.origin.y + bounds.size.height <= panel.origin.y + panel.size.height);
+    }
+    editor.update(&mut visual, |view, cx| view.select_controller_port(1, cx));
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.controller_input.preferences.saving);
+        assert!(view.controller_input.preferences.error.is_none());
+        let persisted = hex_preferences::load_midi_input_preferences(
+            view.controller_input.preferences.path.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted.channel, 3);
+        let port = persisted.port.unwrap();
+        assert_eq!((port.id, port.name.as_str()), (7, "Other Device"));
+    });
+}
+
 #[derive(Default)]
 pub(super) struct ControllerInput {
+    preferences: preferences::Preferences,
     handle: Option<hex_midi::Handle>,
     ports: Vec<hex_midi::Port>,
     port_selector: Option<Entity<Selector>>,
@@ -22,10 +157,21 @@ pub(super) struct ControllerInput {
     input: Option<Arc<LiveExpressionInput>>,
     held_notes: Option<Arc<hex_midi::HeldNoteInput>>,
     step_owner: Option<(u64, hex_project::TrackId, hex_project::ClipId)>,
+    live_owner: Option<(u64, hex_project::TrackId, hex_project::ClipId)>,
+    live_floor: u64,
+    live_computer_floor: u64,
+    live_floor_pending: bool,
+    displayed_notes: Option<hex_midi::HeldNotes>,
     step_floor: u64,
     step_floor_pending: bool,
     step_faulted: bool,
     connected: bool,
+    connecting: bool,
+    expression_prepared: bool,
+    note_input: Option<(
+        Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
+        hex_engine::computer_keyboard::LiveNoteActivation,
+    )>,
     activation: u64,
     discovery: u64,
     blocked_for_streaming: bool,
@@ -41,6 +187,7 @@ impl ControllerInput {
         if activation != self.activation {
             return None;
         }
+        self.connecting = false;
         match result {
             Ok(connected) => {
                 self.connected = connected;
@@ -63,8 +210,28 @@ impl ControllerInput {
             self.step_floor_pending = false;
         }
     }
+    fn discard_live_prefix(&mut self) {
+        self.live_floor_pending = true;
+        if let Some(input) = &self.held_notes
+            && let hex_midi::HeldNotesRead::Snapshot(notes) = input.read()
+        {
+            self.live_floor = notes.through();
+            self.live_floor_pending = false;
+        }
+    }
     fn cancel(&mut self) {
+        self.connecting = false;
+        self.expression_prepared = false;
+        if let Some((input, activation)) = self.note_input.take()
+            && let Some(notes) = input.live_notes()
+        {
+            let _ = notes.cancel_activation(activation);
+        }
         self.step_owner = None;
+        self.live_owner = None;
+        self.live_floor = 0;
+        self.live_floor_pending = false;
+        self.displayed_notes = None;
         self.step_floor = 0;
         self.step_floor_pending = false;
         if let Some(input) = self.input.take() {
@@ -92,6 +259,65 @@ impl Drop for ControllerInput {
     }
 }
 impl EditorView {
+    /// Planned root replacement ends its connection before cancelling the root.
+    /// Preserve the configured port so fault detection cannot mistake this for
+    /// disappearance and silently turn hardware input off.
+    pub(super) fn reprepare_controller_for_recording(&mut self) {
+        if self.controller_wants_live_notes() {
+            self.controller_input.cancel();
+        }
+    }
+    pub(super) fn controller_capture_ready(&self) -> bool {
+        !self.controller_wants_live_notes()
+            || (self.controller_input.connected
+                && self
+                    .controller_input
+                    .note_input
+                    .as_ref()
+                    .zip(self.computer_keyboard.input.as_ref())
+                    .is_some_and(|((connected, token), input)| {
+                        Arc::ptr_eq(connected, input)
+                            && input
+                                .live_notes()
+                                .is_some_and(|live| live.same_current_activation(*token))
+                    }))
+    }
+    pub(super) fn controller_capture_activation(
+        &self,
+        input: &Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<Option<hex_engine::computer_keyboard::LiveNoteActivation>, &'static str> {
+        if !self.controller_wants_live_notes() {
+            return Ok(None);
+        }
+        let (connected, token) = self
+            .controller_input
+            .note_input
+            .as_ref()
+            .ok_or("midi controller is not connected")?;
+        if !self.controller_input.connected
+            || !Arc::ptr_eq(connected, input)
+            || input
+                .live_notes()
+                .is_none_or(|live| !live.same_current_activation(*token))
+        {
+            return Err("midi controller input changed before recording");
+        }
+        Ok(Some(*token))
+    }
+
+    pub(super) fn stop_controller_notes(&mut self) {
+        if self.controller_input.note_input.is_some() {
+            self.controller_input.cancel();
+        }
+    }
+    pub(super) fn controller_wants_live_notes(&self) -> bool {
+        self.controller_input.selected_port.is_some()
+            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+    }
+    pub(super) fn controller_expression_prepared(&mut self) {
+        self.controller_input.expression_prepared = true;
+        self.connect_prepared_controller();
+    }
     fn controller_target(&self) -> Option<(u64, hex_project::TrackId, hex_project::DeviceId)> {
         let state = self.state.as_ref()?;
         let track = self.selected_track?;
@@ -105,8 +331,7 @@ impl EditorView {
     /// Called for every rendered focus/clip context. Both leaving and entering
     /// establish a floor, excluding keys pressed while the editor was unfocused.
     pub(super) fn sync_hardware_step_context(&mut self, window: &Window) {
-        let owner = (self.midi_step.enabled
-            && window.is_window_active()
+        let live_owner = (window.is_window_active()
             && self.midi_focus.is_focused(window)
             && self.clip_view_open)
             .then(|| {
@@ -115,6 +340,15 @@ impl EditorView {
                     .map(|(track, clip)| (self.project_generation, track, clip))
             })
             .flatten();
+        if live_owner != self.controller_input.live_owner {
+            self.controller_input.live_owner = live_owner;
+            self.controller_input.live_computer_floor = self.computer_keyboard.physical_through();
+            self.controller_input.discard_live_prefix();
+        }
+        if self.controller_input.live_floor_pending {
+            self.controller_input.discard_live_prefix();
+        }
+        let owner = live_owner.filter(|_| self.midi_step.enabled);
         if owner != self.controller_input.step_owner {
             self.controller_input.step_owner = owner;
             self.controller_input.discard_step_prefix();
@@ -125,7 +359,50 @@ impl EditorView {
     }
     pub(super) fn invalidate_hardware_step(&mut self) {
         self.controller_input.discard_step_prefix();
+        self.controller_input.discard_live_prefix();
+        self.controller_input.live_computer_floor = self.computer_keyboard.physical_through();
     }
+
+    pub(super) fn live_computer_floor(&self) -> u64 {
+        self.controller_input.live_computer_floor
+    }
+
+    pub(super) fn live_midi_context(&self) -> bool {
+        self.controller_input.live_owner.is_some()
+            && self.controller_input.live_owner
+                == self
+                    .selected_track
+                    .zip(self.detail_clip_id())
+                    .map(|(track, clip)| (self.project_generation, track, clip))
+    }
+
+    pub(super) fn hardware_live_notes(&self) -> Option<(hex_midi::HeldNotes, u64, u8)> {
+        if !self.live_midi_context()
+            || self.controller_input.live_floor_pending
+            || self.controller_input.step_faulted
+            || self.controller_input.target != self.controller_target()
+        {
+            return None;
+        }
+        match self.controller_input.held_notes.as_ref()?.read() {
+            hex_midi::HeldNotesRead::Snapshot(notes) => Some((
+                notes,
+                self.controller_input.live_floor,
+                self.controller_input.channel,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Poll the existing bounded capture endpoint so NoteOff and reset repaint
+    /// even when expression and project state have not changed. No audio writes.
+    pub(super) fn tick_midi_pitch_feedback(&mut self) -> bool {
+        let next = self.hardware_live_notes().map(|(notes, _, _)| notes);
+        let changed = next != self.controller_input.displayed_notes;
+        self.controller_input.displayed_notes = next;
+        changed
+    }
+
     /// Busy/invalid endpoints refuse the whole step, including a false rest.
     pub(super) fn hardware_step_notes(
         &self,
@@ -194,18 +471,45 @@ impl EditorView {
         cx.notify();
     }
     fn select_controller_port(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.controller_preferences_editable() {
+            self.sync_controller_selectors(cx);
+            return;
+        }
         self.controller_input.cancel();
         self.controller_input.step_faulted = false;
         self.controller_input.selected_port = index
             .checked_sub(1)
             .and_then(|index| self.controller_input.ports.get(index))
             .cloned();
+        self.controller_input.preferences.value.port =
+            self.controller_input.selected_port.as_ref().map(|port| {
+                hex_preferences::MidiInputPort {
+                    id: port.id,
+                    name: port.name.clone(),
+                }
+            });
+        self.save_controller_preferences(cx);
+        self.computer_keyboard.suspended = false;
         self.tick_controller_input(cx);
         cx.notify();
     }
     fn install_controller_selectors(&mut self, ports: Vec<hex_midi::Port>, cx: &mut Context<Self>) {
         self.controller_input.cancel();
-        self.controller_input.selected_port = None;
+        let restore = self
+            .controller_input
+            .selected_port
+            .as_ref()
+            .map(|port| port.id)
+            .or_else(|| {
+                self.controller_input
+                    .preferences
+                    .value
+                    .port
+                    .as_ref()
+                    .map(|port| port.id)
+            });
+        self.controller_input.selected_port =
+            ports.iter().find(|port| Some(port.id) == restore).cloned();
         self.controller_input.step_faulted = false;
         self.controller_input.ports = ports;
         self.controller_input.subscriptions.clear();
@@ -218,14 +522,23 @@ impl EditorView {
         let port_config = SelectorConfig::new(
             "controller-input-port",
             choices,
-            0,
-            super::device_panel::control_style(),
+            self.controller_input
+                .selected_port
+                .as_ref()
+                .and_then(|selected| {
+                    self.controller_input
+                        .ports
+                        .iter()
+                        .position(|port| port.id == selected.id)
+                })
+                .map_or(0, |index| index + 1),
+            theme::control_style(),
         );
         let channel_config = SelectorConfig::new(
             "controller-input-channel",
             (1..=16).map(|channel| theme::text(format!("channel {channel}"))),
             usize::from(self.controller_input.channel),
-            super::device_panel::control_style(),
+            theme::control_style(),
         );
         let (Ok(port_config), Ok(channel_config)) = (port_config, channel_config) else {
             self.error = Some("controller input options exceed supported limits".into());
@@ -238,9 +551,15 @@ impl EditorView {
         });
         let channel_subscription =
             cx.subscribe(&channel, |view, _, event: &SelectorChanged, cx| {
+                if !view.controller_preferences_editable() || event.index >= 16 {
+                    view.sync_controller_selectors(cx);
+                    return;
+                }
                 view.controller_input.cancel();
                 view.controller_input.step_faulted = false;
                 view.controller_input.channel = event.index as u8;
+                view.controller_input.preferences.value.channel = event.index as u8;
+                view.save_controller_preferences(cx);
                 view.tick_controller_input(cx);
                 cx.notify();
             });
@@ -249,6 +568,29 @@ impl EditorView {
             .extend([port_subscription, channel_subscription]);
         self.controller_input.port_selector = Some(port);
         self.controller_input.channel_selector = Some(channel);
+    }
+    fn sync_controller_selectors(&mut self, cx: &mut Context<Self>) {
+        let index = self
+            .controller_input
+            .selected_port
+            .as_ref()
+            .and_then(|selected| {
+                self.controller_input
+                    .ports
+                    .iter()
+                    .position(|port| port.id == selected.id)
+            })
+            .map_or(0, |index| index + 1);
+        if let Some(selector) = &self.controller_input.port_selector {
+            selector.update(cx, |selector, cx| {
+                let _ = selector.set_selected(index, cx);
+            });
+        }
+        if let Some(selector) = &self.controller_input.channel_selector {
+            selector.update(cx, |selector, cx| {
+                let _ = selector.set_selected(usize::from(self.controller_input.channel), cx);
+            });
+        }
     }
     fn reset_controller_selector(&mut self, cx: &mut Context<Self>) {
         if let Some(selector) = &self.controller_input.port_selector {
@@ -301,6 +643,23 @@ impl EditorView {
                 }
                 None => break,
             }
+        }
+        if self
+            .controller_input
+            .note_input
+            .as_ref()
+            .is_some_and(|(input, activation)| {
+                input.is_cancelled()
+                    || input
+                        .live_notes()
+                        .is_none_or(|notes| !notes.same_current_activation(*activation))
+            })
+        {
+            self.error = Some("controller note input stopped · reconnect the port".into());
+            self.controller_input.cancel();
+            self.controller_input.selected_port = None;
+            self.reset_controller_selector(cx);
+            return true;
         }
         if self
             .controller_input
@@ -360,6 +719,7 @@ impl EditorView {
             let _ = port;
             return true;
         }
+        self.connect_prepared_controller();
         changed
     }
     pub(super) fn controller_input_matches(&self, input: &Arc<LiveExpressionInput>) -> bool {
@@ -375,6 +735,22 @@ impl EditorView {
             && !input.is_cancelled()
     }
     pub(super) fn connect_prepared_controller(&mut self) {
+        if self.controller_input.connected
+            || self.controller_input.connecting
+            || !self.controller_input.expression_prepared
+            || !self.computer_keyboard.prepared
+        {
+            return;
+        }
+        let Some(note_input) = self
+            .computer_keyboard
+            .input
+            .as_ref()
+            .filter(|input| !input.is_cancelled() && input.live_notes().is_some())
+        else {
+            return;
+        };
+        let note_input = Arc::clone(note_input);
         let Some(input) = self
             .controller_input
             .input
@@ -392,34 +768,29 @@ impl EditorView {
         let Some(notes) = self.controller_input.held_notes.as_ref() else {
             return;
         };
-        let notes_cancel = Arc::clone(notes);
-        let notes_cancelled = Arc::clone(notes);
-        let writer = Arc::clone(input);
-        let cancel = Arc::clone(input);
-        let cancelled = Arc::clone(input);
-        let sink = hex_midi::Sink {
-            notes: Arc::clone(notes),
-            publish: Box::new(move |value| {
-                writer.publish(hex_engine::live_expression::Snapshot {
-                    pressure: value.pressure,
-                    bend: value.bend,
-                    wheel: value.wheel,
-                })
-            }),
-            cancel: Box::new(move || {
-                cancel.cancel();
-                notes_cancel.cancel();
-            }),
-            is_cancelled: Box::new(move || {
-                cancelled.is_cancelled() || notes_cancelled.is_cancelled()
-            }),
+        let activation = match note_input.begin_live_notes_activation_on_control() {
+            Ok(activation) => activation,
+            Err(error) => {
+                self.error = Some(
+                    format!("controller note activation failed: {error:?}")
+                        .to_lowercase()
+                        .into(),
+                );
+                return;
+            }
         };
+        let expression = Arc::clone(input);
+        let held = Arc::clone(notes);
+        self.controller_input.note_input = Some((Arc::clone(&note_input), activation));
+        let sink = monitoring::sink(expression, held, note_input, activation);
+        self.controller_input.connecting = true;
         if let Err(error) = handle.send(hex_midi::Command::Connect {
             activation: self.controller_input.activation,
             port,
             channel: self.controller_input.channel,
             sink,
         }) {
+            self.controller_input.connecting = false;
             self.error = Some(error.into());
         }
     }
@@ -468,7 +839,7 @@ impl EditorView {
             "off"
         };
         let description = theme::text(format!(
-            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · held hardware notes support piano-roll step entry · live note monitoring, sustain, recording and mpe are not included"
+            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · ordered hardware notes play the selected instrument and support piano-roll step entry · sustain, recording and mpe are not included"
         ));
         div().w(px(46.0)).flex_shrink_0().children([div()
             .id("controller-input-menu")
@@ -486,6 +857,7 @@ impl EditorView {
             .child(theme::text("midi"))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: description.clone(),
                 })
                 .into()
@@ -494,7 +866,78 @@ impl EditorView {
                 cx.listener(|view, _, window, cx| view.open_controller_input_menu(window, cx)),
             )])
     }
+    pub(super) fn controller_input_settings(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let status = if self.controller_input.preferences.loading {
+            "loading"
+        } else if self.controller_input.preferences.saving {
+            "saving"
+        } else if self.controller_input.preferences.unwritable {
+            "settings unavailable"
+        } else if self.controller_input.selected_port.is_none()
+            && self.controller_input.preferences.value.port.is_some()
+        {
+            if self
+                .controller_input
+                .preferences
+                .value
+                .port
+                .as_ref()
+                .is_some_and(|saved| {
+                    self.controller_input
+                        .ports
+                        .iter()
+                        .any(|port| port.id == saved.id)
+                })
+            {
+                "stopped"
+            } else {
+                "saved port unavailable"
+            }
+        } else if self.controller_input.connected {
+            "connected"
+        } else if self.controller_input.selected_port.is_some() {
+            "preparing"
+        } else {
+            "off"
+        };
+        div()
+            .id("midi-input-settings")
+            .debug_selector(|| "midi-input-settings".into())
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .text_xs()
+            .child(
+                div()
+                    .id("controller-input-refresh")
+                    .debug_selector(|| "controller-input-refresh".into())
+                    .h(px(22.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .child(theme::text(format!("midi input · {status} · refresh ↻")))
+                    .on_click(cx.listener(|view, _, _, cx| view.refresh_controller_inputs(cx))),
+            )
+            .children(self.controller_input.port_selector.clone())
+            .children(self.controller_input.channel_selector.clone())
+            .children(
+                self.controller_input
+                    .preferences
+                    .error
+                    .as_ref()
+                    .map(|error| div().text_xs().child(theme::text(error))),
+            )
+    }
+    pub(super) fn prepare_controller_settings(&mut self, cx: &mut Context<Self>) {
+        if self.controller_input.port_selector.is_none() {
+            self.install_controller_selectors(Vec::new(), cx);
+        }
+        self.refresh_controller_inputs(cx);
+    }
     pub(super) fn controller_input_overlay(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.theme_settings.open {
+            return None;
+        }
         let focus = self.controller_input.menu_focus.as_ref()?;
         let panel = div()
             .id("controller-input-panel")
@@ -515,19 +958,7 @@ impl EditorView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .id("controller-input-refresh")
-                    .debug_selector(|| "controller-input-refresh".into())
-                    .h(px(22.0))
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .child(theme::text("controller input · discover ↻"))
-                    .on_click(cx.listener(|view, _, _, cx| view.refresh_controller_inputs(cx))),
-            )
-            .children(self.controller_input.port_selector.clone())
-            .children(self.controller_input.channel_selector.clone());
+            .child(self.controller_input_settings(cx));
         Some(
             div()
                 .absolute()
@@ -1226,4 +1657,58 @@ fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui
                 .is_empty()
         );
     });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pitch_feedback_ui_tests.rs"]
+mod pitch_feedback_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn midi_recording_reprepare_preserves_configured_hardware_when_replacing_cancelled_root(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap(),
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+    for computer_enabled in [false, true] {
+        editor.update(&mut visual, |view, cx| {
+            let old = Arc::new(
+                hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                    .with_live_notes()
+                    .unwrap(),
+            );
+            let token = old
+                .live_notes()
+                .unwrap()
+                .current_activation_on_control()
+                .unwrap();
+            view.computer_keyboard.enabled = computer_enabled;
+            view.computer_keyboard.input = Some(Arc::clone(&old));
+            view.controller_input.selected_port = Some(hex_midi::Port {
+                id: 42,
+                name: "configured".into(),
+            });
+            view.controller_input.note_input = Some((Arc::clone(&old), token));
+            view.controller_input.connected = true;
+            view.reprepare_controller_for_recording();
+            view.cancel_computer_keyboard();
+            assert!(old.is_cancelled());
+            assert!(view.controller_input.note_input.is_none());
+            assert!(!view.controller_input.connected);
+            assert_eq!(view.controller_input.selected_port.as_ref().unwrap().id, 42);
+            view.tick_controller_input(cx);
+            assert_eq!(view.controller_input.selected_port.as_ref().unwrap().id, 42);
+            view.controller_input.cancel();
+        });
+        pump(&editor, &mut visual);
+    }
 }

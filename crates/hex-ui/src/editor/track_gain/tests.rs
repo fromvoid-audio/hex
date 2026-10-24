@@ -142,7 +142,7 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
     let selector = Box::leak(format!("track-volume-{}-slider", track.value()).into_boxed_str());
     let rail = visual.debug_bounds(selector).unwrap();
     let start = point(rail.left() + px(10.0), rail.center().y);
-    let end = point(rail.right() - px(2.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
@@ -326,6 +326,7 @@ fn header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag(
             Command::ReplaceTrackGainEnvelope {
                 track,
                 points: vec![hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 0.8,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -527,6 +528,7 @@ fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
             track,
             expected_epoch: 0,
             span: GainTouchSpan {
+                source_start: BeatTime::ZERO,
                 start: BeatTime::ZERO,
                 end: BeatTime::ONE,
                 context: GainTouchContext {
@@ -552,6 +554,7 @@ fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
         Command::ReplaceTrackGainEnvelope {
             track,
             points: vec![GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.8,
                 outgoing: GainInterpolation::Step,
@@ -627,7 +630,7 @@ fn header_volume_is_one_filled_numeric_field_not_a_separate_rail(cx: &mut TestAp
         "reference requires a centered value across the filled bar, not a separate narrow value field: {whole:?} {field:?}"
     );
     assert_eq!(field.center().x, whole.center().x);
-    assert!(field.size.height >= px(16.0));
+    assert_eq!(field.size.height, px(14.0));
     let header = self::bounds(&mut visual, "arrangement-track-header", track);
     let pan = self::bounds(&mut visual, "track-pan", track);
     let activator = self::bounds(&mut visual, "track-mute", track);
@@ -997,4 +1000,202 @@ fn header_pan_vertical_drag_direction_fine_bounds_and_atomic_history(cx: &mut Te
             });
         }
     }
+}
+
+#[gpui::test]
+fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
+    cx: &mut TestAppContext,
+) {
+    for mode in [
+        hex_session::DocumentAudioMode::Resident,
+        hex_session::DocumentAudioMode::VerifiedStreaming,
+    ] {
+        let (_browser, mut visual, editor, [first, second]) = actor_fixture(cx);
+        editor.update(&mut visual, |view, cx| {
+            view.document_audio_mode = mode;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let lower_gap = |visual: &mut VisualTestContext, track: TrackId| {
+            let a = Box::leak(format!("gain-lane-show-{}", track.value()).into_boxed_str());
+            let next = if mode == hex_session::DocumentAudioMode::Resident {
+                "track-return-sends"
+            } else {
+                "track-gain-up"
+            };
+            let b = Box::leak(format!("{next}-{}", track.value()).into_boxed_str());
+            let left = visual.debug_bounds(a).unwrap();
+            let right = visual.debug_bounds(b).unwrap();
+            assert!(
+                left.right() < right.left(),
+                "use actual unused space between controls"
+            );
+            point((left.right() + right.left()) / 2.0, left.center().y)
+        };
+        let first_gap = lower_gap(&mut visual, first);
+        let second_gap = lower_gap(&mut visual, second);
+        visual.simulate_click(first_gap, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.selected_track_ids(),
+                [first],
+                "lower background in {mode:?}"
+            );
+            assert_eq!(view.selected_track, Some(first));
+        });
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| assert!(view.track_header_focused(window)))
+        });
+        visual.simulate_click(
+            second_gap,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), [first, second])
+        });
+        visual.simulate_click(
+            first_gap,
+            Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), [second]);
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "background selection is view state only"
+            );
+            assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+        });
+        if mode == hex_session::DocumentAudioMode::Resident {
+            let mute = bounds(&mut visual, "track-mute", first);
+            let solo = bounds(&mut visual, "track-solo", first);
+            assert!(mute.right() < solo.left());
+            let gap = point((mute.right() + solo.left()) / 2.0, mute.center().y);
+            visual.simulate_click(gap, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.selected_track_ids(),
+                    [first],
+                    "mixer gutter selects too"
+                )
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn lower_header_controls_keep_their_actions_without_selecting_background_track(
+    cx: &mut TestAppContext,
+) {
+    for mode in [
+        hex_session::DocumentAudioMode::Resident,
+        hex_session::DocumentAudioMode::VerifiedStreaming,
+    ] {
+        let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+        editor.update(&mut visual, |view, cx| {
+            view.document_audio_mode = mode;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let name = bounds(&mut visual, "track-name", other).center();
+        visual.simulate_click(name, Modifiers::default());
+        visual.run_until_parked();
+        for prefix in ["track-mute", "track-solo"] {
+            let hit = bounds(&mut visual, prefix, track).center();
+            visual.simulate_click(hit, Modifiers::default());
+            pump(&editor, cx, |view| view.worker_requests_pending == 0);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_track_ids(), [other])
+            });
+        }
+        editor.read_with(&visual, |view, _| {
+            let track = view.state.as_ref().unwrap().project.track(track).unwrap();
+            assert!(track.muted() && track.soloed());
+        });
+        let sends = bounds(&mut visual, "track-return-sends", track).center();
+        visual.simulate_click(sends, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.send_menu_track, Some(track));
+            assert_eq!(view.selected_track_ids(), [other]);
+        });
+        visual.simulate_click(sends, Modifiers::default());
+        if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            let gain = bounds(&mut visual, "track-gain-up", track).center();
+            visual.simulate_click(gain, Modifiers::default());
+            pump(&editor, cx, |view| view.worker_requests_pending == 0);
+            editor.read_with(&visual, |view, _| {
+                assert!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(track)
+                        .unwrap()
+                        .gain()
+                        > 0.5
+                );
+                assert_eq!(view.selected_track_ids(), [other]);
+            });
+        }
+        // Automation deliberately selects its owner; retain that existing action.
+        let automation = bounds(&mut visual, "gain-lane-show", track).center();
+        visual.simulate_click(automation, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.gain_lane.track, Some(track));
+            assert_eq!(view.selected_track, Some(track));
+        });
+    }
+}
+
+#[gpui::test]
+fn compact_resize_refuses_to_hide_an_unfinished_header_gain_draft(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, _]) = actor_fixture(cx);
+    let original = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.clone()
+    });
+    let selector = Box::leak(format!("track-volume-{}-value", track.value()).into_boxed_str());
+    let field = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(field, Modifiers::default());
+    visual.simulate_input("+100 db");
+    let handle = bounds(&mut visual, "track-height-resize", track).center();
+    let original_height = bounds(&mut visual, "arrangement-track-header", track)
+        .size
+        .height;
+    drag(&mut visual, handle, point(handle.x, px(0.0)));
+    assert_eq!(
+        bounds(&mut visual, "arrangement-track-header", track)
+            .size
+            .height,
+        original_height
+    );
+    assert!(
+        visual.debug_bounds(selector).is_some(),
+        "draft remains visible and recoverable"
+    );
+    editor.read_with(&visual, |view, cx| {
+        assert!(view.track_gain_controls.has_pending_draft(cx));
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+    visual.simulate_keystrokes("escape");
+    let handle = bounds(&mut visual, "track-height-resize", track).center();
+    drag(&mut visual, handle, point(handle.x, px(0.0)));
+    assert_eq!(
+        bounds(&mut visual, "arrangement-track-header", track)
+            .size
+            .height,
+        px(23.0)
+    );
+    assert!(visual.debug_bounds(selector).is_none());
 }

@@ -24,6 +24,7 @@ pub(super) struct ComputerKeyboard {
     pub input: Option<std::sync::Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>>,
     pub target: Option<(u64, u64, hex_project::TrackId)>,
     pub request_id: u64,
+    pub prepared: bool,
     pub suspended: bool,
 }
 
@@ -40,6 +41,7 @@ impl Default for ComputerKeyboard {
             input: None,
             target: None,
             request_id: 0,
+            prepared: false,
             suspended: false,
         }
     }
@@ -62,6 +64,17 @@ impl ComputerKeyboard {
 
     pub(super) fn physical_notes(&self) -> impl Iterator<Item = HeldKey> + '_ {
         self.physical.iter().copied().flatten()
+    }
+
+    pub(super) fn physical_through(&self) -> u64 {
+        self.next_token
+    }
+
+    pub(super) fn physical_notes_after(&self, floor: u64) -> impl Iterator<Item = HeldKey> + '_ {
+        self.physical
+            .iter()
+            .zip(self.tokens)
+            .filter_map(move |(note, token)| (token > floor).then_some(*note).flatten())
     }
 
     pub fn toggle(&mut self) {
@@ -153,6 +166,7 @@ impl super::EditorView {
         }
         self.computer_keyboard.held.fill(None);
         self.computer_keyboard.target = None;
+        self.computer_keyboard.prepared = false;
     }
 
     pub(super) fn cancel_computer_keyboard(&mut self) {
@@ -165,6 +179,7 @@ impl super::EditorView {
     /// endpoint revokes its active prefix; fresh physical input can reuse the already admitted
     /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.
     pub(super) fn stop_computer_keyboard(&mut self) {
+        self.stop_controller_notes();
         self.invalidate_hardware_step();
         self.midi_audition.clear();
         if self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication())
@@ -195,7 +210,14 @@ impl super::EditorView {
             cx.notify();
             return;
         }
-        self.cancel_computer_keyboard();
+        if self.controller_wants_live_notes() {
+            if let Some(input) = &self.computer_keyboard.input {
+                input.clear_keys_on_control();
+            }
+            self.computer_keyboard.release_all();
+        } else {
+            self.cancel_computer_keyboard();
+        }
         self.computer_keyboard.toggle();
         self.computer_keyboard.suspended = false;
         if !self.midi_step.enabled || !self.midi_focus.is_focused(window) {
@@ -247,7 +269,9 @@ impl super::EditorView {
     }
 
     fn tick_computer_keyboard_with_policy(&mut self, worker_owned: bool) -> bool {
-        if !self.computer_keyboard.enabled || self.computer_keyboard.suspended {
+        if (!self.computer_keyboard.enabled && !self.controller_wants_live_notes())
+            || self.computer_keyboard.suspended
+        {
             return false;
         }
         if self
@@ -262,6 +286,15 @@ impl super::EditorView {
             self.cancel_computer_keyboard();
             self.computer_keyboard.suspended = true;
             return true;
+        }
+        if self.controller_wants_live_notes()
+            && self
+                .computer_keyboard
+                .input
+                .as_ref()
+                .is_some_and(|input| input.live_notes().is_none())
+        {
+            self.cancel_computer_keyboard();
         }
         let retain_input = self.reusable_worker_keyboard_input(worker_owned);
         if worker_owned
@@ -368,7 +401,31 @@ impl super::EditorView {
         } else {
             hex_engine::computer_keyboard::ComputerKeyboardInput::default()
         };
+        let input = if self.controller_wants_live_notes() {
+            match input.with_live_notes() {
+                Ok(input) => input,
+                Err(error) => {
+                    self.error = Some(error.to_string().into());
+                    return true;
+                }
+            }
+        } else {
+            input
+        };
+        let input = if self.midi_recorder.preparing() {
+            match input.with_recording_support() {
+                Ok(input) => input,
+                Err(reason) => {
+                    self.error = Some(reason.to_string().into());
+                    self.computer_keyboard.suspended = true;
+                    return true;
+                }
+            }
+        } else {
+            input
+        };
         let input = std::sync::Arc::new(input);
+        self.computer_keyboard.prepared = false;
         self.computer_keyboard.input = Some(std::sync::Arc::clone(&input));
         if !self.enqueue(hex_session::service::Request::PrepareComputerKeyboard {
             project_generation: generation,
@@ -448,7 +505,7 @@ impl super::EditorView {
                     .as_ref()
                     .filter(|input| input.is_output_bound())
                 {
-                    if let Err(error) = input.reactivate_on_control() {
+                    if let Err(error) = input.ensure_output_activation_on_control() {
                         self.error = Some(error.to_string().into());
                         self.cancel_computer_keyboard();
                         self.computer_keyboard.suspended = true;
@@ -505,6 +562,35 @@ impl super::EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_floor_excludes_old_keys_without_releasing_physical_ownership() {
+        let mut keyboard = ComputerKeyboard::default();
+        keyboard.toggle();
+        keyboard.key_down("a", false);
+        let floor = keyboard.physical_through();
+        keyboard.key_down("a", true);
+        keyboard.key_down("d", false);
+        assert_eq!(keyboard.physical_notes().count(), 2);
+        assert_eq!(
+            keyboard
+                .physical_notes_after(floor)
+                .map(|n| n.pitch)
+                .collect::<Vec<_>>(),
+            [64]
+        );
+        keyboard.key_up("d");
+        assert!(keyboard.physical_notes_after(floor).next().is_none());
+        keyboard.key_up("a");
+        keyboard.key_down("a", false);
+        assert_eq!(
+            keyboard
+                .physical_notes_after(floor)
+                .map(|n| n.pitch)
+                .collect::<Vec<_>>(),
+            [60]
+        );
+    }
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]

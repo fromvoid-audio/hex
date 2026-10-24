@@ -13,10 +13,13 @@ use metronome::Metronome;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
-    /// Seek and start in one callback action, resetting the same state as Seek.
+    /// Seek and start at this absolute frame, resetting the same state as Seek.
+    /// A cursor at/after the enabled loop end continues linearly beyond it;
+    /// a cursor before the end enters/wraps the loop without changing its bounds.
     PlayFrom(u64),
     Pause,
     Stop,
+    /// Absolute content cursor; loop participation resumes only before its end.
     Seek(u64),
 }
 
@@ -300,6 +303,8 @@ pub struct Playback {
     tuning_audition: Option<Box<crate::tuning_audition::Runtime>>,
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
+    // Control-minted publication identity; no callback owner or allocation.
+    pub(crate) resident_pcm_publication: Option<std::num::NonZeroU64>,
     session_runtime: Option<Box<SessionPlayback>>,
     linear_runtime: Option<Box<RendererRuntime>>,
     session_unavailable: Option<crate::SessionPlaybackError>,
@@ -309,6 +314,46 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    /// Quote resource-free observation metadata for this actual runtime, including a
+    /// transient section's effective MIDI timing. Does not acquire graph resources.
+    pub fn observation_storage_quote_on_control(&self) -> Result<usize, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_deref()
+            .ok_or(Invalid("playback revision unavailable"))?;
+        crate::PreparedPlaybackObservation::storage_quote(
+            revision,
+            crate::session_inventory::EffectiveSessionMidi::new(
+                revision.session(),
+                self.session_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.midi_admission.as_ref()),
+            ),
+        )
+    }
+    /// Capture gates from the installed candidate's immutable runtime metadata,
+    /// preserving the original revision/resource identity and existing control custody.
+    pub fn prepare_observation_on_control(
+        &self,
+    ) -> Result<crate::PreparedPlaybackObservation, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_deref()
+            .ok_or(Invalid("playback revision unavailable"))?;
+        let runtime = self.session_runtime.as_ref();
+        crate::PreparedPlaybackObservation::prepare_effective(
+            revision,
+            crate::session_inventory::EffectiveSessionMidi::new(
+                revision.session(),
+                runtime.and_then(|runtime| runtime.midi_admission.as_ref()),
+            ),
+            runtime.map_or_else(
+                || revision.session().periodic_tempo(),
+                |runtime| runtime.periodic_tempo(),
+            ),
+            runtime.is_none() && revision.session().periodic_tempo_error().is_some(),
+        )
+    }
     pub(crate) fn device_resource_leases(
         &self,
     ) -> impl Iterator<Item = &crate::native_device_resources::PreparedDeviceResourceLease> {
@@ -353,27 +398,34 @@ impl Playback {
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }
-    /// Conservative control-side PCM capacity of this actual immutable graph.
-    /// Shared clip leaves are counted once within the graph; no owner escapes.
+    /// Borrow actual legacy PCM leaves on control. The iterator grants no callback
+    /// or reclamation authority, and does not expose native device source banks.
+    pub(crate) fn resident_pcm_sources(&self) -> impl Iterator<Item = &crate::Audio> + Clone {
+        self.project
+            .tracks()
+            .iter()
+            .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
+            .chain(self.prepared_revision.iter().flat_map(|r| {
+                r.session()
+                    .audio_clips()
+                    .iter()
+                    .filter_map(|c| c.resident_audio())
+            }))
+    }
+    /// Control-side PCM capacity of this graph, deduplicated by actual backing.
     pub fn resident_pcm_capacity_frames(&self) -> Option<u64> {
-        let sources = || {
-            self.project
-                .tracks()
-                .iter()
-                .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
-                .chain(self.prepared_revision.iter().flat_map(|r| {
-                    r.session()
-                        .audio_clips()
-                        .iter()
-                        .filter_map(|c| c.resident_audio())
-                }))
-        };
-        sources().enumerate().try_fold(0u64, |n, (i, source)| {
-            if sources().take(i).any(|old| old.shares_pcm_with(source)) {
-                return Some(n);
-            }
-            n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
-        })
+        self.resident_pcm_sources()
+            .enumerate()
+            .try_fold(0_u64, |n, (i, source)| {
+                if self
+                    .resident_pcm_sources()
+                    .take(i)
+                    .any(|old| old.shares_pcm_with(source))
+                {
+                    return Some(n);
+                }
+                n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
+            })
     }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn live_expression_supported_on_control(&self, track: hex_project::TrackId) -> bool {
@@ -691,6 +743,7 @@ impl Playback {
             tuning_audition,
             project: _,
             prepared_revision,
+            resident_pcm_publication,
             session_runtime,
             linear_runtime,
             session_unavailable: _,
@@ -699,7 +752,7 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
-        if tuning_audition.is_some() {
+        if tuning_audition.is_some() || resident_pcm_publication.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         visit(9, 0, true)?; // actual Project handle
@@ -726,6 +779,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: None,
+            resident_pcm_publication: None,
             session_runtime: None,
             linear_runtime,
             session_unavailable: None,
@@ -767,6 +821,25 @@ impl Playback {
     ) -> Result<Self, crate::SessionPlaybackError> {
         let runtime =
             SessionPlayback::new_with_device_resources(Arc::clone(&prepared_revision), resources)?;
+        Ok(Self::from_parts(
+            prepared_revision,
+            Some(Box::new(runtime)),
+            None,
+        ))
+    }
+
+    /// Prepare an unused interactive candidate retaining a launched section loop.
+    /// This performs no seek or replay; the ordinary callback handoff owns clock/state transfer.
+    pub fn try_from_prepared_section_candidate(
+        prepared_revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, crate::SessionPlaybackError> {
+        let runtime = SessionPlayback::new_section_candidate(
+            Arc::clone(&prepared_revision),
+            resources,
+            region,
+        )?;
         Ok(Self::from_parts(
             prepared_revision,
             Some(Box::new(runtime)),
@@ -819,6 +892,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
+            resident_pcm_publication: None,
             session_runtime: Some(Box::new(runtime)),
             linear_runtime: None,
             session_unavailable: None,
@@ -860,6 +934,7 @@ impl Playback {
             tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
+            resident_pcm_publication: None,
             session_runtime,
             linear_runtime,
             session_unavailable,
@@ -1050,7 +1125,10 @@ impl Playback {
                 revision.session().timing(),
                 revision.session().meter_map(),
                 start,
-                self.project.loop_region(),
+                self.session_runtime.as_ref().map_or_else(
+                    || self.project.loop_region(),
+                    |runtime| runtime.active_loop_region(),
+                ),
                 output,
             );
         }
@@ -1083,6 +1161,28 @@ impl Playback {
             .map_or(self.performance_frame, |runtime| {
                 runtime.performance_frame()
             })
+    }
+
+    /// Callback-owned boundary for a prepared section seek. The caller keeps
+    /// the current graph rendering until this frame, then installs the fresh
+    /// preroll candidate using ordinary seek discontinuity semantics.
+    pub fn section_launch_frame(
+        &self,
+        quantization: crate::LaunchQuantization,
+    ) -> Result<u64, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("section launch requires prepared session timing"))?
+            .scheduled_at(quantization)
+            .map(|(frame, _)| frame)
+            .map_err(|error| Invalid(error.diagnostic_message()))
+    }
+
+    /// Actual graph-local audition loop; independent of the saved loop marker.
+    pub fn section_loop(&self) -> Option<hex_project::LoopRegion> {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.transient_loop)
     }
 
     /// True after the legacy monotonic clock reached its representable limit.
@@ -1375,6 +1475,15 @@ impl Playback {
         previous: &mut Self,
         same_control_context: bool,
     ) -> Result<(), PlaybackHandoffError> {
+        if previous
+            .session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.midi_capture_active())
+        {
+            return Err(PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::DeviceRuntime,
+            ));
+        }
         let rebind_keyboard = same_control_context && self.can_rebind_keyboard_input(previous);
         let continued_audition = match (&self.tuning_audition, &previous.tuning_audition) {
             (Some(next), Some(old)) if next.shares_live_lease(old) => {
@@ -1423,7 +1532,7 @@ impl Playback {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);
                 }
-                next.validate_legacy_transport(previous.performance_frame)
+                next.validate_legacy_transport(previous.position(), previous.performance_frame)
                     .map_err(PlaybackHandoffError::Session)?;
                 if legacy_arrangement_state_cannot_be_seeded(previous) {
                     return Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured);
@@ -1555,6 +1664,54 @@ impl Playback {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.set_device_metering(enabled);
         }
+    }
+
+    /// Admit capture against the installed engine graph. The caller still owns
+    /// output/source/transport authority and must confirm delivered host output.
+    pub fn arm_midi_capture(
+        &mut self,
+        binding: crate::midi_capture::MidiCaptureBinding,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("midi capture session runtime is unavailable"))?
+            .arm_midi_capture(binding, clock)
+    }
+    /// Negative-only current input/fault check for ending a take before Stop
+    /// resets playback. Unlike the sealed render getter, this checks live input.
+    pub fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.session_runtime
+            .as_ref()?
+            .computer_keyboard
+            .as_ref()?
+            .capture_finish_fault(take_id)
+    }
+    pub fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.session_runtime.as_ref()?.midi_capture_fault(take_id)
+    }
+    pub fn finish_midi_capture(
+        &mut self,
+        take_id: u64,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("midi capture session runtime is unavailable"))?
+            .finish_midi_capture(take_id)
+    }
+    pub fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<crate::midi_capture::MidiCaptureRender<'_>>, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .map_or(Ok(None), |runtime| runtime.midi_capture_render(take_id))
     }
 
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
@@ -1820,7 +1977,11 @@ impl Playback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
     ) -> Result<(), Invalid> {
-        let Some(region) = self.project.loop_region().filter(|region| region.enabled()) else {
+        let Some(region) = self
+            .project
+            .loop_region()
+            .filter(|region| region.enabled() && self.position < region.end())
+        else {
             return self.render_linear_with_pages(output, pages);
         };
         output.fill([0.0; 2]);
@@ -1831,10 +1992,6 @@ impl Playback {
         let start = region.start();
         let end = region.end();
         let length = end - start;
-        if self.position >= end {
-            self.position = start + (self.position - start) % length;
-        }
-
         let mut output_offset = 0_usize;
         while output_offset < output.len() {
             if self.position == end {

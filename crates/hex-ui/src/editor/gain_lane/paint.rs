@@ -82,6 +82,7 @@ pub(in crate::editor) fn view(
                                 return;
                             };
                             let point = GainPoint {
+                                incoming_gain: None,
                                 beat,
                                 gain,
                                 outgoing: GainInterpolation::Linear,
@@ -404,6 +405,7 @@ pub(in crate::editor) fn view(
         .id("gain-point-readout")
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::waveform::ClipTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 name: details_tooltip.clone(),
             })
             .into()

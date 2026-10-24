@@ -5,7 +5,7 @@ use crate::{
     InstrumentTrack, owned_shared::SharedDeclaration, shared_analytic::SharedAnalyticContextTable,
 };
 
-/// Explicit upper bounds for the existing compiler's finite, nonlooping class.
+/// Explicit upper bounds for the existing compiler's admitted finite occurrence class.
 /// Rust 1.94 stable driftsort uses max(N,48) scratch element slots beyond
 /// its <=20-element insertion path (48 = SMALL_SORT_GENERAL_SCRATCH_LEN).
 /// Pinned sources:
@@ -17,13 +17,28 @@ use crate::{
 pub(crate) fn compiler_quote(
     track: &hex_project::Track,
 ) -> Result<(usize, usize), AudioStorageError> {
-    let notes = track.midi_clips().iter().try_fold(0usize, |n, c| {
-        if c.source().looping() {
-            return Err(AudioStorageError::UnsupportedGraph);
-        }
-        n.checked_add(c.notes().len())
-            .ok_or(AudioStorageError::Overflow)
-    })?;
+    let notes = track
+        .midi_clips()
+        .iter()
+        .filter(|clip| clip.active())
+        .try_fold(0usize, |total, clip| {
+            let playback = clip
+                .source_playback()
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            clip.notes().iter().try_fold(total, |total, note| {
+                let count = usize::try_from(
+                    playback
+                        .note_occurrences(note.start(), note.duration())
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                        .count(),
+                )
+                .map_err(|_| AudioStorageError::Overflow)?;
+                total
+                    .checked_add(count)
+                    .filter(|n| *n <= crate::midi_compile::MAX_COMPILED_MIDI_OCCURRENCES)
+                    .ok_or(AudioStorageError::UnsupportedGraph)
+            })
+        })?;
     let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?;
     let (payload, overhead) = crate::owned_shared::OwnedShared::<
         crate::midi_note_bank::PreparedMidiNoteBank,
@@ -102,6 +117,7 @@ pub(super) struct SamplerTrackConstruction {
     instrument: Option<InstrumentTrack>,
     volume_identity: Option<crate::midi_clip_volume::arrangement::ArrangementVolumeIdentity>,
     installed: bool,
+    looping_source: bool,
 }
 impl SamplerTrackConstruction {
     pub(super) fn handles(&self) -> usize {
@@ -127,6 +143,7 @@ impl SamplerTrackConstruction {
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        self.looping_source = track.midi_clips().iter().any(|c| c.active() && c.looping());
         self.track = Some(track.id());
         self.device = Some(config.device);
         self.scope = Some(scope);
@@ -170,6 +187,7 @@ impl SamplerTrackConstruction {
         track.instrument_runtime_latency = Some(0);
         track.tuning_identity = self.tuning;
         track.mutable_instrument = true;
+        track.mutable_looping_source = self.looping_source;
         self.installed = true;
         Ok(())
     }
@@ -186,7 +204,7 @@ impl SamplerTrackConstruction {
                 || track.instrument_input_gain != self.input
                 || track.instrument_output_gain != self.output
                 || !track.mutable_instrument
-                || track.mutable_looping_source
+                || track.mutable_looping_source != self.looping_source
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -301,6 +319,7 @@ impl SamplerTrackConstruction {
         track.instrument_latency = None;
         track.instrument_runtime_latency = None;
         track.mutable_instrument = false;
+        track.mutable_looping_source = false;
         self.installed = false;
         Ok(())
     }

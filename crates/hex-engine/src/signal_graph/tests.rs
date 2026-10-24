@@ -321,11 +321,13 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
             track: f.tracks[0],
             points: vec![
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 0.5,
                     outgoing: hex_project::GainInterpolation::Step,
                 },
                 hex_project::GainPoint {
+                    incoming_gain: None,
                     beat,
                     gain: 1.0,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -481,6 +483,10 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     owner.content = hex_project::TrackContentSnapshot::Hybrid {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
+            content_view: None,
+            active: true,
+            playback_offset_raw: 0,
+            one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
             volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),

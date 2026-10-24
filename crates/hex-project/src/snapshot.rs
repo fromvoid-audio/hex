@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
@@ -56,6 +57,7 @@ pub enum SessionCellContentSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAudioClipSnapshot {
+    pub active: bool,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
@@ -66,6 +68,8 @@ pub struct SessionAudioClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
+    pub active: bool,
+    pub playback_offset_raw: u64,
     pub volume: crate::MidiClipVolume,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -74,6 +78,8 @@ pub struct SessionMidiClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiSourceSnapshot {
+    /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
+    pub one_shot_boundary: crate::MidiOneShotBoundary,
     pub source_length_raw: u64,
     pub source_start_raw: u64,
     pub loop_start_raw: u64,
@@ -171,6 +177,11 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    pub content_view: Option<crate::ContentWindow>,
+    pub active: bool,
+    pub playback_offset_raw: u64,
+    /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
+    pub one_shot_boundary: crate::MidiOneShotBoundary,
     pub volume: crate::MidiClipVolume,
     pub name: String,
     pub flavor: crate::ClipFlavor,
@@ -197,6 +208,7 @@ pub struct MidiNoteSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipSnapshot {
+    pub active: bool,
     pub name: String,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -216,6 +228,11 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            arrangement_sections: self
+                .arrangement_sections
+                .iter()
+                .map(crate::ArrangementSectionSnapshot::from)
+                .collect(),
             tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
@@ -299,6 +316,7 @@ impl Project {
                             .audio_clips
                             .iter()
                             .map(|clip| ClipSnapshot {
+                                active: clip.active,
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
@@ -319,6 +337,10 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                content_view: clip.content_view,
+                                active: clip.active,
+                                playback_offset_raw: clip.playback_offset.raw(),
+                                one_shot_boundary: clip.source.one_shot_boundary,
                                 volume: clip.volume.clone(),
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
@@ -397,11 +419,14 @@ impl Project {
                             crate::SessionCellContent::Stop => SessionCellContentSnapshot::Stop,
                             crate::SessionCellContent::Midi(clip) => {
                                 SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                    active: clip.active,
+                                    playback_offset_raw: clip.playback_offset.raw(),
                                     volume: clip.volume.clone(),
                                     flavor: clip.flavor,
                                     id: clip.id.value(),
                                     name: clip.name.clone(),
                                     source: MidiSourceSnapshot {
+                                        one_shot_boundary: clip.source.one_shot_boundary,
                                         source_length_raw: clip.source.source_length.raw(),
                                         source_start_raw: clip.source.source_start.raw(),
                                         loop_start_raw: clip.source.loop_start.raw(),
@@ -425,6 +450,7 @@ impl Project {
                             }
                             crate::SessionCellContent::Audio(clip) => {
                                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                                    active: clip.active,
                                     flavor: clip.flavor,
                                     id: clip.id().value(),
                                     name: clip.name().to_owned(),
@@ -495,6 +521,16 @@ impl Project {
 
         let mut ids = BTreeSet::new();
         let mut max_id = 0_u64;
+        if snapshot.arrangement_sections.len() > crate::MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("arrangement section limit reached"));
+        }
+        for section in snapshot.arrangement_sections {
+            insert_id(section.id, &mut ids, &mut max_id)?;
+            project
+                .arrangement_sections
+                .push(crate::arrangement_sections::from_snapshot(section)?);
+        }
+        crate::arrangement_sections::validate(&project.arrangement_sections, project.tempo_map())?;
         let mut assets = BTreeMap::new();
         for asset in snapshot.assets {
             insert_id(asset.id, &mut ids, &mut max_id)?;
@@ -666,6 +702,7 @@ impl Project {
                     return Err(Invalid("clip source phase is outside its source interval"));
                 }
                 compiled_audio.push(Clip {
+                    active: clip.active,
                     name: clip.name.clone(),
                     flavor: clip.flavor,
                     id: ClipId(clip.id),
@@ -692,12 +729,13 @@ impl Project {
                 let loop_start = crate::BeatTime::from_raw(clip.loop_start_raw);
                 let loop_end = crate::BeatTime::from_raw(clip.loop_end_raw);
                 crate::midi::validate_clip(start, length)?;
-                crate::midi::validate_source(
+                crate::midi::validate_source_boundary(
                     source_length,
                     source_start,
                     loop_start,
                     loop_end,
                     clip.looping,
+                    clip.one_shot_boundary,
                 )?;
                 total_notes = total_notes
                     .checked_add(clip.notes.len())
@@ -729,7 +767,18 @@ impl Project {
                 }
                 crate::midi_note_overwrite::validate_occupancy(&notes)?;
                 clip.volume.validate_source_length(source_length)?;
+                clip.playback_offset_raw
+                    .checked_add(length.raw())
+                    .ok_or(Invalid("midi playback window end overflow"))?;
+                if let Some(view) = clip.content_view {
+                    if view.length()? != length.raw() {
+                        return Err(Invalid("midi content window differs from placement"));
+                    }
+                }
                 compiled_midi.push(MidiClip {
+                    content_view: clip.content_view,
+                    active: clip.active,
+                    playback_offset: crate::BeatTime::from_raw(clip.playback_offset_raw),
                     volume: clip.volume.clone(),
                     name: clip.name.clone(),
                     flavor: clip.flavor,
@@ -737,6 +786,7 @@ impl Project {
                     start,
                     length,
                     source: std::sync::Arc::new(crate::MidiSource {
+                        one_shot_boundary: clip.one_shot_boundary,
                         source_length,
                         source_start,
                         loop_start,
@@ -819,6 +869,9 @@ impl Project {
             let content = match cell.content {
                 SessionCellContentSnapshot::Stop => crate::SessionCellContent::Stop,
                 SessionCellContentSnapshot::Midi(clip) => {
+                    if clip.playback_offset_raw == u64::MAX {
+                        return Err(Invalid("session midi playback window exhausted"));
+                    }
                     if !tracks.iter().any(|track| track.id.value() == cell.track) {
                         return Err(Invalid("session cell track is missing"));
                     }
@@ -834,12 +887,13 @@ impl Project {
                     let source_start = crate::BeatTime::from_raw(clip.source.source_start_raw);
                     let loop_start = crate::BeatTime::from_raw(clip.source.loop_start_raw);
                     let loop_end = crate::BeatTime::from_raw(clip.source.loop_end_raw);
-                    crate::midi::validate_source(
+                    crate::midi::validate_source_boundary(
                         source_length,
                         source_start,
                         loop_start,
                         loop_end,
                         clip.source.looping,
+                        clip.source.one_shot_boundary,
                     )?;
                     total_notes = total_notes
                         .checked_add(clip.source.notes.len())
@@ -872,11 +926,14 @@ impl Project {
                     crate::midi_note_overwrite::validate_occupancy(&notes)?;
                     clip.volume.validate_source_length(source_length)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
+                        active: clip.active,
+                        playback_offset: crate::BeatTime::from_raw(clip.playback_offset_raw),
                         volume: clip.volume,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
+                            one_shot_boundary: clip.source.one_shot_boundary,
                             source_length,
                             source_start,
                             loop_start,
@@ -907,6 +964,7 @@ impl Project {
                         return Err(Invalid("clip limit reached"));
                     }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
+                        active: clip.active,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,

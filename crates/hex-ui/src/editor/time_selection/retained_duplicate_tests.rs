@@ -89,7 +89,10 @@ fn fixture_with_recovery(
                 cx.notify();
             }
         });
-        if editor.read_with(&visual, |view, _| view.state.is_some()) {
+        visual.run_until_parked();
+        if editor.read_with(&visual, |view, _| {
+            view.state.is_some() && !view.audio_import_settings.is_loading()
+        }) {
             break;
         }
         assert!(Instant::now() < until);

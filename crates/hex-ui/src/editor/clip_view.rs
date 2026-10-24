@@ -23,6 +23,14 @@ pub(super) struct RetainedClipDetail {
 impl EditorView {
     /// Inspector identity is separate from whole-clip/range selection. Explicit
     /// focus supersedes this context; deletion and replacement query as empty.
+    /// Identity-only stamp for a retained inspector. Consumers must pair this
+    /// with the canonical snapshot revision before reusing a cached projection.
+    pub(super) fn retained_detail_identity(&self) -> Option<hex_project::ClipId> {
+        let owner = self.retained_clip_detail?;
+        (self.mode == EditorMode::Arrangement && owner.generation == self.project_generation)
+            .then_some(owner.clip)
+    }
+
     pub(super) fn detail_clip_id(&self) -> Option<hex_project::ClipId> {
         if let Some(clip) = self.selected_clip {
             return Some(clip);
@@ -150,21 +158,21 @@ impl EditorView {
         true
     }
 
-    fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
+    fn bounce_selection(&self) -> Option<hex_project::ClipId> {
         let project = &self.state.as_ref()?.project;
         if self.mode == EditorMode::Session {
             let (track, scene) = self.selected_cell?;
             match project.session_cell(track, scene)? {
-                hex_project::SessionCellContent::Midi(clip) => Some((clip.id(), true)),
-                hex_project::SessionCellContent::Audio(clip) => Some((clip.id(), false)),
+                hex_project::SessionCellContent::Midi(clip) => Some(clip.id()),
+                hex_project::SessionCellContent::Audio(_) => None,
                 hex_project::SessionCellContent::Stop => None,
             }
         } else {
             let clip = self.detail_clip_id()?;
             if project.midi_clip(clip).is_some() {
-                Some((clip, true))
+                Some(clip)
             } else {
-                project.clip(clip).map(|_| (clip, false))
+                None
             }
         }
     }
@@ -174,6 +182,7 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        self.reconcile_clip_detail_resize(window, cx);
         self.reconcile_piano_pan();
         self.reconcile_midi_ruler();
         let open = self.clip_view_open;
@@ -200,6 +209,34 @@ impl EditorView {
                     )
                 })
             });
+        let natural = if has_session_audio {
+            super::session_audio_panel::DETAIL_HEIGHT
+        } else if selected_midi {
+            CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
+        } else {
+            CLIP_DETAIL_BODY_HEIGHT
+        };
+        let minimum = if has_session_audio {
+            super::session_audio_panel::DETAIL_HEIGHT
+        } else {
+            super::clip_detail_resize::MIN_HEIGHT
+                + if selected_midi {
+                    self.midi_velocity.visible_height()
+                } else {
+                    0.0
+                }
+        };
+        let preferred = self.clip_detail_resize.preferred(natural, minimum);
+        self.project_spectrum.detail_height = open.then_some(if self.device_panel_active {
+            super::device_panel::DEVICE_PANEL_HEIGHT
+        } else {
+            preferred
+        });
+        // Below a useful content size, keep real controls/canvas intact in the
+        // existing scroll viewport rather than letting intrinsic children crush tracks.
+        self.clip_detail_body_height = self
+            .project_spectrum_detail_height(window, preferred)
+            .max(minimum);
         let detail = if open {
             if self.device_panel_active {
                 Some(
@@ -209,31 +246,21 @@ impl EditorView {
             } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {
-                self.midi_editor(cx).map(|element| div().child(element))
+                self.midi_editor(window, cx)
+                    .map(|element| div().child(element))
             } else if self.mode == EditorMode::Arrangement {
-                super::arrangement_audio_panel::view(self, cx).map(|element| div().child(element))
+                super::arrangement_audio_panel::view(self, window, cx)
+                    .map(|element| div().child(element))
             } else {
                 None
             }
         } else {
             None
         };
-        if detail.is_some() && !self.device_panel_active {
-            self.clip_detail_body_height = if has_session_audio {
-                super::session_audio_panel::DETAIL_HEIGHT
-            } else if selected_midi {
-                CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
-            } else {
-                CLIP_DETAIL_BODY_HEIGHT
-            };
+        if detail.is_none() {
+            self.project_spectrum.detail_height = None;
+            self.clip_detail_body_height = self.project_spectrum_detail_height(window, preferred);
         }
-        self.project_spectrum.detail_height = detail.as_ref().map(|_| {
-            if self.device_panel_active {
-                super::device_panel::DEVICE_PANEL_HEIGHT
-            } else {
-                self.clip_detail_body_height
-            }
-        });
         let label = if self.device_panel_active {
             "devices"
         } else if !open {
@@ -273,6 +300,7 @@ impl EditorView {
                 .debug_selector(|| "clip-view-toggle".into())
                 .tooltip(move |_, cx| {
                     cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         description: if open {
                             "hide clip view"
                         } else {
@@ -308,7 +336,7 @@ impl EditorView {
                 .child(theme::text(label)),
         );
         if !self.device_panel_active
-            && let Some((clip, to_audio)) = self.conversion_selection()
+            && let Some(clip) = self.bounce_selection()
         {
             let enabled = !self.edit_pending();
             let generation = self.project_generation;
@@ -327,15 +355,11 @@ impl EditorView {
                         theme::PaletteRole::Muted
                     })))
                     .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
-                    .child(theme::text(if to_audio { "→ audio" } else { "→ midi" }))
+                    .child(theme::text("→ audio"))
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
-                            description: if to_audio {
-                                "bounce clip to audio in place"
-                            } else {
-                                "convert to empty editable midi clip"
-                            }
-                            .into(),
+                            kind: crate::tooltips::Kind::Identification,
+                            description: "bounce clip to audio in place".into(),
                         })
                         .into()
                     })
@@ -343,7 +367,7 @@ impl EditorView {
                         if !enabled
                             || view.edit_pending()
                             || view.project_generation != generation
-                            || view.conversion_selection() != Some((clip, to_audio))
+                            || view.bounce_selection() != Some(clip)
                         {
                             return;
                         }
@@ -356,14 +380,9 @@ impl EditorView {
                             project_generation: generation,
                             revision,
                             clip,
-                            to_audio,
+                            to_audio: true,
                         }) {
-                            view.status = if to_audio {
-                                "bouncing clip to audio"
-                            } else {
-                                "converting clip to midi"
-                            }
-                            .into();
+                            view.status = "bouncing clip to audio".into();
                         }
                         cx.notify();
                     })),
@@ -422,6 +441,9 @@ impl EditorView {
             .flex()
             .flex_col()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .children(
+                (open && !self.device_panel_active).then(|| self.clip_detail_resize_handle(cx)),
+            )
             .child(row)
             .debug_selector(|| "clip-view".into());
         if open {
@@ -466,3 +488,7 @@ impl EditorView {
         panel
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_view_resize_tests.rs"]
+mod resize_tests;

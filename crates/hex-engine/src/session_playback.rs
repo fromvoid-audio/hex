@@ -26,26 +26,23 @@ use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
 mod candidate_storage;
+mod midi_capture;
 mod mutable_checkpoint;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
     MutableRuntimeCheckpointError, MutableRuntimeCheckpointStore,
 };
-const QUARTER_RAW: u64 = 1_u64 << 32;
-const FOUR_QUARTERS_RAW: u64 = QUARTER_RAW * 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LaunchQuantization {
-    Immediate,
-    FourQuarter,
-}
+pub use crate::launch_quantization::LaunchQuantization;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPlaybackCommand {
     Play,
     Pause,
     Stop,
+    /// Absolute first-pass cursor. At/after the loop end, retain the canonical
+    /// linear tempo/source law instead of normalizing backwards into the loop.
     Seek(u64),
     LaunchClip {
         clip: ClipId,
@@ -333,6 +330,16 @@ pub(crate) fn candidate_group_reservation(
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
+
+/// Control-owned source conversion ceiling, separate from general WAV export.
+pub const MAX_FINITE_BOUNCE_FRAMES: u64 = hex_project::MAX_ARRANGEMENT_BOUNCE_FRAMES;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenderConstruction {
+    Interactive,
+    LinearExport,
+    FiniteBounce,
+}
 pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
 
 /// Bounded result for targets canceled because their stable track or clip was
@@ -373,6 +380,9 @@ pub struct SessionPlayback {
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
+    /// Graph-local section audition; expires when the source graph is replaced.
+    pub(crate) transient_loop: Option<hex_project::LoopRegion>,
+    pub(crate) midi_admission: Option<crate::session_inventory::PreparedSessionMidiAdmission>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
     historical_floor: Option<BeatTime>,
@@ -703,6 +713,8 @@ impl SessionPlayback {
             compensation,
             device_metering: _,
             revision: _,
+            transient_loop: _,
+            midi_admission: _,
             periodic_tempo: _,
             anchor: _,
             historical_floor: _,
@@ -1160,19 +1172,102 @@ impl SessionPlayback {
         Self::new_with_policy_scoped(revision, false, Some(resources))
     }
 
+    /// Construct an unused interactive candidate with an existing launched loop.
+    /// Control owns construction/admission; callback inheritance supplies its actual clock.
+    pub(crate) fn new_section_candidate(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        region: hex_project::LoopRegion,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::section_runtime_allowance(&revision, region)?;
+        Self::new_with_policy_and_loop(revision, false, Some(resources), Some(region))
+    }
+
     fn new_with_policy_scoped(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
     ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_policy_scoped_and_loop(revision, linear_arrangement_export, resources, None)
+    }
+
+    fn new_with_policy_and_loop(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_policy_scoped_and_loop(
+            revision,
+            linear_arrangement_export,
+            resources,
+            transient_loop,
+        )
+    }
+
+    /// Construct an offline finite source bounce. Source-loop occurrences use
+    /// the same bounded query/render path as Arrangement playback. Transport
+    /// wrapping and Session commands remain disabled, as in linear export.
+    /// The exporter owns the declared output window and finite publication;
+    /// this constructor admits its size before any runtime allocation.
+    pub fn new_finite_arrangement_bounce(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        frames: u64,
+    ) -> Result<Self, SessionPlaybackError> {
+        if frames == 0 || frames > MAX_FINITE_BOUNCE_FRAMES {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "source bounce exceeds its finite frame limit",
+            ));
+        }
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_render_policy(revision, RenderConstruction::FiniteBounce, resources, None)
+    }
+
+    fn new_with_policy_scoped_and_loop(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_render_policy(
+            revision,
+            if linear_arrangement_export {
+                RenderConstruction::LinearExport
+            } else {
+                RenderConstruction::Interactive
+            },
+            resources,
+            transient_loop,
+        )
+    }
+
+    fn new_with_render_policy(
+        revision: Arc<PreparedRevision>,
+        policy: RenderConstruction,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        transient_loop: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, SessionPlaybackError> {
+        let linear_arrangement_export = policy != RenderConstruction::Interactive;
         if revision.device_resource_scope != resources.map(|resources| resources.id()) {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "device resource set differs from prepared revision",
             ));
         }
-        // Ordinary linear construction reserves before allocation, then checks the actual
-        // assembled runtime below. Other existing constructor policies retain their budgets.
-        let linear_resource_allowance = if linear_arrangement_export && resources.is_some() {
+        // Scoped linear export and every finite bounce reserve before allocation,
+        // then check the actual runtime below. Interactive budgets stay unchanged.
+        let linear_resource_allowance = if (linear_arrangement_export && resources.is_some())
+            || policy == RenderConstruction::FiniteBounce
+        {
             Some(Self::linear_export_runtime_allowance(&revision)?)
         } else {
             None
@@ -1187,17 +1282,46 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::RevisionTrackMismatch);
         }
-        if !linear_arrangement_export && let Some(error) = revision.session().periodic_tempo_error()
+        if !linear_arrangement_export
+            && transient_loop.is_none()
+            && let Some(error) = revision.session().periodic_tempo_error()
         {
             return Err(SessionPlaybackError::SessionTempoUnavailable(error));
         }
-        let periodic_tempo = if linear_arrangement_export {
+        let periodic_tempo = if let Some(region) = transient_loop {
+            if linear_arrangement_export {
+                return Err(SessionPlaybackError::InvalidCommand);
+            }
+            Some(
+                PreparedPeriodicSessionTempo::prepare(revision.session().timing(), region)
+                    .map_err(SessionPlaybackError::SessionTempoUnavailable)?,
+            )
+        } else if linear_arrangement_export {
             None
         } else {
             revision.session().periodic_tempo()
         };
+        let midi_admission = if let Some(region) = transient_loop {
+            let _ = Self::section_runtime_allowance(&revision, region)?;
+            let base = preroll::arrangement_runtime_storage_preflight_bytes(&revision)
+                .ok_or(SessionPlaybackError::Allocation)?;
+            revision
+                .session()
+                .prepare_section_admission(
+                    crate::MidiTiming::max_micro_bpm(&base_timing_for(
+                        revision.session(),
+                        periodic_tempo,
+                    )),
+                    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+                        .checked_sub(base)
+                        .ok_or(SessionPlaybackError::Allocation)?,
+                )
+                .map_err(|error| SessionPlaybackError::MutableInstrumentDiagnostic(error.0))?
+        } else {
+            None
+        };
 
-        let mutable_arrangement_source_loop = linear_arrangement_export
+        let mutable_arrangement_source_loop = policy == RenderConstruction::LinearExport
             && arrangement_tracks
                 .iter()
                 .any(|track| track.has_mutable_looping_source());
@@ -1205,9 +1329,8 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::MutableInstrumentLoopUnsupported);
         }
         if !linear_arrangement_export
-            && let Some(region) = revision
-                .arrangement()
-                .loop_region()
+            && let Some(region) = transient_loop
+                .or_else(|| revision.arrangement().loop_region())
                 .filter(|region| region.enabled())
         {
             for track in arrangement_tracks {
@@ -1435,6 +1558,7 @@ impl SessionPlayback {
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
                 revision: &revision,
+                midi_admission: midi_admission.as_ref(),
                 analytic_import: &analytic_import,
                 device_chains: &device_chains,
                 return_chains: &return_chains,
@@ -1478,6 +1602,8 @@ impl SessionPlayback {
             compensation,
             device_metering: false,
             revision,
+            transient_loop,
+            midi_admission,
             periodic_tempo,
             anchor: None,
             historical_floor: None,
@@ -1525,8 +1651,57 @@ impl SessionPlayback {
         })
     }
 
+    /// Structural work admitted for the actual runtime's Session MIDI templates.
+    /// This is a guard envelope, not a measured physical CPU budget.
+    pub fn session_work_envelope(&self) -> crate::SessionWorkEnvelope {
+        crate::session_inventory::EffectiveSessionMidi::new(
+            self.revision.session(),
+            self.midi_admission.as_ref(),
+        )
+        .work()
+    }
+
+    pub(crate) fn periodic_tempo(&self) -> Option<PreparedPeriodicSessionTempo> {
+        self.periodic_tempo_at(self.arrangement_frame, self.arrangement_loop_pass)
+    }
+
+    fn periodic_tempo_at(
+        &self,
+        frame: u64,
+        loop_pass: u64,
+    ) -> Option<PreparedPeriodicSessionTempo> {
+        self.active_loop_region_at(frame, loop_pass)
+            .and(self.periodic_tempo)
+    }
+
     pub fn performance_frame(&self) -> u64 {
         self.performance_frame
+    }
+
+    /// Configured loop law for capability/admission checks. Rendering and demand
+    /// use `active_loop_region` to respect absolute cursors after the loop.
+    /// A transient section loop never changes the immutable saved revision.
+    pub(crate) fn loop_region(&self) -> Option<hex_project::LoopRegion> {
+        if self.linear_arrangement_export {
+            None
+        } else {
+            self.transient_loop
+                .or_else(|| self.revision.arrangement().loop_region())
+                .filter(|region| region.enabled())
+        }
+    }
+
+    /// The saved/audition loop participates only when playback reaches it from
+    /// before its end. An absolute seek at or after the end begins a linear
+    /// first pass; a completed wrap retains the existing periodic loop law.
+    /// This query does not change loop settings or introduce transport state.
+    pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
+        self.active_loop_region_at(self.arrangement_frame, self.arrangement_loop_pass)
+    }
+
+    fn active_loop_region_at(&self, frame: u64, loop_pass: u64) -> Option<hex_project::LoopRegion> {
+        self.loop_region()
+            .filter(|region| loop_pass > 0 || frame < region.end())
     }
 
     /// Exact immutable graph retained by this runtime.
@@ -1601,7 +1776,7 @@ impl SessionPlayback {
         playing: bool,
     ) -> Result<(), SessionPlaybackError> {
         self.require_fresh_candidate()?;
-        self.validate_legacy_transport(performance_frame)?;
+        self.validate_legacy_transport(arrangement_frame, performance_frame)?;
         self.candidate_admission_open = false;
         self.arrangement_frame = arrangement_frame;
         self.performance_frame = performance_frame;
@@ -1611,15 +1786,19 @@ impl SessionPlayback {
 
     pub(crate) fn validate_legacy_transport(
         &self,
+        arrangement_frame: u64,
         performance_frame: u64,
     ) -> Result<(), SessionPlaybackError> {
         use crate::MidiTiming;
         // Legacy finite playback accepts frame positions beyond the Session
         // beat domain. Refuse promotion before modifying the candidate rather
         // than accepting a graph that will fail at its first render/launch.
-        base_timing_for(self.revision.session(), self.periodic_tempo)
-            .frame_to_beat(performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        base_timing_for(
+            self.revision.session(),
+            self.periodic_tempo_at(arrangement_frame, 0),
+        )
+        .frame_to_beat(performance_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
         Ok(())
     }
 
@@ -1671,6 +1850,27 @@ impl SessionPlayback {
         })
     }
 
+    /// Offline bounce completion after the isolated source's final gate. Checks
+    /// actual analytic releases and mutable processor state, never output silence.
+    /// The caller must exclude future source events and nonzero latency paths.
+    pub fn arrangement_bounce_is_quiescent(&self) -> bool {
+        !self.has_active_arrangement_voices()
+            && self.releases.is_empty()
+            && self
+                .mutable_instruments
+                .iter()
+                .flatten()
+                .all(|r| r.committed_is_quiescent())
+            && self
+                .device_chains
+                .iter()
+                .chain(self.return_chains.iter())
+                .chain(std::iter::once(&self.main_chain))
+                .all(|c| c.committed_range_is_quiescent(0..c.len()))
+            && self.tail_groups.iter().all(Option::is_none)
+            && self.tail_mutable_instruments.iter().all(Option::is_none)
+    }
+
     pub fn release_voice_count(&self) -> usize {
         self.releases.len()
     }
@@ -1701,7 +1901,9 @@ impl SessionPlayback {
         // Linear export is a deliberately fresh Arrangement-only owner. It
         // cannot inherit route state, Session launches, or a live transport
         // clock from the interactive playback graph.
-        if self.linear_arrangement_export
+        if self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
             || previous.linear_arrangement_export
             || self.current_sampler_console
             || previous.current_sampler_console
@@ -1717,7 +1919,9 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if self.linear_arrangement_export
+        if self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
             || previous.linear_arrangement_export
             || self.current_sampler_console
             || previous.current_sampler_console
@@ -1749,7 +1953,7 @@ impl SessionPlayback {
     }
 
     pub(super) fn timing_view(&self) -> SessionTimingView<'_> {
-        timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor)
+        timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
     }
 
     fn owner_for_target(
@@ -1767,7 +1971,14 @@ impl SessionPlayback {
                     launch_frame: frame,
                 }
             }
-            RouteTarget::Session(clip) if self.revision.session().midi_clip(clip).is_some() => {
+            RouteTarget::Session(clip)
+                if crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip(clip)
+                .is_some() =>
+            {
                 RouteOwner::Session {
                     clip,
                     origin: SessionMidiOrigin::launch(beat),

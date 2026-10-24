@@ -32,6 +32,11 @@ impl ExportControl {
         }
     }
 
+    /// Identity comparison for an exact generated-media completion.
+    pub fn same_job(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.state.load(Ordering::Acquire) == 1
     }
@@ -63,6 +68,12 @@ impl ExportControl {
 
     pub(super) fn advance(&self, count: usize) {
         self.processed.fetch_add(count as u64, Ordering::Release);
+    }
+
+    /// Seal a prepared generated-media transaction immediately before its
+    /// infallible adoption. Cancellation can no longer win after this boundary.
+    pub fn seal_prepared_adoption(&self) -> Result<(), ExportError> {
+        self.begin_publication()
     }
 
     pub(super) fn begin_publication(&self) -> Result<(), ExportError> {
@@ -419,6 +430,56 @@ fn prepare_runtime_observed(
     start: u64,
     frames: u64,
     control: &ExportControl,
+    after_block: impl FnMut(),
+) -> Result<SessionPlayback, ExportError> {
+    let constructor: RuntimeConstructor = if resources.is_some() {
+        resource_linear_runtime
+    } else {
+        legacy_linear_runtime
+    };
+    prepare_runtime_using(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
+        after_block,
+    )
+}
+
+pub(super) fn prepare_bounce_runtime(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+) -> Result<SessionPlayback, ExportError> {
+    prepare_runtime_using(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        SessionPlayback::new_finite_arrangement_bounce,
+        || {},
+    )
+}
+
+type RuntimeConstructor = fn(
+    Arc<PreparedRevision>,
+    Option<&PreparedDeviceResources>,
+    u64,
+) -> Result<SessionPlayback, hex_engine::SessionPlaybackError>;
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_runtime_using(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    constructor: RuntimeConstructor,
     mut after_block: impl FnMut(),
 ) -> Result<SessionPlayback, ExportError> {
     control.check()?;
@@ -434,14 +495,10 @@ fn prepare_runtime_observed(
             .ok_or(ExportError::Invalid("frame range overflows"))?,
         Ordering::Release,
     );
-    // Select before constructing one large playback Result; source scope validation remains
-    // in the engine constructor, and ordinary factories mint leases only on this control thread.
-    let constructor = if resources.is_some() {
-        resource_linear_runtime
-    } else {
-        legacy_linear_runtime
-    };
-    let mut playback = constructor(revision, resources).map_err(ExportError::SessionRender)?;
+    // Construct exactly once with the selected policy; source scope validation
+    // stays in the engine, and factories mint leases only on this control thread.
+    let mut playback =
+        constructor(revision, resources, frames).map_err(ExportError::SessionRender)?;
     if !replay && start != 0 {
         playback
             .apply(SessionPlaybackCommand::Seek(start))
@@ -469,12 +526,14 @@ fn prepare_runtime_observed(
 fn legacy_linear_runtime(
     revision: Arc<PreparedRevision>,
     _resources: Option<&PreparedDeviceResources>,
+    _frames: u64,
 ) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
     SessionPlayback::new_linear_arrangement_export(revision)
 }
 fn resource_linear_runtime(
     revision: Arc<PreparedRevision>,
     resources: Option<&PreparedDeviceResources>,
+    _frames: u64,
 ) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
     let resources = resources.ok_or(
         hex_engine::SessionPlaybackError::MutableInstrumentDiagnostic(

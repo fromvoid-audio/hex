@@ -18,7 +18,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -31,12 +31,32 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            Instant::now() < until,
+            "worker pending at deadline: {:?}",
+            editor.read_with(&*visual, |v, _| (
+                v.worker_requests_pending,
+                v.pending_requests.len(),
+                v.state.as_ref().map(|s| s.revision),
+                v.error.clone()
+            ))
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
+) -> (
+    super::super::external_audio_drop_ui_test::BatchFiles,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+) {
+    fixture_at_rate(cx, 48_000)
+}
+fn fixture_at_rate(
+    cx: &mut TestAppContext,
+    sample_rate: u32,
 ) -> (
     super::super::external_audio_drop_ui_test::BatchFiles,
     gpui::AnyWindowHandle,
@@ -45,10 +65,10 @@ fn fixture(
 ) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
-    let wav = files.wav("resize-release.wav", 48_000, 96_000);
+    let wav = files.wav("resize-release.wav", sample_rate, sample_rate * 2);
     let directory = wav.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = Service::new(sample_rate, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
@@ -58,7 +78,7 @@ fn fixture(
         .submit(Request::Edit(Command::MoveClip {
             clip,
             track,
-            start: 96_000,
+            start: u64::from(sample_rate) * 2,
         }))
         .unwrap();
     let event = next(&service);
@@ -1415,7 +1435,7 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
                     super::snapped_midi_edge_beat(drag, p, f32::from(released.x), lane, viewport)
                         .unwrap();
                 let expected = drag.clip.preview_edge_trim(drag.edge, beat).unwrap();
-                assert_ne!(Some(expected), *drag.preview.borrow());
+                assert_ne!(Some(expected.into()), *drag.preview.borrow());
                 (None, Some(expected))
             } else {
                 let drag = v.active_trim_drag.as_ref().expect("real audio capture");
@@ -1515,7 +1535,10 @@ fn resize_paint_cancel_stale_and_foreign_focus_restore_normal_lane(cx: &mut Test
 fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, cancel: Option<u8>) {
     for other_selected in [false, true] {
         for edge in [TrimEdge::Left, TrimEdge::Right] {
-            let (_files, handle, editor, audio) = fixture(cx);
+            // Lane paint, selection and receipt custody use identical seconds
+            // and pixel geometry at 8kHz; keep real preparation off the long
+            // 48kHz DSP workload covered by the other release tests.
+            let (_files, handle, editor, audio) = fixture_at_rate(cx, 8_000);
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.update(|window, _| window.activate_window());
             let clip = if midi {

@@ -1,5 +1,6 @@
 //! # Purpose
-//! Render fixed-block linear PCM16 WAV files and publish create-new outputs.
+//! Render fixed-block PCM16 Arrangement exports and bounded float32 source
+//! bounces, with explicit publication and ordinary prepared runtime custody.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -30,7 +31,9 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 mod bounce;
 mod controlled;
-pub use bounce::{render_bounce_new, render_bounce_new_with_device_resources};
+pub use bounce::{
+    render_arrangement_bounce_new, render_bounce_new, render_bounce_new_with_device_resources,
+};
 mod publication;
 mod stems;
 pub use controlled::{
