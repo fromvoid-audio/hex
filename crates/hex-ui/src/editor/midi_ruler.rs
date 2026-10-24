@@ -329,6 +329,12 @@ impl EditorView {
                     ))),
             );
         }
+        ruler = ruler.children(self.arrange_midi_highlights(
+            start,
+            span,
+            0.0,
+            "arrange-reflected-ruler-range",
+        ));
         ruler = ruler.child(
             canvas(
                 |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
