@@ -491,25 +491,10 @@ fn waveform_menu_order_preserves_saved_choices_and_undo(cx: &mut TestAppContext)
     visual.run_until_parked();
     let popup = Box::leak(format!("device-{}-parameter-57-popup", device.value()).into_boxed_str());
     let popup_bounds = visual.debug_bounds(popup).expect("wave menu");
-    let label_width = visual.update(|window, _| {
-        window
-            .text_system()
-            .shape_line(
-                "noise looped".into(),
-                px(control_style().font_size),
-                &[gpui::TextRun {
-                    len: "noise looped".len(),
-                    font: gpui::font(theme::FONT_FAMILY),
-                    color: gpui::rgb(0xffffff).into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            )
-            .width
-    });
-    assert!(popup_bounds.size.width >= label_width + px(10.0));
+    // Compact menus share the field rectangle; full option text belongs to
+    // each row's tooltip rather than widening the device-panel layout.
+    assert_eq!(popup_bounds.left(), bounds.left());
+    assert_eq!(popup_bounds.right(), bounds.right());
     visual.simulate_keystrokes("down");
     pump_until(&editor, cx, |view| {
         view.state.as_ref().is_some_and(|state| {
