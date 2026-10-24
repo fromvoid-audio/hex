@@ -1138,6 +1138,18 @@ impl Playback {
         self.project.sample_rate()
     }
 
+    /// Control-side immutable prepared source facts; these are not page or
+    /// native publication authority. Legacy graphs without a complete prepared
+    /// revision return an explicit refusal rather than incomplete dependencies.
+    pub fn streamed_sources_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = &crate::StreamedSourceMetadata>, Invalid> {
+        Ok(self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("prepared source inventory unavailable"))?
+            .streamed_sources())
+    }
     /// Whether any Arrangement or Session source needs the streamed page
     /// provider. Cached by the prepared revision, not rescanned per block.
     pub fn contains_streamed_sources(&self) -> bool {

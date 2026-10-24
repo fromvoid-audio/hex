@@ -632,3 +632,6 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
     drop(errors);
     finish(&mut retirement);
 }
+
+#[cfg(feature = "allocation-probe")]
+mod ordinary;

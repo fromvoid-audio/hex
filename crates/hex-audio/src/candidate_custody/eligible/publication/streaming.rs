@@ -4,10 +4,14 @@ use super::*;
 use hex_engine::StreamPageExtent;
 mod actions;
 mod demand;
+mod ordinary;
 mod prewarm;
 mod view;
 pub(crate) use actions::StageAction;
-use view::{ActiveView, StateView};
+pub(in crate::candidate_custody) use ordinary::OrdinaryReservation;
+pub(crate) use ordinary::OrdinaryStreams;
+pub(crate) use view::ActiveView;
+use view::StateView;
 #[derive(Clone, Copy)]
 struct ScheduledAction {
     ticket: u64,

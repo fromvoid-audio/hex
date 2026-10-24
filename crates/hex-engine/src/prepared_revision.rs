@@ -730,6 +730,24 @@ impl PreparedRevision {
         &self.midi_preview
     }
 
+    /// Borrow the actual immutable graph dependencies on control. Repeated
+    /// bindings may appear in multiple clips; no allocation, clone or custody
+    /// transfer occurs. Hosts must match these facts against retained catalogs.
+    pub fn streamed_sources(&self) -> impl Iterator<Item = &crate::StreamedSourceMetadata> {
+        self.arrangement
+            .streamed_sources()
+            .chain(
+                self.session
+                    .audio_clips()
+                    .iter()
+                    .filter_map(|clip| match clip.source() {
+                        crate::compile::PreparedAudioSource::Streamed(source) => {
+                            Some(source.as_ref())
+                        }
+                        crate::compile::PreparedAudioSource::Resident(_) => None,
+                    }),
+            )
+    }
     pub fn contains_streamed_sources(&self) -> bool {
         self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
     }

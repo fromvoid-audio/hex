@@ -10,6 +10,8 @@ pub use preparation::{
 };
 pub(super) mod publication;
 pub(crate) use pages::DomainEnvelope;
+pub(super) use publication::OrdinaryReservation;
+pub(crate) use publication::{ActiveView, OrdinaryStreams};
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
@@ -88,6 +90,7 @@ struct NativeBank {
     domains: [DomainSlot; 2],
     metadata_bytes: usize,
     closing: bool,
+    ordinary: Option<OrdinaryReservation>,
     publication: publication::Bank,
     native: Option<crate::native_callback_owner::NativeCandidateBoundary>,
 }
@@ -102,6 +105,7 @@ impl Default for NativeBank {
             domains: std::array::from_fn(|_| DomainSlot::vacant()),
             metadata_bytes: 0,
             closing: false,
+            ordinary: None,
             publication: publication::Bank::default(),
             native: None,
         }
@@ -204,6 +208,7 @@ impl Custody {
             domains: std::array::from_fn(|_| DomainSlot::vacant()),
             metadata_bytes: base_bytes,
             closing: false,
+            ordinary: None,
             publication: publication::Bank::default(),
             native,
         };

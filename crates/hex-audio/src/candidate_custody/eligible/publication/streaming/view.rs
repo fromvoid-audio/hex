@@ -2,7 +2,6 @@
 //! no runtime, source, page endpoint or native-owner moves. Constructor custody,
 //! cancellation and final destruction remain in the actual State/Root.
 use super::*;
-use hex_engine::PlaybackAction;
 use hex_stream::ProtectionRole;
 
 #[derive(Clone, Copy)]
@@ -17,7 +16,7 @@ pub(super) struct StateView<'a> {
     pub(super) context_generation: u64,
     pub(super) correlation: Correlation,
 }
-pub(super) struct ActiveView<'a> {
+pub(crate) struct ActiveView<'a> {
     pub(super) state: StateView<'a>,
 }
 impl State {
@@ -60,7 +59,7 @@ impl State {
     }
 }
 impl Active {
-    fn stream_view(&mut self) -> ActiveView<'_> {
+    pub(crate) fn stream_view(&mut self) -> ActiveView<'_> {
         ActiveView {
             state: self.state.stream_view(),
         }
@@ -74,34 +73,8 @@ impl Active {
             .as_ref()
             .is_some_and(|w| w.pending_action.is_some())
     }
-    pub(crate) fn stage_stream_action(
-        &mut self,
-        action: PlaybackAction,
-        ticket: u64,
-    ) -> StageAction {
-        self.stream_view().stage_stream_action(action, ticket)
-    }
-    pub(crate) fn cancel_stream_action(
-        &mut self,
-        domains: &mut [Option<DomainEnvelope>; 2],
-    ) -> Option<u64> {
-        self.stream_view().cancel_stream_action(domains)
-    }
-    pub(crate) fn cancel_pending_routes(
-        &mut self,
-        command: hex_engine::SessionPlaybackCommand,
-        domains: &mut [Option<DomainEnvelope>; 2],
-    ) -> Result<Option<u64>, hex_engine::PlaybackActionError> {
-        self.stream_view().cancel_pending_routes(command, domains)
-    }
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.stream_view().clear_stream_roles(domains);
-    }
-    pub(crate) fn revoke_launch_prewarm(
-        &mut self,
-        domains: &mut [Option<DomainEnvelope>; 2],
-    ) -> bool {
-        self.stream_view().revoke_launch_prewarm(domains)
     }
     pub(crate) fn publication_replaces_prewarm(
         &mut self,
@@ -113,12 +86,6 @@ impl Active {
         self.stream_view()
             .inherit_schedule_observation(&mut previous.stream_view())
     }
-    pub(crate) fn refresh_scheduled_after_command(
-        &mut self,
-        domains: &mut [Option<DomainEnvelope>; 2],
-    ) -> Option<u64> {
-        self.stream_view().refresh_scheduled_after_command(domains)
-    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) fn service_launch_prewarm(
         &mut self,
@@ -128,34 +95,5 @@ impl Active {
     ) -> bool {
         self.stream_view()
             .service_launch_prewarm(domains, prefix, frames)
-    }
-    pub(crate) fn render_streamed(
-        &mut self,
-        domains: &mut [Option<DomainEnvelope>; 2],
-        pending_play: bool,
-        prefix: u64,
-        output: &mut [hex_engine::Frame],
-        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
-    ) -> StreamOutcome {
-        self.stream_view()
-            .render_streamed(domains, pending_play, prefix, output, observer)
-    }
-    pub(crate) fn render_streamed_with_project(
-        &mut self,
-        domains: &mut [Option<DomainEnvelope>; 2],
-        pending_play: bool,
-        prefix: u64,
-        output: &mut [hex_engine::Frame],
-        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
-        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
-    ) -> StreamOutcome {
-        self.stream_view().render_streamed_with_project(
-            domains,
-            pending_play,
-            prefix,
-            output,
-            observer,
-            project,
-        )
     }
 }

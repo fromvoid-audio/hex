@@ -35,10 +35,15 @@ pub(super) fn record_outcome(
 }
 impl Callback {
     pub(super) fn stream_action_pending(&self) -> bool {
-        matches!(self.active.as_ref(), Some(ActivePublication::Eligible(active)) if active.has_stream_action())
+        self.active
+            .as_ref()
+            .is_some_and(ActivePublication::has_stream_action)
     }
     pub(super) fn cancel_active_stream_action(&mut self) {
-        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
             && let Some(ticket) = active.cancel_stream_action(&mut self.domain_pages)
         {
             self.status
@@ -51,7 +56,11 @@ impl Callback {
                 .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionBusy);
             return;
         }
-        let Some(ActivePublication::Eligible(active)) = self.active.as_mut() else {
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        else {
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
             return;
@@ -67,16 +76,30 @@ impl Callback {
         }
     }
     pub(super) fn streamed_transport_mode(&self) -> bool {
-        self.status.verified_streaming_mode.load(Acquire)
-            || matches!(self.active.as_ref(), Some(ActivePublication::Eligible(active)) if active.streaming_enabled())
+        self.stream_pending_play.is_some() || self.stream_action_pending()
+            || self.status.verified_streaming_mode.load(Acquire)
+            || self.active.as_ref().is_some_and(ActivePublication::streaming_enabled)
+            || self.deferred.as_ref().is_some_and(|next| next.streams.is_some())
+            || self.publications.peek().is_ok_and(|next| matches!(next, QueuedPublication::Legacy(next) if next.streams.is_some()))
             || self.deferred_eligible.as_ref().is_some_and(|next| next.streaming_enabled())
             || self.publications.peek().is_ok_and(|next| matches!(next, QueuedPublication::Eligible(next) if next.streaming_enabled()))
     }
     fn invalidate_stream_readiness(&mut self) {
+        if let Some(streams) = self
+            .deferred
+            .as_mut()
+            .and_then(|next| next.streams.as_mut())
+        {
+            streams.cancel_install(&mut self.domain_pages);
+        }
         if let Some(next) = self.deferred_eligible.as_mut() {
             next.cancel_stream_readiness(&mut self.domain_pages);
         }
-        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
+        {
             active.revoke_launch_prewarm(&mut self.domain_pages);
             active.clear_stream_roles(&mut self.domain_pages);
         }
@@ -131,7 +154,10 @@ impl Callback {
         }
     }
     fn refresh_stream_schedule(&mut self) {
-        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+        if let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::stream_view)
             && let Some(ticket) = active.refresh_scheduled_after_command(&mut self.domain_pages)
         {
             self.status
@@ -199,7 +225,11 @@ impl Callback {
                     );
                 }
                 PlaybackAction::Session(SessionPlaybackCommand::CancelPending { track }) => {
-                    if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
+                    if let Some(mut active) = self
+                        .active
+                        .as_mut()
+                        .and_then(ActivePublication::stream_view)
+                    {
                         match active.cancel_pending_routes(
                             SessionPlaybackCommand::CancelPending { track },
                             &mut self.domain_pages,

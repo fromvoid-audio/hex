@@ -2125,6 +2125,12 @@ impl Project {
         &self.return_buses
     }
 
+    pub(crate) fn streamed_sources(&self) -> impl Iterator<Item = &StreamedSourceMetadata> {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(|clip| clip.metadata.as_ref().and_then(|m| m.streamed.as_deref()))
+    }
     /// Whether any clip needs streamed pages to produce audio.
     pub fn contains_streamed_sources(&self) -> bool {
         self.has_streamed_sources

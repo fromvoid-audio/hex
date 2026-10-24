@@ -23,6 +23,8 @@ mod resources;
 mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
+pub(in crate::candidate_custody) use streaming::OrdinaryReservation;
+pub(crate) use streaming::{ActiveView, OrdinaryStreams};
 pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
 mod preparation;
 use preparation::PreparationExecution;
