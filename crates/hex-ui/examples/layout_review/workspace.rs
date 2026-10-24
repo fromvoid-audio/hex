@@ -73,6 +73,8 @@ impl Workspace {
         let calibrated_meter = matches!(kind, Kind::MeterIndicator(_));
         let spec = if calibrated_meter {
             NumericSpec::new(-60.0, 6.0, -24.0, NumericScale::Linear, 1, Some("dbfs"))
+        } else if matches!(kind, Kind::TimeMarkers) {
+            NumericSpec::new(0.0, 1.0, 0.25, NumericScale::Linear, 2, None::<&str>)
         } else {
             NumericSpec::new(0.0, 2.0, 0.5, NumericScale::Linear, 2, None::<&str>)
         }
@@ -102,6 +104,8 @@ impl Workspace {
                     number(0, "level dbfs", -24.0)?,
                     number(1, "held peak dbfs", -12.0)?,
                 ]
+            } else if matches!(kind, Kind::TimeMarkers) {
+                [number(0, "anchor", 0.25)?, number(1, "end", 0.5)?]
             } else {
                 [number(0, "left", 0.25)?, number(1, "right", 0.5)?]
             },
@@ -729,11 +733,12 @@ impl Workspace {
                 )
             }
             Kind::TimeMarkers => {
-                let first = self.numbers[0].read(cx).value() as f32 / 100.0;
-                let second = self.numbers[1].read(cx).value() as f32 / 100.0;
+                let first = self.numbers[0].read(cx).value() as f32;
+                let second = self.numbers[1].read(cx).value() as f32;
                 let start = first.min(second);
                 let end = first.max(second);
                 let mut preview = div()
+                    .debug_selector(|| "workspace-time-marker-preview".into())
                     .relative()
                     .w_full()
                     .h(px(100.0))
@@ -936,6 +941,39 @@ mod tests {
         let visual = VisualTestContext::from_window(*handle, cx);
         visual.run_until_parked();
         (visual, entity)
+    }
+    #[gpui::test]
+    fn shared_time_marker_fixture_uses_full_normalized_extent(cx: &mut TestAppContext) {
+        let (mut visual, view) = fixture(cx, Kind::TimeMarkers);
+        let preview = visual
+            .debug_bounds("workspace-time-marker-preview")
+            .unwrap();
+        let first = visual.debug_bounds("sandbox-marker-Top-start").unwrap();
+        let last = visual.debug_bounds("sandbox-marker-Top-end").unwrap();
+        assert!(
+            (f32::from(first.right() - preview.left() - preview.size.width * 0.25)).abs() < 1.0
+        );
+        assert!((f32::from(last.left() - preview.left() - preview.size.width * 0.5)).abs() < 1.0);
+        view.update(&mut visual, |view, cx| {
+            view.numbers[0].update(cx, |number, cx| number.set_external_value(1.0, cx).unwrap());
+            view.numbers[1].update(cx, |number, cx| number.set_external_value(0.0, cx).unwrap());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("sandbox-marker-Top-start")
+                .unwrap()
+                .right(),
+            preview.left()
+        );
+        assert_eq!(
+            visual
+                .debug_bounds("sandbox-marker-Top-end")
+                .unwrap()
+                .left(),
+            preview.right()
+        );
     }
     #[gpui::test]
     fn glyph_toggles_keep_small_corners_and_show_hover_feedback(cx: &mut TestAppContext) {

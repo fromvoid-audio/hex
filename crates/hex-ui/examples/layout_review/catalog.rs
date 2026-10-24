@@ -101,6 +101,11 @@ impl Item {
             Demo::Workspace(WorkspaceKind::LevelMeter) => {
                 ("level meter", "workspace", "level_meter")
             }
+            Demo::Workspace(WorkspaceKind::TimeMarkers) => (
+                "time selection markers",
+                "workspace",
+                "time_position_marker",
+            ),
             Demo::Workspace(WorkspaceKind::ScrollingList) => (
                 "scrolling list composition",
                 "compositions",
