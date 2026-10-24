@@ -77,7 +77,27 @@ fn serialize_events<S: serde::Serializer>(
     }
     seq.end()
 }
+/// Historical event formats carry geometry only. Refuse newer envelope state
+/// instead of silently losing it through an explicit old writer.
+pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), StorageError> {
+    if project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips())
+        .any(|clip| {
+            clip.audio_edit()
+                .and_then(|edit| edit.domain.events.as_ref())
+                .is_some_and(|events| events.events.iter().any(|event| event.fade.is_some()))
+        })
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save audio event fades",
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn encode(project: &Project) -> Result<Document<'_>, StorageError> {
+    require_legacy_compatible(project)?;
     let mut base = super::appearance::DocumentV27::from_project(project)?;
     base.version = 28;
     let audio_event_state = project
@@ -175,6 +195,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                             start: e.start,
                             end: e.end,
                             source_start: e.source_start,
+                            fade: None,
                         })
                         .collect(),
                 };

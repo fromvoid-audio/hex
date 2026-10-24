@@ -8,7 +8,8 @@
 //! Marker moves retain their identity/length and carve destination overlap from
 //! other markers. A lone surviving fragment retains its identity; on an interior
 //! cut the left retains it and the right receives a fresh identity/name/color copy.
-//! Isolated range/edge resizing still refuses overlap instead of carving neighbors.
+//! Marker edge resizing uses the same carving law; isolated range/content edge
+//! resizing still refuses overlap instead of carving neighbors.
 //! Marker splitting retains the left identity and gives the adjoining right
 //! marker a fresh ID with matching name/color, without editing any musical data.
 //! Reordering cuts `[start,end)` and inserts it before/after the target's original
@@ -288,6 +289,11 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         Command::MoveArrangementSectionMarker { section, start } => {
             marker_move::apply(project, section, start)
         }
+        Command::ResizeArrangementSectionMarker {
+            section,
+            edge,
+            boundary,
+        } => marker_move::resize(project, section, edge, boundary),
         Command::ReorderSectionAfter { section, after } => reorder_after(project, section, after),
         Command::ResizeArrangementSection {
             section,
@@ -376,6 +382,11 @@ impl Project {
             Command::MoveArrangementSectionMarker { section, start } => {
                 marker_move::preview(self, *section, *start)
             }
+            Command::ResizeArrangementSectionMarker {
+                section,
+                edge,
+                boundary,
+            } => marker_move::preview_resize(self, *section, *edge, *boundary),
             Command::ResizeArrangementSection {
                 section,
                 edge,

@@ -1209,6 +1209,7 @@ impl EditorView {
         let audio_event_focus = cx.focus_handle();
         let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
             view.audio_event_editor.gesture = None;
+            view.audio_event_editor.fade_key_held = false;
             cx.notify();
         });
         let midi_focus = cx.focus_handle();
@@ -1241,6 +1242,7 @@ impl EditorView {
                 view.midi_step.cancel_pending();
                 view.invalidate_hardware_step();
                 view.audio_event_editor.gesture = None;
+                view.audio_event_editor.fade_key_held = false;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 let paint_cancelled = view.cancel_clip_paint()
@@ -1270,6 +1272,7 @@ impl EditorView {
             }
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
+            view.audio_event_editor.fade_key_held = false;
             if view.cancel_midi_note_gesture()
                 | view.cancel_track_reorder()
                 | view.cancel_scrub()

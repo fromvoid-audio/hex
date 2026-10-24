@@ -510,6 +510,7 @@ impl Command {
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
+            | Self::ResizeArrangementSectionMarker { .. }
             | Self::RenameArrangementSection { .. }
             | Self::SetArrangementSectionColor { .. }
             | Self::RemoveArrangementSection(..)

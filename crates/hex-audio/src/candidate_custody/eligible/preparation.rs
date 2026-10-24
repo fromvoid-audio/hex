@@ -64,7 +64,11 @@ impl Custody {
             let data = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(
+                    bank.accounted_base(false)
+                        .map_err(AudioCandidateDomainStartError::Busy)?,
+                    |n, d| n.checked_add(d.data),
+                )
                 .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
                 .ok_or(AudioCandidateDomainStartError::Busy(
                     "source reservation overflow",
@@ -72,7 +76,11 @@ impl Custody {
             let peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(
+                    bank.accounted_base(true)
+                        .map_err(AudioCandidateDomainStartError::Busy)?,
+                    |n, d| n.checked_add(d.peak),
+                )
                 .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .ok_or(AudioCandidateDomainStartError::Busy(
                     "source reservation overflow",
