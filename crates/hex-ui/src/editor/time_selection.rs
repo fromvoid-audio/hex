@@ -143,6 +143,7 @@ impl EditorView {
 
     fn range_input_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
+            && !self.automation_view.enabled
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.track_name.is_editing()
