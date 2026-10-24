@@ -16,9 +16,22 @@ fn global_bpm_publishes_with_original_and_predecessor_pcm_still_retained() {
         let imported = h.run(Request::Import(file.wav(rate, 2_000_000)));
         (applied, _) = h.applied(applied);
         let clip = imported.state.project.tracks()[0].clips()[0].id();
+        h.run(Request::Edit(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 250_000 },
+        }));
+        (applied, _) = h.applied(applied);
+        let edited = h.run(Request::Edit(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Move {
+                event: 1,
+                start: 750_000,
+            },
+        }));
+        (applied, _) = h.applied(applied);
         let settings = hex_project::default_audio_warp(
-            imported.state.project.clip(clip).unwrap(),
-            imported.state.project.tempo_map(),
+            edited.state.project.clip(clip).unwrap(),
+            edited.state.project.tempo_map(),
             hex_project::WarpMode::RePitch,
         )
         .unwrap();

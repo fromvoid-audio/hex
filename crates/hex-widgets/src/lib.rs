@@ -43,6 +43,10 @@ pub use splitter::{
 };
 mod style;
 mod text_case;
+mod time_position_marker;
+pub use time_position_marker::{
+    TIME_POSITION_MARKER_HEIGHT, TimeMarkerEdge, TimeMarkerEndpoint, time_position_marker,
+};
 mod text_click_selection;
 pub use spectrum_plot::{
     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,

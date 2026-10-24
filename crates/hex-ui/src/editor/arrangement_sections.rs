@@ -2101,7 +2101,9 @@ mod tests {
         });
         assert_eq!(
             visual.rendered_background("arrangement-grid-line-192000"),
-            Some(gpui::Background::from(rgb(theme::color(theme::PaletteRole::Grid))).opacity(0.9)),
+            Some(gpui::Background::from(rgb(theme::color(
+                theme::PaletteRole::Border
+            )))),
             "the moved section seam remains an ordinary grid line, not a red meter marker"
         );
     }
