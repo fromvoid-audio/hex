@@ -142,6 +142,11 @@ pub(super) struct Bank {
     reservation: Option<AudioCandidatePublicationReservation>,
     metadata_bytes: usize,
     stream_extents: Option<usize>,
+    // Ordinary graphs keep their registered-resource owner. These bounded
+    // references protect the same original native cells, without creating a
+    // constructor runtime/claim or cloning a native worker/endpoint.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) ordinary_native: native_sources::ordinary::ReferenceCounts,
 }
 struct Execution {
     returned: Returned,
@@ -986,9 +991,11 @@ impl super::Custody {
 impl Bank {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn references_native_source(&self, index: usize) -> bool {
-        self.slots
-            .iter()
-            .any(|slot| slot.phase != Phase::Vacant && slot.native_refs.contains(index))
+        self.ordinary_native.contains(index)
+            || self
+                .slots
+                .iter()
+                .any(|slot| slot.phase != Phase::Vacant && slot.native_refs.contains(index))
     }
     pub(super) fn occupied(&self) -> Option<usize> {
         self.reservation?;

@@ -366,7 +366,7 @@ pub(super) fn on_control<T>(mut operation: impl FnMut() -> Result<T, &'static st
     }
 }
 
-fn renew_after_returns(control: &mut Control, binding: Binding) -> Binding {
+pub(super) fn renew_after_returns(control: &mut Control, binding: Binding) -> Binding {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         // Endpoint ingestion may be refused while the existing lifecycle worker

@@ -339,6 +339,31 @@ impl Callback {
         if operation & 1 == 0 {
             return;
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.status.sampler_edit.native_epoch.load(Acquire) {
+            let source = self.current_native_epoch_source();
+            let playing = match self.active.as_ref() {
+                Some(ActivePublication::Eligible(active)) => active
+                    .runtime()
+                    .and_then(|runtime| runtime.status())
+                    .map(|status| status.playing),
+                Some(ActivePublication::Legacy(active)) => Some(active.playback.playing()),
+                _ => None,
+            };
+            self.status.sampler_edit.acknowledge(
+                operation,
+                source,
+                playing.unwrap_or(true),
+                0,
+                source.is_none()
+                    || playing.is_none()
+                    || self.status.closing.load(Acquire)
+                    || self.status.device_fault.load(Acquire)
+                    || self.status.render_fault.load(Acquire),
+                self.status.consumed_command.load(Acquire),
+            );
+            return;
+        }
         if self.status.sampler_edit.resident.load(Acquire) {
             let active = self.active.as_ref().and_then(ActivePublication::legacy);
             let source =

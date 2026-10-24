@@ -969,6 +969,44 @@ impl Playback {
         self.prepared_revision.as_ref()
     }
 
+    /// Borrow the actual prepared foreign nodes on control. These immutable
+    /// facts grant no native source or endpoint custody: publication must match
+    /// them to the host's retained instances and protect their graph lifetime.
+    pub fn foreign_nodes_on_control(
+        &self,
+    ) -> impl Iterator<Item = &hex_lattice::PreparedRuntimeInstance> {
+        self.project
+            .tracks
+            .iter()
+            .flat_map(|track| track.device_chain.iter())
+            .chain(
+                self.project
+                    .return_buses
+                    .iter()
+                    .flat_map(|bus| bus.device_chain.iter()),
+            )
+            .chain(self.project.main_device_chain.iter())
+            .filter(|node| {
+                matches!(
+                    node.definition,
+                    Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                )
+            })
+    }
+
+    /// Observe actual current and committed release-tail foreign bindings.
+    /// The audio owner uses this bounded scalar visit before exposing a graph
+    /// return; copied immutable revision facts alone omit migrated tails.
+    /// No allocation, source transfer or concurrent runtime access is allowed.
+    pub fn visit_foreign_runtime_bindings(
+        &self,
+        visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
+    ) {
+        if let Some(runtime) = self.session_runtime.as_ref() {
+            runtime.visit_foreign_runtime_bindings(visit);
+        }
+    }
+
     /// True only for an explicitly armed, admitted Session-capable runtime.
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.session_runtime

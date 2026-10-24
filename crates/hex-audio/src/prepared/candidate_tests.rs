@@ -303,6 +303,8 @@ fn full_return_queue_holds_actual_candidate_and_shutdown_ack_is_not_disposal() {
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
                     streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(legacy()),
                 }))
                 .ok()
@@ -440,6 +442,8 @@ fn candidate_rejection_held_return_and_guard_release_have_zero_total_and_net_cal
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
                     streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(legacy()),
                 }))
                 .ok()

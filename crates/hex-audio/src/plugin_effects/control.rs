@@ -30,6 +30,9 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        self.worker.transport_is_live_on_control()
+    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_published_blocks(&self) -> u64 {
         self.worker.published_blocks_on_control()

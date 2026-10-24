@@ -8,6 +8,11 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_host::native;
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+pub(super) enum NativeEpochRuntimeTarget {
+    Constructor(crate::candidate_custody::NativeEpochTarget),
+    Ordinary(AppliedAudioSource),
+}
+
 impl PublicationControl {
     /// Exclude transport/publication while the callback acknowledges the exact
     /// current native runtime after the admitted command prefix. This witness
@@ -27,7 +32,7 @@ impl PublicationControl {
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
             || self.status.publication_pending.recording_active()
-            || self.status.applied_audio_source() != Some(expected)
+            || self.status.native_effect_source() != Some(expected)
         {
             return Err("native epoch output is not current or publication is pending");
         }
@@ -78,7 +83,42 @@ impl PublicationControl {
             .write_chunk_uninit(1)
             .map_err(|_| "native epoch publication is busy")?;
         chunk.fill_from_iter(std::iter::once(QueuedPublication::NativeEpoch {
-            target,
+            target: NativeEpochRuntimeTarget::Constructor(target),
+            fence,
+        }));
+        Ok(())
+    }
+    /// Return exactly the callback-observed ordinary native graph under its
+    /// ready fence. Success queues only a scalar request; Root still requires
+    /// actual graph destruction and original endpoint ingestion before renewal.
+    pub fn return_stopped_ordinary_native_epoch_runtime(
+        &mut self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) -> Result<(), &'static str> {
+        // The same still-held operation may need another fresh epoch when Stop
+        // revokes a newly prepared cohort before successor installation. There
+        // is no current graph in that case, but actual endpoint return is still
+        // required; the callback independently proves this vacant frontier.
+        let vacant = self.status.native_effect_source().is_none()
+            && self.status.recording_source().is_none()
+            && self.status.applied_revision.load(Acquire) == source.audio_revision;
+        if !self.native_custody
+            || !self.candidate_root.ordinary_streams_configured()
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || (self.status.native_effect_source() != Some(source) && !vacant)
+            || source.output_identity != self.candidate_root.root_id()
+            || self.status.sampler_edit.native_epoch_context(fence) != Some(source.context)
+        {
+            return Err("ordinary native epoch requires its observed stopped source");
+        }
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "native epoch publication is busy")?;
+        chunk.fill_from_iter(std::iter::once(QueuedPublication::NativeEpoch {
+            target: NativeEpochRuntimeTarget::Ordinary(source),
             fence,
         }));
         Ok(())
@@ -113,6 +153,17 @@ impl PublicationControl {
             || self.status.closing.load(Acquire)
         {
             return Err("native preparation requires a vacant native output");
+        }
+        if self.device_resources.is_some() {
+            let graphs = self
+                .publications
+                .buffer()
+                .capacity()
+                .checked_add(RETIRED)
+                .and_then(|n| n.checked_add(5))
+                .ok_or("ordinary native graph capacity overflow")?;
+            self.candidate_root
+                .configure_ordinary_native_references(graphs)?;
         }
         self.candidate_root
             .configure_native_source_preparation(capacity, limits)
@@ -257,11 +308,33 @@ impl PublicationControl {
     }
 }
 impl Callback {
+    pub(super) fn current_native_epoch_source(&self) -> Option<AppliedAudioSource> {
+        match self.active.as_ref()? {
+            ActivePublication::Eligible(active) => active.applied_audio_source(),
+            ActivePublication::Legacy(active)
+                if self.native_sources.ordinary_runtime_requires_sources() =>
+            {
+                active.source_context.map(|context| AppliedAudioSource {
+                    context,
+                    audio_revision: active.revision,
+                    output_identity: self.candidate_root.root_id(),
+                })
+            }
+            _ => None,
+        }
+    }
     pub(super) fn return_native_epoch_runtime(
         &mut self,
-        target: crate::candidate_custody::NativeEpochTarget,
+        target: NativeEpochRuntimeTarget,
         fence: StoppedEditFence,
     ) {
+        let target = match target {
+            NativeEpochRuntimeTarget::Constructor(target) => target,
+            NativeEpochRuntimeTarget::Ordinary(source) => {
+                self.return_ordinary_native_epoch_runtime(source, fence);
+                return;
+            }
+        };
         let Some(ActivePublication::Eligible(active)) = self.active.as_ref() else {
             return;
         };
@@ -292,6 +365,52 @@ impl Callback {
             self.return_publication(ReturnedPublication::Eligible(
                 active.return_stopped_native_epoch(),
             ));
+            self.status.applied_source.publish(None);
+            self.publish_active_routes(true);
+            self.publish_transport();
+        }
+    }
+    fn return_ordinary_native_epoch_runtime(
+        &mut self,
+        source: AppliedAudioSource,
+        fence: StoppedEditFence,
+    ) {
+        if !self.status.sampler_edit.matches_source(fence, source)
+            || self
+                .status
+                .sampler_edit
+                .native_epoch_context(fence)
+                .is_none()
+            || !self.native_sources.has_endpoints()
+        {
+            return;
+        }
+        if self.active.is_none() {
+            if self.status.applied_revision.load(Acquire) == source.audio_revision
+                && !self.status.publication_pending.load(Acquire)
+            {
+                self.native_sources.refresh_runtime_requirements(None);
+                self.native_sources.request_epoch_return();
+            }
+            return;
+        }
+        if self.current_native_epoch_source() != Some(source)
+            || self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_none_or(|active| active.playback.playing())
+        {
+            return;
+        }
+        self.cancel_active_stream_action();
+        if let Some(ActivePublication::Legacy(mut active)) = self.active.take() {
+            if let Some(mut streams) = active.stream_view() {
+                streams.clear_stream_roles(&mut self.domain_pages);
+            }
+            self.native_sources.refresh_runtime_requirements(None);
+            self.native_sources.request_epoch_return();
+            self.return_graph(active);
             self.status.applied_source.publish(None);
             self.publish_active_routes(true);
             self.publish_transport();
