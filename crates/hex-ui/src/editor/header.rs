@@ -452,7 +452,7 @@ mod ui_tests {
                     for selector in [
                         "arrange-zoom-fit",
                         "arrange-zoom-back",
-                        "arrangement-focus-toggle",
+                        "section-focus-control",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));

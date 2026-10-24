@@ -272,6 +272,9 @@ impl EditorView {
         }
         div()
             .id("section-focus-control")
+            .debug_selector(|| "section-focus-control".into())
+            .flex()
+            .items_center()
             .w(px(20.0))
             .h(px(20.0))
             .flex_shrink_0()
