@@ -266,14 +266,17 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
             let mut sources = Vec::new();
             for root in state.sources {
                 let encoded = serde_json::to_vec(&root.document)?;
-                let root_project = match root.document.get("version").and_then(|v| v.as_u64()) {
-                    Some(40) => super::clip_activation::decode(&encoded)?,
-                    Some(41) => super::content_views::decode(&encoded)?,
-                    _ => {
-                        return Err(StorageError::Invalid(
-                            "retained root requires a non-grouped schema40 or content41 envelope",
-                        ));
-                    }
+                let root_version = root.document.get("version").and_then(|v| v.as_u64());
+                let expected = if version == 42 { 41 } else { 40 };
+                if root_version != Some(expected) {
+                    return Err(StorageError::Invalid(
+                        "retained root schema differs from its owning envelope",
+                    ));
+                }
+                let root_project = if version == 42 {
+                    super::content_views::decode(&encoded)?
+                } else {
+                    super::clip_activation::decode(&encoded)?
                 };
                 let source = root_project
                     .tracks()

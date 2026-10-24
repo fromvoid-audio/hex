@@ -195,3 +195,32 @@ fn both_evidenced_schema41_producers_migrate_without_losing_inventory() {
         assert!(decode(&bytes(&ambiguous)).is_err());
     }
 }
+
+#[test]
+fn embedded_root_schema_matches_the_actual_outer_writer_lineage() {
+    let (mut e, ids) = fixture();
+    e.execute(Command::GroupClips(ids)).unwrap();
+    let current: Value = serde_json::from_slice(&encode(e.project()).unwrap()).unwrap();
+    let mut old_root_in_current = current.clone();
+    let document = &mut old_root_in_current["grouped_audio"][0]["sources"][0]["document"];
+    document["version"] = 40.into();
+    document.as_object_mut().unwrap().remove("content_views");
+    assert!(decode(&bytes(&old_root_in_current)).is_err());
+    let mut old: Value = serde_json::from_slice(include_bytes!(
+        "fixtures/grouped-audio/schema41-group-04d5ee56.json"
+    ))
+    .unwrap();
+    // Construct a valid main41 child using the complete decoded historical root.
+    // It remains invalid in the draft41 outer envelope, whose writer used40.
+    let old_document = &old["grouped_audio"][0]["sources"][0]["document"];
+    let root = decode(&bytes(old_document)).unwrap();
+    let mut newer_document: Value = serde_json::from_slice(&encode(&root).unwrap()).unwrap();
+    newer_document["version"] = 41.into();
+    newer_document
+        .as_object_mut()
+        .unwrap()
+        .remove("grouped_audio");
+    assert!(decode(&bytes(&newer_document)).is_ok());
+    old["grouped_audio"][0]["sources"][0]["document"] = newer_document;
+    assert!(decode(&bytes(&old)).is_err());
+}
