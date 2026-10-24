@@ -28,7 +28,7 @@ impl AppliedSourceStatus {
             .store(source.map_or(0, |s| s.audio_revision), SeqCst);
         self.sequence.store(before.wrapping_add(2), SeqCst);
     }
-    fn read(&self) -> Option<AppliedAudioSource> {
+    pub(super) fn read(&self) -> Option<AppliedAudioSource> {
         for _ in 0..3 {
             let before = self.sequence.load(SeqCst);
             if before & 1 != 0 {
@@ -53,6 +53,12 @@ impl AppliedSourceStatus {
     }
 }
 impl Status {
+    /// Canonical source captured with the actual installed ordinary or eligible
+    /// graph. This is correlation, not sink delivery or admission authority.
+    pub fn recording_source(&self) -> Option<AppliedAudioSource> {
+        let source = self.recording_source.read()?;
+        (self.applied_revision.load(Acquire) == source.audio_revision).then_some(source)
+    }
     /// Actual active constructor source, independent of delivery of Submitted
     /// events. None includes bounded-reader contention or a legacy install.
     /// This correlation observation grants neither custody nor readiness.

@@ -46,6 +46,35 @@ impl EditorView {
             .child(self.icon("■", "stop · escape", Stop, cx))
             .child(
                 self.control_icon(
+                    "●",
+                    self.midi_recorder.label(),
+                    |view, _, cx| {
+                        view.toggle_midi_recording();
+                        cx.notify();
+                    },
+                    cx,
+                )
+                .text_color(rgb(theme::color(
+                    if self.midi_recorder.blocks_edits() {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
+            .children(self.midi_recorder.blocks_edits().then(|| {
+                self.control_icon(
+                    "×",
+                    "discard retained midi take",
+                    |view, _, cx| {
+                        view.discard_midi_take();
+                        cx.notify();
+                    },
+                    cx,
+                )
+            }))
+            .child(
+                self.control_icon(
                     "▶↻",
                     "section autoplay and loop · click a section to launch",
                     |view, _, _| view.toggle_section_autoplay(),

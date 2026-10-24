@@ -47,7 +47,7 @@ impl EditorView {
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_numeric_editing(cx)
             || self.gain_lane.draft.is_some()
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             return Err("finish pending edits before dropping a device");
         }
