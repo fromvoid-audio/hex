@@ -126,19 +126,39 @@ impl EditorView {
                 }
                 let mut clips = Vec::new();
                 let mut any_active = false;
-                for clip in self.selected_clip_ids() {
-                    let active = state
-                        .project
-                        .clip_active(clip)
-                        .ok_or("selected clip no longer exists")?;
-                    // Mode changes retain a Session selection. It has no
-                    // Arrangement extent and must not mute its owning track.
-                    if state.project.clip(clip).is_none() && state.project.midi_clip(clip).is_none()
-                    {
-                        continue;
+                let mut remaining: std::collections::BTreeSet<_> =
+                    self.selected_clip_ids().into_iter().collect();
+                // Resolve a large multi-selection in one pass rather than
+                // scanning the project for every selected identity.
+                for track in state.project.tracks() {
+                    for clip in track.clips() {
+                        if remaining.remove(&clip.id()) {
+                            clips.push(clip.id());
+                            any_active |= clip.active();
+                        }
                     }
-                    clips.push(clip);
-                    any_active |= active;
+                    for clip in track.midi_clips() {
+                        if remaining.remove(&clip.id()) {
+                            clips.push(clip.id());
+                            any_active |= clip.active();
+                        }
+                    }
+                }
+                // Mode changes retain a Session selection. It has no
+                // Arrangement extent and must not mute its owning track.
+                for cell in state.project.session_cells() {
+                    match cell.content() {
+                        SessionCellContent::Audio(clip) => {
+                            remaining.remove(&clip.id());
+                        }
+                        SessionCellContent::Midi(clip) => {
+                            remaining.remove(&clip.id());
+                        }
+                        SessionCellContent::Stop => (),
+                    }
+                }
+                if !remaining.is_empty() {
+                    return Err("selected clip no longer exists".into());
                 }
                 Ok((!clips.is_empty()).then_some(Command::EditClips {
                     clips,
