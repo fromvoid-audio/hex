@@ -487,6 +487,9 @@ mod native {
             assert_eq!(view.worker_requests_pending, 0);
             assert_eq!(view.gain_lane.selected, Some(BeatTime::from_raw(2)));
         });
+        // The text editor owns the typed a; replace that invalid numeric text.
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("125%");
         visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         entity.update(&mut visual, |view, _| {
