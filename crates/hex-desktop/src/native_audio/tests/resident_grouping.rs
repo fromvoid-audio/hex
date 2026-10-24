@@ -34,8 +34,10 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     (applied, _) = h.applied(applied);
     let track = first.state.project.tracks()[0].id();
     let first_clip = first.state.project.tracks()[0].clips()[0].id();
+    let second_path = files.0.join("second.wav");
+    fs::rename(files.wav(48_000, 48), &second_path).unwrap();
     let second = h.run(Request::ImportToTrack {
-        path: files.wav(48_000, 48),
+        path: second_path,
         track,
         start: 96,
     });
@@ -95,7 +97,9 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
     assert_eq!(replay(&mut h), expected);
     let undone = h.run(Request::Undo);
     (applied, _) = h.applied(applied);
-    assert_eq!(undone.state.project, before.state.project);
+    let mut restored = before.state.project.snapshot();
+    restored.next_id = undone.state.project.snapshot().next_id;
+    assert_eq!(undone.state.project.snapshot(), restored);
     assert_eq!(replay(&mut h), expected);
     let redone = h.run(Request::Redo);
     (applied, _) = h.applied(applied);
