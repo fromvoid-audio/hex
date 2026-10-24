@@ -133,7 +133,7 @@ pub(super) fn passive_audio_fragment(
     if let Some(header) = compact_header {
         return Some(content.child(header));
     }
-    content = content.children([clip_grid_layer(grid, start, stop)]);
+    content = content.children(clip_grid_layer(grid, start, stop));
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
             waveform, clip, start, stop, cache,
@@ -190,7 +190,7 @@ pub(super) fn passive_midi_fragment(
     if let Some(header) = compact_header {
         return (Some(content.child(header)), 0);
     }
-    content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
+    content = content.children(clip_grid_layer(grid, visible_start, visible_end));
     let mut shown = 0;
     for sample in samples
         .iter()
