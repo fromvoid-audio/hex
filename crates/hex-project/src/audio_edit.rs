@@ -705,11 +705,6 @@ impl AudioClipEdit {
             self.timing = AudioClipTiming::Musical(tempo.frame_to_beat(clip_start)?);
             return Ok(());
         }
-        if self.domain.events.is_some() {
-            return Err(Invalid(
-                "timing mode cannot change after audio event edits; undo those edits first",
-            ));
-        }
         let phase = self.placement.map_or(0, |p| p.cycle_phase);
         let origin_frame = if let Some(view) = self.content_view {
             i128::from(clip_start)
@@ -733,6 +728,12 @@ impl AudioClipEdit {
         let start = beat_at(self.view_start)?;
         let end = beat_at(self.view_end)?;
         let fade_start = beat_at(self.domain.fade_start)?;
+        let events = self
+            .domain
+            .events
+            .as_ref()
+            .map(|events| events.reproject_to_beats(length, beat_at).map(Arc::new))
+            .transpose()?;
         let placement = self
             .placement
             .map(|p| -> Result<_, Invalid> {
@@ -794,6 +795,7 @@ impl AudioClipEdit {
         }
         let domain = Arc::make_mut(&mut self.domain);
         domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
+        domain.events = events;
         domain.fade_start = fade_start;
         domain.fade_projection = Some(AudioFadeProjection {
             tempo: tempo.clone(),
@@ -814,9 +816,28 @@ impl AudioClipEdit {
             return Ok(());
         }
         if self.reference_start_raw().is_some() && self.domain.events.is_some() {
-            return Err(Invalid(
-                "timing mode cannot change after audio event edits; undo those edits first",
-            ));
+            if self.domain.warp_enabled {
+                return Err(Invalid("disable warp before frame anchoring"));
+            }
+            // Frame placement need not flatten a beat-domain event program.
+            // Freeze its complete processing clock just as global tempo edits
+            // do for unwarped clips, preserving moved sources and retained fades.
+            let reference_start_raw = self
+                .processing_origin()?
+                .checked_add(i128::from(self.view_start))
+                .ok_or(Invalid("audio event frozen reference overflow"))?;
+            let frozen = self
+                .processing_projection
+                .as_ref()
+                .map_or_else(|| Arc::new(tempo.clone()), |p| Arc::clone(&p.tempo));
+            self.timing = AudioClipTiming::Frozen {
+                reference_start_raw,
+                tempo: frozen,
+            };
+            self.processing_projection = None;
+            self.placement_start_offset = 0;
+            self.placement_end_offset = 0;
+            return Ok(());
         }
         if self.reference_start_raw().is_some() && !self.domain.fade.is_neutral() {
             return Err(Invalid(

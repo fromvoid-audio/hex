@@ -2662,3 +2662,199 @@ fn section_reorder_prepares_sounding_cross_track_audio_and_loop_midi_with_bounda
     );
     assert!(editor.project().clip(clip).is_some());
 }
+
+#[test]
+fn edited_frame_events_can_enable_warp_and_keep_sound_through_timing_toggles() {
+    use hex_project::{AudioEventEdit, TrimEdge};
+    let compare = |actual: Vec<crate::Frame>, expected: &[crate::Frame], label: &str| {
+        let first = actual.iter().zip(expected).position(|(a, b)| a != b);
+        assert!(
+            actual.len() == expected.len() && first.is_none(),
+            "{label}: first different frame {first:?}"
+        );
+    };
+    for looping in [false, true] {
+        let (mut editor, clip, media) = fixture(looping);
+        let mut reference = Editor::new(editor.project().clone(), 32).unwrap();
+        let reference_settings = default_audio_warp(
+            reference.project().clip(clip).unwrap(),
+            reference.project().tempo_map(),
+            WarpMode::RePitch,
+        )
+        .unwrap();
+        reference
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(reference_settings),
+            })
+            .unwrap();
+        let operations = [
+            AudioEventEdit::Split { at: 2000 },
+            AudioEventEdit::Move {
+                event: 1,
+                start: 4000,
+            },
+            AudioEventEdit::Trim {
+                event: 1,
+                start: 4250,
+                end: 5750,
+            },
+            AudioEventEdit::Delete {
+                start: 6000,
+                end: 6500,
+            },
+        ];
+        for operation in operations {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let root = reference
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .clone();
+        let at = |frame| {
+            root.root_position_at(frame, reference.project().tempo_map())
+                .unwrap()
+        };
+        let operations = [
+            AudioEventEdit::Split { at: at(2000) },
+            AudioEventEdit::Move {
+                event: 1,
+                start: at(4000),
+            },
+            AudioEventEdit::Trim {
+                event: 1,
+                start: at(4250),
+                end: at(5750),
+            },
+            AudioEventEdit::Delete {
+                start: at(6000),
+                end: at(6500),
+            },
+        ];
+        for operation in operations {
+            reference
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let track = editor.project().tracks()[0].id();
+        for e in [&mut editor, &mut reference] {
+            e.execute(Command::MoveClip {
+                clip,
+                track,
+                start: 10_000,
+            })
+            .unwrap();
+            e.execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 11_000,
+            })
+            .unwrap();
+        }
+        let original = editor.project().clip(clip).unwrap().clone();
+        let context = AudioTransformPreparation::default();
+        let baseline = render(&prepare(&editor, &media, &context), 10_000, 8000, 257);
+        // Independent command order: enable warp on the unedited root, then
+        // perform the same cuts/move/trim in its musical coordinates. This also
+        // retains existing warp-specific loop seam processing in the oracle.
+        let expected = render(&prepare(&reference, &media, &context), 10_000, 8000, 173);
+        if !looping {
+            compare(expected.clone(), &baseline, "unity warp");
+        }
+        let settings =
+            default_audio_warp(&original, editor.project().tempo_map(), WarpMode::RePitch).unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings.clone()),
+            })
+            .unwrap();
+        let musical = editor.project().clip(clip).unwrap().clone();
+        let edit = musical.audio_edit().unwrap();
+        let events = musical.audio_events();
+        let old = original.audio_events();
+        assert_eq!(events.next_id, old.next_id);
+        assert_eq!(events.events.len(), old.events.len());
+        for (new, old) in events.events.iter().zip(&old.events) {
+            assert_eq!(new.id, old.id);
+            for (new, old) in [
+                (new.start, old.start),
+                (new.end, old.end),
+                (new.source_start, old.source_start),
+            ] {
+                assert_eq!(
+                    edit.root_frame_at(new, editor.project().tempo_map())
+                        .unwrap(),
+                    old
+                );
+            }
+        }
+        for block in [1, 257] {
+            compare(
+                render(&prepare(&editor, &media, &context), 10_000, 8000, block),
+                &expected,
+                "event/warp command order",
+            );
+        }
+        assert!(editor.undo());
+        assert_eq!(editor.project().clip(clip).unwrap(), &original);
+        assert!(editor.redo());
+        assert_eq!(editor.project().clip(clip).unwrap(), &musical);
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: None,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: false,
+            })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .live_musical_start()
+                .is_none()
+        );
+        compare(
+            render(&prepare(&editor, &media, &context), 10_000, 8000, 17),
+            &baseline,
+            "unwarped frozen events",
+        );
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        compare(
+            render(&prepare(&editor, &media, &context), 10_000, 8000, 127),
+            &expected,
+            "re-enabled warp",
+        );
+        editor
+            .execute(Command::SetProjectTempo {
+                tempo: Tempo::new(180_000_000).unwrap(),
+            })
+            .unwrap();
+        let changed = prepare(&editor, &media, &context);
+        let pcm = render(&changed, 0, 18_000, 173);
+        assert!(pcm.iter().flatten().any(|x| x.abs() > 0.01));
+        compare(
+            render(&changed, 7000, 4000, 31),
+            &pcm[7000..11_000],
+            "tempo seek partition",
+        );
+    }
+}
