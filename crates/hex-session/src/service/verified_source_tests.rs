@@ -472,3 +472,72 @@ fn verified_import_into_existing_track_preserves_its_instrument_and_native_refus
             .is_err()
     );
 }
+
+#[test]
+fn verified_bindings_prepare_through_the_ordinary_resource_scope_without_pcm() {
+    let files = Files::new();
+    let source = files.wav("ordinary-scope.wav", 48_000, 8, 1000);
+    let mut session = Session::new_with_audio_mode(
+        48_000,
+        16,
+        0,
+        DocumentAudioMode::VerifiedStreaming,
+        Some(reservation(4)),
+    )
+    .unwrap();
+    let verified = session.verify_import(source).unwrap();
+    session
+        .import_verified_revision(
+            verified,
+            VerifiedImportDestination::NewTrack {
+                before: None,
+                start: 0,
+            },
+            None,
+        )
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let originals = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+    let resources =
+        hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+            &originals,
+            session.project(),
+            1_000_000,
+            &cancel,
+        )
+        .unwrap();
+    let mut bank = session.media_bank();
+    let prepared = Arc::new(
+        bank.prepare_with_device_resources(
+            session.project(),
+            session.sine_table(),
+            None,
+            &session.audio_transforms,
+            &resources,
+            0,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    assert!(prepared.contains_streamed_sources());
+    assert!(prepared.requires_device_resources());
+    assert!(hex_engine::SessionPlayback::new(Arc::clone(&prepared)).is_err());
+    assert!(hex_engine::SessionPlayback::new_with_device_resources(prepared, &resources).is_ok());
+    assert_eq!(session.resident_frames(), 0);
+    assert!(bank.resident.is_empty());
+    assert_eq!(bank.verified.len(), 1);
+    assert_eq!(session.project().tracks()[0].clips()[0].duration(), 8);
+    bank.epoch = 0;
+    assert!(
+        bank.prepare_with_device_resources(
+            session.project(),
+            session.sine_table(),
+            None,
+            &session.audio_transforms,
+            &resources,
+            0,
+            &cancel
+        )
+        .is_err()
+    );
+}

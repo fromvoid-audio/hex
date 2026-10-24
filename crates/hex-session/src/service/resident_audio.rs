@@ -171,9 +171,8 @@ impl Inputs<'_> {
         let work = resources.compiler_scan_work_on_control(project)?;
         let prepared =
             crate::prepare_with_waveforms_using(project, media, transforms, waveforms, || {
-                PreparedRevision::prepare_with_device_resources(
+                media.prepare_with_device_resources(
                     project,
-                    &media.resident,
                     table,
                     self.current.map(|s| s.prepared.session().as_ref()),
                     transforms,

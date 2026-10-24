@@ -233,6 +233,55 @@ impl MediaBank {
         if self.verified.is_empty() {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }
+        let sources = self.prepared_sources()?;
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            project, &sources, self.epoch, table, previous,
+        )
+    }
+
+    /// Full ordinary resource preparation shares the same verified bindings as semantic
+    /// compilation. This owns no reader/page endpoint and grants no native readiness.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_device_resources(
+        &self,
+        project: &Project,
+        table: Arc<hex_engine::SineTable>,
+        previous: Option<&PreparedSessionInventory>,
+        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+        resources: &hex_engine::native_device_resources::PreparedDeviceResources,
+        scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        self.validate_clip_sources(project)?;
+        if self.verified.is_empty() {
+            return PreparedRevision::prepare_with_device_resources(
+                project,
+                &self.resident,
+                table,
+                previous,
+                transforms,
+                resources,
+                scan_frames,
+                cancel,
+            );
+        }
+        let sources = self.prepared_sources()?;
+        PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(
+            project,
+            &sources,
+            self.epoch,
+            table,
+            previous,
+            transforms,
+            resources,
+            scan_frames,
+            cancel,
+        )
+    }
+
+    fn prepared_sources(
+        &self,
+    ) -> Result<BTreeMap<AssetId, PreparedAudioSource>, hex_engine::Invalid> {
         let mut sources: BTreeMap<_, _> = self
             .resident
             .iter()
@@ -244,8 +293,6 @@ impl MediaBank {
                 PreparedAudioSource::Streamed(Arc::new(source.source_metadata(*id, self.epoch)?)),
             );
         }
-        PreparedRevision::prepare_with_prepared_audio_sources(
-            project, &sources, self.epoch, table, previous,
-        )
+        Ok(sources)
     }
 }
