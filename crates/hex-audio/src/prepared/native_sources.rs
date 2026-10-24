@@ -18,8 +18,8 @@ impl PublicationControl {
     ) -> Result<StoppedEditFence, &'static str> {
         self.status.retire_stopped_edit_on_control();
         // Compensated stream windows currently reject the native bridge's
-        // positive latency. Do not admit a fence that this mode cannot ACK or
-        // install; its compensated-window contract must be extended first.
+        // positive latency. Do not admit renewal in a mode that cannot install
+        // its compensated successor; that window contract must be extended first.
         if self.status.verified_streaming_mode.load(Acquire) {
             return Err("native epoch renewal requires resident playback");
         }
