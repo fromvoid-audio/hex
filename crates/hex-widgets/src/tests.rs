@@ -1887,6 +1887,83 @@ fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut Te
 }
 
 #[gpui::test]
+fn device_meter_colors_follow_samples_and_held_evidence_not_gain_position(cx: &mut TestAppContext) {
+    let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
+    let (handle, control) = open_numeric_control_appearance(
+        cx,
+        NumericControlKind::VerticalSlider,
+        spec,
+        24.0,
+        NumericControlPresentation::DeviceMeters,
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for index in 0..2 {
+        let side = if index == 0 { "input" } else { "output" };
+        let fill = Box::leak(format!("test-control-{side}-meter-fill").into_boxed_str());
+        let peak = Box::leak(format!("test-control-{side}-meter-peak").into_boxed_str());
+        let above = Box::leak(format!("test-control-{side}-meter-above").into_boxed_str());
+        let well = Box::leak(format!("test-control-{side}-meter").into_boxed_str());
+        for (level, held, color, overload) in [
+            (0.1, 0.2, 0x33bb77, false),
+            (crate::METER_NEAR_PEAK_AMPLITUDE, 0.75, 0xffcc33, false),
+            (1.0, 1.0, 0xffcc33, false),
+            (1.01, 1.01, 0xee3344, true),
+            (0.1, 1.2, 0x33bb77, true),
+        ] {
+            control.update(cx, |control, cx| {
+                control.set_meter_readout(
+                    crate::DeviceMeterReadout {
+                        index,
+                        height: 184.0,
+                        gain_db: 24.0,
+                        levels: [level; 2],
+                        held: [held; 2],
+                        signal: 0x33bb77,
+                        warning: 0xffcc33,
+                        clipping: 0xee3344,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(fill),
+                Some(gpui::rgb(color).into())
+            );
+            assert_eq!(visual.debug_bounds(above).is_some(), overload);
+            let peak_bounds = visual.debug_bounds(peak).unwrap();
+            let well_bounds = visual.debug_bounds(well).unwrap();
+            assert!(
+                peak_bounds.top() >= well_bounds.top()
+                    && peak_bounds.bottom() <= well_bounds.bottom()
+            );
+            if held > 1.0 {
+                assert_eq!(
+                    visual.rendered_background(peak),
+                    Some(gpui::rgb(0xee3344).into())
+                );
+            }
+        }
+        control.update(cx, |control, cx| {
+            control.set_meter_readout(
+                crate::DeviceMeterReadout {
+                    index,
+                    height: 184.0,
+                    levels: [f32::NAN; 2],
+                    held: [f32::INFINITY; 2],
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(fill).unwrap().size.height, px(0.0));
+        assert!(visual.debug_bounds(above).is_none() && visual.debug_bounds(peak).is_none());
+    }
+}
+
+#[gpui::test]
 fn meter_gain_handle_protrudes_without_losing_endpoints_or_pointer_input(cx: &mut TestAppContext) {
     for index in 0..2 {
         let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
