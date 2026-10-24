@@ -1965,7 +1965,7 @@ impl EditorView {
         grid: Option<super::waveform::WaveformGrid>,
     ) -> Div {
         let waveform = state.waveforms.get(&clip.asset());
-        if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+        let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
             // The immutable prepared peaks cover the retained root. Cropping
             // changes its visible offset, never its processing/source origin.
             let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
@@ -2020,7 +2020,8 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("missing media")),
             }
-        }
+        };
+        super::waveform::clip_waveform_activity(body, clip.active())
     }
 
     fn waveform_grid(

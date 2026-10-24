@@ -76,6 +76,10 @@ pub(super) fn retime(
             event.start = scale(event.start, numerator, denominator)?;
             event.end = scale(event.end, numerator, denominator)?;
             event.source_start = scale(event.source_start, numerator, denominator)?;
+            event.fade = event
+                .fade
+                .map(|fade| fade.reproject(|at| scale(at, numerator, denominator)))
+                .transpose()?;
         }
     }
     edit.sync_content_length()?;

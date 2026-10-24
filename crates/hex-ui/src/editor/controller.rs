@@ -2038,6 +2038,18 @@ impl EditorView {
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
+        if event.bounce_complete.as_ref().is_some_and(|completed| {
+            self.bounce_control
+                .as_ref()
+                .is_some_and(|active| active.same_job(completed))
+        }) {
+            self.bounce_control = None;
+        }
+        if event.project_replaced
+            && let Some(control) = self.bounce_control.take()
+        {
+            control.cancel();
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -2854,6 +2866,16 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        if matches!(
+            &request,
+            Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::NewWithAudioMode { .. }
+                | Request::OpenWithAudioMode { .. }
+        ) && let Some(control) = &self.bounce_control
+        {
+            control.cancel();
+        }
         let open_save = self.project_open.permits_save()
             && matches!(
                 &request,
@@ -3074,6 +3096,7 @@ impl EditorView {
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
+                | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }

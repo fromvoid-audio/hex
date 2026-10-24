@@ -19,6 +19,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod bounce;
 mod browser;
 mod browser_input;
 mod clip_action_scope;
@@ -381,6 +382,8 @@ actions!(
         SplitClip,
         SetLoopFromClip,
         LoopSelection,
+        BounceInPlace,
+        BounceToNewTracks,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -492,6 +495,16 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
+        KeyBinding::new(
+            "b",
+            BounceInPlace,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
+        KeyBinding::new(
+            "cmd-b",
+            BounceToNewTracks,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
+        ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("w", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
@@ -749,6 +762,7 @@ pub(super) struct EditorView {
     pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
+    bounce_control: Option<hex_session::service::ExportControl>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1195,6 +1209,7 @@ impl EditorView {
         let audio_event_focus = cx.focus_handle();
         let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
             view.audio_event_editor.gesture = None;
+            view.audio_event_editor.fade_key_held = false;
             cx.notify();
         });
         let midi_focus = cx.focus_handle();
@@ -1227,6 +1242,7 @@ impl EditorView {
                 view.midi_step.cancel_pending();
                 view.invalidate_hardware_step();
                 view.audio_event_editor.gesture = None;
+                view.audio_event_editor.fade_key_held = false;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 let paint_cancelled = view.cancel_clip_paint()
@@ -1256,6 +1272,7 @@ impl EditorView {
             }
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
+            view.audio_event_editor.fade_key_held = false;
             if view.cancel_midi_note_gesture()
                 | view.cancel_track_reorder()
                 | view.cancel_scrub()
@@ -1404,6 +1421,7 @@ impl EditorView {
             pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
+            bounce_control: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,

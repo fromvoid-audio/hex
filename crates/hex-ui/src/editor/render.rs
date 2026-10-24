@@ -545,6 +545,16 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.sections.held() {
+                        let position = window.mouse_position();
+                        if view.update_section_pointer(
+                            f32::from(position.x),
+                            f32::from(position.y),
+                            event.modifiers,
+                        ) {
+                            cx.notify();
+                        }
+                    }
                     if view.refresh_piano_note_modifiers(event.modifiers, window) {
                         cx.notify();
                     }
@@ -621,6 +631,11 @@ impl Render for EditorView {
                 if view.tuning_audition_up(&event.keystroke.key) {
                     cx.stop_propagation();
                     cx.notify();
+                }
+                if event.keystroke.key == "f" && view.audio_event_editor.fade_key_held {
+                    view.audio_event_editor.fade_key_held = false;
+                    cx.notify();
+                    cx.stop_propagation();
                 }
                 if event.keystroke.key == "f" && view.fade_key_held {
                     view.fade_key_held = false;
@@ -796,6 +811,11 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_bounce() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
@@ -1244,6 +1264,16 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &super::BounceInPlace, window, cx| {
+                view.bounce_arrangement_selection(true, window);
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::BounceToNewTracks, window, cx| {
+                    view.bounce_arrangement_selection(false, window);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window);
                 cx.notify();

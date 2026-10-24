@@ -250,3 +250,13 @@ application pointer path. The browser clear action is the first consumer. A real
 AppKit semantic-object regression checks role/no-value and action restrictions;
 actual Inspector/VoiceOver acceptance remains separate. Original archive hashes
 are retained; added-source hashes and cumulative patch are regenerated.
+
+24 October loop cursor: additive `CursorStyle::Loop` uses original circular-arrow
+vector artwork, a centered hotspot and cached AppKit ownership alongside existing
+bracket cursors. Allocation happens at platform setup, never pointer movement;
+headless platforms skip native construction. Linux/Windows retain horizontal
+resize fallbacks. No workspace FFI or unsafe code is added. Original published
+archive/file hashes and unrelated patch blocks are retained; changed hashes and
+the cumulative patch are regenerated from the verified original archive. Native
+hover selection is checked headlessly; actual cursor appearance remains a user
+interaction acceptance item on the optimized macOS app.

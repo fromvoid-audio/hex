@@ -15,6 +15,12 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    CommitArrangementBounce {
+        target: crate::BounceTarget,
+        in_place: bool,
+        files: Vec<crate::BounceFile>,
+    },
     /// Set one authored clip's activation across Arrangement or Session.
     SetClipActive {
         clip: ClipId,
@@ -38,11 +44,25 @@ pub enum Command {
         start: crate::BeatTime,
         end: crate::BeatTime,
     },
-    /// Marker-only placement/resize; music is never stretched or moved.
+    /// Isolated marker range edit; overlaps are refused and music stays fixed.
     SetArrangementSectionRange {
         section: crate::SectionId,
         start: crate::BeatTime,
         end: crate::BeatTime,
+    },
+    /// Move one marker without changing its length or any musical content.
+    /// Destination overlap trims/removes other markers; an interior cut retains
+    /// their left identity and allocates a fresh right identity/name/color copy.
+    MoveArrangementSectionMarker {
+        section: crate::SectionId,
+        start: crate::BeatTime,
+    },
+    /// Resize one marker edge, carving overlapping markers without editing music.
+    /// Surviving fragments follow the same identity law as marker movement.
+    ResizeArrangementSectionMarker {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        boundary: crate::BeatTime,
     },
     RenameArrangementSection {
         section: crate::SectionId,
@@ -1564,8 +1584,15 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::CommitArrangementBounce {
+                target,
+                in_place,
+                files,
+            } => crate::bounce::commit(self, target, in_place, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
+            | Command::MoveArrangementSectionMarker { .. }
+            | Command::ResizeArrangementSectionMarker { .. }
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
@@ -2756,9 +2783,9 @@ impl Project {
 }
 
 impl Command {
-    /// Structural section edits use stopped resident preparation/publication.
+    /// Structural section edits use fenced resident preparation/publication.
     /// Metadata edits and marker merging do not alter musical material.
-    pub fn requires_stopped_section_edit(&self) -> bool {
+    pub fn requires_section_publication(&self) -> bool {
         matches!(
             self,
             Self::ReorderSectionBefore { .. }

@@ -103,6 +103,13 @@ selection, these keys toggle the existing loop. **command+l** uses the same acti
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 
+drag a section header to move its musical content. hold **option** before or
+during the drag to adjust only its marker; the music stays in place. option-resize
+an edge to trim or remove overlapping section markers. grid snapping remains
+active when enabled; **command** temporarily inverts it. after entering option
+adjustment, releasing option keeps that drag marker-only. release outside the
+section lane to accept the last valid preview, or press **escape** to cancel.
+
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
@@ -129,6 +136,27 @@ runtime storage or midi density limits, is refused while current playback contin
 a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
+
+with the arrange timeline focused, **b** bounces selected material in place;
+**command+b** keeps the originals and inserts bounced audio on a new track below
+each source track. a nonempty time selection takes precedence over selected clips.
+each selected track produces one audio clip spanning its selected clips and gaps.
+clip bounces include instrument and effect release tails. a time selection renders
+exactly its start-to-end interval, retaining earlier state needed for sound inside
+that interval. press **escape** to cancel; one undo restores the entire operation.
+
+stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
+a fresh playback state so live release voices cannot duplicate the baked tails.
+undo and redo of an in-place bounce use the same stopped-edit rule.
+
+bounce writes float audio before the track mixer. mixer automation, sends, returns
+and main processing remain live. in-place bounce removes the baked devices, so it
+refuses if that would change unselected material or a tail would overlap it; use
+**command+b** instead. routed inputs, verified streaming and nonzero-latency device
+paths currently refuse. a release that does not finish within ten seconds refuses
+without applying an edit. source files remain unchanged. while editing text,
+numeric values or midi notes, or using the computer midi keyboard, these arrange
+bounce shortcuts do not run.
 
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
@@ -173,6 +201,32 @@ instead of repeatedly clicking a busy action.
 in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
+
+## clip loop resizing
+
+hover the lower part of a clip's right edge to show the loop cursor, then drag
+to repeat its source. the rest of the edge keeps ordinary trimming. audio and
+midi clips use the same gesture; no loop icon is painted inside the clip. looped
+clips have rounded bottom corners. drag the first repeat boundary to change the
+cycle while keeping the outer duration; directed clips retain only the outer
+repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
+
+## audio event fades
+
+select an audio clip and choose **events** in its detail area. focus the event
+waveform and hold **f** to show its fade controls. release **f** to hide default
+controls; edited fades remain visible. the computer midi keyboard must be off.
+
+drag an upper square to change a fade length. drag a diamond horizontally and
+vertically to shape its curve. lower squares trim the event; they move freely by
+default, with **command** opting into the event grid. double-click a fade control
+to reset that event's fades. one undo restores each completed gesture.
+
+the preview becomes prepared audio after release. **escape** or leaving the
+editor cancels a held gesture. splitting retains the source fade, moving keeps
+it attached to the sound, and an explicit trim fits it to the new event window.
+event fades use the same supported resident clips as event editing; a refused
+preparation leaves the project unchanged. original media files stay intact.
 
 # find, preview and import audio
 
@@ -378,6 +432,7 @@ the complete edit.
 | toggle browser / search | command+option+b / command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
+| bounce in place / to a new track | b / command+b |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

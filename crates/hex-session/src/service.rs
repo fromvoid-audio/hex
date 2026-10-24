@@ -29,14 +29,16 @@ mod export_lane;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
+mod stopped_arrangement;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
-    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, WorkerAudioSink,
+    ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
+    NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
+    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
+    WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -211,6 +213,8 @@ pub struct Event {
     pub midi_take_complete: Option<MidiTakeCompletion>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
+    /// Correlates the final bounce result with its shared cancellation control.
+    pub bounce_complete: Option<hex_export::ExportControl>,
     /// Correlates one final batch result; contains metadata only, never PCM.
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
@@ -635,6 +639,17 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
+    /// Bounce selected Arrangement clips or an explicit range.
+    /// At most MAX_CLIPS captured IDs or MAX_TRACKS range rows in the existing
+    /// 32-slot FIFO. One synchronous control-worker job; Escape cancels via the
+    /// shared control without waiting for that FIFO. No audio/UI thread rendering.
+    BounceArrangement {
+        project_generation: u64,
+        revision: u64,
+        target: hex_project::BounceTarget,
+        in_place: bool,
+        control: hex_export::ExportControl,
+    },
     /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
     ConvertClip {
         project_generation: u64,
@@ -705,6 +720,7 @@ impl Request {
                 | Request::CompareDevice { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
+                | Request::BounceArrangement { .. }
                 | Request::ConvertClip { .. }
                 | Request::TuningLibrary { .. }
         )
@@ -1159,6 +1175,18 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        if let Request::BounceArrangement {
+            target: hex_project::BounceTarget::Clips(ids),
+            ..
+        } = &request
+        {
+            if ids.is_empty()
+                || ids.len() > hex_project::MAX_CLIPS
+                || ids.capacity() > hex_project::MAX_CLIPS
+            {
+                return Err(SubmitError::Busy(request));
+            }
+        }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some()
                 || self
@@ -1770,6 +1798,7 @@ fn run_worker(
                 midi_take_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
+                bounce_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
                 document_format_upgrade_required: false,
@@ -1805,6 +1834,7 @@ fn run_worker(
             midi_take_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
+            bounce_complete: None,
             audio_batch_complete: None,
             save_complete: false,
             document_format_upgrade_required: false,
@@ -1988,6 +2018,10 @@ fn run_worker(
         let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
         let mut tuning_input_publication = None;
+        let bounce_complete = match &request {
+            Request::BounceArrangement { control, .. } => Some(control.clone()),
+            _ => None,
+        };
         let mut audio_batch_complete = None;
         let mut audio_batch_failure = None;
         let mut open_complete = false;
@@ -2253,6 +2287,31 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = resolution_failure.or_else(|| match &request {
+            Request::BounceArrangement {
+                project_generation: captured,
+                revision: captured_revision,
+                control,
+                ..
+            } => {
+                if *captured != project_generation
+                    || *captured_revision != revision
+                    || control.is_cancelled()
+                {
+                    Some("bounce cancelled · target changed".into())
+                } else if compiled
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.gain_recording_track().is_some())
+                {
+                    Some("finish gain recording before bouncing".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before bouncing".into())
+                } else {
+                    None
+                }
+            }
             Request::EditArrangementSection {
                 project_generation: captured,
                 revision: captured_revision,
@@ -4696,6 +4755,77 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::BounceArrangement {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    target,
+                    in_place,
+                    control,
+                } => {
+                    let result = if captured_generation != project_generation
+                        || captured_revision != revision
+                    {
+                        Err("bounce cancelled · project changed".into())
+                    } else if control.is_cancelled() {
+                        Err("bounce cancelled".into())
+                    } else {
+                        recovery
+                            .clone()
+                            .map(Ok)
+                            .unwrap_or_else(untitled_recovery_path)
+                            .and_then(|path| {
+                                let root = path
+                                    .parent()
+                                    .and_then(Path::parent)
+                                    .ok_or("bounce media folder unavailable")?
+                                    .join("media/bounces");
+                                if let Some(sink) = events.resident_audio() {
+                                    let context = hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    };
+                                    let admission = export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| {
+                                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                                sources: current_sources.as_ref(),
+                                                prepared: Some(prepared),
+                                            }
+                                        }),
+                                        resident_seek.as_ref(),
+                                        resident_preview.as_ref(),
+                                    );
+                                    resident_audio::bounce_arrangement(
+                                        &mut session,
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        context,
+                                        sink,
+                                        admission,
+                                        &mut resident_snapshot,
+                                    )
+                                } else {
+                                    session.bounce_arrangement(
+                                        target,
+                                        in_place,
+                                        &root,
+                                        &control,
+                                        compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    )
+                                }
+                            })
+                    };
+                    match result {
+                        Ok((result, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some("arrangement bounced to audio".into());
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::ConvertClip {
                     project_generation: expected_generation,
                     revision: expected_revision,
@@ -4832,7 +4962,56 @@ fn run_worker(
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                         && session
-                            .section_history_requires_stop(matches!(&request, Request::Redo)) =>
+                            .editor
+                            .next_history_requires_stopped_bounce(matches!(
+                                &request,
+                                Request::Redo
+                            )) =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            resident_audio::bounce_history(
+                                &mut session,
+                                matches!(request, Request::Redo),
+                                context,
+                                sink,
+                                admission,
+                                &mut resident_snapshot,
+                            )
+                        });
+                    match result {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("bounce history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session.section_history_requires_publication(matches!(
+                            &request,
+                            Request::Redo
+                        )) =>
                 {
                     let context = hex_engine::AudioSourceContext {
                         project_generation,
@@ -6077,6 +6256,7 @@ fn run_worker(
                 midi_take_complete,
                 tuning_audition_complete,
                 live_expression_complete,
+                bounce_complete,
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,

@@ -297,6 +297,9 @@ pub enum PublicationPolicy {
     /// Authored structural edit: the shared stopped gate remains held until exact
     /// installation. Stop keeps priority; Play cannot run on the old graph.
     InstallUnderStoppedArrangement(StoppedEditFence),
+    /// Structural live edit under the same source/command gate; inherit the actual
+    /// installation-boundary transport, routes and voice/release state.
+    InheritUnderArrangement(StoppedEditFence),
 }
 
 impl PublicationPolicy {
@@ -1437,11 +1440,11 @@ impl PublicationControl {
         source_context: Option<hex_engine::AudioSourceContext>,
     ) -> Result<u64, PublishError> {
         let reason = if self.status.sampler_edit.active()
-            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token)
+            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
                 if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
         {
             Some("stopped edit excludes unrelated graph publication")
-        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token)
+        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token) | PublicationPolicy::InheritUnderArrangement(token)
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
@@ -2446,7 +2449,8 @@ impl Callback {
                         || stop_pending)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
-                PublicationPolicy::InstallUnderStoppedArrangement(token) => {
+                PublicationPolicy::InstallUnderStoppedArrangement(token)
+                | PublicationPolicy::InheritUnderArrangement(token) => {
                     (self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
@@ -6942,6 +6946,83 @@ mod tests {
             control.command(PlaybackCommand::Play).unwrap();
             callback.begin_block();
             assert!(control.status.playing.load(Acquire));
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
+    #[test]
+    fn live_arrangement_gate_inherits_installation_cursor_and_priority_stop() {
+        for stop in [false, true] {
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let revision = control
+                .publish_with_policy_and_context_generation(
+                    graph().0,
+                    PublicationPolicy::InstallFreshRuntime,
+                    7,
+                )
+                .unwrap();
+            callback.begin_block();
+            control.command(PlaybackCommand::Play).unwrap();
+            let gate = control
+                .request_live_arrangement_edit_fence(7, revision)
+                .unwrap();
+            let mut pcm = [[0.0; 2]; 8];
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            assert_eq!(control.arrangement_edit_playing(gate), Some(true));
+            let captured = control.arrangement_edit_position(gate).unwrap();
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            callback.begin_block();
+            callback.render(&mut pcm).unwrap();
+            assert!(control.publish(graph().0).is_err());
+            let installed = control
+                .publish_with_policy_and_context_generation(
+                    graph_with_frame([0.5; 2]).0,
+                    PublicationPolicy::InheritUnderArrangement(gate),
+                    7,
+                )
+                .unwrap();
+            if stop {
+                control.stop();
+            }
+            #[cfg(feature = "allocation-probe")]
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut pcm).unwrap();
+            });
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                callback.begin_block();
+                callback.render(&mut pcm).unwrap();
+            }
+            #[cfg(feature = "allocation-probe")]
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), installed);
+            assert_eq!(control.status.playing.load(Acquire), !stop);
+            let active = callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap();
+            if stop {
+                assert_eq!(active.playback.position(), 0);
+                assert_eq!(pcm, [[0.0; 2]; 8]);
+            } else {
+                assert!(active.playback.position() > captured + 8);
+                assert_eq!(pcm, [[0.5; 2]; 8]);
+            }
+            control.release_stopped_edit_fence(gate);
             control.request_shutdown();
             callback.begin_block();
             control.reclaim();
