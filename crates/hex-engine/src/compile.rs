@@ -14,6 +14,26 @@ pub enum PreparedAudioSource {
     Streamed(Arc<StreamedSourceMetadata>),
 }
 
+/// Control-only source resolver shared by full ordinary resource preparation.
+/// This borrows metadata/PCM; it grants neither a page loan nor native custody.
+#[derive(Clone, Copy)]
+pub(crate) enum SourceBank<'a> {
+    Resident(&'a BTreeMap<AssetId, Audio>),
+    Mixed(&'a BTreeMap<AssetId, PreparedAudioSource>, u64),
+}
+impl<'a> SourceBank<'a> {
+    pub(crate) fn resolve(
+        self,
+        asset: &'a Asset,
+        rate: u32,
+    ) -> Result<PreparedAudioSourceRef<'a>, Invalid> {
+        match self {
+            Self::Resident(media) => resolve_resident(asset, rate, media),
+            Self::Mixed(sources, generation) => resolve_prepared(asset, rate, sources, generation),
+        }
+    }
+}
+
 /// A decoded media bank is separate from editable metadata and undo history.
 /// Every referenced asset must resolve with project-rate prepared PCM and the
 /// persisted playback frame count. Source-rate conversion happens before compile.
@@ -872,9 +892,9 @@ fn validate_resident(asset: &Asset, project_rate: u32, audio: &Audio) -> Result<
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn project_with_sampler_sources(
-    snapshot: &hex_project::Project,
-    media: &BTreeMap<AssetId, Audio>,
+pub(crate) fn project_with_source_bank<'a>(
+    snapshot: &'a hex_project::Project,
+    sources: SourceBank<'a>,
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -884,7 +904,7 @@ pub(crate) fn project_with_sampler_sources(
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview_scoped(
         snapshot,
-        |asset, rate| resolve_resident(asset, rate, media),
+        |asset, rate| sources.resolve(asset, rate),
         sine_table,
         registry,
         instruments,

@@ -385,6 +385,29 @@ impl PreparedRevision {
         transforms: &crate::audio_transform::AudioTransformPreparation,
         samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, Invalid> {
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::Resident(media),
+            sine_table,
+            previous_session,
+            effects,
+            instruments,
+            transforms,
+            samplers,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_with_source_bank<'a>(
+        project: &'a Project,
+        sources: crate::compile::SourceBank<'a>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::midi_compile::require_supported_clip_volume(project)?;
             crate::gain_envelope::validate_project(project)?;
@@ -403,9 +426,9 @@ impl PreparedRevision {
                     "shared instrument context revision budget exceeded",
                 ));
             }
-            let (arrangement, midi_preview) = crate::compile::project_with_sampler_sources(
+            let (arrangement, midi_preview) = crate::compile::project_with_source_bank(
                 project,
-                media,
+                sources,
                 Some(Arc::clone(&sine_table)),
                 effects,
                 instruments,
@@ -413,9 +436,9 @@ impl PreparedRevision {
                 Some(transforms),
                 samplers,
             )?;
-            let session = PreparedSessionInventory::prepare_with_sampler_sources(
+            let session = PreparedSessionInventory::prepare_with_source_bank(
                 project,
-                media,
+                sources,
                 sine_table,
                 previous_session,
                 instruments,
@@ -500,6 +523,46 @@ impl PreparedRevision {
         Self::prepare_with_registries_and_sampler_sources(
             project,
             media,
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            transforms,
+            Some(&preparation),
+        )
+    }
+
+    /// Prepare mixed resident/file-backed clips through the full ordinary native-resource
+    /// compiler. Resource identity, factory scans, authored MIDI and runtime budgets retain
+    /// their ordinary contracts. Source facts alone grant no page readiness or publication.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_prepared_audio_sources_and_device_resources(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Invalid> {
+        if expected_generation == 0 {
+            return Err(Invalid("stream source generation must be positive"));
+        }
+        resources.validate_project(project)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        let preparation = crate::native_device_resources::CompilerDeviceResources::new(
+            resources,
+            max_scan_frames,
+            cancel,
+        );
+        Self::prepare_with_source_bank(
+            project,
+            crate::compile::SourceBank::Mixed(sources, expected_generation),
             sine_table,
             previous_session,
             &effects,
