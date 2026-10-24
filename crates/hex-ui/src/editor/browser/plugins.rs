@@ -106,7 +106,10 @@ impl EditorView {
             let (loaded, app) = cx
                 .background_executor()
                 .spawn(async move {
-                    let catalog = Catalog::load(&path);
+                    let catalog = Catalog::load(&path).and_then(|mut catalog| {
+                        catalog.refresh_sources()?;
+                        Ok(catalog)
+                    });
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let app = hex_plugin_catalog::worker::available_app();
                     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
@@ -374,7 +377,7 @@ impl EditorView {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        match request {
+                        let mut update = match request {
                             PluginScan::Selected(path) => worker::scan(&catalog, &app, path, token),
                             PluginScan::Standard => worker::scan_standard(&catalog, &app, token),
                             PluginScan::Folder(path) => {
@@ -384,7 +387,15 @@ impl EditorView {
                             PluginScan::TestFolders(roots) => {
                                 worker::scan_folders(&catalog, &app, &roots, token)
                             }
+                        };
+                        if let Some(catalog) = &mut update.catalog {
+                            if let Err(error) = catalog.refresh_sources() {
+                                update.catalog = None;
+                                update.status =
+                                    format!("plugin source inspection failed · {error}");
+                            }
                         }
+                        update
                     })
                     .await;
                 let _ = this.update(cx, |view, cx| {
@@ -409,15 +420,20 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let key = BrowserItemKey::Plugin(row.module.clone(), row.cid);
+        let tooltip = format!("{}\n{}", row.module.display(), row.status);
         div()
             .id(("browser-vst3", index))
             .debug_selector(move || format!("browser-vst3-row-{index}"))
             .h(px(ROW_HEIGHT))
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .px_1()
             .flex()
             .items_center()
             .gap_1()
             .cursor_pointer()
+            .tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
             .bg(rgb(theme::color(
                 if self.browser.results_focused && self.browser.selected_index == index {
                     theme::PaletteRole::Hover
@@ -451,6 +467,9 @@ impl EditorView {
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(row.status)),

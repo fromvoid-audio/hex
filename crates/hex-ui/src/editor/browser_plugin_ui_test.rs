@@ -40,6 +40,61 @@ fn original_plugin_catalog(path: std::path::PathBuf) -> hex_plugin_catalog::Cata
     catalog
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[gpui::test]
+fn browser_vst3_reload_marks_missing_source_without_rewriting_last_good_or_scanning(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
+    let physical = directory.0.canonicalize().unwrap();
+    let path = physical.join("plugin-catalog.json");
+    let module = physical.join("missing.vst3");
+    hex_plugin_catalog::storage::update(&path, |catalog| {
+        *catalog = original_plugin_catalog(module.clone());
+        catalog
+            .entries
+            .extend(original_plugin_catalog(physical.join("AAA.vst3")).entries);
+        catalog.validate()?;
+        Ok(())
+    })
+    .unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.preferences_path = physical.join("browser.json");
+        view.select_browser_source(BrowserSection::Plugins, cx);
+        view.start_plugin_catalog(cx);
+    });
+    wait_for_plugin_scan(&mut visual, &editor);
+    let row = visual
+        .debug_bounds("browser-vst3-row-1")
+        .expect("painted explicit duplicate module");
+    visual.simulate_click(row.center(), Modifiers::default());
+    editor.update(&mut visual, |view, cx| view.start_plugin_catalog(cx));
+    wait_for_plugin_scan(&mut visual, &editor);
+    editor.read_with(&visual, |view, cx| {
+        let rows = view.browser_visible_plugins(cx);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].module, module);
+        assert_eq!(rows[0].cid, rows[1].cid);
+        assert_eq!(rows[1].cid, Some([1; 16]));
+        assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::Plugin(ref path, Some(id))) if path == &module && id == [1;16]), "reload must preserve selected path, never substitute another duplicate CID");
+        assert!(
+            rows[1]
+                .status
+                .contains("source unavailable · rescan required"),
+            "missing source must not look current: {:?}",
+            rows[1]
+        );
+        assert!(
+            view.browser.plugins.diagnostics.is_none(),
+            "reload must not start scanner"
+        );
+    });
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
 #[gpui::test]
 fn browser_vst3_restores_searchable_typed_rows_and_enter_never_queues_native_insertion(
     cx: &mut TestAppContext,
