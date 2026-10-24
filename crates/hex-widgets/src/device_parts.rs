@@ -14,8 +14,8 @@ pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
 
 /// Boolean state presentation, distinct from a momentary action surface.
 /// The owner supplies acknowledged state, semantic colors and all input/focus/
-/// accessibility handlers. Only an eight-pixel circle paints; the transparent
-/// twelve-pixel target retains compact header geometry. Hover/press never imply
+/// accessibility handlers. An eight-pixel square with small corners paints inside
+/// the transparent twelve-pixel target. Hover/press never imply
 /// a state change, and this view owns no command, history or local toggle state.
 pub fn device_state_indicator(
     id: SharedString,
@@ -34,11 +34,12 @@ pub fn device_state_indicator(
         .items_center()
         .justify_center()
         .cursor_pointer()
+        .hover(|hover| hover.opacity(0.8))
         .child(
             div()
                 .debug_selector(move || indicator.clone())
                 .size(px(8.0))
-                .rounded_full()
+                .rounded(px(crate::TOGGLE_CORNER_RADIUS))
                 .bg(rgb(if checked { on_color } else { off_color })),
         )
 }

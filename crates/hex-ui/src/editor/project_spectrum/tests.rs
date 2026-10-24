@@ -1,6 +1,6 @@
 use super::*;
 use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
-use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, size};
 use hex_project::{Command, Created, Editor, ElementColor, Project};
 use hex_session::service::ViewState;
 use std::{
@@ -243,6 +243,8 @@ fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
         (880.0, 540.0),
         (999.0, 540.0),
         (1000.0, 540.0),
+        (super::super::header::WIDE_TOOLBAR_MIN_WIDTH - 1.0, 540.0),
+        (super::super::header::WIDE_TOOLBAR_MIN_WIDTH, 540.0),
         (1500.0, 650.0),
     ] {
         visual.simulate_resize(size(px(width), px(height)));

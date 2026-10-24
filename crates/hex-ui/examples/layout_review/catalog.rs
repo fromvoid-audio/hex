@@ -16,6 +16,7 @@ pub(super) enum Demo {
     Toggle(ToggleAppearance),
     Selector(SelectorAppearance),
     Bars,
+    Rectangle(bool),
     Graph,
     Color,
     Curve,
@@ -56,6 +57,7 @@ impl Item {
             ),
             Demo::Toggle(_) => ("toggle", "discrete", "toggle"),
             Demo::Selector(_) => ("selector", "discrete", "selector"),
+            Demo::Rectangle(_) => ("rectangle", "graphics", "rectangle"),
             Demo::Bars => ("bar editor", "graphics", "bareditor"),
             Demo::Graph => ("response graph", "graphics", "responsegraph"),
             Demo::Color => ("color picker", "graphics", "colorpicker"),
@@ -77,6 +79,9 @@ impl Item {
                 "composed layout and chrome",
             ),
             Demo::Compositions => ("device compositions", "compositions", "device_composition"),
+            Demo::Workspace(WorkspaceKind::Splitter(_)) => {
+                ("captured splitter", "layout", "splitter")
+            }
             Demo::Workspace(WorkspaceKind::Text(_)) => ("text input", "workspace", "textinput"),
             Demo::Workspace(WorkspaceKind::Menu(_)) => (
                 "popup menu composition",
@@ -117,6 +122,7 @@ impl Item {
             }
             Demo::Workspace(WorkspaceKind::Button(_)) => "glyph and state configurations",
             Demo::Workspace(WorkspaceKind::RoundAction(_)) => "round momentary configurations",
+            Demo::Workspace(WorkspaceKind::Splitter(_)) => "movement axis configurations",
             Demo::Frame(_) => "composed layout fixtures",
             Demo::Compositions => "device fixtures",
             _ => "configurations",
@@ -256,6 +262,8 @@ pub(super) fn inventory() -> Vec<Item> {
     }
     for (name, demo) in [
         ("bar editor", Demo::Bars),
+        ("clip rectangle", Demo::Rectangle(false)),
+        ("section rectangle", Demo::Rectangle(true)),
         ("response graph", Demo::Graph),
         ("color picker", Demo::Color),
         ("curve plot", Demo::Curve),
@@ -363,6 +371,14 @@ pub(super) fn inventory() -> Vec<Item> {
         (
             "round icon action",
             WorkspaceKind::RoundAction(RoundActionKind::Icon),
+        ),
+        (
+            "splitter · horizontal",
+            WorkspaceKind::Splitter(hex_widgets::SplitterAxis::Horizontal),
+        ),
+        (
+            "splitter · vertical",
+            WorkspaceKind::Splitter(hex_widgets::SplitterAxis::Vertical),
         ),
         ("output sample-peak status", WorkspaceKind::OutputMeter),
         ("scrolling list", WorkspaceKind::ScrollingList),

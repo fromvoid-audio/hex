@@ -1139,6 +1139,14 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
 fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mut TestAppContext) {
     let (handle, editor, track, clip, _files) = fixture(cx, false, None);
     let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(header.center(), Modifiers::default());
+    visual.run_until_parked();
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
             clip,
