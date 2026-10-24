@@ -257,7 +257,7 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
     use hex_project::BeatTime;
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let files = Files::new();
-    let mut h = ResidentHarness::new();
+    let mut h = ResidentHarness::with_frame_limit(8_000_000);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
     let added = h.run(Request::Edit(Command::AddMidiTrack {
