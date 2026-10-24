@@ -295,3 +295,53 @@ fn envelope_fit_and_back_restore_view_without_musical_edits(cx: &mut TestAppCont
         assert_eq!((s.project.snapshot(), s.can_undo, s.can_redo), original);
     });
 }
+
+#[gpui::test]
+fn mode_switch_contains_its_label_and_toggles_without_musical_edits(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    visual.simulate_resize(gpui::size(gpui::px(960.0), gpui::px(600.0)));
+    visual.run_until_parked();
+    let original = editor.read_with(&visual, |v, _| {
+        let s = v.state.as_ref().unwrap();
+        (s.project.snapshot(), s.can_undo, s.can_redo)
+    });
+    for label in ["envelopes", "notes"] {
+        let button = visual
+            .debug_bounds("switch between notes and clip volume envelope")
+            .unwrap();
+        let measured = visual.update(|window, _| {
+            window
+                .text_system()
+                .shape_line(
+                    theme::text(label),
+                    gpui::px(12.0),
+                    &[gpui::TextRun {
+                        len: label.len(),
+                        font: gpui::font(theme::FONT_FAMILY),
+                        color: gpui::rgb(0xffffff).into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width
+        });
+        assert!(
+            button.size.width >= measured + gpui::px(8.0),
+            "mode label {label} needs a padded hit surface: {:?} versus {:?}",
+            button.size.width,
+            measured
+        );
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.midi_volume.enabled, label == "envelopes")
+        });
+    }
+    editor.read_with(&visual, |v, _| {
+        let s = v.state.as_ref().unwrap();
+        assert_eq!((s.project.snapshot(), s.can_undo, s.can_redo), original);
+        assert!(!v.edit_pending());
+    });
+}
