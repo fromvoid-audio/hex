@@ -12,7 +12,53 @@ use hex_project::{
 /// frames and outer PCM each share the existing 16777216-frame preparation cap.
 const MAX_VIEW_OCCURRENCES: u64 = 8_192;
 
+/// Control-only processing root for a finite placement's visual preview.
+/// The same transform cache/budget owns PCM; this shared query transfers no
+/// callback or canonical-state authority. Summarize on the worker, never render.
+pub struct AudioPreviewRoot {
+    pub audio: Audio,
+    /// Technical domain-clock origin (raw beats for a musical domain).
+    pub origin: i128,
+}
+
 impl AudioTransformPreparation {
+    /// Resolve the retained first processing root for an accepted finite
+    /// placement. Use inside the caller's existing preparation transaction;
+    /// failure must refuse that candidate alongside its playback preparation.
+    /// Original assets must have already passed the resident source boundary.
+    pub fn preview_root(
+        &self,
+        project: &CanonicalProject,
+        clip: hex_project::ClipId,
+        source: &Audio,
+    ) -> Result<Option<AudioPreviewRoot>, Invalid> {
+        let clip = project
+            .clip(clip)
+            .ok_or(Invalid("audio preview clip is missing"))?;
+        let Some(edit) = clip.audio_edit().filter(|edit| edit.placement.is_some()) else {
+            return Ok(None);
+        };
+        let asset = project
+            .asset(clip.asset())
+            .ok_or(Invalid("audio preview asset is missing"))?;
+        if source.sample_rate() != project.sample_rate()
+            || source.frames().len() as u64 != asset.playback_frames()
+        {
+            return Err(Invalid("audio preview source differs from project media"));
+        }
+        edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        let projection = AudioViewProjection::new(clip, project.tempo_map())?;
+        let origin = projection.root_origin();
+        let root = occurrence_edit(edit, origin, self, project.tempo_map())?;
+        let audio = self.prepare_audio(project, &root, asset, source)?;
+        if audio.frames().len() as u64 != root.projected_domain(project.tempo_map())?.1 {
+            return Err(Invalid(
+                "audio preview root differs from canonical projection",
+            ));
+        }
+        Ok(Some(AudioPreviewRoot { audio, origin }))
+    }
+
     pub(super) fn compile_view(
         &self,
         project: &CanonicalProject,
@@ -84,7 +130,8 @@ impl AudioTransformPreparation {
             let root = if let Some(root) = frame_root.as_ref() {
                 root
             } else {
-                let root_edit = occurrence_edit(edit, occurrence, self, project.tempo_map())?;
+                let root_edit =
+                    occurrence_edit(edit, occurrence.root_origin, self, project.tempo_map())?;
                 let prepared = self.prepare_audio(project, &root_edit, asset, source)?;
                 frame_root = Some(prepared);
                 frame_root
@@ -168,7 +215,7 @@ fn validate_copy(clip: &hex_project::Clip, occurrence: AudioViewOccurrence) -> R
 
 fn occurrence_edit(
     edit: &AudioClipEdit,
-    occurrence: AudioViewOccurrence,
+    origin: i128,
     preparation: &AudioTransformPreparation,
     current_tempo: &hex_project::TempoMap,
 ) -> Result<AudioClipEdit, Invalid> {
@@ -181,14 +228,14 @@ fn occurrence_edit(
             AudioClipTiming::Musical(_) => {
                 root.processing_projection = Some(Arc::new(AudioProcessingProjection {
                     tempo: preparation.shared_tempo(edit.processing_tempo(current_tempo))?,
-                    origin_beat_raw: occurrence.root_origin,
+                    origin_beat_raw: origin,
                 }));
             }
             AudioClipTiming::Frozen {
                 reference_start_raw,
                 ..
             } => {
-                *reference_start_raw = occurrence.root_origin;
+                *reference_start_raw = origin;
             }
             AudioClipTiming::Frames => return Err(Invalid("musical audio placement has no clock")),
         }

@@ -593,19 +593,19 @@ impl EditorView {
                         }
                         overlay =
                             overlay.child(loop_handles::body(clip_waveform_body(notes), looping));
-                        overlay = overlay.child(loop_handles::midi_markers(
-                            &clip,
-                            Some(preview),
-                            &state.project,
-                            visible_start,
-                            visible_end,
-                        ));
                     }
                     overlay = overlay.child(self.clip_name_preview_header(
                         track_id,
                         clip.id(),
                         clip.name(),
                         cx,
+                    ));
+                    overlay = overlay.child(loop_handles::midi_markers(
+                        &clip,
+                        Some(preview),
+                        &state.project,
+                        visible_start,
+                        visible_end,
                     ));
                     clip_area = clip_area.children([overlay]);
                 }
@@ -660,19 +660,17 @@ impl EditorView {
                                 .child(loop_handles::body(clip_waveform_body(waveform), looping));
                         }
                     }
-                    if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
-                        preview = preview.child(loop_handles::audio_markers(
-                            &preview_clip,
-                            &state.project,
-                            visible_start,
-                            visible_end,
-                        ));
-                    }
                     preview = preview.child(self.clip_name_preview_header(
                         track_id,
                         original_clip.id(),
                         original_clip.name(),
                         cx,
+                    ));
+                    preview = preview.child(loop_handles::audio_markers(
+                        &preview_clip,
+                        &state.project,
+                        visible_start,
+                        visible_end,
                     ));
                     clip_area = clip_area.children([preview]);
                 }
@@ -1808,16 +1806,14 @@ impl EditorView {
                     );
                 }
             }
-            if self.track_height(track_id) > super::track_layout::HEADER_ONLY_HEIGHT {
-                midi = midi.child(loop_handles::midi_markers(
-                    clip,
-                    None,
-                    &state.project,
-                    visible_start,
-                    visible_end,
-                ));
-            }
             midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), fill, cx));
+            midi = midi.child(loop_handles::midi_markers(
+                clip,
+                None,
+                &state.project,
+                visible_start,
+                visible_end,
+            ));
             if let Some((payload, lane)) = midi_drag_payload {
                 let move_surface = self
                     .clip_drag_surface(
@@ -2133,12 +2129,6 @@ impl EditorView {
                 )),
                 looping,
             ));
-            content = content.child(loop_handles::audio_markers(
-                clip,
-                &state.project,
-                visible_start,
-                visible_end,
-            ));
         }
         let fade_preview = self.fade_preview(clip.id());
         let fade = fade_preview.unwrap_or(clip.retained_fade());
@@ -2191,6 +2181,14 @@ impl EditorView {
         let hover_generation = self.project_generation;
         let mut content = content
             .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
+            .when(!active_trim_preview, |content| {
+                content.child(loop_handles::audio_markers(
+                    clip,
+                    &state.project,
+                    visible_start,
+                    visible_end,
+                ))
+            })
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .on_hover(cx.listener(move |view, hovered, _, cx| {

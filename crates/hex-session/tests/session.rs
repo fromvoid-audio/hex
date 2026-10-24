@@ -964,6 +964,26 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
         .unwrap();
     let resized = session.project().clone();
     let graph = session.compile().unwrap();
+    let summaries = session.audio_clip_waveforms().unwrap();
+    let accepted = &summaries[&clip];
+    assert_eq!(
+        accepted.waveform.source_frames, 24,
+        "playback peaks cover the outer placement"
+    );
+    let root = accepted
+        .preview_root
+        .as_ref()
+        .expect("retained preview root");
+    assert_eq!(
+        root.waveform.source_frames, 6,
+        "cycle resizing keeps the full captured root"
+    );
+    let hidden = root.waveform.peaks_for_frames(4, 6).unwrap();
+    assert_eq!(
+        hidden[0].max,
+        8000.0 / 32768.0,
+        "hidden root samples survive a shorter cycle"
+    );
     let expected: Vec<_> = (0..26)
         .map(|frame| {
             if frame < 2 {

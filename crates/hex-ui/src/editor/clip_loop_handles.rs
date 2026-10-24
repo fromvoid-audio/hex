@@ -72,7 +72,7 @@ fn geometry(
                 height: 8.0,
             });
         }
-        if lane.height - body_top >= 13.0
+        if lane.height - body_top >= 4.0
             && let Some(frame) = boundary.filter(|frame| *frame > a && *frame < b)
         {
             handles[1] = Some(LoopControl {
@@ -83,6 +83,15 @@ fn geometry(
                 height: (lane.height - body_top - 9.0).max(4.0),
             });
         }
+    }
+    // In a collapsed row both zones can share the small body band. The
+    // explicit corner wins if a first boundary is too close to that corner.
+    if let [Some(corner), Some(boundary)] = handles
+        && boundary.left < corner.left + WIDTH
+        && boundary.left + WIDTH > corner.left
+        && boundary.top + boundary.height > corner.top
+    {
+        handles[1] = None;
     }
     Some(LoopControls {
         left,
@@ -222,7 +231,25 @@ fn markers(
             _ => hi = mid,
         }
     }
-    for index in lo..count.min(lo.saturating_add(32)) {
+    let first_visible = lo;
+    hi = count;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match frame(mid) {
+            Some(value) if value < end => lo = mid + 1,
+            _ => hi = mid,
+        }
+    }
+    let last_visible = lo;
+    let stride = last_visible
+        .saturating_sub(first_visible)
+        .div_ceil(32)
+        .max(1);
+    for offset in 0_u64..32 {
+        let index = first_visible.saturating_add(offset.saturating_mul(stride));
+        if index >= last_visible {
+            break;
+        }
         let Some(value) = frame(index).filter(|value| *value < end) else {
             break;
         };
@@ -333,4 +360,30 @@ pub(in crate::editor) fn midi_markers(
             .ok()
     });
     markers(start, end, count, frame(0), frame, outer == Some(end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn loop_fill_and_border_keep_square_headers_and_only_round_lower_corners() {
+        let mut ordinary = surface(div(), false);
+        let mut looping = surface(div(), true);
+        let plain = ordinary.style();
+        assert!(
+            plain.corner_radii.bottom_left.is_none() && plain.corner_radii.bottom_right.is_none()
+        );
+        let rounded = looping.style();
+        assert!(
+            rounded.corner_radii.top_left.is_none() && rounded.corner_radii.top_right.is_none()
+        );
+        assert_eq!(
+            rounded.corner_radii.bottom_left,
+            Some(px(BOTTOM_RADIUS).into())
+        );
+        assert_eq!(
+            rounded.corner_radii.bottom_right,
+            rounded.corner_radii.bottom_left
+        );
+    }
 }

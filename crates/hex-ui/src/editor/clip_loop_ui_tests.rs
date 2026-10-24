@@ -177,6 +177,14 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             .expect("first repeat marker");
         assert!(marker.left() > held.left() && marker.right() < held.right());
         assert!(f.visual.rendered_border(overlay).is_some());
+        let body = f
+            .visual
+            .debug_bounds("clip-waveform-body")
+            .expect("loop body");
+        assert!(
+            body.bottom() <= held.bottom() - px(loop_handles::BOTTOM_RADIUS),
+            "child fills stay clear of rounded lower corners"
+        );
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, modifiers);
         f.visual.run_until_parked();
@@ -371,6 +379,10 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_strip(cx: &mut TestAppCont
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         pump(&f.editor, &mut f.visual);
+        assert!(
+            f.visual.debug_bounds(selector(&f, "cycle")).is_some(),
+            "compact row retains the first-boundary target beside the corner"
+        );
         f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             let p = &v.state.as_ref().unwrap().project;
@@ -379,6 +391,37 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_strip(cx: &mut TestAppCont
             } else {
                 loop_handles::audio_repeats(p.clip(f.clip).unwrap())
             });
+        });
+    }
+}
+
+#[gpui::test]
+fn clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body(
+    cx: &mut TestAppContext,
+) {
+    let mut f = fixture(cx, false);
+    f.editor.update(&mut f.visual, |v, _| {
+        v.waveform_geometry_cache.borrow_mut().clear()
+    });
+    let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+    let held = f.visual.debug_bounds("trim-live-preview").unwrap();
+    for released in [false, true] {
+        if released {
+            f.visual
+                .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            f.visual.run_until_parked();
+            assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+        }
+        f.editor.read_with(&f.visual, |v, _| {
+            assert!(
+                v.waveform_geometry_cache
+                    .borrow()
+                    .painted_waveforms()
+                    .iter()
+                    .any(|p| p.bounds.right() >= held.right() - px(2.0)
+                        && p.ordinates.iter().any(|(lo, hi)| hi - lo > 1.0)),
+                "held loop must paint accepted nonzero peaks through its new outer edge"
+            );
         });
     }
 }

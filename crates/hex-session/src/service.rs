@@ -89,6 +89,15 @@ pub struct AudioClipWaveform {
     pub waveform: Arc<Waveform>,
     pub offset: u64,
     pub length: u64,
+    /// Original processing-root peaks for metadata-only placement gestures.
+    /// Outer waveform above continues to match actual committed playback.
+    pub preview_root: Option<AudioPreviewWaveform>,
+}
+
+#[derive(Clone)]
+pub struct AudioPreviewWaveform {
+    pub waveform: Arc<Waveform>,
+    pub origin: i128,
 }
 
 /// Read-only model and cached summaries for a single committed project revision.
