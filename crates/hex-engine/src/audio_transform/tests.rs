@@ -5,6 +5,8 @@ use hex_project::{
 };
 use std::collections::BTreeMap;
 
+#[path = "tests/content_reverse.rs"]
+mod content_reverse;
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 

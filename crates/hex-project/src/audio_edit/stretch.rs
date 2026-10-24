@@ -26,6 +26,27 @@ pub(super) fn retime(
     let (_, old_frames, _, _) = edit.projected_domain(tempo)?;
     let old_fade = edit.domain.fade;
     let length = scale(edit.domain.clock.length(), numerator, denominator)?;
+    if let Some(view) = &mut edit.content_view {
+        view.base_view_start = scale(view.base_view_start, numerator, denominator)?;
+        view.base_view_end = scale(view.base_view_end, numerator, denominator)?;
+        let sign = view.base_start_delta.signum();
+        let absolute = u64::try_from(view.base_start_delta.unsigned_abs())
+            .map_err(|_| Invalid("audio content stretch displacement overflow"))?;
+        view.base_start_delta = i128::from(scale(absolute, numerator, denominator)?) * sign;
+        view.window = crate::ContentWindow::new(
+            scale(view.window.start, numerator, denominator)?,
+            scale(view.window.end, numerator, denominator)?,
+            view.window.reversed,
+        )?;
+        if let Some(p) = &mut view.base_placement {
+            p.outer_length = AudioDomainClock::Beats(BeatTime::from_raw(scale(
+                p.outer_length.length(),
+                numerator,
+                denominator,
+            )?));
+            p.cycle_phase = scale(p.cycle_phase, numerator, denominator)?;
+        }
+    }
     edit.view_start = scale(edit.view_start, numerator, denominator)?;
     edit.view_end = scale(edit.view_end, numerator, denominator)?;
     if let Some(placement) = &mut edit.placement {
@@ -57,6 +78,7 @@ pub(super) fn retime(
             event.source_start = scale(event.source_start, numerator, denominator)?;
         }
     }
+    edit.sync_content_length()?;
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
     if frames == 0 || frames > MAX_AUDIO_DOMAIN_FRAMES {

@@ -431,3 +431,148 @@ fn current_sampler_adoption_source_capacity_and_actual_data_caps_refuse_without_
         finish(&mut retirement);
     }
 }
+
+#[test]
+fn reversed_finite_sampler_repeats_keep_exact_callback_gates_without_allocation() {
+    let _serial = serial();
+    let (project, asset) = fixture();
+    let mut e = Editor::new(project, 32).unwrap();
+    let track = e.project().tracks()[0].id();
+    let clip = e.project().track(track).unwrap().midi_clips()[0].id();
+    let note = e.project().midi_clip(clip).unwrap().notes()[0].id();
+    e.execute(Command::RemoveMidiNote(note)).unwrap();
+    let beat = |frame| e.project().tempo_map().frame_to_beat(frame).unwrap();
+    let period = beat(24);
+    let duration = beat(6);
+    let length = beat(60);
+    e.execute(Command::SetMidiClipSource {
+        clip,
+        source_length: period,
+        source_start: BeatTime::ZERO,
+        loop_start: BeatTime::ZERO,
+        loop_end: period,
+        looping: true,
+        length,
+    })
+    .unwrap();
+    e.execute(Command::AddMidiNote {
+        clip,
+        start: duration,
+        duration,
+        pitch: 60,
+        channel: 3,
+        velocity: 127,
+    })
+    .unwrap();
+    e.execute(Command::ReverseClips(vec![clip])).unwrap();
+    let project = e.project();
+    let onsets = hex_engine::midi_compile::midi_events(project)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == hex_engine::midi_compile::MidiEventKind::NoteOn)
+        .map(|e| e.frame)
+        .collect::<Vec<_>>();
+    assert_eq!(onsets, vec![0, 24, 48]);
+    let quote = AudioCandidateReservationQuote::for_project(project, 1).unwrap();
+    let storage = quote.storage_reservation(65_536).unwrap();
+    let context = AudioSourceContext {
+        project_generation: 4,
+        editor_revision: 7,
+    };
+    let mut cell = AudioCandidatePreparation::try_new_on_control(1, storage).unwrap();
+    let pcm = hex_engine::Audio::new(
+        24_000,
+        vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0, 0.0]],
+    )
+    .unwrap();
+    cell.copy_resident_source_on_control(asset, &pcm).unwrap();
+    cell.prepare_current_sampler_on_control(project, 11, context, 4, &AtomicBool::new(false))
+        .unwrap();
+    let limits = crate::AudioCandidatePublicationReservation {
+        runtime_slots: 3,
+        archive_slots: 3,
+        receipt_rows: 4,
+        member_rows: quote.member_rows * 3,
+        transfer_rows: quote.transfer_rows * 3,
+        data_rows: quote.data_rows,
+        handle_rows: quote.handle_rows * 4,
+        max_retained_data_bytes: storage.max_prepared_data_bytes * 3,
+        max_construction_peak_data_bytes: storage.max_construction_data_bytes * 3,
+    };
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    let token = control
+        .reserve_audio_candidate_adoption(crate::AudioCandidatePreparationReservation {
+            source_capacity: 1,
+            storage,
+            member_rows: quote.member_rows,
+            transfer_rows: quote.transfer_rows,
+            handle_rows: quote.handle_rows,
+        })
+        .unwrap_or_else(|e| panic!("{}", e.reason));
+    let mut cell = Some(cell);
+    control
+        .adopt_audio_candidate_preparation(token, context, &mut cell)
+        .unwrap();
+    let ticket = control
+        .stage_current_sampler_preparation(token, context)
+        .unwrap();
+    control
+        .command(crate::prepared::PlaybackCommand::Play)
+        .unwrap();
+    let mut output = [[0.0; 2]; 66];
+    let counts = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            for block in output.chunks_mut(7) {
+                callback.begin_block();
+                callback.render(block).unwrap();
+            }
+        })
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    for onset in [0, 24, 48] {
+        assert_eq!(output[onset], [0.125, -0.25]);
+        assert!(output[onset..onset + 6].iter().any(|f| *f != [0.0; 2]));
+    }
+    assert!(output[60..].iter().all(|f| *f == [0.0; 2]));
+    control
+        .command(crate::prepared::PlaybackCommand::Stop)
+        .unwrap();
+    data.owner_mut().unwrap().run(|callback, _| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    });
+    control.request_shutdown();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    assert!(
+        !crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(())
+        )
+        .unwrap()
+    );
+    drop(data);
+    drop(errors);
+    let _ = retirement.advance().unwrap();
+    drop(recover(&mut control, &ticket));
+    finish(&mut retirement);
+    drop(control);
+}

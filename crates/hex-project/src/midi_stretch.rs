@@ -201,6 +201,16 @@ pub(crate) fn apply(
         note.start = start;
         note.duration = duration;
     }
+    target.content_view = original
+        .content_view()
+        .map(|view| -> Result<_, Invalid> {
+            crate::ContentWindow::new(
+                preview.scale(BeatTime::from_raw(view.start))?.raw(),
+                preview.scale(BeatTime::from_raw(view.end))?.raw(),
+                view.reversed,
+            )
+        })
+        .transpose()?;
     target.start = preview.start;
     target.length = preview.length;
     target.playback_offset = preview.playback_offset;

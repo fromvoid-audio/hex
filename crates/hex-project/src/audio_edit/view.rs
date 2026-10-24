@@ -21,6 +21,9 @@ pub struct AudioViewPlacement {
 /// Root offsets are relative to `root_frame_origin`; destinations are absolute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioViewOccurrence {
+    /// Half-open interval in the retained outer clip clock.
+    pub elapsed_start: u64,
+    pub elapsed_end: u64,
     /// Signed raw BeatTime units for a beat domain, project frames otherwise.
     pub root_origin: i128,
     /// Signed project-frame projection of that root origin.
@@ -49,13 +52,15 @@ pub struct AudioViewProjection<'a> {
     outer_frames: (u64, u64),
     first_boundary: i128,
     displacement: i128,
+    placed_frames: (u64, u64),
+    content: Option<(crate::ContentWindow, i128, i128)>,
 }
 
 impl<'a> AudioViewProjection<'a> {
     pub fn new(clip: &'a Clip, tempo: &'a TempoMap) -> Result<Self, Invalid> {
         let value = Self::from_clip(clip, tempo)?;
-        if clip.start != value.outer_frames.0
-            || clip.duration != value.outer_frames.1 - value.outer_frames.0
+        if clip.start != value.placed_frames.0
+            || clip.duration != value.placed_frames.1 - value.placed_frames.0
         {
             return Err(Invalid("audio outer frame cache differs from placement"));
         }
@@ -88,12 +93,77 @@ impl<'a> AudioViewProjection<'a> {
                     )
                 },
             );
+        if matches!(clock, AudioDomainClock::Beats(_)) != reference_start_raw.is_some() {
+            return Err(Invalid("audio clock and placement disagree"));
+        }
+        if let Some(edit) = clip.audio_edit()
+            && let Some(content) = edit.content_view
+        {
+            content.validate(edit)?;
+            let current = reference_start_raw.unwrap_or(i128::from(clip.start));
+            let base = current
+                .checked_add(content.base_start_delta)
+                .ok_or(Invalid("audio content base overflow"))?;
+            // Use the same bounded signed context as musical projection. Frame
+            // bases may be virtual and negative, but must leave room for the
+            // retained u64 crop/phase arithmetic before applying displacement.
+            if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&base) {
+                return Err(Invalid("audio content base exceeds bounded clock context"));
+            }
+            let beat = matches!(clock, AudioDomainClock::Beats(_));
+            let base_frame = if beat {
+                audio_projection_frame(tempo, base)?
+            } else {
+                base
+            };
+            // Base geometry may precede time zero after moving a trimmed clip.
+            // A scalar virtual displacement keeps indexed base destinations
+            // representable; processing roots retain their signed real origin.
+            let shift = base_frame
+                .checked_add(displacement)
+                .and_then(|n| n.min(0).checked_neg())
+                .ok_or(Invalid("audio virtual base displacement overflow"))?;
+            let mut value = Self::from_parts(
+                clip,
+                tempo,
+                clock,
+                content.base_view_start..content.base_view_end,
+                base,
+                content.base_placement,
+                displacement
+                    .checked_add(shift)
+                    .ok_or(Invalid("audio virtual base displacement overflow"))?,
+            )?;
+            let frame = |raw| -> Result<u64, Invalid> {
+                let frame = if beat {
+                    audio_projection_frame(tempo, raw)?
+                } else {
+                    raw
+                };
+                u64::try_from(
+                    frame
+                        .checked_add(displacement)
+                        .ok_or(Invalid("audio content destination overflow"))?,
+                )
+                .map_err(|_| Invalid("audio content destination exceeds frame range"))
+            };
+            value.placed_frames = (
+                frame(current)?,
+                frame(
+                    current
+                        .checked_add(i128::from(content.window.length()?))
+                        .ok_or(Invalid("audio content end overflow"))?,
+                )?,
+            );
+            value.content = Some((content.window, current, displacement));
+            return Ok(value);
+        }
         Self::from_parts(
             clip,
             tempo,
             clock,
             view_start..view_end,
-            reference_start_raw,
+            reference_start_raw.unwrap_or(i128::from(clip.start)),
             placement,
             displacement,
         )
@@ -104,7 +174,7 @@ impl<'a> AudioViewProjection<'a> {
         tempo: &'a TempoMap,
         clock: AudioDomainClock,
         view: std::ops::Range<u64>,
-        reference_start_raw: Option<i128>,
+        start: i128,
         placement: Option<AudioViewPlacement>,
         displacement: i128,
     ) -> Result<Self, Invalid> {
@@ -117,10 +187,6 @@ impl<'a> AudioViewProjection<'a> {
             return Err(Invalid("audio cycle exceeds retained root"));
         }
         let beat_clock = matches!(clock, AudioDomainClock::Beats(_));
-        if beat_clock != reference_start_raw.is_some() {
-            return Err(Invalid("audio clock and placement disagree"));
-        }
-        let start = reference_start_raw.unwrap_or(i128::from(clip.start));
         if beat_clock {
             audio_projection_frame(tempo, start)?;
         }
@@ -184,6 +250,8 @@ impl<'a> AudioViewProjection<'a> {
             phase,
             count,
             outer_frames,
+            placed_frames: outer_frames,
+            content: None,
             first_boundary: (if beat_clock {
                 audio_projection_frame(tempo, first_end)?
             } else {
@@ -205,12 +273,154 @@ impl<'a> AudioViewProjection<'a> {
         self.clip
     }
     pub fn outer_frame_bounds(&self) -> (u64, u64) {
-        self.outer_frames
+        self.placed_frames
+    }
+    /// Virtual base destination for a retained elapsed clock boundary. Only
+    /// differences are source offsets; virtual displacement grants no placement.
+    pub fn base_frame_at_elapsed(&self, elapsed: u64) -> Result<u64, Invalid> {
+        u64::try_from(
+            self.frame(
+                self.start
+                    .checked_add(i128::from(elapsed))
+                    .ok_or(Invalid("audio base boundary overflow"))?,
+            )?,
+        )
+        .map_err(|_| Invalid("audio base boundary exceeds frame range"))
+    }
+    /// Fractional virtual base destination, with 32 frame fraction bits. Map
+    /// preparation retains source phase through musical reflection/tempo seams.
+    pub fn base_frame_q32_at_elapsed(&self, elapsed: u64) -> Result<i128, Invalid> {
+        let raw = self
+            .start
+            .checked_add(i128::from(elapsed))
+            .ok_or(Invalid("audio fractional base overflow"))?;
+        let frame = if self.beat_clock {
+            audio_projection_frame_q32(self.tempo, raw)?
+        } else {
+            raw.checked_mul(1_i128 << 32)
+                .ok_or(Invalid("audio fractional base overflow"))?
+        };
+        frame
+            .checked_add(
+                self.displacement
+                    .checked_mul(1_i128 << 32)
+                    .ok_or(Invalid("audio fractional displacement overflow"))?,
+            )
+            .ok_or(Invalid("audio fractional base overflow"))
+    }
+    /// Original finite base placement's reference, before directed reading.
+    pub fn base_reference_start(&self) -> i128 {
+        self.start
+    }
+    /// Elapsed destination clock at a project frame; the exact end is permitted.
+    pub fn elapsed_at_frame(&self, frame: u64) -> Result<u64, Invalid> {
+        let (_, start, displacement) = self.content.unwrap_or((
+            crate::ContentWindow {
+                start: 0,
+                end: 1,
+                reversed: false,
+            },
+            self.start,
+            self.displacement,
+        ));
+        let raw = i128::from(frame)
+            .checked_sub(displacement)
+            .ok_or(Invalid("audio content inverse displacement overflow"))?;
+        let position = if self.beat_clock {
+            audio_projection_beat(self.tempo, raw)?
+        } else {
+            raw
+        };
+        u64::try_from(position - start)
+            .map_err(|_| Invalid("audio content frame precedes placement"))
+    }
+    /// Project an elapsed destination clock boundary with the same live/frozen law.
+    pub fn frame_at_elapsed(&self, elapsed: u64) -> Result<u64, Invalid> {
+        let (_, start, displacement) = self.content.unwrap_or((
+            crate::ContentWindow {
+                start: 0,
+                end: 1,
+                reversed: false,
+            },
+            self.start,
+            self.displacement,
+        ));
+        let raw = start
+            .checked_add(i128::from(elapsed))
+            .ok_or(Invalid("audio content boundary overflow"))?;
+        let frame = if self.beat_clock {
+            audio_projection_frame(self.tempo, raw)?
+        } else {
+            raw
+        };
+        u64::try_from(
+            frame
+                .checked_add(displacement)
+                .ok_or(Invalid("audio content boundary overflow"))?,
+        )
+        .map_err(|_| Invalid("audio content boundary exceeds frames"))
+    }
+    /// Fractional actual destination for an elapsed clip-clock boundary.
+    pub fn frame_q32_at_elapsed(&self, elapsed: u64) -> Result<i128, Invalid> {
+        let (_, start, displacement) = self.content.unwrap_or((
+            crate::ContentWindow {
+                start: 0,
+                end: 1,
+                reversed: false,
+            },
+            self.start,
+            self.displacement,
+        ));
+        let raw = start
+            .checked_add(i128::from(elapsed))
+            .ok_or(Invalid("audio fractional destination overflow"))?;
+        let frame = if self.beat_clock {
+            audio_projection_frame_q32(self.tempo, raw)?
+        } else {
+            raw.checked_mul(1_i128 << 32)
+                .ok_or(Invalid("audio fractional destination overflow"))?
+        };
+        frame
+            .checked_add(
+                displacement
+                    .checked_mul(1_i128 << 32)
+                    .ok_or(Invalid("audio fractional destination overflow"))?,
+            )
+            .ok_or(Invalid("audio fractional destination overflow"))
     }
     /// Historical signed boundary. It may precede the clip or time zero;
     /// callers must range-check before drawing, never clamp it to project zero.
     pub fn logical_first_boundary(&self) -> i128 {
         self.first_boundary
+    }
+    /// Internal repeat seams in audible elapsed order. Unlike base occurrence
+    /// destinations, this includes finite read direction and retained trims.
+    pub fn repeat_boundaries(&self) -> Result<Option<crate::RepeatBoundaryPlan>, Invalid> {
+        let edit = self.clip.audio_edit();
+        let placement = edit.and_then(|edit| {
+            edit.content_view
+                .map_or(edit.placement, |v| v.base_placement)
+        });
+        if placement.is_none_or(|p| p.mode != AudioViewMode::Repeat) {
+            return Ok(None);
+        }
+        let window = self.content.map_or_else(
+            || {
+                crate::ContentWindow::new(
+                    0,
+                    u64::try_from(self.end - self.start)
+                        .map_err(|_| Invalid("audio repeat extent overflow"))?,
+                    false,
+                )
+            },
+            |(window, _, _)| Ok(window),
+        )?;
+        window.repeat_boundaries(
+            self.cycle
+                .checked_sub(self.phase)
+                .ok_or(Invalid("audio repeat phase exceeds cycle"))?,
+            self.cycle,
+        )
     }
     pub fn occurrence_count(&self) -> u64 {
         self.count
@@ -280,6 +490,10 @@ impl<'a> AudioViewProjection<'a> {
                 ));
             }
             return Ok(AudioViewOccurrence {
+                elapsed_start: u64::try_from(begin - self.start)
+                    .map_err(|_| Invalid("audio occurrence elapsed overflow"))?,
+                elapsed_end: u64::try_from(end - self.start)
+                    .map_err(|_| Invalid("audio occurrence elapsed overflow"))?,
                 root_origin: source_origin,
                 root_frame_origin: source_first,
                 root_frame_length,
@@ -318,6 +532,10 @@ impl<'a> AudioViewProjection<'a> {
             return Err(Invalid("audio occurrence crop exceeds root frames"));
         }
         Ok(AudioViewOccurrence {
+            elapsed_start: u64::try_from(begin - self.start)
+                .map_err(|_| Invalid("audio occurrence elapsed overflow"))?,
+            elapsed_end: u64::try_from(end - self.start)
+                .map_err(|_| Invalid("audio occurrence elapsed overflow"))?,
             root_origin,
             root_frame_origin,
             root_frame_length,
@@ -455,7 +673,7 @@ pub fn preview_view_resize(
         tempo,
         clock,
         view_start..view_end,
-        reference_start_raw,
+        reference_start_raw.unwrap_or(i128::from(clip.start)),
         Some(placement),
         displacement,
     )?;
@@ -568,6 +786,7 @@ fn materialize_view_resize(
     value.view_end = next.view_end;
     value.set_reference_start_raw(next.reference_start_raw)?;
     value.placement = Some(next.placement);
+    value.rebase_content()?;
     clip.edit = Some(edit);
     super::commands::project_clip(&mut clip, tempo)?;
     clip.audio_edit()
