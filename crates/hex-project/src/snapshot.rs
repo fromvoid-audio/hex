@@ -101,6 +101,8 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub kind: crate::TrackKind,
+    pub parent_group: Option<u64>,
     pub color: crate::ElementColor,
     pub gain_envelope: Vec<crate::GainPoint>,
     pub gain_touch_spans: Vec<crate::GainTouchSpan>,
@@ -283,6 +285,8 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    kind: track.kind,
+                    parent_group: track.parent_group.map(TrackId::value),
                     color: track.color,
                     gain_envelope: track.gain_lane.base.clone(),
                     gain_touch_spans: track.gain_lane.spans.clone(),
@@ -823,6 +827,8 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                kind: track.kind,
+                parent_group: track.parent_group.map(TrackId),
                 color: track.color,
                 gain_lane: crate::GainLane::new(
                     track.gain_envelope,
@@ -1025,6 +1031,7 @@ impl Project {
                 }
             }
         }
+        project.validate_track_hierarchy()?;
         if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {
             let mut candidate = project.snapshot();
             candidate.return_feeds = return_feeds;

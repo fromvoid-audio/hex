@@ -2110,12 +2110,18 @@ fn run_worker(
                         TrackClipboardAction::Paste { before } => Some(
                             track_clipboard
                                 .as_ref()
-                                .map(|clipboard| Command::PasteTracks {
-                                    clipboard: Arc::clone(clipboard),
-                                    before: *before,
-                                })
                                 .ok_or_else(|| {
-                                    "track clipboard is empty · copy tracks first".into()
+                                    "track clipboard is empty · copy tracks first".to_owned()
+                                })
+                                .and_then(|clipboard| {
+                                    session
+                                        .project()
+                                        .track_destination_before(*before)
+                                        .map(|destination| Command::PasteTracks {
+                                            clipboard: Arc::clone(clipboard),
+                                            destination,
+                                        })
+                                        .map_err(|error| error.to_string())
                                 }),
                         ),
                         TrackClipboardAction::Duplicate {
@@ -2125,21 +2131,16 @@ fn run_worker(
                             session
                                 .project()
                                 .capture_tracks(tracks, *without_clips)
-                                .map(|clipboard| {
-                                    let after = session
+                                .and_then(|clipboard| {
+                                    session
                                         .project()
-                                        .tracks()
-                                        .iter()
-                                        .rposition(|t| tracks.ids().contains(&t.id()));
-                                    let before = after
-                                        .and_then(|i| session.project().tracks().get(i + 1))
-                                        .map(|t| t.id());
-                                    Command::PasteTracks {
-                                        clipboard: Arc::new(clipboard),
-                                        before,
-                                    }
+                                        .track_destination_after_selection(tracks)
+                                        .map(|destination| Command::PasteTracks {
+                                            clipboard: Arc::new(clipboard),
+                                            destination,
+                                        })
                                 })
-                                .map_err(|e| e.to_string()),
+                                .map_err(|error| error.to_string()),
                         ),
                     }
                 }
