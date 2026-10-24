@@ -392,8 +392,9 @@ in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-keep the button held to position the new band in the same gesture. vertical
-movement changes q for a cut or notch, or the gain of a bell. existing
+keep the button held to position the new band and hear its effect during playback.
+release to keep the band as one undoable edit. vertical movement changes q for a
+cut or notch, or the gain of a bell. existing
 nodes keep their own selection and drag targets. press **escape** to cancel.
 
 each visible eq has its own live spectrum, including eqs on return and main

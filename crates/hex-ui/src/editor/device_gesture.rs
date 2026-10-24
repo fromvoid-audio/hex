@@ -290,7 +290,17 @@ impl EditorView {
             }
         };
         if !self.device_gesture.has_pending_terminal() {
-            if let Err(error) = self.device_gesture.finish_current() {
+            // An unreleased creation has no canonical node to finalize. An
+            // independent project action cancels it; a released terminal keeps
+            // its admitted custody and remains ordered ahead of this barrier.
+            let result = if self.device_gesture.snapshot().is_some_and(|snapshot| {
+                matches!(snapshot.target, GestureTarget::EqNodeCreation { .. })
+            }) {
+                self.device_gesture.cancel()
+            } else {
+                self.device_gesture.finish_current()
+            };
+            if let Err(error) = result {
                 self.error = Some(error.into());
                 return false;
             }
