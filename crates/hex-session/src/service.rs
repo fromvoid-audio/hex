@@ -355,12 +355,15 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
-    /// Captured ordinary-track row move. Target identities and source revision
-    /// must still match before this becomes a canonical MoveTrackBefore edit.
-    ReorderTrack {
+    /// Captured ordinary-track block move. Immutable membership contains at most
+    /// MAX_TRACKS IDs (2048 ID bytes); clones share that allocation. With the
+    /// 32-slot FIFO, queued reorders retain at most 65536 ID bytes; the active
+    /// gesture and worker each retain their own bounded payload separately.
+    /// Identities and source revision must match before MoveTracksBefore.
+    ReorderTracks {
         project_generation: u64,
         revision: u64,
-        track: hex_project::TrackId,
+        tracks: hex_project::TrackReorderSelection,
         before: Option<hex_project::TrackId>,
     },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
@@ -618,7 +621,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
-                | Request::ReorderTrack { .. }
+                | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
@@ -1939,15 +1942,18 @@ fn run_worker(
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
         let resolved_edit = match &request {
-            Request::ReorderTrack {
+            Request::ReorderTracks {
                 project_generation: captured_generation,
                 revision: captured_revision,
-                track,
+                tracks,
                 before,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("track reorder canceled · project changed".to_owned())
-                } else if session.project().track(*track).is_none()
+                } else if tracks
+                    .ids()
+                    .iter()
+                    .any(|id| session.project().track(*id).is_none())
                     || before.is_some_and(|anchor| session.project().track(anchor).is_none())
                 {
                     Err("track reorder target no longer exists".into())
@@ -1957,8 +1963,8 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before reordering tracks".into())
                 } else {
-                    Ok(Command::MoveTrackBefore {
-                        track: *track,
+                    Ok(Command::MoveTracksBefore {
+                        tracks: tracks.clone(),
                         before: *before,
                     })
                 },
@@ -2333,7 +2339,7 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
-                    | Request::ReorderTrack { .. }
+                    | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
@@ -2350,7 +2356,7 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
-                    | Request::ReorderTrack { .. }
+                    | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
@@ -2759,7 +2765,7 @@ fn run_worker(
                         replacement_revision = Some(prepared);
                     }
                 }
-                Request::ReorderTrack { .. } => {
+                Request::ReorderTracks { .. } => {
                     error = Some("track reorder target was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
