@@ -137,6 +137,7 @@ impl EditorView {
                         let message = self.status.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: message.clone().into(),
                             })
                             .into()
@@ -217,6 +218,7 @@ impl EditorView {
                     let description = self.audio_admission.description();
                     move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
                             description: description.clone().into(),
                         })
                         .into()
@@ -274,6 +276,7 @@ impl EditorView {
         bar = bar.child(
             crate::output_meter::render(meter_input).tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: crate::output_meter::description(meter_input).into(),
                 })
                 .into()
@@ -307,6 +310,7 @@ impl EditorView {
                         let description = diagnostic.clone();
                         move |_, cx| {
                             cx.new(|_| super::transport::MiniTooltip {
+                                kind: crate::tooltips::Kind::Identification,
                                 description: description.clone().into(),
                             })
                             .into()
@@ -355,6 +359,7 @@ fn status_slot(
         slot = slot
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: full_status.clone().into(),
                 })
                 .into()

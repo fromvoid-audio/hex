@@ -108,6 +108,7 @@ impl BrowserLayout {
 
 pub(super) fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| super::super::transport::MiniTooltip {
+        kind: crate::tooltips::Kind::Identification,
         description: theme::text(label),
     })
     .into()
@@ -261,6 +262,7 @@ impl EditorView {
             })
             .tooltip(move |_, cx| {
                 cx.new(|_| super::super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: theme::text(if forward { "forward" } else { "back" }),
                 })
                 .into()
