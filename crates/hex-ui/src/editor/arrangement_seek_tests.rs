@@ -67,6 +67,72 @@ fn stateful_project() -> Project {
     editor.project().clone()
 }
 
+#[test]
+fn post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation() {
+    let mut snapshot = stateful_project().snapshot();
+    let region = hex_project::LoopRegion::new(128, 512, true).unwrap();
+    snapshot.loop_region = Some(region);
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let graph = Arc::new(
+        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    assert!(graph.arrangement_seek_requires_preroll());
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    let active = control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(&graph)).unwrap())
+        .unwrap();
+    let mut block = [[0.0; 2]; 128];
+    callback.begin_block();
+    callback.render(&mut block).unwrap();
+    let fence = capture_arrangement_fence(&control, &project, active).unwrap();
+    let service = Service::new(48_000, 8, 1 << 20).unwrap();
+    let intent = SeekIntent {
+        section: None,
+        recovery_generation: None,
+        destination_frame: 768,
+        start_playing: true,
+        project_generation: 7,
+        project_revision: 3,
+        prepared_revision: Some(Arc::clone(&graph)),
+        device_preview_identity: None,
+    };
+    let request = service
+        .request_arrangement_seek(intent.spec().unwrap())
+        .unwrap();
+    let pending = PendingSeek::from_intent(request, &intent, fence);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = loop {
+        if let Some(result) = service.try_arrangement_seek_result() {
+            break result;
+        }
+        assert!(Instant::now() < deadline, "actual seek worker timed out");
+        thread::yield_now();
+    };
+    assert!(pending.matches_result(&result));
+    let playback = result.result.unwrap();
+    assert_eq!(playback.position(), 768);
+    let applied = control
+        .publish_with_policy(
+            playback,
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+        )
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut block).unwrap();
+    use std::sync::atomic::Ordering;
+    assert_eq!(
+        control.status.applied_revision.load(Ordering::Acquire),
+        applied
+    );
+    assert_eq!(control.status.position.load(Ordering::Acquire), 896);
+    assert_eq!(graph.arrangement().loop_region(), Some(region));
+    control.request_shutdown();
+    callback.begin_block();
+    callback.render(&mut block).unwrap();
+    control.reclaim();
+}
+
 fn active_arrangement_control() -> (prepared::Control, prepared::Callback, Project, u64) {
     let project = one_track_project();
     let prepared = Arc::new(

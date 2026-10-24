@@ -1485,6 +1485,15 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
 fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, _) = audio_project();
+    let mut model = Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::SetLoopRegion {
+            start: 32_000,
+            end: 64_000,
+            enabled: true,
+        })
+        .unwrap();
+    let project = model.project().clone();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -1596,6 +1605,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
             view.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
             "Space after Pause restarts from the edit cursor, not the paused playhead"
+        );
+        assert_eq!(
+            view.state.as_ref().unwrap().project.loop_region(),
+            Some(hex_project::LoopRegion::new(32_000, 64_000, true).unwrap())
         );
     });
 
