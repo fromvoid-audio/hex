@@ -24,12 +24,16 @@ See [native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
 
-For a specific debugging need:
+To run the optimized desktop directly from source:
 
 ```sh
-cargo run -p hex-desktop --locked
-cargo run -p hex-desktop --locked -- --demo
+cargo run -r --locked
+cargo run -r --locked -- --demo
 ```
+
+The desktop is the default workspace member. Plain `cargo build` and `cargo test`
+also select it; use `--workspace` to select all members or `-p` for a specific crate.
+Omit `-r` only for a specific debugging need.
 
 ## Native widget sandbox
 
