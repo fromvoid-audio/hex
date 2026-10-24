@@ -7,20 +7,22 @@ use std::sync::Arc;
 /// gesture, its queued request and receipt. Project membership is checked when
 /// applying the command; input order never changes canonical relative order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TrackReorderSelection(Arc<[TrackId]>);
+pub struct TrackSelectionIds(Arc<[TrackId]>);
 
-impl TrackReorderSelection {
+impl TrackSelectionIds {
     pub fn new(ids: &[TrackId]) -> Result<Self, Invalid> {
         if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
-            return Err(Invalid("track reorder needs a bounded non-empty selection"));
+            return Err(Invalid(
+                "track operation needs a bounded non-empty selection",
+            ));
         }
         let mut members = Vec::new();
         members
             .try_reserve_exact(ids.len())
-            .map_err(|_| Invalid("could not reserve track reorder selection"))?;
+            .map_err(|_| Invalid("could not reserve track selection"))?;
         for id in ids {
             if members.contains(id) {
-                return Err(Invalid("track reorder selection contains duplicate tracks"));
+                return Err(Invalid("track selection contains duplicate tracks"));
             }
             members.push(*id);
         }
@@ -35,7 +37,7 @@ impl TrackReorderSelection {
 impl Project {
     pub(crate) fn move_tracks_before(
         &mut self,
-        selection: &TrackReorderSelection,
+        selection: &TrackSelectionIds,
         before: Option<TrackId>,
     ) -> Result<Created, Invalid> {
         let ids = selection.ids();
@@ -43,7 +45,7 @@ impl Project {
             return self.move_track_before(*track, before);
         }
         if ids.iter().any(|id| self.track(*id).is_none()) {
-            return Err(Invalid("track reorder selection no longer exists"));
+            return Err(Invalid("track selection no longer exists"));
         }
         if before.is_some_and(|id| self.track(id).is_none()) {
             return Err(Invalid("track order target no longer exists"));
@@ -55,11 +57,11 @@ impl Project {
             .tracks
             .iter()
             .position(|track| ids.contains(&track.id()))
-            .ok_or(Invalid("track reorder selection no longer exists"))?;
+            .ok_or(Invalid("track selection no longer exists"))?;
         let after = first
             .checked_add(ids.len())
             .filter(|index| *index <= self.tracks.len())
-            .ok_or(Invalid("track reorder selection exceeds track inventory"))?;
+            .ok_or(Invalid("track selection exceeds track inventory"))?;
         if self.tracks[first..after]
             .iter()
             .all(|track| ids.contains(&track.id()))

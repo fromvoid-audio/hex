@@ -547,6 +547,7 @@ impl Command {
             | Self::InsertTrack { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
+            | Self::PasteTracks { .. }
             | Self::ImportAudioTrack { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }

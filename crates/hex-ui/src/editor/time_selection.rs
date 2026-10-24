@@ -728,6 +728,16 @@ impl EditorView {
     }
 
     pub(super) fn copy_time_selection(&mut self, cut: bool, window: &Window) {
+        if self.track_clipboard_shortcut(
+            window,
+            if cut {
+                super::track_clipboard::Shortcut::Cut
+            } else {
+                super::track_clipboard::Shortcut::Copy
+            },
+        ) {
+            return;
+        }
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
             || !self.focus.is_focused(window)
@@ -751,6 +761,9 @@ impl EditorView {
     }
 
     pub(super) fn paste_time_selection(&mut self, window: &Window) {
+        if self.track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Paste) {
+            return;
+        }
         self.paste_or_insert_time_selection(false, window);
     }
 

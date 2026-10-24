@@ -130,16 +130,16 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool) {
     visual.run_until_parked();
 }
 #[gpui::test]
-fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
+fn loop_selection_keys_set_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    for (first, second, start, end) in [
-        (audio, None, 0, 48_000),
-        (midi, None, 72_000, 120_000),
-        (audio, Some(midi), 0, 120_000),
+    for (key, first, second, start, end) in [
+        ("l", audio, None, 0, 48_000),
+        ("w", midi, None, 72_000, 120_000),
+        ("w", audio, Some(midi), 0, 120_000),
     ] {
         click(&mut visual, first, false);
         if let Some(second) = second {
@@ -151,11 +151,11 @@ fn l_sets_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_his
                 v.selected_clip_ids(),
             )
         });
-        visual.simulate_keystrokes("l");
+        visual.simulate_keystrokes(key);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
-            let region = p.loop_region().expect("L creates selected loop");
+            let region = p.loop_region().expect("shortcut creates selected loop");
             assert_eq!(
                 (region.start(), region.end(), region.enabled()),
                 (start, end, true)
@@ -255,32 +255,42 @@ fn l_time_bounds_win_including_reverse_and_main_proxy_with_stale_refusal(cx: &mu
 }
 
 #[gpui::test]
-fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
+fn w_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     // No selection must not create a loop or toggle an existing one.
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.state.as_ref().unwrap().project.loop_region().is_none())
     });
     click(&mut visual, audio, false);
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     // Browser search owns its input and enclosing browser key context.
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("cmd-shift-l");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| assert!(v.changelog.is_open()));
+    visual.simulate_keystrokes("w");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("escape");
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -290,7 +300,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -314,7 +324,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -329,20 +339,20 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         })
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
             revision,
-            "L remains a note"
+            "W remains a note"
         )
     });
     editor.update(&mut visual, |v, _| {
         v.computer_keyboard.enabled = false;
         v.worker_requests_pending = 1;
     });
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
@@ -351,7 +361,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         v.selected_clip = None;
         v.time_selection = None;
     });
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -365,7 +375,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         };
         v.selected_clip = Some(stale);
     });
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision);
@@ -377,7 +387,7 @@ fn l_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
         cx.notify();
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("l");
+    visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
