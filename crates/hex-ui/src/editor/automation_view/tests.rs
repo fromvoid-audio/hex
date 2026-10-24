@@ -139,6 +139,17 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
         assert_eq!(p.snapshot().tracks[0].content, before.tracks[0].content);
     });
     assert_eq!(visual.debug_bounds(marker), Some(held));
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("a a");
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(
+            state.project.track(track).unwrap().gain_envelope(),
+            &[authored]
+        );
+        assert_eq!(state.revision, revision);
+    });
     visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
