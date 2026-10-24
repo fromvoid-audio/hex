@@ -4,7 +4,7 @@ use gpui::{Div, SharedString, Stateful, div, prelude::*, px, rgb};
 
 pub const DEVICE_HEADER_ACTION_SIZE: f32 = 12.0;
 
-/// Compact action/segment; header consumers retain this shared twelve-pixel size.
+/// Compact momentary action; header consumers retain this shared twelve-pixel size.
 /// Non-header compositions may supply their own width/height without style forks.
 pub fn device_action(label: SharedString, style: ActionStyle) -> Div {
     crate::action(label, style)
@@ -86,7 +86,10 @@ pub fn device_divider(style: ControlStyle) -> Div {
 
 /// Directly selectable compact segment, with the shared readout corner radius.
 pub fn device_segment(label: SharedString, style: ActionStyle) -> Div {
-    device_action(label, style).rounded(px(crate::CONTROL_CORNER_RADIUS))
+    crate::action_surface(style)
+        .child(label)
+        .size(px(DEVICE_HEADER_ACTION_SIZE))
+        .text_size(px(8.0))
 }
 
 /// Focus boundary for owner-controlled navigation artwork.

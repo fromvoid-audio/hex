@@ -597,7 +597,7 @@ fn shared_actions_preserve_owner_sizes_clicks_and_common_hover(cx: &mut TestAppC
         assert_eq!(bounds.size, size(px(width), px(height)));
         assert_eq!(
             visual.rendered_surface_geometry(name).unwrap().0.top_left,
-            px(CONTROL_CORNER_RADIUS).scale(scale)
+            px(width.min(height) / 2.0).scale(scale)
         );
         assert_eq!(
             visual.rendered_background(name),

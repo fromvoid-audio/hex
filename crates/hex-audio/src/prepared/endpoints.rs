@@ -20,6 +20,7 @@ pub(crate) struct ClientEndpoints {
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
     gain_recording: crate::gain_recording::Control,
+    midi_recording: crate::midi_recording::Control,
     pub(super) status: Arc<Status>,
     command_ticket: u64,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -40,6 +41,7 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            midi_recording,
             command_ticket,
             mut publication,
         } = self;
@@ -61,6 +63,7 @@ impl Control {
             spectrum_target,
             processor_audition,
             gain_recording,
+            midi_recording,
             status,
             command_ticket,
             #[cfg(all(test, feature = "allocation-probe"))]
@@ -164,6 +167,7 @@ impl Client {
     }
     pub fn close(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
+            endpoints.midi_recording.cancel();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
         }
@@ -285,6 +289,36 @@ impl Client {
         if let Some(e) = self.endpoints.owner_mut() {
             e.sample_preview.reclaim();
         }
+    }
+    pub fn midi_target(&self) -> Option<crate::midi_recording::Target> {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.midi_recording.target())
+    }
+    pub fn midi_begin(
+        &mut self,
+        target: crate::midi_recording::Target,
+    ) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_mut()
+            .ok_or("audio client is closed")?
+            .midi_recording
+            .begin(target)
+    }
+    pub fn midi_finish(&self) {
+        if let Some(e) = self.endpoints.owner_ref() {
+            e.midi_recording.finish();
+        }
+    }
+    pub fn midi_cancel(&self) {
+        if let Some(e) = self.endpoints.owner_ref() {
+            e.midi_recording.cancel();
+        }
+    }
+    pub fn midi_receipt(&mut self) -> Option<crate::midi_recording::Receipt> {
+        self.endpoints
+            .owner_mut()
+            .and_then(|e| e.midi_recording.try_receipt())
     }
     pub fn gain_target(&self) -> Option<crate::gain_recording::Target> {
         self.endpoints
@@ -487,6 +521,7 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.midi_recording.finish();
         self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status

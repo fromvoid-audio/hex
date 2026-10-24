@@ -1346,6 +1346,10 @@ mod tests {
             !editor.read_with(cx, |view, _| view.scrub_active()),
             "modal clicks must not start an underlying seek"
         );
+        assert!(
+            editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()),
+            "modal clicks must not capture the underlying loop rail"
+        );
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(

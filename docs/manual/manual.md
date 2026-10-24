@@ -240,8 +240,32 @@ hardware notes play the selected instrument with their original note-on velocity
 computer-keyboard notes use the same selected track and keep separate ownership.
 selection audition waits while hardware input is selected. pressure, pitch bend,
 modulation and held-note piano-roll step entry remain available. live input timing
-is currently resolved at audio-block boundaries; sustain, recording and mpe are
-not included in this input workflow.
+is currently resolved at audio-block boundaries; sustain and mpe are not included.
+
+## record midi notes
+
+select an active midi clip in arrange with an enabled instrument. enable the
+computer midi keyboard or configure a hardware input, then start playback inside
+the clip. click **●** in the transport to prepare and start midi recording. wait
+for the recording status before performing. preparation releases existing monitored
+notes while it installs the recording input. newly played notes are captured;
+notes already held before recording are not added to the take.
+
+click **●** again to finish while playback continues, or press **escape** to stop.
+held notes end at the last delivered recording boundary. recording also finishes
+at the clip end. the completed take becomes one undoable edit; undo and redo
+restore the whole take. timing follows the next audio block, without arrival-time
+or device-latency compensation.
+
+keep the selected clip, input and instrument unchanged during the take. a refused
+commit retains the take: click **●** to retry. **×** explicitly discards a retained
+take. an interrupted take is marked incomplete and is never committed silently.
+finish or explicitly discard it before opening, creating or closing a project.
+
+this recorder supports finite nonlooping arrangement midi clips on resident
+native output. disable the project loop before recording. console, streamed
+projects, audio recording, loop overdub and per-note expression recording are not
+available through this control.
 
 # instruments and effects
 
