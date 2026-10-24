@@ -29,6 +29,7 @@ struct ContentKey {
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
+    automation_view: bool,
     focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
 
@@ -196,6 +197,7 @@ impl EditorView {
             selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
+            automation_view: self.automation_view.enabled,
             focus_ranges: self.arrangement_focus_ranges(),
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
         };

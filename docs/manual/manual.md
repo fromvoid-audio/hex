@@ -202,6 +202,24 @@ in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
 
+## arrangement automation view
+
+press **a** with arrangement focus, or use the toolbar's **a** control, to show
+track-gain automation over faded clips. press **a** again to return to clip
+editing. switching views preserves clips, selection, automation and undo history.
+**0** remains the clip activation shortcut outside automation view. text fields
+and the computer midi keyboard keep their own input.
+
+click a gain curve to add a point, drag a point to change its time or value, and
+release to apply the edit. **command** gives free beat placement. **escape**
+cancels a held edit; **backspace** removes the selected automation point.
+one undo restores a completed change. background clip edits are unavailable
+while the automation lanes own arrangement focus.
+
+this view currently shows track gain. recorded touch spans are displayed but
+read-only: leave automation view and use the track's gain editor to clear the
+lane before editing its base curve. device-parameter lanes are not offered here.
+
 ## clip loop resizing
 
 hover the lower part of a clip's right edge to show the loop cursor, then drag
@@ -433,6 +451,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
+| arrangement automation view | a |
+| activate selected clips | 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 
