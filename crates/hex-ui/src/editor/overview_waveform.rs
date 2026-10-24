@@ -3,12 +3,15 @@
 //! Sampler cache identity uses verified original content facts, not a bank or a
 //! retained overview table; New/Open can therefore release its charged backing.
 use super::{theme, waveform::waveform_column_count};
-use gpui::{
-    Bounds, ContentMask, Div, Path, PathBuilder, Pixels, canvas, div, point, prelude::*, px, rgb,
-    size,
-};
+#[cfg(test)]
+use gpui::size;
+use gpui::{Bounds, Div, Pixels, div, point, prelude::*, px};
 use hex_project::{AssetId, OriginalSourceFacts};
 use hex_session::{CachedPeak, CachedWaveform, OriginalSourceOverviews};
+use hex_widgets::{
+    WaveformChannel, WaveformColors, WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode,
+    WaveformRange, waveform_plot,
+};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::Arc};
 
 #[derive(Clone)]
@@ -77,17 +80,18 @@ impl Key {
     }
 }
 struct Geometry {
-    paths: [Path<Pixels>; 2],
-    // Filled envelopes have no area at DC/silence. These separate physical-pixel
-    // strokes keep those regions visible at their actual level, without widening
-    // the stored extrema or drawing a false signal through nonzero-range bins.
-    zero_range_paths: [Option<Path<Pixels>>; 2],
+    display: hex_widgets::WaveformGeometry,
     #[cfg(test)]
     zero_range_spans: [Vec<(gpui::Point<Pixels>, gpui::Point<Pixels>)>; 2],
     #[cfg(test)]
     columns: usize,
     #[cfg(test)]
     outlines: [Vec<gpui::Point<Pixels>>; 2],
+}
+impl AsRef<hex_widgets::WaveformGeometry> for Geometry {
+    fn as_ref(&self) -> &hex_widgets::WaveformGeometry {
+        &self.display
+    }
 }
 struct Entry {
     identity: Identity,
@@ -179,8 +183,7 @@ fn prepare(
             .min(frames);
         sampled.push(peaks(start, end)?);
     }
-    let mut paths = Vec::with_capacity(2);
-    let mut zero_range_paths = Vec::with_capacity(2);
+    let mut channels = Vec::with_capacity(2);
     #[cfg(test)]
     let mut zero_range_spans = Vec::with_capacity(2);
     #[cfg(test)]
@@ -220,61 +223,45 @@ fn prepare(
         let area = sampled
             .iter()
             .any(|pair| pair[channel].max != pair[channel].min);
-        let mut builder = if area {
-            PathBuilder::fill()
-        } else {
-            PathBuilder::stroke(px(1.0 / scale))
-        };
-        builder.move_to(*upper.first()?);
-        for p in upper.iter().skip(1) {
-            builder.line_to(*p);
-        }
-        if area {
-            for p in lower.iter().rev() {
-                builder.line_to(*p);
+        // Filled envelopes have no area at DC/silence. Keep the exact original
+        // per-bin strokes without widening extrema or changing source mapping.
+        let spans = (0..columns).filter_map(|column| {
+            let top = upper.get(column + 1)?;
+            let bottom = lower.get(column + 1)?;
+            if !area || top.y != bottom.y {
+                return None;
             }
-            builder.close();
-        }
-        let mut trace = PathBuilder::stroke(px(1.0 / scale));
-        let mut has_trace = false;
-        #[cfg(test)]
-        let mut spans = Vec::new();
-        if area {
-            for column in 0..columns {
-                let top = upper.get(column + 1)?;
-                let bottom = lower.get(column + 1)?;
-                if top.y != bottom.y {
-                    continue;
-                }
-                let left = point(
-                    bounds.left() + px(column as f32 * width / columns as f32),
-                    top.y,
-                );
-                let right = point(
-                    bounds.left() + px((column + 1) as f32 * width / columns as f32),
-                    top.y,
-                );
-                trace.move_to(left);
-                trace.line_to(right);
-                has_trace = true;
-                #[cfg(test)]
-                spans.push((left, right));
-            }
-        }
-        zero_range_paths.push(if has_trace {
-            Some(trace.build().ok()?)
-        } else {
-            None
+            let left = point(
+                bounds.left() + px(column as f32 * width / columns as f32),
+                top.y,
+            );
+            let right = point(
+                bounds.left() + px((column + 1) as f32 * width / columns as f32),
+                top.y,
+            );
+            Some([left, right])
         });
         #[cfg(test)]
-        zero_range_spans.push(spans);
-        paths.push(builder.build().ok()?);
+        zero_range_spans.push(spans.clone().map(|[left, right]| (left, right)).collect());
+        channels.push(WaveformChannel::new(
+            WaveformEnvelope {
+                upper: &upper,
+                lower: &lower,
+                mode: if area {
+                    WaveformEnvelopeMode::Filled
+                } else {
+                    WaveformEnvelopeMode::Trace
+                },
+                trace_width: px(1.0 / scale),
+                centerline: None,
+            },
+            spans,
+        )?);
         #[cfg(test)]
         outlines.push(upper.into_iter().chain(lower).collect());
     }
     Some(Geometry {
-        paths: paths.try_into().ok()?,
-        zero_range_paths: zero_range_paths.try_into().ok()?,
+        display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
         #[cfg(test)]
         zero_range_spans: zero_range_spans.try_into().ok()?,
         #[cfg(test)]
@@ -285,45 +272,28 @@ fn prepare(
 }
 
 pub(super) fn render(source: Source, cache: Rc<RefCell<Cache>>, active: Option<(f64, f64)>) -> Div {
-    div().absolute().inset_0().child(
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let Some(geometry) = cache
-                    .try_borrow_mut()
-                    .ok()
-                    .and_then(|mut cache| cache.geometry(&source, bounds, window.scale_factor()))
-                else {
-                    return;
-                };
-                let width = f32::from(bounds.size.width);
-                let (start, end) = active.unwrap_or((0.0, 0.0));
-                for (left, right, role) in [
-                    (0.0, start, theme::PaletteRole::Muted),
-                    (start, end, theme::PaletteRole::Waveform),
-                    (end, 1.0, theme::PaletteRole::Muted),
-                ] {
-                    if right <= left {
-                        continue;
-                    }
-                    let mask = Bounds::new(
-                        bounds.origin + point(px(left as f32 * width), px(0.0)),
-                        size(px((right - left) as f32 * width), bounds.size.height),
-                    );
-                    window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
-                        for path in geometry
-                            .paths
-                            .iter()
-                            .chain(geometry.zero_range_paths.iter().flatten())
-                        {
-                            window.paint_path(path.clone(), rgb(theme::color(role)));
-                        }
-                    });
-                }
-            },
-        )
-        .absolute()
-        .inset_0(),
+    let emphasis = match active {
+        Some((start, end)) => {
+            let Some(range) = WaveformRange::new(start, end) else {
+                return div().absolute().inset_0();
+            };
+            WaveformEmphasis::Range(Some(range))
+        }
+        None => WaveformEmphasis::Range(None),
+    };
+    waveform_plot(
+        move |paint| {
+            cache
+                .try_borrow_mut()
+                .ok()
+                .and_then(|mut cache| cache.geometry(&source, paint.bounds, paint.scale))
+        },
+        WaveformColors {
+            waveform: theme::color(theme::PaletteRole::Waveform),
+            inactive: theme::color(theme::PaletteRole::Muted),
+            centerline: theme::color(theme::PaletteRole::Border),
+        },
+        emphasis,
     )
 }
 
@@ -412,7 +382,13 @@ mod tests {
                 )
             })
             .unwrap();
-            assert!(geometry.zero_range_paths.iter().all(Option::is_none));
+            assert!(
+                geometry
+                    .display
+                    .channels()
+                    .iter()
+                    .all(|channel| !channel.has_zero_range_trace())
+            );
             for (channel, outline) in geometry.outlines.iter().enumerate() {
                 let expected = 23.5 + 25.0 + channel as f32 * 50.0 - sample * 24.5;
                 assert!(
@@ -457,7 +433,7 @@ mod tests {
             };
             let geometry = prepare(300, bounds(width), scale, query).unwrap();
             for channel in 0..2 {
-                assert!(geometry.zero_range_paths[channel].is_some());
+                assert!(geometry.display.channels()[channel].has_zero_range_trace());
                 assert_eq!(geometry.zero_range_spans[channel].len(), columns * 2 / 3);
                 let center = 23.5 + 25.0 + channel as f32 * 50.0;
                 let amplitude = 25.0 - 1.0 / scale;
@@ -499,7 +475,7 @@ mod tests {
             })
             .unwrap();
             for channel in 0..2 {
-                assert!(geometry.zero_range_paths[channel].is_some());
+                assert!(geometry.display.channels()[channel].has_zero_range_trace());
                 assert_eq!(geometry.zero_range_spans[channel].len(), geometry.columns);
                 let band_top = 23.5 + channel as f32 * 50.0;
                 let expected_y = if channel == 0 {

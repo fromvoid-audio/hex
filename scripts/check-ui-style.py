@@ -31,6 +31,8 @@ widgets = (
     'row.child(', 'loop_cell)',
     'tools)', 'oscillator_fields)', 'link)', 'enabled)', 'hex_widgets::device_segment(',
     'hex_widgets::action(',
+    # The shared splitter handle paints caller-resolved geometry/color only.
+    'self.project_spectrum_splitter_input(cx)',
     'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
     'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',

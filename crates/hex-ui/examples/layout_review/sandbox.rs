@@ -176,6 +176,8 @@ impl Sandbox {
                     theme::text(if enabled { "disable" } else { "enable" }),
                     theme::action_style(),
                 )
+                .px(px(4.0))
+                .py(px(2.0))
                 .id(("sample-enable", index))
                 .debug_selector(move || format!("sample-{index}-enable"))
                 .on_click(cx.listener(move |_, _, _, cx| {
@@ -186,6 +188,8 @@ impl Sandbox {
         if let Some(sample) = self.samples.get(&index).cloned() {
             tools = tools.child(
                 hex_widgets::toggle_action(theme::text("narrow / wide"), theme::action_style())
+                    .px(px(4.0))
+                    .py(px(2.0))
                     .id(("sample-width", index))
                     .debug_selector(move || format!("sample-{index}-width"))
                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -198,6 +202,8 @@ impl Sandbox {
         }
         tools.child(
             hex_widgets::action(theme::text("reset sample"), theme::action_style())
+                .px(px(4.0))
+                .py(px(2.0))
                 .id(("sample-reset", index))
                 .debug_selector(move || format!("sample-{index}-reset"))
                 .on_click(cx.listener(move |s, _, _, cx| {
@@ -222,6 +228,8 @@ impl Render for Sandbox {
                     theme::text(category),
                     theme::device_segment_style(category == self.category),
                 )
+                .px(px(4.0))
+                .py(px(2.0))
                 .id(category)
                 .debug_selector(move || category.into())
                 .on_click(cx.listener(move |s, _, window, cx| {
@@ -265,7 +273,9 @@ impl Render for Sandbox {
                 .id(index)
                 .debug_selector(move || format!("page-{index}"))
                 .w_full()
-                .min_h(px(26.0))
+                .h(px(22.0))
+                .px(px(4.0))
+                .overflow_hidden()
                 .flex_shrink_0()
                 .justify_start()
                 .on_click(cx.listener(move |s, _, window, cx| {
@@ -348,6 +358,8 @@ impl Render for Sandbox {
             ),
             theme::action_style(),
         )
+        .px(px(4.0))
+        .py(px(2.0))
         .id("sandbox-theme")
         .debug_selector(|| "sandbox-theme".into())
         .on_click(cx.listener(|s, _, _, cx| s.theme(cx)));

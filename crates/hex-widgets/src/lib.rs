@@ -9,7 +9,10 @@
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
 mod action;
-pub use action::{ROUND_ACTION_SIZE, action, action_surface, round_action_surface, toggle_action};
+pub use action::{
+    ActionPressStyle, ROUND_ACTION_SIZE, action, action_surface, pressed_action_surface,
+    round_action_surface, toggle_action,
+};
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 mod color_picker;
@@ -32,6 +35,11 @@ mod numeric_text;
 mod response_graph;
 mod spectrum_painter;
 mod spectrum_plot;
+mod splitter;
+pub use splitter::{
+    SplitterAxis, SplitterCancel, SplitterEvent, SplitterGesture, SplitterHandleConfig,
+    SplitterInput,
+};
 mod style;
 mod text_case;
 mod text_click_selection;
@@ -82,6 +90,7 @@ mod frame_tests;
 #[cfg(test)]
 mod tests;
 
+mod text_caret;
 mod text_input;
 pub use text_input::{
     TextBackspace, TextCopy, TextCut, TextDelete, TextEnd, TextHome, TextInput, TextInputChanged,
@@ -90,6 +99,7 @@ pub use text_input::{
 };
 
 mod level_meter;
+mod meter_clip;
 pub use level_meter::{
     LevelMeterStyle, METER_NEAR_PEAK_AMPLITUDE, METER_NEAR_PEAK_DBFS, MeterColors, MeterLevel,
     level_meter,
@@ -109,3 +119,10 @@ pub use rectangle::{
 };
 #[cfg(test)]
 mod rectangle_tests;
+
+mod waveform_plot;
+pub use waveform_plot::{
+    MAX_WAVEFORM_COLUMNS, MAX_WAVEFORM_ENVELOPE_POINTS, WaveformChannel, WaveformColors,
+    WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
+    WaveformStroke, WaveformViewport, waveform_plot,
+};

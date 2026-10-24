@@ -790,8 +790,16 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
-                    | view.cancel_project_spectrum_resize(cx)
-                    | view.cancel_clip_detail_resize(cx)
+                    | view.project_spectrum_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
+                    | view.clip_detail_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()

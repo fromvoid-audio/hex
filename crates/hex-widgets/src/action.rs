@@ -1,6 +1,24 @@
 //! Stateless action presentation shared by device panels and the workspace.
 use crate::{ActionStyle, CONTROL_CORNER_RADIUS};
-use gpui::{Div, SharedString, div, prelude::*, px, rgb};
+use gpui::{Div, SharedString, Stateful, div, prelude::*, px, rgb};
+
+/// Caller-resolved highlight colors for a held momentary action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActionPressStyle {
+    pub background: u32,
+    pub text: u32,
+}
+
+/// Apply transient pressed paint after an owner assigns a stable identity.
+/// Hover and geometry are retained; the owner still dispatches the action.
+pub fn pressed_action_surface(surface: Stateful<Div>, style: ActionPressStyle) -> Stateful<Div> {
+    surface.active(move |pressed| {
+        pressed
+            .opacity(1.0)
+            .bg(rgb(style.background))
+            .text_color(rgb(style.text))
+    })
+}
 
 /// Compact default diameter for round momentary actions. Header compositions
 /// retain their explicit density; labeled pills extend this circle horizontally.
@@ -36,6 +54,13 @@ pub fn action_surface(style: ActionStyle) -> Div {
         .text_color(rgb(style.text))
         .hover(move |hover| {
             let hover = hover.bg(rgb(style.hover_background));
+            // Keep the state hue when owners deliberately preserve its fill,
+            // while still giving latched controls visible pointer feedback.
+            let hover = if style.hover_background == style.background {
+                hover.opacity(0.8)
+            } else {
+                hover
+            };
             if let Some(text) = style.hover_text {
                 hover.text_color(rgb(text))
             } else {
@@ -53,19 +78,17 @@ pub fn round_action_surface(
     id: impl Into<gpui::ElementId>,
     style: ActionStyle,
     border: u32,
+    pressed: ActionPressStyle,
 ) -> gpui::Stateful<Div> {
-    action_surface(style)
-        .id(id)
-        .size(px(ROUND_ACTION_SIZE))
-        .rounded_full()
-        .border_1()
-        .border_color(rgb(border))
-        .active(move |pressed| {
-            pressed
-                .opacity(0.7)
-                .bg(rgb(style.hover_background))
-                .text_color(rgb(style.hover_text.unwrap_or(style.text)))
-        })
+    pressed_action_surface(
+        action_surface(style)
+            .id(id)
+            .size(px(ROUND_ACTION_SIZE))
+            .rounded_full()
+            .border_1()
+            .border_color(rgb(border)),
+        pressed,
+    )
 }
 
 #[cfg(test)]
