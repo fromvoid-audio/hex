@@ -142,7 +142,7 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .flex_shrink_0()
         .flex()
         .items_center()
-        .gap(px(1.0))
+        // Contiguous compact controls keep the audio status readable at minimum width.
         // The toolbar is below the title row and does not need the traffic-light inset.
         .pr_2()
         .border_b_1()
@@ -449,7 +449,11 @@ mod ui_tests {
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
-                    for selector in ["arrange-zoom-fit", "arrange-zoom-back"] {
+                    for selector in [
+                        "arrange-zoom-fit",
+                        "arrange-zoom-back",
+                        "section-focus-control",
+                    ] {
                         let control = visual.debug_bounds(selector).unwrap();
                         assert!(control.size.width >= px(19.0) && control.size.height >= px(20.0));
                         assert!(control.left() >= toolbar.left() && control.right() <= name.left());
