@@ -31,6 +31,12 @@ fn actual_native_queued_graph_callback_profile() {
         let mut callback_ns = Vec::with_capacity(MEASURED);
         let mut reply_ns = Vec::with_capacity(MEASURED);
         let mut lateness_ns = Vec::with_capacity(MEASURED);
+        let mut gap_ns = Vec::with_capacity(MEASURED);
+        let mut published_before = Vec::with_capacity(MEASURED);
+        let mut pending_before = Vec::with_capacity(MEASURED);
+        let mut failure = None;
+        let mut delivered_blocks = 0;
+        let mut previous_start = None;
         let mut output = [[0.0; 2]; QUANTUM];
         let mut host = [0.0_f32; QUANTUM * 2];
         let mut target = Instant::now();
@@ -38,40 +44,76 @@ fn actual_native_queued_graph_callback_profile() {
             if let Some(remaining) = target.checked_duration_since(Instant::now()) {
                 std::thread::sleep(remaining);
             }
+            let published = crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap();
+            let mut pending = None;
+            data.owner_mut().unwrap().run(|callback, _| {
+                pending = callback.native_sources.test_pending_requests(binding);
+            });
+            let pending = pending.unwrap();
             let start = Instant::now();
+            let gap =
+                previous_start.map_or(Duration::ZERO, |previous| start.duration_since(previous));
+            previous_start = Some(start);
             let lateness = start.saturating_duration_since(target);
             let next_target = target + period;
+            let mut delivered = false;
             allocation_free(|| {
                 data.owner_mut().unwrap().run(|callback, _| {
                     callback.begin_block();
                     callback.begin_native_effect_callback(QUANTUM).unwrap();
                     let rendered = callback.render(&mut output);
-                    assert!(rendered.is_ok(), "native profile owner {location} block {block}: {rendered:?}; transport={:?}", callback.native_sources.test_transport_fault(binding));
-                    assert!(crate::device::finish_host_chunk(
+                    let fault = callback.native_sources.test_transport_fault(binding);
+                    delivered = crate::device::finish_host_chunk(
                         callback,
                         &mut host,
                         &mut output,
                         2,
                         &rendered,
                         (block * QUANTUM) as u64,
-                        Instant::now()
-                    ));
+                        Instant::now(),
+                    );
+                    if !delivered {
+                        failure = Some((
+                            block,
+                            fault,
+                            published,
+                            pending,
+                            gap.as_nanos(),
+                            lateness.as_nanos(),
+                        ));
+                    }
                 })
             });
             let elapsed = start.elapsed();
             // Stop observing at the next scheduled callback even without a
             // reply. Waiting longer would mask real pipeline deadline faults.
             let dispatched = Instant::now();
-            let reply = loop {
-                if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() > block as u64 {
+            let reply = if delivered {
+                loop {
+                    if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() > block as u64 {
                     break Some(dispatched.elapsed().as_nanos());
                 }
-                if Instant::now() >= next_target {
-                    break None;
+                    if Instant::now() >= next_target {
+                        break None;
+                    }
+                    std::thread::yield_now();
                 }
-                std::thread::yield_now();
+            } else {
+                None
             };
+            if delivered {
+                delivered_blocks += 1;
+            } else {
+                assert_eq!(
+                    host,
+                    [0.0; QUANTUM * 2],
+                    "failed callback must expose whole-host silence"
+                );
+            }
             for (index, actual) in output.iter().enumerate() {
+                if !delivered {
+                    break;
+                }
                 let at = block * QUANTUM + index;
                 let expected = at
                     .checked_sub(2 * QUANTUM)
@@ -89,13 +131,19 @@ fn actual_native_queued_graph_callback_profile() {
                 callback_ns.push(elapsed.as_nanos());
                 reply_ns.push(reply);
                 lateness_ns.push(lateness.as_nanos());
+                gap_ns.push(gap.as_nanos());
+                published_before.push(published);
+                pending_before.push(pending);
+            }
+            if failure.is_some() {
+                break;
             }
             target = next_target;
         }
         // The paced stream ended. Observe its final actual completion on
         // control before requesting retirement, outside the measurement.
         let deadline = Instant::now() + Duration::from_secs(3);
-        while
+        while failure.is_none() &&
             crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(
                 &root, binding,
             )
@@ -114,19 +162,28 @@ fn actual_native_queued_graph_callback_profile() {
         );
         drop(returned);
         let returned = recover(&mut control, binding);
-        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(returned.cleanup_error.is_none());
+        if failure.is_none() {
+            assert!(returned.error.is_none());
+        } else {
+            println!("native profile failure cleanup cause: {:?}", returned.error);
+        }
         let native::PreparationDisposal::Reaped(disposal) = returned.disposal else {
             panic!("original native profile disposal")
         };
-        assert!(disposal.status.success());
-        let terminal = disposal.terminal.unwrap();
-        assert_eq!(
-            (terminal.blocks, terminal.frames),
-            (
-                (WARMUP + MEASURED) as u64,
-                ((WARMUP + MEASURED) * QUANTUM) as u64
-            )
-        );
+        if failure.is_none() {
+            assert!(disposal.status.success());
+            let terminal = disposal.terminal.unwrap();
+            assert_eq!(
+                (terminal.blocks, terminal.frames),
+                (
+                    (WARMUP + MEASURED) as u64,
+                    ((WARMUP + MEASURED) * QUANTUM) as u64
+                )
+            );
+        } else {
+            println!("native profile failure actual disposal: {disposal:?}");
+        }
         drop(control);
         finish(&mut retirement);
         // Raw samples are retained in the explicit --nocapture log. Budget
@@ -137,8 +194,12 @@ fn actual_native_queued_graph_callback_profile() {
             .collect::<Vec<_>>()
             .join(",");
         println!(
-            "{{\"scope\":\"original-root-native-graph-paced\",\"owner\":{location},\"rate\":48000,\"quantum\":{QUANTUM},\"warmup\":{WARMUP},\"period_ns\":{},\"callback_ns\":{callback_ns:?},\"observed_reply_ns\":[{replies}],\"pacing_lateness_ns\":{lateness_ns:?}}}",
+            "{{\"scope\":\"original-root-native-graph-paced\",\"owner\":{location},\"rate\":48000,\"quantum\":{QUANTUM},\"warmup\":{WARMUP},\"period_ns\":{},\"delivered_blocks\":{delivered_blocks},\"failure\":\"{failure:?}\",\"callback_ns\":{callback_ns:?},\"observed_reply_ns\":[{replies}],\"pacing_lateness_ns\":{lateness_ns:?},\"callback_gap_ns\":{gap_ns:?},\"published_before\":{published_before:?},\"pending_before\":{pending_before:?}}}",
             period.as_nanos()
+        );
+        assert!(
+            failure.is_none(),
+            "native profile owner {location}: block/fault/completed/pending/gap/lateness={failure:?}"
         );
     }
 }
