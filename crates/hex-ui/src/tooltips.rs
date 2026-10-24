@@ -86,6 +86,15 @@ pub(crate) fn view(kind: &Kind, description: &str, cx: &App) -> Div {
         .child(theme::text(text))
 }
 
+pub(crate) fn bind_keys(cx: &mut App) {
+    // Keep activation in this control's key handler (including held-key refusal),
+    // ahead of the editor's Space transport and Enter launch actions.
+    cx.bind_keys(
+        ["enter", "space"]
+            .map(|key| gpui::KeyBinding::new(key, gpui::NoAction, Some("hex_help_tooltip_toggle"))),
+    );
+}
+
 struct ButtonState {
     focus: FocusHandle,
     lifetime: AccessibilityLifetime,
@@ -137,11 +146,11 @@ impl RenderOnce for HelpToggle {
                     window.focus_next()
                 }
                 cx.stop_propagation();
-            } else if !modifiers.shift
-                && !event.is_held
-                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+            } else if !modifiers.shift && matches!(event.keystroke.key.as_str(), "enter" | "space")
             {
-                toggle(cx);
+                if !event.is_held {
+                    toggle(cx);
+                }
                 cx.stop_propagation();
             }
         })
@@ -226,6 +235,7 @@ mod tests {
         }
     }
     fn fixture(cx: &mut TestAppContext) -> VisualTestContext {
+        cx.update(bind_keys);
         let handle = *cx.add_window(|_, _| Fixture);
         let visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();

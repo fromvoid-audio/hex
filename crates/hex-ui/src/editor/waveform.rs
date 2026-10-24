@@ -1,5 +1,5 @@
 use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px};
+use gpui::{Context, Div, Window, prelude::*, px};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
 use hex_widgets::{MAX_WAVEFORM_COLUMNS, WaveformColors, WaveformEmphasis, waveform_plot};
@@ -689,7 +689,7 @@ mod tests {
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn waveform_canvas_paints_full_clip_extent(cx: &mut gpui::TestAppContext) {
-        use gpui::{IntoElement, point, size};
+        use gpui::{IntoElement, div, point, size};
         use std::{cell::Cell, rc::Rc};
 
         let visual = cx.add_empty_window();

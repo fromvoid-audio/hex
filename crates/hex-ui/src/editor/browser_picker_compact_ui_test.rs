@@ -376,7 +376,47 @@ fn help_toggle_preserves_collapsed_source_identification_query_focus_and_changel
             cx
         ))
     );
-    visual.simulate_keystrokes("shift-tab tab space");
+    visual.run_until_parked();
+    assert!(visual.update(|window, _| {
+        window
+            .accessibility_nodes()
+            .find(|n| n.descriptor.id == node.id)
+            .unwrap()
+            .descriptor
+            .focused
+    }));
+    visual.simulate_keystrokes("shift-tab");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("open-changelog"),
+        Some(gpui::Background::from(gpui::rgb(crate::theme::color(
+            crate::theme::PaletteRole::Hover
+        )))),
+        "previous tab stop is changelog"
+    );
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    assert!(
+        visual.update(|window, _| window
+            .accessibility_nodes()
+            .find(|n| n.descriptor.id == node.id)
+            .unwrap()
+            .descriptor
+            .focused),
+        "next tab stop is help"
+    );
+    for key in ["space", "enter"] {
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: true,
+        });
+        visual.run_until_parked();
+        assert!(
+            !visual.update(|_, cx| crate::tooltips::enabled(cx)),
+            "held activation stays off"
+        );
+    }
+    visual.simulate_keystrokes("space");
     visual.run_until_parked();
     assert!(
         visual.update(|_, cx| crate::tooltips::enabled(cx)),
