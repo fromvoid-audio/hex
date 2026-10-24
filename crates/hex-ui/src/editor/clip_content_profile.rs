@@ -28,10 +28,16 @@ impl Drop for Scratch {
 }
 struct ProfileRoot {
     editor: Entity<EditorView>,
+    profile_phases: bool,
 }
 impl Render for ProfileRoot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let content = self.editor.clone();
+        let content = self.editor.clone().into_any_element();
+        let content = if self.profile_phases {
+            crate::editor::navigation_metrics::PhaseProbe::new(content).into_any_element()
+        } else {
+            content
+        };
         div().size_full().relative().child(content)
     }
 }
@@ -87,7 +93,10 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
                 scratch.path.join("theme.json"),
             )
         });
-        ProfileRoot { editor }
+        ProfileRoot {
+            editor,
+            profile_phases: false,
+        }
     });
     let root = handle.root(cx).expect("profile root");
     let editor = root.read_with(cx, |root, _| root.editor.clone());

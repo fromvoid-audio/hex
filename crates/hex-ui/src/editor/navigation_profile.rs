@@ -9,6 +9,7 @@ fn fixture(
     directory: &std::path::Path,
     tracks: usize,
     audio_only: bool,
+    profile_phases: bool,
 ) -> (VisualTestContext, Entity<EditorView>, Scratch) {
     let path = directory.join(format!("{tracks}.hex"));
     assert!(
@@ -33,6 +34,7 @@ fn fixture(
     cx.update(crate::editor::bind_editor_keys);
     let service = Service::new(48_000, 8, 8_000_000).unwrap();
     let handle = cx.add_window(|window, cx| ProfileRoot {
+        profile_phases,
         editor: cx.new(|cx| {
             EditorView::new_with_browser_preferences_path(
                 window,
@@ -189,7 +191,7 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
     );
     if stage_timing {
         println!(
-            "NAV_STAGE_CSV,phase,content,tracks,row_mode,density,action,iteration,warmup,editor_us,row_us,clip_model_us,wave_lookup_us,wave_build_us,wave_submit_us,diagnostic_us,editor_calls,row_calls,clip_model_calls,wave_lookup_calls,wave_build_calls,wave_submit_calls,diagnostic_calls"
+            "NAV_STAGE_CSV,phase,content,tracks,row_mode,density,action,iteration,warmup,editor_us,row_us,clip_model_us,wave_lookup_us,wave_build_us,wave_submit_us,diagnostic_us,request_layout_us,prepaint_us,paint_us,editor_calls,row_calls,clip_model_calls,wave_lookup_calls,wave_build_calls,wave_submit_calls,diagnostic_calls,request_layout_calls,prepaint_calls,paint_calls"
         );
     }
     let mut inputs = vec![(directory, "mixed")];
@@ -202,7 +204,7 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
         for (tracks, single_row) in [(1, false), (100, false), (100, true)] {
             let cx = &mut cx.new_app();
             let (mut visual, editor, _scratch) =
-                fixture(cx, &directory, tracks, content == "audio");
+                fixture(cx, &directory, tracks, content == "audio", stage_timing);
             if single_row {
                 let (track, body) = editor.read_with(cx, |view, _| {
                     (
