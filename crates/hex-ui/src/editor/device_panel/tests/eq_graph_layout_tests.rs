@@ -611,6 +611,7 @@ fn analyzed_tone(
     target: hex_audio::spectrum_target::SpectrumTarget,
     frequency: f32,
     amplitude: f32,
+    captured_at: std::time::Instant,
 ) -> hex_audio::spectrum_worker::PublishedSpectra {
     use hex_audio::spectrum_worker::{CaptureOutcome, SpectrumStamp, spawn_spectrum_worker};
     let stamp = SpectrumStamp {
@@ -620,7 +621,6 @@ fn analyzed_tone(
         applied_revision: target.activation_floor,
     };
     let (mut capture, mut reader, reaper) = spawn_spectrum_worker(stamp).unwrap();
-    let captured_at = std::time::Instant::now();
     for chunk in 0..16 {
         let frames: [[f32; 2]; 256] = std::array::from_fn(|i| {
             let phase = std::f32::consts::TAU * frequency * (chunk * 256 + i) as f32
@@ -634,7 +634,7 @@ fn analyzed_tone(
     }
     let deadline = captured_at + std::time::Duration::from_secs(2);
     let pair = loop {
-        if let Some(pair) = reader.try_latest_pair() {
+        if let Some(pair) = reader.try_latest_pair_at(captured_at) {
             break pair;
         }
         assert!(
@@ -698,14 +698,24 @@ fn both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing(
     });
     let mut previous: Option<Vec<Vec<[f32; 2]>>> = None;
     for amplitude in [0.05, 0.4] {
+        // Fix the consumer clock, never the result bytes or capture timestamp.
+        // Scheduling under parallel test load must not turn this presentation
+        // assertion into a native 100ms deadline claim. Expiry is checked below.
+        let captured_at = std::time::Instant::now();
         let pairs: Vec<_> = targets
             .iter()
             .enumerate()
             .map(|(i, target)| {
-                analyzed_tone(*target, if i == 0 { 440.0 } else { 1760.0 }, amplitude)
+                analyzed_tone(
+                    *target,
+                    if i == 0 { 440.0 } else { 1760.0 },
+                    amplitude,
+                    captured_at,
+                )
             })
             .collect();
         editor.update(cx, |v, cx| {
+            v.device_panel.eq_spectrum.test_now = Some(captured_at);
             v.device_panel.spectrum_results.extend(
                 pairs
                     .iter()
@@ -735,11 +745,25 @@ fn both_visible_eq_curves_advance_from_real_fft_results_without_focus_stealing(
             .collect();
         assert_ne!(curves[0], curves[1], "independent tones remain distinct");
         if let Some(previous) = previous {
-            for i in 0..2 {
-                assert_ne!(curves[i], previous[i], "both visible EQs advance");
+            for (current, previous) in curves.iter().zip(previous) {
+                assert_ne!(*current, previous, "both visible EQs advance");
             }
         }
         previous = Some(curves);
+        editor.update(cx, |v, cx| {
+            v.device_panel.eq_spectrum.test_now = Some(
+                captured_at
+                    + hex_audio::spectrum_worker::DISPLAY_STALE_AFTER
+                    + std::time::Duration::from_nanos(1),
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for graph in &graphs {
+            graph.read_with(cx, |graph, _| {
+                assert_eq!(graph.analyzer_layers(), (None, None), "stale curves clear");
+            });
+        }
         editor.read_with(cx, |v, _| {
             assert_eq!(v.device_panel.selected_device, Some(second));
             assert_eq!(v.state.as_ref().unwrap().project, original);

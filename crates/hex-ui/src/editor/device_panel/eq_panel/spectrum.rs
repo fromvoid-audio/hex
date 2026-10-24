@@ -20,6 +20,8 @@ pub(in super::super) struct SpectrumSelection {
     pub(in super::super) test_channel: Option<hex_audio::spectrum_target::SpectrumTargetControl>,
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in super::super) test_client: Option<hex_audio::prepared::Client>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(in super::super) test_now: Option<std::time::Instant>,
 }
 impl SpectrumSelection {
     fn enabled_raw(&self, device: u64) -> bool {
@@ -133,12 +135,23 @@ fn clear(view: &mut EditorView) {
     let _ = publish(view, &[]);
     view.device_panel.spectrum_results.clear();
 }
-fn matches(result: &hex_audio::spectrum_worker::PublishedSpectra, target: SpectrumTarget) -> bool {
+fn now(_view: &EditorView) -> std::time::Instant {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    if let Some(now) = _view.device_panel.eq_spectrum.test_now {
+        return now;
+    }
+    std::time::Instant::now()
+}
+fn matches(
+    result: &hex_audio::spectrum_worker::PublishedSpectra,
+    target: SpectrumTarget,
+    now: std::time::Instant,
+) -> bool {
     result.output.stamp.target == target.token
         && result.output.stamp.generation == target.project_generation
         && result.output.stamp.sample_rate_hz == target.sample_rate_hz
         && result.output.stamp.applied_revision >= target.activation_floor
-        && result.output.is_fresh_at(std::time::Instant::now())
+        && result.output.is_fresh_at(now)
 }
 pub(in crate::editor) fn result(
     view: &EditorView,
@@ -153,7 +166,7 @@ pub(in crate::editor) fn result(
     }
     let (_, target) = desired(view)?.find(identity)?;
     let result = view.device_panel.spectrum_results.get(&target.token)?;
-    (target.project_generation == view.project_generation && matches(result, target))
+    (target.project_generation == view.project_generation && matches(result, target, now(view)))
         .then_some(result)
 }
 
@@ -213,10 +226,11 @@ pub(in crate::editor) fn reconcile(view: &mut EditorView) -> bool {
         }
         changed = true;
     }
+    let now = now(view);
     let count = view.device_panel.spectrum_results.len();
     view.device_panel
         .spectrum_results
-        .retain(|_, result| valid.iter().any(|target| matches(result, *target)));
+        .retain(|_, result| valid.iter().any(|target| matches(result, *target, now)));
     changed |= count != view.device_panel.spectrum_results.len();
     if !view.clip_view_open || !view.device_panel_active {
         changed |= clear_status(view);
