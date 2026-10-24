@@ -229,7 +229,7 @@ fn marker_move_carves_edges_covers_and_splits_with_one_history_edge_and_no_music
             start: b(start),
         };
         assert!(
-            !command.requires_stopped_section_edit(),
+            !command.requires_section_publication(),
             "metadata-only admission"
         );
         let preview = project.preview_arrangement_section_edit(&command).unwrap();
@@ -237,6 +237,10 @@ fn marker_move_carves_edges_covers_and_splits_with_one_history_edge_and_no_music
         assert_eq!(preview.tempo_map(), project.tempo_map());
         let mut editor = Editor::new(project, 8).unwrap();
         editor.execute(command).unwrap();
+        assert!(
+            !editor.next_section_history_requires_publication(false),
+            "metadata undo must not acquire the structural audio gate"
+        );
         let after = editor.project().snapshot();
         assert_eq!(after.arrangement_sections.len(), expected.len());
         for ((actual, shown), &(name, start, end, fresh)) in after
@@ -271,6 +275,10 @@ fn marker_move_carves_edges_covers_and_splits_with_one_history_edge_and_no_music
             "clips, audio, MIDI, automation, tempo, meter, loop and routing stay fixed"
         );
         assert!(editor.undo());
+        assert!(
+            !editor.next_section_history_requires_publication(true),
+            "metadata redo must not acquire the structural audio gate"
+        );
         let mut restored = before.clone();
         restored.next_id = after.next_id; // Canonical identities never rewind.
         assert_eq!(editor.project().snapshot(), restored);
