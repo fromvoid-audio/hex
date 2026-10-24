@@ -6,7 +6,10 @@ use super::*;
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateReservationQuote {
     pub source_capacity: usize,
-    /// Ephemeral finite MIDI compiler overlap; excluded from retained DATA.
+    /// Complete fresh transformed Arrangement PCM, separate from input assets.
+    /// An upper bound until the constructor ledger observes actual Vec capacity.
+    pub prepared_pcm_frames: u64,
+    /// Ephemeral closed audio/MIDI/effect compiler overlap; excluded from retained DATA.
     pub compiler_workspace_bytes: usize,
     pub data_rows: usize,
     pub handle_rows: usize,
@@ -21,10 +24,34 @@ impl AudioCandidateReservationQuote {
         sources: usize,
     ) -> Result<Self, AudioStorageError> {
         crate::audio_preparation::validate_constructor_project(project)?;
+        Self::for_project_counts(project, sources, false)
+    }
+    /// Caller sizing for the explicitly selected closed foreign-effect class.
+    /// A registry or this quote never admits a native source or callback.
+    pub fn for_project_with_effect_registry(
+        project: &hex_project::Project,
+        sources: usize,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, AudioStorageError> {
+        crate::audio_preparation::validate_constructor_project_with_effects(
+            project,
+            Some(effects),
+        )?;
+        Self::for_project_counts(project, sources, true)
+    }
+    fn for_project_counts(
+        project: &hex_project::Project,
+        sources: usize,
+        effect_payloads: bool,
+    ) -> Result<Self, AudioStorageError> {
         if sources > hex_project::MAX_ASSETS {
             return Err(AudioStorageError::Capacity);
         }
         let mut counts = Counts::default();
+        counts.add(
+            Kind::PreparedSource,
+            crate::audio_preparation::transformed::transformed_count(project),
+        )?;
         counts.add(Kind::Fixed, 1)?;
         counts.add(Kind::Source, sources)?;
         counts.add(Kind::Scene, project.scenes().len())?;
@@ -45,6 +72,10 @@ impl AudioCandidateReservationQuote {
             counts.add(Kind::Device, track.devices().len())?;
             counts.add(Kind::Point, track.gain_envelope().len())?;
         }
+        counts.add(Kind::Device, project.main_devices().len())?;
+        for bus in project.return_tracks() {
+            counts.add(Kind::Device, bus.devices().len())?;
+        }
         for cell in project.session_cells() {
             if let hex_project::SessionCellContent::Midi(clip) = cell.content() {
                 counts.session_clips = counts
@@ -63,6 +94,57 @@ impl AudioCandidateReservationQuote {
             project.return_tracks().len(),
             sources,
         )?;
+        quote.prepared_pcm_frames =
+            crate::audio_preparation::transformed::prepared_pcm_frames(project)?;
+        let pcm_bytes = usize::try_from(quote.prepared_pcm_frames)
+            .ok()
+            .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
+            .ok_or(AudioStorageError::Overflow)?;
+        let (retained, workspace) = crate::audio_preparation::transformed_audio_quote(project)?;
+        quote.metadata_data_bytes = quote
+            .metadata_data_bytes
+            .checked_add(
+                retained
+                    .checked_sub(pcm_bytes)
+                    .ok_or(AudioStorageError::Overflow)?,
+            )
+            .ok_or(AudioStorageError::Overflow)?;
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(workspace)
+            .ok_or(AudioStorageError::Overflow)?;
+        if effect_payloads {
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(crate::compensation::MAX_COMPENSATION_BYTES)
+                .ok_or(AudioStorageError::Overflow)?;
+            let mut payloads = 0usize;
+            let mut largest = 0;
+            for device in project
+                .tracks()
+                .iter()
+                .flat_map(|t| t.devices())
+                .chain(project.return_tracks().iter().flat_map(|r| r.devices()))
+                .chain(project.main_devices())
+            {
+                payloads = payloads
+                    .checked_add(device.state().payload().len())
+                    .ok_or(AudioStorageError::Overflow)?;
+                largest = largest.max(device.state().payload().len());
+            }
+            quote.metadata_data_bytes = quote
+                .metadata_data_bytes
+                .checked_add(payloads)
+                .ok_or(AudioStorageError::Overflow)?;
+            quote.compiler_workspace_bytes = quote
+                .compiler_workspace_bytes
+                .checked_add(largest)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
         // Cardinalities cannot describe spare capacity retained by canonical
         // sources. Quote the actual two owning identity tokens per Console clip.
         let canonical_bytes =
@@ -78,6 +160,9 @@ impl AudioCandidateReservationQuote {
     /// Ceiling from existing canonical cardinality limits, used only to bound
     /// a persistent host's finite reservation. Per-request scratch can use the
     /// much smaller current-project quote. No runtime or bank is constructed.
+    /// This cardinality ceiling has zero actual prepared PCM: its caller's
+    /// separately bounded physical input allowance covers all native PCM.
+    /// Per-project callers must add `prepared_pcm_frames` to physical admission.
     /// Canonical source spare capacity is checked by the actual constructor;
     /// cardinalities alone cannot certify that every project fits this ceiling.
     pub fn for_supported_limits(sources: usize) -> Result<Self, AudioStorageError> {
@@ -88,6 +173,7 @@ impl AudioCandidateReservationQuote {
         for (kind, count) in [
             (Kind::Fixed, 1),
             (Kind::Source, sources),
+            (Kind::PreparedSource, hex_project::MAX_CLIPS),
             (Kind::Track, hex_project::MAX_TRACKS),
             (Kind::Return, hex_project::MAX_RETURN_TRACKS),
             (Kind::Clip, hex_project::MAX_CLIPS),
@@ -104,12 +190,17 @@ impl AudioCandidateReservationQuote {
         }
         counts.session_clips = hex_project::MAX_SESSION_CELLS;
         counts.session_notes = hex_project::MAX_NOTES;
-        Self::from_counts(
+        let mut quote = Self::from_counts(
             counts,
             hex_project::MAX_TRACKS,
             hex_project::MAX_RETURN_TRACKS,
             sources,
-        )
+        )?;
+        quote.compiler_workspace_bytes = quote
+            .compiler_workspace_bytes
+            .checked_add(crate::audio_preparation::transformed::workspace_ceiling()?)
+            .ok_or(AudioStorageError::Overflow)?;
+        Ok(quote)
     }
     /// Resident constructor cardinalities use the canonical asset ceiling,
     /// independently of any streaming worker's configured source capacity.
@@ -130,6 +221,7 @@ impl AudioCandidateReservationQuote {
             )?;
         Ok(Self {
             source_capacity: sources,
+            prepared_pcm_frames: 0,
             compiler_workspace_bytes: crate::audio_preparation::sampler_workspace_bound(
                 counts.notes,
                 counts.clips,
@@ -152,8 +244,14 @@ impl AudioCandidateReservationQuote {
         self,
         input_data_bytes: usize,
     ) -> Result<crate::AudioStorageReservation, AudioStorageError> {
+        let prepared_pcm_bytes = usize::try_from(self.prepared_pcm_frames)
+            .ok()
+            .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
+            .ok_or(AudioStorageError::Overflow)?;
         let retained = self
             .metadata_data_bytes
+            .checked_add(prepared_pcm_bytes)
+            .ok_or(AudioStorageError::Overflow)?
             .checked_add(input_data_bytes)
             .and_then(|n| n.checked_add(crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
             .ok_or(AudioStorageError::Overflow)?;
@@ -182,6 +280,7 @@ impl AudioCandidateReservationQuote {
 enum Kind {
     Fixed,
     Source,
+    PreparedSource,
     Scene,
     Cell,
     Return,
@@ -219,6 +318,7 @@ impl Counts {
         let (rows, handles) = match kind {
             Kind::Fixed => (256usize, 128usize),
             Kind::Source => (8, 8),
+            Kind::PreparedSource => (4, 2),
             Kind::Scene => (8, 4),
             Kind::Cell | Kind::Clip => (16, 16),
             Kind::Return => (32, 16),

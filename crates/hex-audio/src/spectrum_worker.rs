@@ -6,6 +6,7 @@
 //! and attempts one nonblocking SPSC push.
 
 use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
+use crate::spectrum_target::{MAX_SPECTRUM_TARGETS, SpectrumTargets};
 mod native;
 pub(crate) use native::constructor_storage_quote;
 mod project;
@@ -30,15 +31,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CAPTURE_QUEUE_CAPACITY: usize = 32;
+// Thirty-two complete visible-chain quanta absorb off-thread FFT scheduling.
+pub const CAPTURE_QUEUE_CAPACITY: usize = 32 * MAX_SPECTRUM_TARGETS;
 pub const MAX_CAPTURE_FRAMES: usize = 256;
-pub const MAX_BATCHES_PER_POLL: usize = 32;
+pub const MAX_BATCHES_PER_POLL: usize = CAPTURE_QUEUE_CAPACITY;
 pub const ANALYSIS_INTERVAL: Duration = Duration::from_nanos(33_333_334);
 pub const DISPLAY_STALE_AFTER: Duration = Duration::from_millis(100);
 const DECAY_DB_PER_SECOND: f32 = 48.0;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const RESULT_QUEUE_CAPACITY: usize = 1;
+const RESULT_QUEUE_CAPACITY: usize = MAX_SPECTRUM_TARGETS;
 const MIN_CAPTURE_SAMPLE_RATE_HZ: u32 = 8_000;
 const MAX_CAPTURE_SAMPLE_RATE_HZ: u32 = 192_000;
 
@@ -97,7 +99,7 @@ pub enum CaptureOutcome {
 /// callback owner. It must be returned to control after callback quiescence.
 pub struct SpectrumCapture {
     producer: Producer<CaptureBatch>,
-    next_sequence: u64,
+    next_sequences: [u64; MAX_SPECTRUM_TARGETS],
     exhausted: bool,
     native: Option<NativeSpectrumReceipt>,
     pub(crate) project: Option<project::ProjectCapture>,
@@ -123,7 +125,7 @@ impl SpectrumCapture {
         frames: &[[f32; 2]],
         captured_start: Instant,
     ) -> CaptureOutcome {
-        self.submit_signals_at(stamp, None, frames, captured_start)
+        self.submit_signals_at(0, stamp, None, frames, captured_start)
     }
 
     /// Submit aligned actual node input and output in one bounded packet.
@@ -144,25 +146,34 @@ impl SpectrumCapture {
         output: &[[f32; 2]],
         captured_start: Instant,
     ) -> CaptureOutcome {
-        self.submit_signals_at(stamp, Some(input), output, captured_start)
+        self.submit_signals_at(0, stamp, Some(input), output, captured_start)
+    }
+
+    /// Fixed membership slot from the callback's admitted target set. Each slot
+    /// has its own sequence, so interleaved EQs cannot reset each other's FFT.
+    pub(crate) fn submit_pair_for_slot_at(
+        &mut self,
+        slot: usize,
+        stamp: SpectrumStamp,
+        input: &[[f32; 2]],
+        output: &[[f32; 2]],
+        captured_start: Instant,
+    ) -> CaptureOutcome {
+        self.submit_signals_at(slot, stamp, Some(input), output, captured_start)
     }
 
     fn submit_signals_at(
         &mut self,
+        slot: usize,
         stamp: SpectrumStamp,
         input: Option<&[[f32; 2]]>,
         frames: &[[f32; 2]],
         captured_start: Instant,
     ) -> CaptureOutcome {
-        if self.exhausted {
-            return CaptureOutcome::SequenceExhausted;
-        }
-        let sequence = self.next_sequence;
-        let Some(next_sequence) = sequence.checked_add(1) else {
-            self.exhausted = true;
-            return CaptureOutcome::SequenceExhausted;
+        let sequence = match self.advance(slot) {
+            Ok(sequence) => sequence,
+            Err(outcome) => return outcome,
         };
-        self.next_sequence = next_sequence;
 
         if self
             .native
@@ -187,6 +198,7 @@ impl SpectrumCapture {
             input_samples[..input.len()].copy_from_slice(input);
         }
         let batch = CaptureBatch {
+            slot: slot as u8,
             stamp,
             sequence,
             captured_start,
@@ -204,16 +216,28 @@ impl SpectrumCapture {
     /// Record an unavailable, failed or rolled-back render attempt so the next
     /// accepted capture resets the worker's rolling window at the gap.
     pub fn skip(&mut self) -> CaptureOutcome {
-        if self.exhausted {
-            return CaptureOutcome::SequenceExhausted;
+        self.skip_slot(0)
+    }
+    pub(crate) fn skip_slot(&mut self, slot: usize) -> CaptureOutcome {
+        match self.advance(slot) {
+            Ok(sequence) => CaptureOutcome::Skipped { sequence },
+            Err(outcome) => outcome,
         }
-        let sequence = self.next_sequence;
-        let Some(next_sequence) = sequence.checked_add(1) else {
-            self.exhausted = true;
-            return CaptureOutcome::SequenceExhausted;
+    }
+    fn advance(&mut self, slot: usize) -> Result<u64, CaptureOutcome> {
+        if self.exhausted {
+            return Err(CaptureOutcome::SequenceExhausted);
+        }
+        let Some(next) = self.next_sequences.get_mut(slot) else {
+            return Err(CaptureOutcome::InvalidBatch { sequence: 0 });
         };
-        self.next_sequence = next_sequence;
-        CaptureOutcome::Skipped { sequence }
+        let sequence = *next;
+        let Some(successor) = sequence.checked_add(1) else {
+            self.exhausted = true;
+            return Err(CaptureOutcome::SequenceExhausted);
+        };
+        *next = successor;
+        Ok(sequence)
     }
 }
 
@@ -222,6 +246,7 @@ impl SpectrumCapture {
 pub struct SpectrumReader {
     results: Receiver<PublishedSpectra>,
     latest: Option<PublishedSpectra>,
+    latest_targets: Box<[Option<PublishedSpectra>]>,
     native: Option<NativeSpectrumIdentity>,
     project: Option<project::ProjectReader>,
 }
@@ -237,6 +262,41 @@ impl SpectrumReader {
     ) -> Option<PublishedProjectSpectrum> {
         self.project.as_mut()?.latest_at(now, selection)
     }
+    /// Fresh independent pairs for exactly the admitted membership. Cache slots
+    /// are stable across focus/order changes; removed tokens never reappear.
+    pub fn try_latest_pairs_at(
+        &mut self,
+        now: Instant,
+        targets: &SpectrumTargets,
+    ) -> Vec<PublishedSpectra> {
+        for _ in 0..RESULT_QUEUE_CAPACITY {
+            let result = match self.results.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            };
+            let slot = targets.iter().find_map(|(slot, target)| {
+                (target.token == result.output.stamp.target).then_some(slot)
+            });
+            if let Some(entry) = slot.and_then(|slot| self.latest_targets.get_mut(slot)) {
+                *entry = Some(result);
+            }
+        }
+        for (slot, result) in self.latest_targets.iter_mut().enumerate() {
+            if result.as_ref().is_some_and(|result| {
+                !result.output.is_fresh_at(now)
+                    || !targets.get(slot).is_some_and(|target| {
+                        target.token == result.output.stamp.target
+                            && target.project_generation == result.output.stamp.generation
+                            && target.sample_rate_hz == result.output.stamp.sample_rate_hz
+                            && result.output.stamp.applied_revision >= target.activation_floor
+                    })
+            }) {
+                *result = None;
+            }
+        }
+        self.latest_targets.iter().flatten().cloned().collect()
+    }
+
     /// Return the newest result, clearing cached display data after 100 ms.
     pub fn try_latest(&mut self) -> Option<PublishedSpectrum> {
         self.try_latest_at(Instant::now())
@@ -378,13 +438,34 @@ fn spawn_worker(
     let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
         .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
 
-    let core = SpectrumCore::new(kernel, initial_stamp.sample_rate_hz);
+    let count = if fixed_native {
+        MAX_SPECTRUM_TARGETS
+    } else {
+        1
+    };
+    let mut cores = Vec::new();
+    cores
+        .try_reserve_exact(count)
+        .map_err(|_| SpectrumWorkerError::Allocation)?;
+    cores.push(SpectrumCore::new(kernel, initial_stamp.sample_rate_hz));
+    for _ in 1..count {
+        let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
+            .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
+        cores.push(SpectrumCore::new(kernel, initial_stamp.sample_rate_hz));
+    }
+    let cores = cores.into_boxed_slice();
     let (project_capture, project_reader, project_worker) = if fixed_native {
         let (capture, reader, worker) = project::channel(initial_stamp.sample_rate_hz)?;
         (Some(capture), Some(reader), Some(worker))
     } else {
         (None, None, None)
     };
+    let mut latest_targets = Vec::new();
+    latest_targets
+        .try_reserve_exact(MAX_SPECTRUM_TARGETS)
+        .map_err(|_| SpectrumWorkerError::Allocation)?;
+    latest_targets.resize_with(MAX_SPECTRUM_TARGETS, || None);
+    let latest_targets = latest_targets.into_boxed_slice();
     let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
     let (result_sender, result_receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
@@ -393,7 +474,8 @@ fn spawn_worker(
             NativeSpectrumReceipt::new(
                 &producer,
                 &stop,
-                &core,
+                &cores,
+                &latest_targets,
                 initial_stamp.sample_rate_hz,
                 project_capture.as_ref(),
                 project_worker.as_ref(),
@@ -410,14 +492,14 @@ fn spawn_worker(
             if let Some(entry) = entry {
                 entry();
             }
-            worker_loop(consumer, result_sender, worker_stop, core, project_worker)
+            worker_loop(consumer, result_sender, worker_stop, cores, project_worker)
         })
         .map_err(SpectrumWorkerError::ThreadSpawn)?;
 
     Ok((
         SpectrumCapture {
             producer,
-            next_sequence: 0,
+            next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: receipt,
             project: project_capture,
@@ -425,6 +507,7 @@ fn spawn_worker(
         SpectrumReader {
             results: result_receiver,
             latest: None,
+            latest_targets,
             native: receipt.map(|receipt| receipt.identity),
             project: project_reader,
         },
@@ -440,6 +523,7 @@ fn spawn_worker(
 
 #[derive(Clone, Copy)]
 struct CaptureBatch {
+    slot: u8,
     stamp: SpectrumStamp,
     sequence: u64,
     captured_start: Instant,
@@ -453,7 +537,7 @@ fn worker_loop(
     mut consumer: Consumer<CaptureBatch>,
     result_sender: SyncSender<PublishedSpectra>,
     stop: Arc<AtomicBool>,
-    mut core: SpectrumCore,
+    mut cores: Box<[SpectrumCore]>,
     mut project: Option<project::ProjectWorker>,
 ) {
     while !stop.load(Ordering::Acquire) {
@@ -462,12 +546,16 @@ fn worker_loop(
             let Ok(batch) = consumer.pop() else {
                 break;
             };
-            core.ingest(batch);
+            if let Some(core) = cores.get_mut(usize::from(batch.slot)) {
+                core.ingest(batch);
+            }
             drained += 1;
         }
         let now = Instant::now();
-        if let Some(result) = core.analyze_pair_if_due(now) {
-            let _ = result_sender.try_send(result);
+        for core in &mut cores {
+            if let Some(result) = core.analyze_pair_if_due(now) {
+                let _ = result_sender.try_send(result);
+            }
         }
         if let Some(project) = project.as_mut() {
             drained += project.poll(now);
@@ -687,6 +775,96 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_worker_keeps_interleaved_eq_windows_and_reader_membership_independent() {
+        use crate::spectrum_target::{SpectrumTargetRequest, channel};
+        let (mut control, _callback) = channel();
+        let requests = [10, 20].map(|id| SpectrumTargetRequest {
+            identity: hex_engine::PostNodeIdentity::new(
+                hex_engine::ProcessorChainOwner::Track(1),
+                id,
+                hex_engine::DeviceTypeId::from_static("hex.eq"),
+            ),
+            project_generation: 7,
+            activation_floor: 3,
+            sample_rate_hz: 48_000,
+        });
+        control.set_targets(&requests).unwrap();
+        let targets = *control.desired_targets();
+        let (mut capture, mut reader, reaper) =
+            spawn_native_spectrum_worker(stamp(0, 0, 48_000, 0)).unwrap();
+        let now = Instant::now();
+        for sequence in 0..16 {
+            for (slot, target) in targets.iter() {
+                let level = if target.identity.device_id == 10 {
+                    0.125
+                } else {
+                    0.5
+                };
+                assert_eq!(
+                    capture.submit_pair_for_slot_at(
+                        slot,
+                        SpectrumStamp {
+                            target: target.token,
+                            generation: 7,
+                            sample_rate_hz: 48_000,
+                            applied_revision: 3,
+                        },
+                        &[[level * 2.0; 2]; 256],
+                        &[[level; 2]; 256],
+                        now
+                    ),
+                    CaptureOutcome::Queued { sequence }
+                );
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pairs = loop {
+            let pairs = reader.try_latest_pairs_at(now, &targets);
+            if pairs.len() == 2 {
+                break pairs;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "both actual rolling FFTs must publish"
+            );
+            std::thread::yield_now();
+        };
+        let peak = |frame: &SpectrumFrame| {
+            frame
+                .bins_dbfs
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        assert!(
+            (peak(&pairs[1].output.frame) - peak(&pairs[0].output.frame) - 12.0412).abs() < 0.05
+        );
+        for pair in &pairs {
+            assert!(
+                (peak(pair.input.as_ref().unwrap()) - peak(&pair.output.frame) - 6.0206).abs()
+                    < 0.05
+            );
+        }
+        control.set_targets(&requests[1..]).unwrap();
+        let retained = reader.try_latest_pairs_at(now, control.desired_targets());
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            retained[0].output.stamp.target,
+            targets.get(1).unwrap().token
+        );
+        assert!(
+            reader
+                .try_latest_pairs_at(
+                    now + DISPLAY_STALE_AFTER + Duration::from_nanos(1),
+                    control.desired_targets()
+                )
+                .is_empty()
+        );
+        drop(capture);
+        reaper.shutdown_and_join().unwrap();
+    }
+
+    #[test]
     fn paired_decay_uses_shared_elapsed_time_and_gap_clears_both_envelopes() {
         let context = stamp(3, 7, 48_000, 11);
         let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
@@ -833,7 +1011,7 @@ mod tests {
         let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
-            next_sequence: 0,
+            next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
             project: None,
@@ -891,6 +1069,7 @@ mod tests {
         let mut samples = [[0.0; 2]; MAX_CAPTURE_FRAMES];
         samples[..count].fill([value, value]);
         CaptureBatch {
+            slot: 0,
             stamp,
             sequence,
             captured_start: Instant::now(),
@@ -913,7 +1092,7 @@ mod tests {
         let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
-            next_sequence: 0,
+            next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
             project: None,
@@ -1032,6 +1211,7 @@ mod tests {
         let mut reader = SpectrumReader {
             results: receiver,
             latest: None,
+            latest_targets: vec![None; MAX_SPECTRUM_TARGETS].into_boxed_slice(),
             native: None,
             project: None,
         };
@@ -1151,7 +1331,7 @@ mod tests {
         let (producer, _consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
-            next_sequence: u64::MAX,
+            next_sequences: [u64::MAX; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
             project: None,
@@ -1171,7 +1351,7 @@ mod tests {
         let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
-            next_sequence: 0,
+            next_sequences: [0; MAX_SPECTRUM_TARGETS],
             exhausted: false,
             native: None,
             project: None,

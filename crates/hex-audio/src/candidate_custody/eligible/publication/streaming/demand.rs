@@ -375,6 +375,7 @@ impl ActiveView<'_> {
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.clear_stream_roles(domains);
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn render_streamed(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -383,16 +384,20 @@ impl ActiveView<'_> {
         output: &mut [hex_engine::Frame],
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
     ) -> StreamOutcome {
-        self.render_streamed_with_project(
+        self.render_streamed_with_foreign(
             domains,
             pending_play,
             command_prefix,
             output,
             observer,
             None,
+            None,
         )
     }
-    pub(crate) fn render_streamed_with_project(
+    // The window/transport arguments and borrowed observation lanes have
+    // independent owners; foreign endpoints add no stored or adopted resource.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_streamed_with_foreign(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
         pending_play: bool,
@@ -400,6 +405,7 @@ impl ActiveView<'_> {
         output: &mut [hex_engine::Frame],
         mut observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        mut foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> StreamOutcome {
         let mut request = StreamInstall {
             domains,
@@ -571,12 +577,24 @@ impl ActiveView<'_> {
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
-                        runtime.render_with_pages_and_signal_observers(
-                            &mut output[committed..committed + rendered_frames],
-                            &mut pages,
-                            observer,
-                            project_tap.as_mut(),
-                        )
+                        if let Some(foreign) = foreign.as_mut() {
+                            let mut window =
+                                crate::prepared::NativeEffectWindow::new(&mut **foreign, committed);
+                            runtime.render_with_foreign_processors(
+                                &mut output[committed..committed + rendered_frames],
+                                Some(&mut pages),
+                                observer,
+                                project_tap.as_mut(),
+                                &mut window,
+                            )
+                        } else {
+                            runtime.render_with_pages_and_signal_observers(
+                                &mut output[committed..committed + rendered_frames],
+                                &mut pages,
+                                observer,
+                                project_tap.as_mut(),
+                            )
+                        }
                     });
                 if let Err(error) = rendered {
                     output[committed..].fill([0.0; 2]);

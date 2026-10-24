@@ -91,6 +91,20 @@ use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
+with the computer midi keyboard off, select two or more clips on one arrange
+track and press **g** to group them. select only audio clips or only midi clips.
+hex keeps gaps and refuses a group that would cover unselected material. midi
+clips become one finite midi clip with their played notes and volume curves.
+audio clips become events inside one clip; original files and source processing
+remain retained. grouped audio keeps its source timing at the grouping tempo.
+use undo to restore the original clips in one step. grouping requires resident
+audio; unsupported streamed sources refuse before the edit is committed.
+
+in the lower audio editor, **g** makes the selected event or time span its own
+clip and keeps the material on either side. select one visible, nonrepeating
+span. text fields, device controls and the piano editor keep their own key input;
+when the computer midi keyboard is enabled, **g** plays its note.
+
 changing the project bpm keeps clips at their musical start positions. audio with
 warp off keeps its natural playback speed. if a faster bpm makes an audio tail
 reach the next clip on that track, hex crops that tail at the next start. original
@@ -102,6 +116,13 @@ with the same bounds toggles looping off or on, retaining the range. with no
 selection, these keys toggle the existing loop. **command+l** uses the same action.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
+
+drag a section header to move its musical content. hold **option** before or
+during the drag to adjust only its marker; the music stays in place. option-resize
+an edge to trim or remove overlapping section markers. grid snapping remains
+active when enabled; **command** temporarily inverts it. after entering option
+adjustment, releasing option keeps that drag marker-only. release outside the
+section lane to accept the last valid preview, or press **escape** to cancel.
 
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
@@ -194,6 +215,34 @@ instead of repeatedly clicking a busy action.
 in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
+
+## arrangement automation view
+
+use the toolbar's **a** control to show track-gain automation over faded clips.
+click it again to return to clip editing. switching views preserves clips,
+selection, automation and undo history. **a** and **0** toggle contextual
+activation outside automation view: the focused device, track, selected clips,
+or selected time span. a partial time span splits clips at its edges. text fields
+and the computer midi keyboard keep their own input.
+
+click a gain curve to add a point, drag a point to change its time or value, and
+release to apply the edit. **command** gives free beat placement. **escape**
+cancels a held edit; **backspace** removes the selected automation point.
+one undo restores a completed change. background clip edits are unavailable
+while the automation lanes own arrangement focus.
+
+this view currently shows track gain. recorded touch spans are displayed but
+read-only: leave automation view and use the track's gain editor to clear the
+lane before editing its base curve. device-parameter lanes are not offered here.
+
+## clip loop resizing
+
+hover the lower part of a clip's right edge to show the loop cursor, then drag
+to repeat its source. the rest of the edge keeps ordinary trimming. audio and
+midi clips use the same gesture; no loop icon is painted inside the clip. looped
+clips have rounded bottom corners. drag the first repeat boundary to change the
+cycle while keeping the outer duration; directed clips retain only the outer
+repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
 ## audio event fades
 
@@ -347,6 +396,11 @@ keep the button held to position the new band in the same gesture. vertical
 movement changes q for a cut or notch, or the gain of a bell. existing
 nodes keep their own selection and drag targets. press **escape** to cancel.
 
+each visible eq has its own live spectrum, including eqs on return and main
+tracks. selecting another device keeps these spectra running. use **spectrum**
+on an eq to turn only its analyzer off or on. a hidden device panel stops its
+analyzer; missing or stale audio clears the live curve.
+
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual
 does not promise a complete third-party plugin-hosting workflow.
@@ -377,6 +431,13 @@ exports are wav files. main mix produces the combined output; the stem choices
 keep the selected outputs separate. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
+
+verified streaming projects export through a separate bounded media worker.
+keep original media available until export completes. hex verifies those files
+before reading and again before publishing; missing or changed media, unavailable
+pages and cancellation leave the previous destination intact. choose an export
+path separate from the original media. editing or opening another document does
+not change an export already in progress.
 
 # reversing clips
 
@@ -412,6 +473,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
+| arrangement automation view | toolbar a control |
+| contextual activation | a / 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

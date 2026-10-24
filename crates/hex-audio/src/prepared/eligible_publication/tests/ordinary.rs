@@ -294,9 +294,15 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
             },
         )
         .unwrap_or_else(|_| panic!("source registration"));
+    assert!(control.audio_candidate_domain_is_sealed(domain));
+    assert!(
+        !control.audio_candidate_domain_endpoint_is_installed(domain),
+        "catalog sealing must not stand in for callback delivery"
+    );
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block());
+    assert!(control.audio_candidate_domain_endpoint_is_installed(domain));
     let mut revision = control
         .publish_with_admission_and_source_on_control(
             compile(metadata.clone()),
@@ -505,6 +511,10 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
     control.reclaim();
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(1));
     assert!(control.retire_audio_candidate_domain(domain));
+    assert!(
+        !control.audio_candidate_domain_endpoint_is_installed(domain),
+        "retiring domains must not authorize a new association"
+    );
     for _ in 0..3 {
         control.reclaim();
     }
@@ -524,6 +534,7 @@ fn ordinary_case(sampler: bool, keyboard: bool) {
         std::thread::yield_now();
     }
     assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    assert!(!control.audio_candidate_domain_endpoint_is_installed(domain));
     drop(data);
     drop(errors);
     drop(control);

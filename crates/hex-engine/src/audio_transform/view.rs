@@ -42,6 +42,11 @@ impl AudioTransformPreparation {
         else {
             return Ok(None);
         };
+        if clip.has_retained_audio_roots() {
+            return Err(Invalid(
+                "grouped audio preview requires every retained source",
+            ));
+        }
         let asset = project
             .asset(clip.asset())
             .ok_or(Invalid("audio preview asset is missing"))?;
@@ -54,7 +59,7 @@ impl AudioTransformPreparation {
         let projection = AudioViewProjection::new(clip, project.tempo_map())?;
         let origin = projection.root_origin();
         let root = occurrence_edit(edit, origin, self, project.tempo_map())?;
-        let audio = self.prepare_audio(project, &root, asset, source)?;
+        let audio = self.prepare_audio_at_tempo(project.tempo_map(), &root, asset, source)?;
         if audio.frames().len() as u64 != root.projected_domain(project.tempo_map())?.1 {
             return Err(Invalid(
                 "audio preview root differs from canonical projection",
@@ -63,9 +68,70 @@ impl AudioTransformPreparation {
         Ok(Some(AudioPreviewRoot { audio, origin }))
     }
 
-    pub(super) fn compile_view(
+    /// Resolve every original resident dependency for a finite-placement root
+    /// preview. Grouped clips use the same bounded composite renderer as their
+    /// playback; holes, retained processing and fades survive outside the visible
+    /// crop. The returned root omits outer clip gain, like `preview_root`.
+    pub fn preview_root_with_sources<'a>(
         &self,
         project: &CanonicalProject,
+        clip: hex_project::ClipId,
+        mut source: impl FnMut(hex_project::AssetId) -> Option<&'a Audio>,
+    ) -> Result<Option<AudioPreviewRoot>, Invalid> {
+        let canonical = project
+            .clip(clip)
+            .ok_or(Invalid("audio preview clip is missing"))?;
+        let Some(edit) = canonical
+            .audio_edit()
+            .filter(|edit| edit.placement.is_some() || edit.content_view.is_some())
+        else {
+            return Ok(None);
+        };
+        let Some(events) = edit
+            .domain
+            .events
+            .as_ref()
+            .filter(|events| !events.sources.is_empty())
+        else {
+            let audio = source(canonical.asset())
+                .ok_or(Invalid("audio preview requires resident source"))?;
+            return self.preview_root(project, clip, audio);
+        };
+        let asset = project
+            .asset(canonical.asset())
+            .ok_or(Invalid("audio preview asset is missing"))?;
+        edit.validate(canonical, project.tempo_map(), asset.playback_frames())?;
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(events.sources.len())
+            .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
+        for root in &events.sources {
+            let asset = project
+                .asset(root.clip.asset())
+                .ok_or(Invalid("audio preview asset is missing"))?;
+            let audio = source(asset.id()).ok_or(Invalid(
+                "grouped audio preview requires every resident source",
+            ))?;
+            if audio.sample_rate() != project.sample_rate()
+                || audio.frames().len() as u64 != asset.playback_frames()
+            {
+                return Err(Invalid("audio preview source differs from project media"));
+            }
+            sources.push(GroupSource { root, asset, audio });
+        }
+        let audio = self.prepare_group_root(canonical, &sources)?;
+        let origin = AudioViewProjection::new(canonical, project.tempo_map())?.root_origin();
+        if audio.frames().len() as u64 != edit.domain.clock.length() {
+            return Err(Invalid(
+                "grouped audio preview root differs from canonical domain",
+            ));
+        }
+        Ok(Some(AudioPreviewRoot { audio, origin }))
+    }
+
+    pub(super) fn compile_view(
+        &self,
+        tempo_map: &hex_project::TempoMap,
         clip: &hex_project::Clip,
         edit: &AudioClipEdit,
         asset: &Asset,
@@ -74,7 +140,7 @@ impl AudioTransformPreparation {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let projection = AudioViewProjection::new(clip, project.tempo_map())?;
+        let projection = AudioViewProjection::new(clip, tempo_map)?;
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES
             || projection.occurrence_count() > MAX_VIEW_OCCURRENCES
         {
@@ -87,10 +153,10 @@ impl AudioTransformPreparation {
                 "finite audio placement preparation currently requires resident audio; source changes were not committed",
             ));
         };
-        let tempo = self.shared_tempo(project.tempo_map())?;
+        let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio) = self.lookup_key(source, asset, |key| {
             matches!(key, EntryKey::View { edit: retained, tempo, start, duration }
-                if retained == edit && tempo.as_ref() == project.tempo_map()
+                if retained == edit && tempo.as_ref() == tempo_map
                     && *start == clip.start() && *duration == clip.duration())
         })? {
             return placed_clip(audio, clip);
@@ -134,9 +200,8 @@ impl AudioTransformPreparation {
             let root = if let Some(root) = frame_root.as_ref() {
                 root
             } else {
-                let root_edit =
-                    occurrence_edit(edit, occurrence.root_origin, self, project.tempo_map())?;
-                let prepared = self.prepare_audio(project, &root_edit, asset, source)?;
+                let root_edit = occurrence_edit(edit, occurrence.root_origin, self, tempo_map)?;
+                let prepared = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
                 frame_root = Some(prepared);
                 frame_root
                     .as_ref()
@@ -192,7 +257,10 @@ impl AudioTransformPreparation {
     }
 }
 
-fn validate_copy(clip: &hex_project::Clip, occurrence: AudioViewOccurrence) -> Result<(), Invalid> {
+pub(super) fn validate_copy(
+    clip: &hex_project::Clip,
+    occurrence: AudioViewOccurrence,
+) -> Result<(), Invalid> {
     let source = occurrence
         .root_end
         .checked_sub(occurrence.root_start)

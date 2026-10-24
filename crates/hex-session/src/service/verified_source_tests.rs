@@ -849,3 +849,80 @@ fn file_batch_storage_and_preparation_refusals_preserve_project_sources_and_wave
     assert_eq!(retained.len(), 1);
     assert!(Arc::ptr_eq(&retained[&clip].waveform, &waveform));
 }
+
+#[test]
+fn ordinary_file_peaks_match_complete_resident_conversion_without_retaining_pcm() {
+    let files = Files::new();
+    for (source_rate, project_rate) in [(48_000, 48_000), (44_100, 48_000), (96_000, 44_100)] {
+        let path = files.wav("peaks.wav", source_rate, 5003, 0);
+        let mut bytes = fs::read(&path).unwrap();
+        for (index, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
+            let value = if index == 5002 {
+                -32_000
+            } else {
+                ((index % 17) as i16 - 8) * 2000
+            };
+            sample.copy_from_slice(&value.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        let mut source = crate::VerifiedAudioFile::inspect(
+            path.clone(),
+            project_rate,
+            reservation(1).reader,
+            || false,
+        )
+        .unwrap();
+        let facts = source.clone();
+        if source_rate == project_rate {
+            let mut small = reservation(1).reader;
+            small.reader.max_window_frames = 2;
+            let mut bounded =
+                crate::VerifiedAudioFile::inspect(path.clone(), project_rate, small, || false)
+                    .unwrap();
+            bounded.prepare_waveform_on_control(|| false).unwrap();
+            assert_eq!(bounded.cached_waveform().unwrap().source_frames, 5003);
+        }
+        assert!(source.cached_waveform().is_none());
+        let decoded = hex_media::decode_wav_file(
+            path.clone(),
+            hex_media::Limits::new(64 * 1024 * 1024, 8192),
+        )
+        .unwrap();
+        let resident = crate::PreparedImport::at_rate(
+            decoded,
+            project_rate,
+            hex_media::ResampleLimits {
+                max_source_frames: 8192,
+                max_output_frames: 16_384,
+            },
+        )
+        .unwrap();
+        let expected = hex_media::waveform::summarize_peaks(&resident.audio, 1024).unwrap();
+        source.prepare_waveform_on_control(|| false).unwrap();
+        let actual = source.cached_waveform().unwrap();
+        assert_eq!(actual.source_frames, expected.source_frames);
+        assert_eq!(actual.bins, expected.bins);
+        assert_eq!(actual.cached_bin_count(), expected.cached_bin_count());
+        assert!(actual.cached_bin_count() <= 2047);
+        assert!(!actual.shares_audio_with(&resident.audio));
+        assert_eq!(
+            source, facts,
+            "derived display data must not refresh file facts"
+        );
+        let mut cancelled = facts.clone();
+        let mut polls = 0;
+        assert!(
+            cancelled
+                .prepare_waveform_on_control(|| {
+                    polls += 1;
+                    polls > 10
+                })
+                .is_err()
+        );
+        assert!(cancelled.cached_waveform().is_none());
+        files.wav("peaks.wav", source_rate, 5003, 1234);
+        let mut changed = facts;
+        assert!(changed.prepare_waveform_on_control(|| false).is_err());
+        assert!(changed.cached_waveform().is_none());
+    }
+}

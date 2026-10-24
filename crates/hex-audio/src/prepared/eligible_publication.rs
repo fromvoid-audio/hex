@@ -96,6 +96,25 @@ impl PublicationControl {
     ) -> bool {
         self.candidate_root.domain_is_sealed(token)
     }
+    /// Factual control-side cache eviction hint. This does not retire a domain,
+    /// grant source access, or establish callback/page readiness. Reuse and
+    /// retirement still validate the actual Root cell and incarnation.
+    pub fn audio_candidate_domain_has_no_graph_users(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.domain_has_no_graph_users(token)
+    }
+    /// Factual delivery receipt for a nonretiring sealed domain's one exact
+    /// endpoint. Ready/catalog sealing alone does not establish this receipt.
+    /// This is neither page readiness nor publication authority; every render
+    /// still requires exact protected extents from the actual retained loan.
+    pub fn audio_candidate_domain_endpoint_is_installed(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.domain_endpoint_installed(token)
+    }
     /// Borrowed worker-side coverage check against the actual retained sealed
     /// catalog and exact Root slot/incarnation. Neutral file facts alone cannot
     /// make an unrelated or already-retiring token cover a source.
@@ -179,6 +198,9 @@ impl PublicationControl {
             .reserve_runtime_preparation(reservation, domains)
     }
     /// Actual configured Root/control backing, independent of its DATA ceiling.
+    /// Native sources require the exact accepted unsplit owner inventory; busy,
+    /// pending or retiring source inspection returns None. This grants no
+    /// callback, native-output or graph publication authority.
     pub fn audio_candidate_control_backing_bytes(&self) -> Option<usize> {
         self.candidate_root.actual_control_backing_bytes()
     }

@@ -57,6 +57,28 @@ impl RuntimeOwner {
                 .render_with_signal_observers(output, observer, project)
         }
     }
+    pub(super) fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let result = if let Some((sources, _)) = self.sampler_sources.as_ref() {
+            self.playback.render_current_sampler_with_foreign(
+                output, pages, observer, project, sources, foreign,
+            )
+        } else {
+            self.playback
+                .render_with_foreign_processors(output, pages, observer, project, foreign)
+        };
+        if result.is_err() {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+        }
+        result
+    }
     pub(super) fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
         &mut self,
         output: &mut [crate::Frame],

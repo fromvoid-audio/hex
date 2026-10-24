@@ -10,15 +10,102 @@ use hex_session::service::{
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     ResidentPublicationRefusal,
 };
+use std::sync::atomic::AtomicU8;
 
 struct ResidentSink {
     inner: NativeAudioSink,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
+    loop_witness_fault: Arc<AtomicU8>,
     pending_present: Arc<AtomicBool>,
+    file_publication_waiting: Arc<AtomicBool>,
     pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
+        self.inner.ordinary_source_reservation()
+    }
+    fn prepare_resident_file_metadata(
+        &mut self,
+        input: hex_session::service::ResidentFileInput<'_>,
+    ) -> Result<Option<hex_session::service::ResidentFileMetadata>, String> {
+        self.inner.prepare_resident_file_metadata(input)
+    }
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Exact production inputs and injected final admission refusal.
+    fn publish_resident_with_files(
+        &mut self,
+        playback: Playback,
+        resources: Option<&PreparedDeviceResources>,
+        observation: Arc<PreparedPlaybackObservation>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        limit: usize,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        files: Option<hex_session::service::ResidentFilePublication<'_>>,
+    ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        self.file_publication_waiting
+            .store(files.is_some(), std::sync::atomic::Ordering::Release);
+        let refuse = self.refuse.load(Acquire);
+        let result = self.inner.publish_resident_with_files(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            limit,
+            &mut |actual| {
+                admit(actual)?;
+                if refuse {
+                    Err("fixture final admission refusal".into())
+                } else {
+                    Ok(())
+                }
+            },
+            files,
+        );
+        self.file_publication_waiting
+            .store(false, std::sync::atomic::Ordering::Release);
+        result
+    }
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        self.inner.streamed_exporter()
+    }
+
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        let Some(mut actual) = self.inner.resident_runtime_loop(context)? else {
+            return Ok(None);
+        };
+        // Emulate a stale view between capture and final worker publication.
+        // The native owner still observes the real output and refuses this copy.
+        match self.loop_witness_fault.load(Acquire) {
+            1 => actual.output_identity += 1,
+            2 => actual.audio_revision += 1,
+            3 => {
+                if let Some(source) = actual.source_context.as_mut() {
+                    source.project_generation += 1;
+                }
+            }
+            4 => {
+                if let Some(source) = actual.source_context.as_mut() {
+                    source.editor_revision += 1;
+                }
+            }
+            5 => actual.section_loop = None,
+            6 => {
+                if let Some(region) = actual.section_loop {
+                    actual.section_loop = Some(
+                        hex_project::LoopRegion::new(region.start() + 1, region.end(), true)
+                            .unwrap(),
+                    );
+                }
+            }
+            _ => {}
+        }
+        Ok(Some(actual))
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
@@ -129,7 +216,9 @@ pub(super) struct ResidentHarness {
     pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
     pub(super) refuse: Arc<AtomicBool>,
     pub(super) budget_refuse: Arc<AtomicBool>,
+    pub(super) loop_witness_fault: Arc<AtomicU8>,
     pub(super) pending_present: Arc<AtomicBool>,
+    file_publication_waiting: Arc<AtomicBool>,
     pub(super) pending_observation_generation: Arc<AtomicU64>,
     allow_unavailable: bool,
     pub(super) unavailable: Vec<String>,
@@ -190,7 +279,9 @@ impl ResidentHarness {
         }));
         let refuse = Arc::new(AtomicBool::new(false));
         let budget_refuse = Arc::new(AtomicBool::new(false));
+        let loop_witness_fault = Arc::new(AtomicU8::new(0));
         let pending_present = Arc::new(AtomicBool::new(false));
+        let file_publication_waiting = Arc::new(AtomicBool::new(false));
         let pending_observation_generation = Arc::new(AtomicU64::new(0));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
@@ -200,7 +291,9 @@ impl ResidentHarness {
                 inner,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
+                loop_witness_fault: Arc::clone(&loop_witness_fault),
                 pending_present: Arc::clone(&pending_present),
+                file_publication_waiting: Arc::clone(&file_publication_waiting),
                 pending_observation_generation: Arc::clone(&pending_observation_generation),
             }),
             AudioPolicy::new().unwrap().resident_native,
@@ -214,7 +307,9 @@ impl ResidentHarness {
             submitted: None,
             refuse,
             budget_refuse,
+            loop_witness_fault,
             pending_present,
+            file_publication_waiting,
             pending_observation_generation,
             allow_unavailable,
             unavailable: Vec::new(),
@@ -256,6 +351,9 @@ impl ResidentHarness {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
+            if self.file_publication_waiting.load(Acquire) {
+                let _ = self.render();
+            }
             if let Ok(event) = self.service.try_event() {
                 return event;
             }

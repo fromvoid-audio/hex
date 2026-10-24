@@ -137,15 +137,23 @@ impl Session {
         &self,
         path: &std::path::Path,
     ) -> Result<Option<VerifiedAudioFile>, SessionError> {
+        self.plan_file_import_with_allowance(
+            path,
+            self.max_resident_frames
+                .saturating_sub(self.resident_frames),
+        )
+    }
+    pub(crate) fn plan_file_import_with_allowance(
+        &self,
+        path: &std::path::Path,
+        remaining: u64,
+    ) -> Result<Option<VerifiedAudioFile>, SessionError> {
         let Some(reservation) = self.source_reservation else {
             return Ok(None);
         };
         if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
             return Err(SessionError::Invalid("file source import cancelled"));
         }
-        let remaining = self
-            .max_resident_frames
-            .saturating_sub(self.resident_frames);
         if self.audio_mode == DocumentAudioMode::VerifiedStreaming || remaining == 0 {
             return self.verify_import(path.to_path_buf()).map(Some);
         }
@@ -187,9 +195,16 @@ impl Session {
         mut canceled: impl FnMut() -> bool,
     ) -> Result<VerifiedAudioFile, SessionError> {
         let limits = self.remaining_source_reservation(path.capacity(), pending)?;
-        VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
-            self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
-        })
+        let mut source =
+            VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
+                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+            })?;
+        if self.audio_mode() == DocumentAudioMode::Resident {
+            source.prepare_waveform_on_control(|| {
+                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+            })?;
+        }
+        Ok(source)
     }
     pub(crate) fn import_verified_revision(
         &mut self,
@@ -260,12 +275,14 @@ impl Session {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)] // Same prepared batch transaction plus explicit overwrite semantics.
     pub(crate) fn import_verified_batch_revision(
         &mut self,
         sources: Vec<VerifiedAudioFile>,
         destination: crate::import_batch::AudioBatchDestination,
         expected: &Project,
         previous: Option<&hex_engine::PreparedRevision>,
+        overwrite: bool,
         mut admit: impl FnMut() -> Result<(), SessionError>,
         prepare: impl FnOnce(
             crate::import_batch::Preparation<'_>,
@@ -324,7 +341,7 @@ impl Session {
                 AudioBatchDestination::Track { track, .. } => VerifiedImportDestination::Track {
                     track,
                     start: cursor,
-                    overwrite: true,
+                    overwrite,
                 },
                 AudioBatchDestination::NewTracks { before_track, .. } => {
                     VerifiedImportDestination::NewTrack {

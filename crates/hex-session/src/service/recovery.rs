@@ -167,16 +167,14 @@ pub(super) fn open_source_with_limits(
             .checked_add(frames)
             .ok_or("project pcm frame count overflow")
     })?;
-    // This control-only source plan preserves the ordinary document policy. Native
-    // publication must additionally compose its actual resource/page owners before
-    // adopting such a replacement; no metadata scalar can promise that readiness.
+    // Preserve the ordinary document policy. Native replacement first retains
+    // factual file inputs with its admitted offline graph; the fresh output
+    // verifies its real catalog and delivers the endpoint before queue submission.
+    // File facts alone never promise page readiness or callback application.
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
         && !has_originals
         && required_pcm > frame_allowance;
-    if ordinary_file_backed && native.is_some() {
-        return Err("file-backed ordinary reopening requires native page publication".into());
-    }
     if mode == DocumentAudioMode::VerifiedStreaming || ordinary_file_backed {
         let reservation = reservation
             .ok_or("verified source reservation is required")?

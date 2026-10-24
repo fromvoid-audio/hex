@@ -34,6 +34,11 @@ impl PcmArcReceipt {
             buffer_bytes: buffer.size(),
         })
     }
+    pub(crate) fn declared_bytes(self) -> Option<usize> {
+        self.arc_payload_bytes
+            .checked_add(self.arc_overhead_bytes)?
+            .checked_add(self.buffer_bytes)
+    }
     pub(crate) fn checked_allocations(self, audio: &crate::Audio) -> Option<[(usize, usize); 2]> {
         (self.len == audio.frames.values.len()
             && self.capacity == audio.frames.values.capacity()

@@ -221,14 +221,18 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
         for instrument, name, source in ((0, "effect", "macos_fixture.cpp"),
                                          (1, "instrument", "macos_fixture.cpp"),
                                          (0, "lifecycle", "macos_lifecycle_fixture.cpp"),
-                                         (0, "processing", "macos_processing_fixture.cpp")):
+                                         (0, "processing", "macos_processing_fixture.cpp"),
+                                         (0, "tail", "macos_processing_fixture.cpp"),
+                                         (0, "infinite", "macos_processing_fixture.cpp")):
             bundle = resources / "fixtures" / (name + ".vst3")
             (bundle / "Contents").mkdir(parents=True)
             info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
                     "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}
             (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
             binary = bundle / "Contents/MacOS/fixture"
-            compile_one(source, binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
+            tail_flags = (["-DHEX_FIXTURE_RESIDUAL_ECHO=1"] if name == "tail" else
+                          ["-DHEX_FIXTURE_INFINITE_TAIL=1"] if name == "infinite" else [])
+            compile_one(source, binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument), *tail_flags])
             digests[name] = sha(binary)
         modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
                  "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",

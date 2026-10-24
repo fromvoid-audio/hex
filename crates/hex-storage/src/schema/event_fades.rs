@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Fade {
+pub(crate) struct Fade {
     source_start: u64,
     span: u64,
     fade_in: u64,
@@ -39,7 +39,7 @@ impl From<AudioEventFade> for Fade {
     }
 }
 impl Fade {
-    fn checked(self) -> Result<AudioEventFade, StorageError> {
+    pub(crate) fn checked(self) -> Result<AudioEventFade, StorageError> {
         let shape = ClipFade::new(self.span, 0, self.fade_in, self.fade_out)
             .and_then(|shape| {
                 shape.with_shape(
@@ -61,7 +61,9 @@ struct Event {
     #[serde(deserialize_with = "required_fade")]
     fade: Option<Fade>,
 }
-fn required_fade<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Fade>, D::Error> {
+pub(crate) fn required_fade<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Fade>, D::Error> {
     Option::deserialize(d)
 }
 #[derive(Serialize, Deserialize)]

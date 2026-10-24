@@ -198,6 +198,25 @@ impl EditorView {
                 |view, _, _| view.zoom_timeline(false),
                 cx,
             ))
+            .child(
+                self.control_icon(
+                    "a",
+                    "arrangement automation view · track gain",
+                    |view, _, cx| {
+                        view.toggle_automation_view(cx);
+                    },
+                    cx,
+                )
+                .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+                .debug_selector(|| "automation-view-toggle".into())
+                .text_color(rgb(theme::color(
+                    if self.automation_view.enabled && self.mode == EditorMode::Arrangement {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Muted
+                    },
+                ))),
+            )
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))

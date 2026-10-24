@@ -101,6 +101,66 @@ impl SignalGraph {
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<Option<Arc<Self>>, Invalid> {
+        Ok(Some(Arc::new(Self::prepare_value(
+            project, feeds, canonical,
+        )?)))
+    }
+    /// The same private topology constructor, retained by closed preparation.
+    /// No caller Arc or copied graph declaration can enter this path.
+    pub(crate) fn prepare_owned(
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+        canonical: &hex_project::Project,
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        Ok(crate::owned_shared::OwnedShared::new_owned(
+            Self::prepare_value(project, feeds, canonical)?,
+        ))
+    }
+    fn prepare_value(
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+        canonical: &hex_project::Project,
+    ) -> Result<Self, Invalid> {
+        // Bound transient builder/lookup contexts before their first allocation.
+        // BTree nodes are control-only opaque construction contexts, never
+        // retained DATA or callback owners. No allocator/RSS claim is made.
+        let devices = project
+            .tracks
+            .iter()
+            .map(|t| t.device_chain.len())
+            .chain(project.return_buses.iter().map(|r| r.device_chain.len()))
+            .try_fold(project.main_device_chain.len(), |n, count| {
+                n.checked_add(count)
+            })
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let generators = project
+            .tracks
+            .iter()
+            .filter(|t| t.instrument_slot_enabled())
+            .count();
+        let nodes = project
+            .tracks
+            .len()
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(project.return_buses.len().checked_mul(2)?))
+            .and_then(|n| n.checked_add(devices))
+            .and_then(|n| n.checked_add(generators))
+            .and_then(|n| n.checked_add(1))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let sends = project
+            .tracks
+            .iter()
+            .try_fold(0usize, |n, t| n.checked_add(t.sends.len()))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        let edges = nodes
+            .checked_sub(1)
+            .and_then(|n| n.checked_add(sends))
+            .and_then(|n| n.checked_add(feeds.len()))
+            .and_then(|n| n.checked_add(canonical.audio_feeds().len()))
+            .ok_or(Invalid("signal graph cardinality overflow"))?;
+        if nodes > MAX_COMPENSATION_NODES || edges > MAX_COMPENSATION_EDGES {
+            return Err(error(CompensationError::GraphLimit));
+        }
         let mut builder = Builder::default();
         let mut tracks = Vec::new();
         for (index, track) in project.tracks.iter().enumerate() {
@@ -390,9 +450,14 @@ impl SignalGraph {
                 "signal graph tables exceed the compensation budget",
             ));
         }
-        Ok(Some(Arc::new(graph)))
+        Ok(graph)
     }
     pub(crate) fn table_bytes(&self) -> Option<usize> {
+        size_of::<Self>()
+            .checked_add(2 * size_of::<usize>())?
+            .checked_add(self.nested_bytes()?)
+    }
+    pub(crate) fn nested_bytes(&self) -> Option<usize> {
         let Self {
             plan,
             tracks,
@@ -403,9 +468,9 @@ impl SignalGraph {
             pre_main_edges,
             typed,
         } = self;
-        let mut total = size_of::<Self>()
-            .checked_add(2 * size_of::<usize>())?
-            .checked_add(plan.storage_bytes().ok()?)?
+        let mut total = plan
+            .storage_bytes()
+            .ok()?
             .checked_add(typed.capacity().checked_mul(size_of::<NodeId>())?)?
             .checked_add(tracks.capacity().checked_mul(size_of::<TrackPlan>())?)?
             .checked_add(returns.capacity().checked_mul(size_of::<ReturnPlan>())?)?
@@ -615,8 +680,37 @@ impl SignalRuntime {
         }
         Ok(runtime)
     }
+    #[cfg(test)]
+    pub(crate) fn test_input_address(&self) -> usize {
+        self.inputs.as_ptr() as usize
+    }
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
         self.storage_bytes_with_graph(&self.graph)
+    }
+    pub(crate) fn visit_fresh_candidate_storage<'a>(
+        &'a self,
+        graph: &'a Arc<SignalGraph>,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        // A fresh runtime has both original fields pointing at this actual
+        // constructor graph. Later history rebinds retain separate origins.
+        if !Arc::ptr_eq(graph, &self.graph) || !Arc::ptr_eq(graph, &self.delay_graph) {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        ledger.existing_shared(
+            &self.graph,
+            Owner::exclusive(self),
+            Location("compensation-graph", 0),
+        )?;
+        ledger.existing_shared(
+            &self.delay_graph,
+            Owner::exclusive(self),
+            Location("compensation-delay-graph", 0),
+        )?;
+        ledger.vec(&self.inputs)?;
+        ledger.vec(&self.main)?;
+        self.delays.visit_owned_candidate_storage(ledger)
     }
     pub(crate) fn can_continue_pre_main(&self, other: &Self) -> bool {
         self.graph.pre_main_compatible(&other.graph)
@@ -730,6 +824,23 @@ impl SignalRuntime {
         offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.process_main_with_foreign(
+            chain,
+            frames,
+            offset,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_main_with_foreign(
+        &self,
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: &mut [Frame],
+        offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
         if frames.len() != 1 || chain.len() != self.graph.main_devices.len() {
             return Err(Invalid("main content-origin plan does not match runtime"));
         }
@@ -739,11 +850,12 @@ impl SignalRuntime {
                     .stamp_at_delay(self.graph.plan.nodes()[node].input_arrival_frames),
             );
             if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_clock(
+                chain.process_range_tapped_with_foreign(
                     index..index + 1,
                     frames,
                     offset,
                     Some(&clock),
+                    foreign,
                     &mut |owner, device, kind, phase, offset, frames| {
                         observer(
                             crate::PostNodeIdentity::new(owner, device, kind),
@@ -754,7 +866,13 @@ impl SignalRuntime {
                     },
                 )
             } else {
-                chain.process_range_with_clock(index..index + 1, frames, Some(&clock))
+                chain.process_range_with_foreign(
+                    index..index + 1,
+                    frames,
+                    offset,
+                    Some(&clock),
+                    foreign,
+                )
             }
             .map_err(|_| Invalid("main effect runtime failed"))?;
             if self
@@ -773,22 +891,48 @@ impl SignalRuntime {
         index: usize,
         track: &Track,
         chain: &mut hex_lattice::NativeRuntimeChain,
+        audio: Frame,
+        generator: Frame,
+        offset: usize,
+        metered: bool,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<Frame, Invalid> {
+        self.process_track_with_foreign(
+            index,
+            track,
+            chain,
+            audio,
+            generator,
+            offset,
+            metered,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_track_with_foreign(
+        &mut self,
+        index: usize,
+        track: &Track,
+        chain: &mut hex_lattice::NativeRuntimeChain,
         mut audio: Frame,
         mut generator: Frame,
         offset: usize,
         metered: bool,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<Frame, Invalid> {
         audio = self.edge(self.graph.tracks[index].source_input, audio)?;
         audio[0] += self.inputs[index][0];
         audio[1] += self.inputs[index][1];
         let slot = track.instrument_position();
-        self.effects(
+        self.effects_with_foreign(
             &self.graph.tracks[index].devices[..slot],
             chain,
             0,
             &mut audio,
             offset,
+            foreign,
             observer,
         )?;
         track.apply_instrument_input_gain(std::slice::from_mut(&mut audio));
@@ -813,12 +957,13 @@ impl SignalRuntime {
         if metered {
             track.instrument_meter.observe_output(&[mixed]);
         }
-        self.effects(
+        self.effects_with_foreign(
             &self.graph.tracks[index].devices[slot..],
             chain,
             slot,
             &mut mixed,
             offset,
+            foreign,
             observer,
         )?;
         Ok(mixed)
@@ -832,6 +977,27 @@ impl SignalRuntime {
         offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.effects_with_foreign(
+            nodes,
+            chain,
+            start,
+            frame,
+            offset,
+            &mut hex_lattice::RefuseForeign,
+            observer,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn effects_with_foreign(
+        &self,
+        nodes: &[usize],
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        start: usize,
+        frame: &mut Frame,
+        offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
         for (local, &node) in nodes.iter().enumerate() {
             let clock = OriginClock(
                 self.delays
@@ -839,11 +1005,12 @@ impl SignalRuntime {
             );
             let frames = std::slice::from_mut(frame);
             if let Some(observer) = observer.as_mut() {
-                chain.process_range_tapped_with_clock(
+                chain.process_range_tapped_with_foreign(
                     start + local..start + local + 1,
                     frames,
                     offset,
                     Some(&clock),
+                    foreign,
                     &mut |owner, device, kind, phase, offset, frames| {
                         observer(
                             crate::PostNodeIdentity::new(owner, device, kind),
@@ -854,10 +1021,12 @@ impl SignalRuntime {
                     },
                 )
             } else {
-                chain.process_range_with_clock(
+                chain.process_range_with_foreign(
                     start + local..start + local + 1,
                     frames,
+                    offset,
                     Some(&clock),
+                    foreign,
                 )
             }
             .map_err(|_| Invalid("compensated native device range is invalid"))?;

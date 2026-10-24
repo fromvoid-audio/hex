@@ -379,3 +379,139 @@ fn contained_marker_move_respects_section_capacity_without_publishing_a_partial_
     assert_eq!(editor.project().snapshot(), snapshot);
     assert!(!editor.can_undo());
 }
+
+#[test]
+fn marker_resize_carves_both_edges_and_cover_without_touching_music_or_history_flags() {
+    use hex_project::TrimEdge::{Left, Right};
+    for (name, edge, boundary, expected) in [
+        (
+            "Moving",
+            Right,
+            36,
+            vec![
+                ("Moving", 0, 36),
+                ("Target", 36, 40),
+                ("Middle", 44, 46),
+                ("Neighbor", 48, 56),
+            ],
+        ),
+        (
+            "Moving",
+            Right,
+            44,
+            vec![("Moving", 0, 44), ("Middle", 44, 46), ("Neighbor", 48, 56)],
+        ),
+        ("Moving", Right, 60, vec![("Moving", 0, 60)]),
+        (
+            "Neighbor",
+            Left,
+            38,
+            vec![("Moving", 0, 4), ("Target", 32, 38), ("Neighbor", 38, 56)],
+        ),
+        (
+            "Target",
+            Left,
+            2,
+            vec![
+                ("Moving", 0, 2),
+                ("Target", 2, 40),
+                ("Middle", 44, 46),
+                ("Neighbor", 48, 56),
+            ],
+        ),
+        (
+            "Target",
+            Left,
+            34,
+            vec![
+                ("Moving", 0, 4),
+                ("Target", 34, 40),
+                ("Middle", 44, 46),
+                ("Neighbor", 48, 56),
+            ],
+        ),
+    ] {
+        let (project, _) = fixture(4);
+        let before = project.snapshot();
+        let id = project
+            .arrangement_sections()
+            .iter()
+            .find(|s| s.name() == name)
+            .unwrap()
+            .id();
+        let command = Command::ResizeArrangementSectionMarker {
+            section: id,
+            edge,
+            boundary: b(boundary),
+        };
+        assert!(!command.requires_section_publication());
+        let preview = project.preview_arrangement_section_edit(&command).unwrap();
+        assert_eq!(project.snapshot(), before);
+        let mut editor = Editor::new(project, 8).unwrap();
+        editor.execute(command).unwrap();
+        let after = editor.project().snapshot();
+        assert_eq!(after.arrangement_sections.len(), expected.len());
+        for ((actual, shown), (name, start, end)) in after
+            .arrangement_sections
+            .iter()
+            .zip(preview.sections())
+            .zip(expected)
+        {
+            let original = before
+                .arrangement_sections
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap();
+            assert_eq!(
+                (
+                    actual.name.as_str(),
+                    actual.start,
+                    actual.end,
+                    actual.id,
+                    actual.color
+                ),
+                (name, b(start), b(end), original.id, original.color)
+            );
+            assert_eq!(
+                (shown.id().value(), shown.start(), shown.end()),
+                (actual.id, actual.start, actual.end)
+            );
+        }
+        let mut music = after.clone();
+        music.arrangement_sections = before.arrangement_sections.clone();
+        assert_eq!(music, before);
+        assert!(!editor.next_section_history_requires_publication(false));
+        assert!(editor.undo());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(!editor.next_section_history_requires_publication(true));
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert!(editor.undo());
+        let opposite = if edge == Left {
+            before
+                .arrangement_sections
+                .iter()
+                .find(|s| s.id == id.value())
+                .unwrap()
+                .end
+        } else {
+            before
+                .arrangement_sections
+                .iter()
+                .find(|s| s.id == id.value())
+                .unwrap()
+                .start
+        };
+        assert!(
+            editor
+                .execute(Command::ResizeArrangementSectionMarker {
+                    section: id,
+                    edge,
+                    boundary: opposite
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.redo(), "refusal retains redo");
+    }
+}

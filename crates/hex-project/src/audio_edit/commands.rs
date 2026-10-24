@@ -331,6 +331,11 @@ pub(crate) fn reset_region(
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
+    if clip.has_retained_audio_roots() {
+        return Err(Invalid(
+            "source-region replacement cannot discard retained audio roots; use crop handles",
+        ));
+    }
     let old = clip
         .edit
         .clone()

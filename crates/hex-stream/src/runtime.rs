@@ -535,6 +535,14 @@ impl StreamRuntime {
         }
     }
 
+    /// Actual simultaneous cache capacity. The worker retains a turnover page;
+    /// this scalar is only a bound, never source readiness or native authority.
+    pub fn page_capacity(&self) -> usize {
+        self.pages
+            .as_ref()
+            .map_or(0, |pages| pages.endpoint.cache_capacity())
+    }
+
     pub fn pin_pages(&mut self, keys: &[crate::PageKey]) -> bool {
         self.pages
             .as_mut()

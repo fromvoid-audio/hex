@@ -40,6 +40,7 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
+        let work = &mut *work;
         let barrier = lock(&root.0.bank);
         if barrier.closing || barrier.retiring {
             return Err("candidate Root is closing");
@@ -130,6 +131,8 @@ impl Custody {
             },
             summary,
             Some(token),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            &work.sources,
         )?;
         // All refusal paths precede this fixed Option move. No engine identity,
         // bank/scope binding or runtime address is relabeled to the new Root.

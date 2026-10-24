@@ -171,13 +171,22 @@ impl Callback {
             self.status.pending_stop_marker.swap(0, AcqRel),
         );
         if let Some(stop) = cut.stop_through {
+            self.finish_midi_before_stop();
+            self.revoke_output_transport();
+            self.revoke_current_sampler_keyboard();
             self.cancel_active_stream_action();
             self.stream_pending_play = None;
             self.invalidate_stream_readiness();
-            self.apply_stream_zero_page_action(
-                PlaybackAction::Transport(PlaybackCommand::Stop),
-                stop,
-            );
+            if let Some(ActivePublication::Legacy(active)) = self.active.as_mut() {
+                active
+                    .playback
+                    .apply_priority_stop(&self.status.keyboard_activation);
+            } else {
+                self.apply_stream_zero_page_action(
+                    PlaybackAction::Transport(PlaybackCommand::Stop),
+                    stop,
+                );
+            }
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
             self.invalidate_processor_audition_request();
             self.stream_prefix = self.stream_prefix.max(stop);
@@ -200,6 +209,13 @@ impl Callback {
             if cut.stop_through.is_some_and(|stop| queued.ticket <= stop) {
                 continue;
             }
+            if !self.status.sampler_edit.permits(queued) {
+                self.status.publish_rejected_action(
+                    queued.ticket,
+                    PlaybackActionRejection::SamplerEditBusy,
+                );
+                continue;
+            }
             match queued.action {
                 PlaybackAction::Transport(PlaybackCommand::Play)
                 | PlaybackAction::Session(SessionPlaybackCommand::Play) => {
@@ -219,6 +235,9 @@ impl Callback {
                     self.cancel_active_stream_action();
                     self.stream_pending_play = None;
                     self.invalidate_stream_readiness();
+                    self.invalidate_midi_recording(
+                        crate::midi_recording::AbortReason::TransportChanged,
+                    );
                     self.apply_stream_zero_page_action(queued.action, queued.ticket);
                     self.invalidate_gain_recording(
                         crate::gain_recording::AbortReason::TransportChanged,

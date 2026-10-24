@@ -18,6 +18,7 @@ pub(super) struct Snapshot {
     pub(super) prepared: Arc<PreparedRevision>,
     pub(super) resources: PreparedDeviceResources,
     pub(super) inputs: RuntimeInputs,
+    pub(super) file_sources: Option<ResidentFileSet>,
 }
 struct Inputs<'a> {
     native: NativeSamplerSources<'a>,
@@ -110,27 +111,32 @@ impl Inputs<'_> {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)] // Existing compile inputs plus the captured native source context.
     fn prepare(
         &self,
         project: &Project,
-        sink: &dyn WorkerAudioSink,
+        sink: &mut dyn WorkerAudioSink,
         media: &MediaBank,
         table: Arc<hex_engine::SineTable>,
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
-        self.prepare_with_gain(project, sink, media, table, transforms, waveforms, None)
+        self.prepare_with_gain(
+            project, sink, media, table, transforms, waveforms, None, context,
+        )
     }
     #[allow(clippy::too_many_arguments)] // Existing compile inputs plus one transient raw-fader target.
     fn prepare_with_gain(
         &self,
         project: &Project,
-        sink: &dyn WorkerAudioSink,
+        sink: &mut dyn WorkerAudioSink,
         media: &MediaBank,
         table: Arc<hex_engine::SineTable>,
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
         gain_recording: Option<hex_project::TrackId>,
+        context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
@@ -169,23 +175,62 @@ impl Inputs<'_> {
                 ))?,
         )?;
         let work = resources.compiler_scan_work_on_control(project)?;
+        let file_refs = media.required_verified_sources(project);
+        let file_sources = if file_refs.is_empty() {
+            None
+        } else {
+            let input = ResidentFileInput {
+                context,
+                semantic_source_epoch: media.epoch,
+                files: &file_refs,
+            };
+            let metadata = sink
+                .prepare_resident_file_metadata(ResidentFileInput {
+                    context,
+                    semantic_source_epoch: media.epoch,
+                    files: &file_refs,
+                })
+                .map_err(SessionError::NativeAudio)?
+                .ok_or(SessionError::Invalid(
+                    "ordinary file source metadata unavailable",
+                ))?;
+            Some(ResidentFileSet::capture(input, metadata)?)
+        };
+
         let prepared =
             crate::prepare_with_waveforms_using(project, media, transforms, waveforms, || {
-                media.prepare_with_device_resources(
-                    project,
-                    table,
-                    self.current.map(|s| s.prepared.session().as_ref()),
-                    transforms,
-                    &resources,
-                    work,
-                    self.shutdown,
-                )
+                if let Some(sources) = file_sources.as_ref() {
+                    media.prepare_with_device_resources_and_catalog(
+                        project,
+                        table,
+                        self.current.map(|s| s.prepared.session().as_ref()),
+                        transforms,
+                        &resources,
+                        work,
+                        self.shutdown,
+                        Some((
+                            sources.metadata().catalog_generation(),
+                            sources.metadata().sources(),
+                        )),
+                    )
+                } else {
+                    media.prepare_with_device_resources(
+                        project,
+                        table,
+                        self.current.map(|s| s.prepared.session().as_ref()),
+                        transforms,
+                        &resources,
+                        work,
+                        self.shutdown,
+                    )
+                }
             })?;
         let prepared = match gain_recording {
             Some(track) => prepared.arm_gain_recording(project, track)?,
             None => prepared,
         };
         let snapshot = Snapshot {
+            file_sources,
             resources,
             prepared: Arc::new(prepared),
             inputs: if self.predecessor.is_some() {
@@ -330,7 +375,8 @@ impl Inputs<'_> {
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, None)
+        let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
+        self.publish_tagged_with_loop(snapshot, project, sink, metadata, policy, section_loop)
     }
     #[allow(clippy::too_many_arguments)] // One existing publication path with an optional transient clock.
     fn publish_tagged_with_loop(
@@ -342,18 +388,7 @@ impl Inputs<'_> {
         policy: ResidentPublicationPolicy,
         section_loop: Option<hex_project::LoopRegion>,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = match section_loop {
-            Some(region) => Playback::try_from_prepared_section_candidate(
-                Arc::clone(&snapshot.prepared),
-                &snapshot.resources,
-                region,
-            ),
-            None => Playback::try_from_prepared_with_device_resources(
-                Arc::clone(&snapshot.prepared),
-                &snapshot.resources,
-            ),
-        }
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
@@ -386,17 +421,11 @@ impl Inputs<'_> {
         {
             return Err(SessionError::Invalid("resident publication cancelled"));
         }
-        let quoted = if let Some(region) = playback.section_loop() {
-            hex_engine::SessionPlayback::section_runtime_allowance(&snapshot.prepared, region)
-                .map_err(|error| SessionError::NativeAudio(error.to_string()))?
-                .checked_add(additional_runtime_bytes)
-                .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
-                .ok_or(SessionError::Invalid(
-                    "section runtime input allowance overflow",
-                ))?
-        } else {
-            runtime_allowance(&snapshot.prepared, additional_runtime_bytes)?
-        };
+        let quoted = runtime_allowance_with_loop(
+            &snapshot.prepared,
+            additional_runtime_bytes,
+            playback.section_loop(),
+        )?;
         if playback
             .accounted_session_runtime_bytes_on_control()
             .is_none_or(|bytes| bytes > quoted)
@@ -442,7 +471,7 @@ impl Inputs<'_> {
             runtime,
             snapshot.resources.metadata_bytes()?,
         )?;
-        sink.publish_resident(
+        sink.publish_resident_with_files(
             playback,
             Some(&snapshot.resources),
             observation,
@@ -469,6 +498,14 @@ impl Inputs<'_> {
                 }
                 Ok(())
             },
+            snapshot
+                .file_sources
+                .as_ref()
+                .map(|sources| ResidentFilePublication {
+                    sources,
+                    shutdown: self.shutdown,
+                    cancel: self.cancel,
+                }),
         )
         .map_err(|refused| SessionError::NativeAudio(refused.error))
     }
@@ -480,6 +517,65 @@ fn runtime_allowance(prepared: &PreparedRevision, extra: usize) -> Result<usize,
         .checked_add(extra)
         .map(|quote| quote.min(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
         .ok_or(SessionError::Invalid("runtime input allowance overflow"))
+}
+
+/// Capture only ordinary inheritance. Fresh seek/replacement callers own their
+/// explicit loop and discontinuity policy; unavailable output stays editable.
+fn inherited_runtime(
+    sink: &mut dyn WorkerAudioSink,
+    context: hex_engine::AudioSourceContext,
+    policy: ResidentPublicationPolicy,
+) -> Result<(ResidentPublicationPolicy, Option<hex_project::LoopRegion>), SessionError> {
+    match policy {
+        ResidentPublicationPolicy::InheritRuntime => {
+            let actual = sink
+                .resident_runtime_loop(context)
+                .map_err(SessionError::NativeAudio)?;
+            Ok(actual.map_or((policy, None), |actual| {
+                (
+                    ResidentPublicationPolicy::InheritRuntimeAt(actual),
+                    actual.section_loop,
+                )
+            }))
+        }
+        ResidentPublicationPolicy::InheritRuntimeAt(actual) => Ok((policy, actual.section_loop)),
+        _ => Ok((policy, None)),
+    }
+}
+
+fn playback_with_loop(
+    snapshot: &Snapshot,
+    section_loop: Option<hex_project::LoopRegion>,
+) -> Result<Playback, SessionError> {
+    match section_loop {
+        Some(region) => Playback::try_from_prepared_section_candidate(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+            region,
+        ),
+        None => Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+        ),
+    }
+    .map_err(|error| SessionError::NativeAudio(error.to_string()))
+}
+
+fn runtime_allowance_with_loop(
+    prepared: &PreparedRevision,
+    extra: usize,
+    section_loop: Option<hex_project::LoopRegion>,
+) -> Result<usize, SessionError> {
+    let Some(region) = section_loop else {
+        return runtime_allowance(prepared, extra);
+    };
+    hex_engine::SessionPlayback::section_runtime_allowance(prepared, region)
+        .map_err(|error| SessionError::NativeAudio(error.to_string()))?
+        .checked_add(extra)
+        .filter(|bytes| *bytes <= hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+        .ok_or(SessionError::Invalid(
+            "section runtime input allowance overflow",
+        ))
 }
 
 /// One command seam for typed worker requests and ordinary edits. The native consumer publishes
@@ -735,6 +831,7 @@ pub(super) fn prepare_bounce_import(
         input.table,
         input.transforms,
         input.waveforms,
+        context,
     )?;
     admit()?;
     if let Some(frame) = stopped {
@@ -765,11 +862,59 @@ pub(super) fn import_file(
     {
         return Err(SessionError::Invalid("session target cell is occupied"));
     }
-    let remaining = session
-        .max_resident_frames()
-        .checked_sub(session.resident_frames())
-        .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
-    let output_limit = usize::try_from(remaining)
+    let allowance = if session.source_plan_reservation().is_some() {
+        // Plan before decoding against the same actual native/current/export
+        // owners used by final admission, including original sampler banks.
+        let native = sink.resident_admission();
+        let current_sets = current.as_ref().map(|snapshot| [&snapshot.resources]);
+        let current_revisions = current
+            .as_ref()
+            .map(|snapshot| [snapshot.prepared.as_ref()]);
+        let current_view = DeviceResourceAdmission::new(
+            current_sets.as_ref().map_or(&[], |sets| sets.as_slice()),
+            &[],
+        )
+        .with_prepared_revisions(
+            current_revisions
+                .as_ref()
+                .map_or(&[], |revisions| revisions.as_slice()),
+        );
+        let mut registered = admission.registered.to_vec();
+        registered.push(current_view);
+        registered.extend(native);
+        sampler_export::Admission {
+            registered: &registered,
+            native: sink.native_sampler_hold(),
+            ..admission
+        }
+        .append_original_frame_allowance(session)?
+    } else {
+        session
+            .max_resident_frames()
+            .saturating_sub(session.resident_frames())
+    };
+    if let Some(source) = session.plan_file_import_with_allowance(&path, allowance)? {
+        let expected = session.project().clone();
+        let mut accepted = None;
+        let (_, prepared) = session.import_verified_batch_revision(
+            vec![source],
+            destination,
+            &expected,
+            current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+            overwrite,
+            || Ok(()),
+            |input, admit| {
+                let snapshot =
+                    prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+                let prepared = Arc::clone(&snapshot.prepared);
+                accepted = Some(snapshot);
+                Ok(prepared)
+            },
+        )?;
+        *current = accepted;
+        return Ok(prepared);
+    }
+    let output_limit = usize::try_from(allowance)
         .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
     if output_limit == 0 {
         return Err(SessionError::Invalid("resident audio frame limit reached"));
@@ -902,10 +1047,18 @@ impl Session {
                     current,
                     legacy: legacy_refs.clone(),
                 };
-                let sink = sink.try_borrow().map_err(|_| {
+                let mut sink = sink.try_borrow_mut().map_err(|_| {
                     SessionError::Invalid("resident publication is already borrowed")
                 })?;
-                inputs.prepare(project, &**sink, media, table, transforms, waveforms)
+                inputs.prepare(
+                    project,
+                    &mut **sink,
+                    media,
+                    table,
+                    transforms,
+                    waveforms,
+                    context,
+                )
             },
             |project, snapshot, stage| {
                 let inputs = Inputs {
@@ -1095,7 +1248,9 @@ impl Session {
         SessionError,
     > {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
-        let quote = runtime_allowance(&snapshot.prepared, selected.allowance()?)?;
+        let (policy, section_loop) = inherited_runtime(sink, metadata.context, policy)?;
+        let quote =
+            runtime_allowance_with_loop(&snapshot.prepared, selected.allowance()?, section_loop)?;
         inputs.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -1106,11 +1261,7 @@ impl Session {
                 .ok_or(SessionError::Invalid("runtime input allowance overflow"))?,
             0,
         )?;
-        let mut playback = Playback::try_from_prepared_with_device_resources(
-            Arc::clone(&snapshot.prepared),
-            &snapshot.resources,
-        )
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
         selected.attach(project, &mut playback)?;
         if required.is_some_and(|required| !selected.satisfies(&requested, required)) {
@@ -1187,6 +1338,7 @@ impl Session {
             self.sine_table(),
             &self.audio_transforms,
             &self.audio_clip_waveforms,
+            context,
         )?;
         let metadata = ResidentPublicationMetadata {
             context,
@@ -1241,6 +1393,7 @@ impl Session {
             self.sine_table(),
             &self.audio_transforms,
             &self.audio_clip_waveforms,
+            context,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
@@ -1264,6 +1417,7 @@ impl Session {
                 self.sine_table(),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
+                context,
             )?;
             let project = Arc::new(candidate.clone());
             let metadata = ResidentPublicationMetadata {
@@ -1304,6 +1458,7 @@ impl Session {
             &self.audio_transforms,
             &self.audio_clip_waveforms,
             Some(track),
+            context,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
@@ -1464,8 +1619,6 @@ impl Session {
                     target,
                     current.filter(|_| reuse).map(|snapshot| &snapshot.prepared),
                     || {
-                        let mut snapshot =
-                            inputs.prepare(target, sink, &media, table, transforms, waveforms)?;
                         // Unknown previous audio correlation cannot justify reusing a no-op compiler
                         // owner, but it still must publish at the unchanged authored revision.
                         let context = if source == target {
@@ -1476,6 +1629,8 @@ impl Session {
                         } else {
                             context
                         };
+                        let mut snapshot = inputs
+                            .prepare(target, sink, &media, table, transforms, waveforms, context)?;
                         inputs.publish(&mut snapshot, target, sink, context)?;
                         Ok((Arc::clone(&snapshot.prepared), snapshot))
                     },
@@ -1561,8 +1716,6 @@ impl Session {
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
         let prepare = |source: &Project, project: &Project| {
-            let mut snapshot =
-                inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
             let context = if source == project {
                 hex_engine::AudioSourceContext {
                     editor_revision: context.editor_revision.saturating_sub(1),
@@ -1571,6 +1724,8 @@ impl Session {
             } else {
                 context
             };
+            let mut snapshot =
+                inputs.prepare(project, sink, &media, table, transforms, waveforms, context)?;
             if let Some(frame) = stopped_bounce_frame {
                 inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
             } else if let Some(cursor) = stopped_cursor {
@@ -2538,6 +2693,7 @@ mod tests {
                     )
                     .unwrap();
                 let captured = Snapshot {
+                    file_sources: current.file_sources.clone(),
                     prepared: Arc::clone(&current.prepared),
                     resources: current.resources.capture_on_control(bytes).unwrap(),
                     inputs: current.inputs.clone(),

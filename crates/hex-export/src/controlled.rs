@@ -332,18 +332,80 @@ fn render_prepared_using(
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
+    render_prepared_using_pages(
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        signal,
+        control,
+        publication,
+        None,
+    )
+}
+
+/// Linear export with caller-owned, independently verified offline pages.
+/// Optional ordinary resources borrow the exact admitted compiler scope; page
+/// preparation does not create or replace those leases. Preparation covers
+/// preroll and every output/capture/stem chunk. A miss or
+/// failed final verification refuses ordinary publication; no resident fallback.
+#[allow(clippy::too_many_arguments)] // Existing range/publication plus one borrowed page boundary.
+pub fn render_prepared_with_pages_and_policy(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    signal: ExportSignal,
+    control: &ExportControl,
+    publication: &Publication,
+    pages: &mut dyn PreparedExportPages,
+) -> Result<ExportReport, ExportError> {
+    render_prepared_using_pages(
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        signal,
+        control,
+        publication,
+        Some(pages),
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Same renderer; optional exact borrowed page preparation.
+fn render_prepared_using_pages(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    signal: ExportSignal,
+    control: &ExportControl,
+    publication: &Publication,
+    mut pages: Option<&mut dyn PreparedExportPages>,
+) -> Result<ExportReport, ExportError> {
     if let ExportSignal::Stems(stems) = &signal {
         if !matches!(publication, Publication::CreateNew) {
             return Err(ExportError::Invalid("stem batches require a new directory"));
         }
-        return super::stems::render_stems_using(
-            path, revision, resources, start, frames, stems, control,
+        return super::stems::render_stems_using_pages(
+            path, revision, resources, start, frames, stems, control, pages,
         );
     }
     control.claim()?;
     let sample_rate = revision.arrangement().sample_rate();
     publish(path, sample_rate, start, frames, publication, || {
-        let playback = prepare_runtime(revision, resources, start, frames, control)?;
+        let playback = prepare_runtime_with_pages(
+            revision,
+            resources,
+            start,
+            frames,
+            control,
+            pages.as_deref_mut(),
+        )?;
         let (plan, buffers) = match signal {
             ExportSignal::Main => (None, Vec::new()),
             ExportSignal::CapturedMix(ids) => {
@@ -369,6 +431,7 @@ fn render_prepared_using(
         Ok(ControlledRenderer {
             playback,
             sources: None,
+            pages,
             plan,
             buffers,
             control: control.clone(),
@@ -407,6 +470,7 @@ pub fn render_control_sampler_with_policy(
         Ok(ControlledRenderer {
             playback,
             sources: Some(sources),
+            pages: None,
             plan: None,
             buffers: Vec::new(),
             control: control.clone(),
@@ -422,6 +486,31 @@ pub(super) fn prepare_runtime(
     control: &ExportControl,
 ) -> Result<SessionPlayback, ExportError> {
     prepare_runtime_observed(revision, resources, start, frames, control, || {})
+}
+
+pub(super) fn prepare_runtime_with_pages<'provider>(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+) -> Result<SessionPlayback, ExportError> {
+    let constructor: RuntimeConstructor = if resources.is_some() {
+        resource_linear_runtime
+    } else {
+        legacy_linear_runtime
+    };
+    prepare_runtime_using_pages(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
+        || {},
+        pages,
+    )
 }
 
 fn prepare_runtime_observed(
@@ -480,7 +569,30 @@ fn prepare_runtime_using(
     frames: u64,
     control: &ExportControl,
     constructor: RuntimeConstructor,
+    after_block: impl FnMut(),
+) -> Result<SessionPlayback, ExportError> {
+    prepare_runtime_using_pages(
+        revision,
+        resources,
+        start,
+        frames,
+        control,
+        constructor,
+        after_block,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // One construction policy and optional control-only pages.
+fn prepare_runtime_using_pages<'provider>(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    control: &ExportControl,
+    constructor: RuntimeConstructor,
     mut after_block: impl FnMut(),
+    mut pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
     control.check()?;
     let replay = start != 0 && revision.arrangement_seek_requires_preroll();
@@ -512,9 +624,17 @@ fn prepare_runtime_using(
     while remaining > 0 {
         control.check()?;
         let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
-        playback
-            .render(&mut block[..count])
-            .map_err(ExportError::SessionRender)?;
+        if let Some(pages) = pages.as_deref_mut() {
+            pages.prepare_chunk(&playback, count, control)?;
+            playback
+                .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
+                .map_err(ExportError::SessionRender)?;
+            pages.complete_chunk()?;
+        } else {
+            playback
+                .render(&mut block[..count])
+                .map_err(ExportError::SessionRender)?;
+        }
         remaining -= count as u64;
         control.advance(count);
         after_block();
@@ -543,17 +663,21 @@ fn resource_linear_runtime(
     SessionPlayback::new_linear_arrangement_export_with_device_resources(revision, resources)
 }
 
-struct ControlledRenderer {
+struct ControlledRenderer<'a> {
     playback: SessionPlayback,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
+    pages: Option<&'a mut dyn PreparedExportPages>,
     plan: Option<OutputCapturePlan>,
     buffers: Vec<[Frame; FRAMES_PER_BLOCK]>,
     control: ExportControl,
 }
 
-impl BlockRenderer for ControlledRenderer {
+impl BlockRenderer for ControlledRenderer<'_> {
     fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
         self.control.check()?;
+        if let Some(pages) = self.pages.as_deref_mut() {
+            pages.prepare_chunk(&self.playback, frames.len(), &self.control)?;
+        }
         if let Some(plan) = &self.plan {
             let mut slices: Vec<&mut [Frame]> = self
                 .buffers
@@ -561,9 +685,19 @@ impl BlockRenderer for ControlledRenderer {
                 .map(|buffer| &mut buffer[..frames.len()])
                 .collect();
             let mut capture = OutputCapture::new(plan, &mut slices);
-            self.playback
-                .render_with_capture(frames, &mut capture)
-                .map_err(ExportError::SessionRender)?;
+            if let Some(pages) = self.pages.as_deref_mut() {
+                self.playback
+                    .render_with_pages_and_capture(
+                        frames,
+                        &mut crate::pages::PageView(pages),
+                        &mut capture,
+                    )
+                    .map_err(ExportError::SessionRender)?;
+            } else {
+                self.playback
+                    .render_with_capture(frames, &mut capture)
+                    .map_err(ExportError::SessionRender)?;
+            }
             frames.fill([0.0; 2]);
             for index in 0..plan.ids().len() {
                 let output = capture
@@ -578,16 +712,26 @@ impl BlockRenderer for ControlledRenderer {
             self.playback
                 .render_control_sampler_export(frames, sources)
                 .map_err(ExportError::SessionRender)?;
+        } else if let Some(pages) = self.pages.as_deref_mut() {
+            self.playback
+                .render_with_pages(frames, &mut crate::pages::PageView(pages))
+                .map_err(ExportError::SessionRender)?;
         } else {
             self.playback
                 .render(frames)
                 .map_err(ExportError::SessionRender)?;
         }
+        if let Some(pages) = self.pages.as_deref_mut() {
+            pages.complete_chunk()?;
+        }
         self.control.advance(frames.len());
         self.control.check()
     }
 
-    fn before_publication(&self) -> Result<(), ExportError> {
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        if let Some(pages) = self.pages.as_deref_mut() {
+            pages.finish(&self.control)?;
+        }
         self.control.begin_publication()
     }
 }

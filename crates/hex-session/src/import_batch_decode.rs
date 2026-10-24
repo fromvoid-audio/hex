@@ -550,6 +550,7 @@ impl AudioBatchImport {
             self.destination,
             &self.project,
             previous,
+            self.options.overwrite,
             || {
                 if let Err(error) = self.check(current) {
                     admission_error = Some(error);

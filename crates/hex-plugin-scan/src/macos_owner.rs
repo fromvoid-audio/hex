@@ -460,14 +460,14 @@ pub fn run(
     if owner.cleanup.direct_exit_code != Some(0) {
         cause.get_or_insert_with(|| "native scan failed or crashed".into());
     }
-    for result in [build.unchanged(), bundle.unchanged()] {
+    for result in [build.unchanged(), bundle.unchanged().map_err(String::from)] {
         if let Err(error) = result {
             cause.get_or_insert(error);
         }
     }
     if let Some(value) = &executable {
         if let Err(error) = bundle.executable_unchanged(value) {
-            cause.get_or_insert(error);
+            cause.get_or_insert(String::from(error));
         }
     }
     if sent != outgoing.len() {

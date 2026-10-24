@@ -8,7 +8,15 @@ pub use preparation::{
     AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
     AudioCandidateDomainStartError,
 };
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) mod native_sources;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use native_sources::{NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) mod publication;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use native_sources::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
+};
 pub(crate) use pages::DomainEnvelope;
 pub(super) use publication::OrdinaryReservation;
 pub(crate) use publication::{ActiveView, OrdinaryStreams};
@@ -35,6 +43,9 @@ pub struct AudioCandidateDomainRefusal {
     pub reason: &'static str,
     pub domain: CandidateDomain,
 }
+/// Stream occupancy and Root source-budget commitments. DATA totals include
+/// fixed metadata and configured native pool allowances, even when native cells
+/// are vacant; they are reservations, not an actual backing/RSS observation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioCandidateDomainUsage {
     pub occupied_domains: usize,
@@ -93,6 +104,8 @@ struct NativeBank {
     ordinary: Option<OrdinaryReservation>,
     publication: publication::Bank,
     native: Option<crate::native_callback_owner::NativeCandidateBoundary>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    sources: native_sources::Bank,
 }
 impl Default for NativeBank {
     fn default() -> Self {
@@ -108,7 +121,29 @@ impl Default for NativeBank {
             ordinary: None,
             publication: publication::Bank::default(),
             native: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            sources: native_sources::Bank::default(),
         }
+    }
+}
+impl NativeBank {
+    /// Budget accounting includes the configured native pool even while its
+    /// cells are vacant. Actual backing and resource witnesses stay separate.
+    fn accounted_base(&self, peak: bool) -> Result<usize, &'static str> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let extra = if peak {
+            self.sources.peak_reserved
+        } else {
+            self.sources.retained_reserved
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let extra = {
+            let _ = peak;
+            0
+        };
+        self.metadata_bytes
+            .checked_add(extra)
+            .ok_or("native source reservation overflow")
     }
 }
 struct DomainExecution {
@@ -122,6 +157,8 @@ struct DomainExecution {
 struct NativeWork {
     domains: [Option<DomainExecution>; 2],
     publication: publication::Work,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    sources: native_sources::Work,
 }
 #[derive(Default)]
 pub(super) struct Custody {
@@ -211,6 +248,8 @@ impl Custody {
             ordinary: None,
             publication: publication::Bank::default(),
             native,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            sources: native_sources::Bank::default(),
         };
         self.enabled.store(true, Ordering::Release);
         Ok(())
@@ -243,13 +282,13 @@ impl Custody {
             let used = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .try_fold(bank.accounted_base(false)?, |n, d| n.checked_add(d.data))
                 .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
                 .ok_or("domain storage overflow")?;
             let used_peak = bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .try_fold(bank.accounted_base(true)?, |n, d| n.checked_add(d.peak))
                 .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .ok_or("domain construction overflow")?;
             let capsule_bytes = if readiness.is_some() {
@@ -285,6 +324,9 @@ impl Custody {
             slot.phase = Phase::Reserved;
             slot.starting = true;
             slot.signal.return_requested.store(false, Ordering::Relaxed);
+            slot.signal
+                .endpoint_installed
+                .store(false, Ordering::Relaxed);
             Ok((
                 AudioCandidateDomainToken {
                     root: bank.root,
@@ -361,6 +403,17 @@ impl Custody {
         }
         Ok((token, envelope))
     }
+    pub(super) fn domain_has_no_graph_users(&self, token: AudioCandidateDomainToken) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && bank.root == token.root
+            && bank.domains.get(token.slot).is_some_and(|slot| {
+                slot.matches(token)
+                    && !slot.retiring
+                    && slot.phase == Phase::Accepted
+                    && slot.uses == 0
+            })
+    }
     pub(super) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
         let bank = lock(&self.bank);
         !bank.closing
@@ -410,6 +463,8 @@ impl Custody {
         true
     }
     pub(super) fn close(&self) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mut source_cancellations = native_sources::empty_cancellations();
         let mut guard = lock(&self.bank);
         {
             let bank = &mut *guard;
@@ -419,10 +474,21 @@ impl Custody {
                     slot.retiring = true;
                 }
             }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            bank.sources.close(&mut source_cancellations);
+        }
+        drop(guard);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        for cancellation in source_cancellations.into_iter().flatten() {
+            cancellation.cancel_on_control();
         }
     }
     pub(super) fn has_work(&self, abandoned: bool) -> bool {
         let guard = lock(&self.bank);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if guard.sources.has_work(abandoned, &guard.publication) {
+            return true;
+        }
         guard.publication.has_work(abandoned || guard.closing)
             || guard.domains.iter().any(|s| {
                 s.phase == Phase::Failed
@@ -439,12 +505,18 @@ impl Custody {
     }
     pub(super) fn complete(&self) -> bool {
         let guard = lock(&self.bank);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if guard.sources.occupied() {
+            return false;
+        }
         guard.domains.iter().all(|s| s.phase == Phase::Vacant) && guard.publication.complete()
     }
     pub(super) fn advance_on_control(&self, abandoned: bool) {
         let Ok(mut work) = self.work.try_lock() else {
             return;
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.advance_native_sources(&mut work.sources, abandoned);
         for index in 0..2 {
             {
                 let mut guard = lock(&self.bank);
@@ -593,11 +665,15 @@ impl Custody {
             retained_data_reservation: bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))?,
+                .try_fold(bank.accounted_base(false).ok()?, |n, d| {
+                    n.checked_add(d.data)
+                })?,
             construction_peak_data_reservation: bank
                 .domains
                 .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))?,
+                .try_fold(bank.accounted_base(true).ok()?, |n, d| {
+                    n.checked_add(d.peak)
+                })?,
         })
     }
 }
@@ -605,7 +681,7 @@ impl Custody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn pair() -> CandidateDomain {
+    pub(super) fn pair() -> CandidateDomain {
         let mut runtime =
             hex_stream::StreamRuntime::new(hex_stream::StreamConfig::with_pool_pages(4), vec![])
                 .unwrap();

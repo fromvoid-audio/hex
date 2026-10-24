@@ -331,6 +331,30 @@ impl PreparedRevision {
         )
     }
 
+    /// Prepare the ordinary resident graph with a host's effect registry and
+    /// the existing built-in instrument registry. Foreign factories declare
+    /// immutable facts only; the audio host must separately retain and admit
+    /// their actual source/worker/endpoint owners. This grants no publication
+    /// authority and never reconstructs a native instance from state bytes.
+    pub fn prepare_with_effect_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_registries(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            effects,
+            &instruments,
+        )
+    }
+
     pub fn prepare_with_audio_transforms(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -510,9 +534,39 @@ impl PreparedRevision {
         max_scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<Self, Invalid> {
-        resources.validate_project(project)?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_device_resources_and_effect_registry(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            transforms,
+            resources,
+            max_scan_frames,
+            cancel,
+            &effects,
+        )
+    }
+
+    /// The same registered-resource compiler with host-provided effect
+    /// definitions. Original sampler leases, transformations, cancellation and
+    /// scan reservations retain their existing owners and validation. Foreign
+    /// facts grant no native source/endpoint or publication custody; the host
+    /// must separately retain the matching actual instances through delivery.
+    #[allow(clippy::too_many_arguments)] // Existing complete resident inputs plus the effect registry.
+    pub fn prepare_with_device_resources_and_effect_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        resources.validate_project(project)?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
         let preparation = crate::native_device_resources::CompilerDeviceResources::new(
@@ -525,7 +579,7 @@ impl PreparedRevision {
             media,
             sine_table,
             previous_session,
-            &effects,
+            effects,
             &instruments,
             transforms,
             Some(&preparation),
@@ -748,6 +802,23 @@ impl PreparedRevision {
                     }),
             )
     }
+    /// Borrow the exact source metadata retained by compiled Arrangement clips.
+    /// Duplicate clip references may repeat a source; Session-only clips and
+    /// unused asset records are excluded. This inventory includes inactive clip
+    /// entries and grants no file freshness, page readiness or source custody.
+    /// Offline consumers must budget/deduplicate it and prepare each real demand.
+    pub fn arrangement_stream_sources(
+        &self,
+    ) -> impl Iterator<Item = &crate::StreamedSourceMetadata> {
+        self.arrangement.tracks().iter().flat_map(|track| {
+            track.clips.iter().filter_map(|clip| {
+                clip.metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.streamed.as_deref())
+            })
+        })
+    }
+
     pub fn contains_streamed_sources(&self) -> bool {
         self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
     }

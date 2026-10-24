@@ -22,6 +22,8 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
@@ -35,6 +37,12 @@ pub use eligible::{
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
+};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::{NativeEndpointBank, NativeEndpointEnvelope};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use eligible::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
@@ -685,6 +693,12 @@ impl CandidateRoot {
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)
     }
+    pub(crate) fn domain_endpoint_installed(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.endpoint_installed(token)
+    }
+    pub(crate) fn domain_has_no_graph_users(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.domain_has_no_graph_users(token)
+    }
     pub(crate) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
         self.0.eligible.domain_is_sealed(token)
     }
@@ -726,9 +740,11 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        drop(returns);
+        // Native source cancellation may perform control-side descriptor I/O;
+        // it must not run under the ordinary return/terminal lock.
         self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
-        drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
     }
     fn drain_abandoned_on_control(&self) -> bool {
@@ -747,6 +763,13 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                crate::prepared::ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.ingest_native_endpoint(endpoint) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Native(endpoint));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.ingest_pages(pages) {
                         returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));

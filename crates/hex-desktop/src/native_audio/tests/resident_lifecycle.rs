@@ -798,3 +798,176 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
     assert_eq!(refused.state.project, committed.state.project);
     assert_pcm(&mut h, 0.03125);
 }
+
+#[test]
+fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publication() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let first_path = files.wav(48_000, 4);
+    let second_path = files.0.join("second.wav");
+    std::fs::copy(&first_path, &second_path).unwrap();
+    let mut h = ResidentHarness::with_frame_limit(4);
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let first = h.run(Request::Import(first_path));
+    let (first_audio, _) = h.applied(initial);
+    assert_eq!(first.state.project.assets().count(), 1);
+    // This uses production ordinary defaults: no VerifiedStreaming command or
+    // source-mode opt-in is sent by the fixture.
+    let second = h.run(Request::Import(second_path));
+    assert_eq!(second.state.project.assets().count(), 2);
+    assert!(
+        second
+            .state
+            .project
+            .assets()
+            .all(|asset| asset.playback_frames() == 4)
+    );
+    assert_eq!(second.state.waveforms.len(), 2);
+    for waveform in second.state.waveforms.values() {
+        assert_eq!(waveform.source_frames, 4);
+        assert_eq!(waveform.bins.len(), 4);
+        assert!(
+            waveform
+                .bins
+                .iter()
+                .flatten()
+                .all(|peak| peak.min == 0.25 && peak.max == 0.25)
+        );
+    }
+    let snapshot = second.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(
+        snapshot.audio_mode(),
+        hex_session::DocumentAudioMode::Resident
+    );
+    assert!(
+        snapshot
+            .sources()
+            .values()
+            .any(|source| matches!(source, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+    let (second_audio, metadata) = h.applied(first_audio);
+    assert_eq!(metadata.context.editor_revision, second.state.revision);
+    let refused_path = files.0.join("refused.wav");
+    std::fs::copy(files.0.join("second.wav"), &refused_path).unwrap();
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::Import(refused_path.clone()))
+        .unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("fixture final admission refusal")
+    );
+    assert_eq!(refused.state.project, second.state.project);
+    assert_eq!(refused.state.revision, second.state.revision);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        second_audio
+    );
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    // Refusal left a genuinely verified but unused cache domain beside the
+    // active one. A different file must evict that cache, not retire the active
+    // domain and wait forever for its own not-yet-prepared successor.
+    let third_path = files.0.join("third.wav");
+    std::fs::copy(files.0.join("second.wav"), &third_path).unwrap();
+    let third = h.run(Request::Import(third_path));
+    let (third_audio, _) = h.applied(second_audio);
+    assert_eq!(third.state.project.assets().count(), 3);
+    let fourth = h.run(Request::Import(refused_path));
+    h.applied(third_audio);
+    assert_eq!(fourth.state.project.assets().count(), 4);
+    assert!(
+        fourth
+            .state
+            .project
+            .assets()
+            .all(|asset| asset.playback_frames() == 4)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut expected = [[0.0; 2]; 64];
+    expected[..4].fill([1.0; 2]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        if status.stream_buffering.load(Acquire) {
+            assert_eq!(pcm, [[0.0; 2]; 64]);
+            assert_eq!(status.position.load(Acquire), 0);
+            assert_eq!(status.performance_frame.load(Acquire), 0);
+            assert!(
+                Instant::now() < deadline,
+                "ordinary source pages did not become ready"
+            );
+            std::thread::yield_now();
+            continue;
+        }
+        assert_eq!(pcm, expected);
+        assert_eq!(status.position.load(Acquire), 64);
+        break;
+    }
+    let saved_path = files.0.join("growing.hex");
+    let saved = h.run(Request::SaveNew(saved_path.clone()));
+    assert!(saved.save_complete);
+    let persisted = hex_storage::load(&saved_path).unwrap();
+    assert_eq!(persisted.assets().count(), 4);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::Open(saved_path));
+    assert!(reopened.open_complete);
+    assert_eq!(reopened.state.project.as_ref(), &persisted);
+    assert_eq!(reopened.state.waveforms.len(), 4);
+    assert!(reopened.state.waveforms.values().all(|waveform| {
+        waveform.source_frames == 4
+            && waveform
+                .bins
+                .iter()
+                .flatten()
+                .all(|peak| peak.min == 0.25 && peak.max == 0.25)
+    }));
+    finish_replacement(&mut h, &reopened, old_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let pcm = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        if status.stream_buffering.load(Acquire) {
+            assert_eq!(pcm, [[0.0; 2]; 64]);
+            assert_eq!(status.position.load(Acquire), 0);
+            assert_eq!(status.performance_frame.load(Acquire), 0);
+            assert!(
+                Instant::now() < deadline,
+                "reopened source pages did not become ready"
+            );
+            std::thread::yield_now();
+        } else {
+            assert_eq!(pcm, expected);
+            assert_eq!(status.position.load(Acquire), 64);
+            break;
+        }
+    }
+    // Actual carrier destruction and Root cleanup must release the exclusive
+    // native lease, including an active ordinary graph with installed pages.
+    drop(h);
+    let mut fresh = ResidentHarness::with_frame_limit(4);
+    assert!(fresh.next().error.is_none());
+    fresh.applied(0);
+}

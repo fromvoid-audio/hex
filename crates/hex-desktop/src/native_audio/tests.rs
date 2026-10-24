@@ -4,11 +4,13 @@ use super::*;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_export;
+mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
 mod resident_routes;
 mod resident_sections;
 mod sampler;
+mod stream_export;
 mod track_clipboard;
 mod track_reorder;
 use hex_audio::worker_fixture::HeadlessBackend;
@@ -213,6 +215,16 @@ impl ObservedSink {
     }
 }
 impl WorkerAudioSink for ObservedSink {
+    fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
+        self.inner.streamed_exporter()
+    }
+
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        self.inner.resident_runtime_loop(context)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
@@ -1686,6 +1698,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap()
     else {
@@ -1729,6 +1742,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InstallFreshRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap()
     else {
@@ -1748,6 +1762,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation is waiting"));
@@ -1830,6 +1845,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
                 ResidentPublicationPolicy::InheritRuntime,
                 0,
                 &mut admit,
+                None,
             )
             .unwrap();
         assert!(matches!(
@@ -1859,6 +1875,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ResidentPublicationPolicy::InheritRuntime,
             0,
             &mut admit,
+            None,
         )
         .unwrap_err();
     assert!(refused.error.contains("observation retirement is waiting"));
@@ -1871,7 +1888,8 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             second_metadata,
             ResidentPublicationPolicy::InheritRuntime,
             0,
-            &mut admit
+            &mut admit,
+            None,
         )
         .unwrap(),
         ResidentPublicationAcceptance::Submitted { .. }

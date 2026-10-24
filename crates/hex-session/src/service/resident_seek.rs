@@ -267,6 +267,7 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
+                file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
                 inputs: selected.inputs.clone(),

@@ -208,6 +208,25 @@ impl StreamPlayback<'_> {
             next.preview_stream_handoff(old, maximum_frames, playing, visit)
         }
     }
+    /// Borrow the existing admitted foreign endpoints through the same runtime
+    /// facade. Neither this view nor page facts grant endpoint authority.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        match &mut self.runtime {
+            Runtime::Constructor(runtime) => {
+                runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
+            }
+            Runtime::Ordinary(runtime, _) => {
+                runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
+            }
+        }
+    }
     pub fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
         &mut self,
         output: &mut [crate::Frame],

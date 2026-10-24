@@ -98,10 +98,10 @@ impl Channel {
                 if wanted == 12 {
                     let magic = &out.bytes[..8];
                     if ![
-                        b"HXVIFA02",
-                        b"HXVIRD03",
-                        b"HXVIQF01",
-                        b"HXVIRR01",
+                        b"HXVIFA03",
+                        b"HXVIRD04",
+                        b"HXVIQF02",
+                        b"HXVIRR02",
                         b"HXVIER01",
                         b"HXVITR01",
                     ]
@@ -204,7 +204,7 @@ mod tests {
     use super::*;
     #[test]
     fn hostile_frames_refuse_before_unbounded_reads_or_allocation() {
-        let mut oversized = b"HXVIRD03".to_vec();
+        let mut oversized = b"HXVIRD04".to_vec();
         oversized.extend(u32::MAX.to_le_bytes());
         let mut events = vec![0; 64];
         events[..4].copy_from_slice(b"HXVB");
@@ -239,7 +239,7 @@ mod tests {
         let mut body = Vec::new();
         protocol::stamp(
             &mut body,
-            hex_audio::plugin_transport::Binding {
+            hex_lattice_contract::ForeignProcessorBinding {
                 root: 1,
                 instance: 2,
                 graph: 3,
@@ -263,6 +263,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(packet.data(), expected);
+        assert_eq!(packet.magic(), b"HXVITR01");
+        assert_eq!(packet.body().unwrap(), body);
         channel.reject_queued_after_reap().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+    #[test]
+    fn control_send_close_and_expired_deadline_keep_bounded_socket_semantics() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let mut channel = Channel::new(stream).unwrap();
+        let bytes = protocol::control(*b"HXVIST01", &[]).unwrap();
+        channel
+            .send(
+                &bytes,
+                end_after(Duration::from_secs(1)).unwrap(),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        let mut received = vec![0; bytes.len()];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, bytes);
+        let expired = Instant::now();
+        pause(expired);
+        assert!(matches!(
+            channel.send(&bytes, expired, &mut || Ok(())),
+            Err(Error::Timeout)
+        ));
+        channel.close();
+        assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     }
 }

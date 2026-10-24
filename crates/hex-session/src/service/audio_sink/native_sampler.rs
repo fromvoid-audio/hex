@@ -100,7 +100,7 @@ impl NativeSamplerInput<'_> {
     }
     fn needed(&self, asset: hex_project::AssetId) -> bool {
         let project = self.project;
-        project.tracks().iter().any(|t| t.clips().iter().any(|c| c.asset() == asset)
+        project.tracks().iter().any(|t| t.clips().iter().any(|c| c.referenced_assets().any(|source| source == asset))
             || t.instrument().is_some_and(|d| d.state().asset_references().iter().any(|r| r.asset.value() == asset.value())))
             || project.session_cells().iter().any(|c| matches!(c.content(), hex_project::SessionCellContent::Audio(c) if c.asset() == asset))
     }
@@ -118,6 +118,34 @@ impl NativeSamplerInput<'_> {
     }
     pub fn quote(
         &self,
+    ) -> Result<
+        (
+            AudioCandidateReservationQuote,
+            AudioStorageReservation,
+            usize,
+            u64,
+        ),
+        String,
+    > {
+        self.quote_inner(None)
+    }
+    pub fn quote_with_effects(
+        &self,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<
+        (
+            AudioCandidateReservationQuote,
+            AudioStorageReservation,
+            usize,
+            u64,
+        ),
+        String,
+    > {
+        self.quote_inner(Some(effects))
+    }
+    fn quote_inner(
+        &self,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
     ) -> Result<
         (
             AudioCandidateReservationQuote,
@@ -158,7 +186,11 @@ impl NativeSamplerInput<'_> {
                 .ok_or("source frame count overflow")?;
             count = count.checked_add(1).ok_or("source count overflow")?;
         }
-        let quote = AudioCandidateReservationQuote::for_project(self.project, count)
+        let quote = effects
+            .map_or_else(
+                || AudioCandidateReservationQuote::for_project(self.project, count),
+                |effects| effects.quote(self.project, count),
+            )
             .map_err(|e| format!("sampler constructor quote refused: {e:?}").to_lowercase())?;
         let pcm = usize::try_from(frames)
             .ok()
@@ -167,6 +199,11 @@ impl NativeSamplerInput<'_> {
         let storage = quote
             .storage_reservation(pcm)
             .map_err(|e| format!("sampler reservation refused: {e:?}").to_lowercase())?;
+        // The native constructor retains one additional finite PCM root for
+        // each transformed clip. Reserve physical frames before any copy/work.
+        frames = frames
+            .checked_add(quote.prepared_pcm_frames)
+            .ok_or("prepared audio frame reservation overflow")?;
         Ok((quote, storage, count, frames))
     }
     /// Reserve additional native copy/control together with actual Session and
@@ -219,6 +256,40 @@ impl NativeSamplerInput<'_> {
         catalog: u64,
         cell: &mut AudioCandidatePreparation,
     ) -> Result<(), hex_engine::AudioStorageError> {
+        self.copy_sources(cell)?;
+        let limits = self
+            .reservation
+            .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
+        cell.prepare_current_sampler_on_control(
+            self.project,
+            catalog,
+            self.context,
+            limits.max_scan_frames,
+            self.shutdown,
+        )
+    }
+    pub fn prepare_with_effects(
+        &self,
+        catalog: u64,
+        cell: &mut AudioCandidatePreparation,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.copy_sources(cell)?;
+        let limits = self
+            .reservation
+            .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
+        effects.prepare(
+            cell,
+            self.project,
+            catalog,
+            self.context,
+            Some((limits.max_scan_frames, self.shutdown)),
+        )
+    }
+    fn copy_sources(
+        &self,
+        cell: &mut AudioCandidatePreparation,
+    ) -> Result<(), hex_engine::AudioStorageError> {
         for asset in self.project.assets().filter(|a| self.needed(a.id())) {
             if self.sampler_asset(asset.id()) {
                 cell.copy_original_source_on_control(
@@ -238,16 +309,7 @@ impl NativeSamplerInput<'_> {
                 )?;
             }
         }
-        let limits = self
-            .reservation
-            .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
-        cell.prepare_current_sampler_on_control(
-            self.project,
-            catalog,
-            self.context,
-            limits.max_scan_frames,
-            self.shutdown,
-        )
+        Ok(())
     }
 }
 pub(in crate::service) fn drive(

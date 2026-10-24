@@ -505,11 +505,14 @@ impl Command {
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
             | Self::MoveClipsWithOverwrite { .. }
+            | Self::GroupAudioEventRange { .. }
+            | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
+            | Self::ResizeArrangementSectionMarker { .. }
             | Self::RenameArrangementSection { .. }
             | Self::SetArrangementSectionColor { .. }
             | Self::RemoveArrangementSection(..)

@@ -14,6 +14,7 @@ impl EditorView {
             || event.keystroke.modifiers != Modifiers::default()
             || event.is_held
             || self.mode != EditorMode::Arrangement
+            || self.automation_view.enabled
             || !self.focus.is_focused(window)
             || window
                 .context_stack()

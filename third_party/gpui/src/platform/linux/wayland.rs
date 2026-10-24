@@ -24,7 +24,7 @@ impl CursorStyle {
             CursorStyle::ResizeRight => Shape::EResize,
             CursorStyle::ResizeLeftBracket => Shape::WResize,
             CursorStyle::ResizeRightBracket => Shape::EResize,
-            CursorStyle::ResizeLeftRight => Shape::EwResize,
+            CursorStyle::ResizeLeftRight | CursorStyle::Loop => Shape::EwResize,
             CursorStyle::ResizeUp => Shape::NResize,
             CursorStyle::ResizeDown => Shape::SResize,
             CursorStyle::ResizeUpDown => Shape::NsResize,

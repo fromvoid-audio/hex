@@ -1740,6 +1740,11 @@ impl Session {
         self.media
             .get(&asset)
             .map(|resident| Arc::clone(&resident.waveform))
+            .or_else(|| {
+                self.verified_sources
+                    .get(&asset)
+                    .and_then(|file| file.cached_waveform().cloned())
+            })
     }
 
     /// Clone only the small asset map and its shared waveform handles.
@@ -1747,6 +1752,11 @@ impl Session {
         self.media
             .iter()
             .map(|(id, resident)| (*id, Arc::clone(&resident.waveform)))
+            .chain(self.verified_sources.iter().filter_map(|(id, file)| {
+                file.cached_waveform()
+                    .cloned()
+                    .map(|waveform| (*id, waveform))
+            }))
             .collect()
     }
 
@@ -1887,7 +1897,7 @@ fn prepare_with_waveforms_using(
             .filter(|view| {
                 project.clip(view.clip).is_some_and(|clip| {
                     clip.audio_edit()
-                        .is_some_and(|edit| edit.placement.is_some())
+                        .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
                 })
             })
             .count();
@@ -1932,14 +1942,10 @@ fn prepare_with_waveforms_using(
                     .audio_edit()
                     .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
             {
-                let source = media
-                    .resident
-                    .get(&clip.asset())
-                    .ok_or(hex_engine::Invalid(
-                        "audio preview requires resident source",
-                    ))?;
                 transforms
-                    .preview_root(project, clip.id(), source)?
+                    .preview_root_with_sources(project, clip.id(), |asset| {
+                        media.resident.get(&asset)
+                    })?
                     .map(|root| {
                         let waveform = roots
                             .iter()

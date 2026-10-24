@@ -421,6 +421,9 @@ pub(crate) struct NativeRetirement {
     publication: Option<Box<crate::prepared::PublicationControl>>,
     completed_stream_handle: bool,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: [Option<crate::candidate_custody::NativeEndpointEnvelope>;
+        hex_lattice::MAX_STATEFUL_PROCESSORS],
     final_active: Option<crate::candidate_custody::FinalActiveReturn>,
     root: crate::candidate_custody::CandidateRoot,
 }
@@ -445,6 +448,8 @@ impl NativeRetirement {
             publication: None,
             completed_stream_handle: false,
             domain_pages: std::array::from_fn(|_| None),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: std::array::from_fn(|_| None),
             final_active: None,
             root,
         }
@@ -549,6 +554,18 @@ impl NativeRetirement {
             if !data.callback.drain_candidate_custody_on_control() {
                 return Ok(false);
             }
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if data.callback.has_native_source_endpoints() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data
+                    .callback
+                    .extract_native_source_endpoints_on_control(&mut self.native_sources)
+                {
+                    return Err(());
+                }
+            }
             if data.callback.has_domain_pages() {
                 if !self.completed_stream_handle {
                     return Ok(false);
@@ -576,6 +593,18 @@ impl NativeRetirement {
                     return Err(());
                 }
             }
+            if data.callback.has_active_ordinary_streams() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data.callback.release_final_ordinary_streams_on_control(
+                    &FinalReleaseAuthority {
+                        root: self.root.root_id(),
+                    },
+                ) {
+                    return Err(());
+                }
+            }
             self.states[0] = Disposal::Pending;
             drop(self.data.take());
             self.states[0] = Disposal::Complete;
@@ -590,6 +619,15 @@ impl NativeRetirement {
         }
         if self.states != [Disposal::Complete; 2] {
             return Err(());
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        for index in 0..self.native_sources.len() {
+            if let Some(endpoint) = self.native_sources[index].take()
+                && let Err(endpoint) = self.root.ingest_native_endpoint(endpoint)
+            {
+                self.native_sources[index] = Some(endpoint);
+                return Ok(false);
+            }
         }
         for index in 0..self.domain_pages.len() {
             if let Some(pages) = self.domain_pages[index].take()
