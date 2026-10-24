@@ -11,10 +11,7 @@ use hex_audio::prepared::{
 use hex_engine::{NativeDeviceClass, PreparedRevision, SineTable, playback::Playback};
 use hex_lattice_contract::ParameterValue;
 use hex_project::{Command, Editor, Project};
-use hex_session::{
-    arrangement_seek::{ArrangementSeekMode, ArrangementSeekSpec},
-    service::Service,
-};
+use hex_session::{arrangement_seek::ArrangementSeekMode, service::Service};
 use std::{
     collections::BTreeMap,
     sync::Arc,

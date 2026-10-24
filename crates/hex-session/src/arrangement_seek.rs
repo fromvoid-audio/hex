@@ -31,6 +31,8 @@ pub enum ArrangementSeekMode {
     #[default]
     LinearArrangement,
     Interactive,
+    /// Fresh playing section loop. The region must be enabled, destination must
+    /// equal its start, and start_playing must be true; malformed specs refuse.
     SectionLoop(hex_project::LoopRegion),
 }
 
@@ -389,6 +391,13 @@ fn prepare(
     cancelled: &AtomicBool,
 ) -> Result<Playback, ArrangementPrerollError> {
     match spec.mode {
+        ArrangementSeekMode::SectionLoop(region)
+            if !region.enabled()
+                || spec.destination_frame != region.start()
+                || !spec.start_playing =>
+        {
+            Err(ArrangementPrerollError::CandidatePositionMismatch)
+        }
         ArrangementSeekMode::LinearArrangement => {
             let runtime = SessionPlayback::prepare_arrangement_preroll_from_revision(
                 Arc::clone(&spec.prepared_revision),
@@ -605,6 +614,57 @@ mod tests {
             assert!(Instant::now() < deadline, "worker did not publish a result");
             thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn section_specs_refuse_coercion_and_preserve_exact_result_metadata() {
+        let graph = prepared();
+        let worker = ArrangementSeekWorker::new().unwrap();
+        let enabled = hex_project::LoopRegion::new(0, 256, true).unwrap();
+        for (region, destination_frame, start_playing) in [
+            (enabled, 1, true),
+            (enabled, 0, false),
+            (
+                hex_project::LoopRegion::new(0, 256, false).unwrap(),
+                0,
+                true,
+            ),
+        ] {
+            let request = worker
+                .submit(ArrangementSeekSpec {
+                    mode: ArrangementSeekMode::SectionLoop(region),
+                    destination_frame,
+                    work_budget_frames: destination_frame,
+                    start_playing,
+                    ..spec(Arc::clone(&graph), 1)
+                })
+                .unwrap();
+            wait_for_ready(&worker);
+            let result = worker.try_result().unwrap();
+            assert_eq!(result.request_id, request);
+            assert_eq!(result.mode, ArrangementSeekMode::SectionLoop(region));
+            assert_eq!(
+                (result.destination_frame, result.start_playing),
+                (destination_frame, start_playing)
+            );
+            assert_eq!(
+                result.result.err(),
+                Some(ArrangementPrerollError::CandidatePositionMismatch)
+            );
+        }
+        worker
+            .submit(ArrangementSeekSpec {
+                mode: ArrangementSeekMode::SectionLoop(enabled),
+                start_playing: true,
+                ..spec(Arc::clone(&graph), 2)
+            })
+            .unwrap();
+        wait_for_ready(&worker);
+        let playback = worker.try_result().unwrap().result.unwrap();
+        assert_eq!(playback.section_loop(), Some(enabled));
+        assert_eq!(playback.position(), 0);
+        assert!(playback.playing());
+        worker.shutdown_and_join_on_control();
     }
 
     fn wait_for_idle(worker: &ArrangementSeekWorker) {
