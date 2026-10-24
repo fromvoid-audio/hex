@@ -5,6 +5,8 @@ use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDevic
 use std::collections::BTreeMap;
 
 mod pressure;
+#[cfg(not(debug_assertions))]
+mod profile;
 mod sampler;
 
 fn limits() -> hex_engine::AudioStorageLedgerReservation {
@@ -31,9 +33,12 @@ fn fixture(profile: &str) -> OrdinaryFixture {
     fixture_at(profile, 2)
 }
 fn fixture_at(profile: &str, location: usize) -> OrdinaryFixture {
+    fixture_with_quantum(profile, location, 8)
+}
+fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> OrdinaryFixture {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, 8)
+        .configure_physical_callback_request(&mut callback, quantum)
         .unwrap();
     let (mut data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
@@ -90,7 +95,7 @@ fn fixture_at(profile: &str, location: usize) -> OrdinaryFixture {
         _ => ProcessorChainOwner::Main,
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
-    let binding = source_for_fixture(&mut control, identity, profile);
+    let binding = source_for_profile(&mut control, identity, profile, quantum, None);
     editor
         .execute(match location {
             0 => Command::InsertDevice {

@@ -33,6 +33,7 @@ fn actual_ordinary_native_graph_references_survive_full_returns_and_queued_shutd
         |_| Ok::<_, ()>(()),
     ) {
         Err(AdmittedPublishError::Publication(refused)) => {
+            assert_eq!(refused.reason, "playback publication already pending");
             assert!(Arc::ptr_eq(
                 refused.playback.prepared_revision().unwrap(),
                 &original

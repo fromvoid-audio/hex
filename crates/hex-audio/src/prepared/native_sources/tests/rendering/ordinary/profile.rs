@@ -1,0 +1,104 @@
+//! Optimized paced ordinary graph measurements; no device or native app.
+use super::*;
+
+fn cpu_time() -> Duration {
+    rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime)
+        .try_into()
+        .unwrap()
+}
+
+#[test]
+#[ignore = "explicit optimized original SDK ordinary graph measurement"]
+fn actual_native_ordinary_graph_callback_profile() {
+    let _serial = serial();
+    const Q: usize = 256;
+    const WARM: usize = 64;
+    const N: usize = 1024;
+    let period = Duration::from_nanos(1_000_000_000 * Q as u64 / 48_000);
+    for location in 0..3 {
+        let mut f = fixture_with_quantum("processing", location, Q as u16);
+        let playback = compile(&f, true);
+        publish(&mut f.control, playback, PublicationPolicy::InheritRuntime);
+        let root = f.control.native_candidate_root();
+        f.control.command(PlaybackCommand::Play).unwrap();
+        let mut wall = Vec::with_capacity(N);
+        let mut cpu = Vec::with_capacity(N);
+        let mut replies = Vec::with_capacity(N);
+        let mut failure = None;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                qos_threads::set_current_thread(qos_threads::Qos::High).unwrap();
+                let mut target = Instant::now();
+                for block_index in 0..WARM + N {
+                    if let Some(remaining) = target.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(remaining);
+                    }
+                    let next_target = target + period;
+                    let mut output = [[0.0; 2]; Q];
+                    let mut host = [0.0_f32; Q * 2];
+                    let mut delivered = false;
+                    let cpu_start = cpu_time();
+                    let start = Instant::now();
+                    allocation_free(|| {
+                        f.data.owner_mut().unwrap().run(|callback, _| {
+                            callback.begin_block();
+                            callback.begin_native_effect_callback(Q).unwrap();
+                            let rendered = callback.render(&mut output);
+                            delivered = crate::device::finish_host_chunk(
+                                callback, &mut host, &mut output, 2, &rendered,
+                                (block_index * Q) as u64, Instant::now(),
+                            );
+                        })
+                    });
+                    let elapsed = start.elapsed().as_nanos();
+                    let cpu_elapsed = cpu_time().checked_sub(cpu_start).unwrap().as_nanos();
+                    let dispatched = Instant::now();
+                    let reply = loop {
+                        if !delivered { break None; }
+                        if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, f.binding).unwrap()
+                            > block_index as u64 {
+                            break Some(dispatched.elapsed().as_nanos());
+                        }
+                        if Instant::now() >= next_target { break None; }
+                        std::thread::yield_now();
+                    };
+                    let correct = output.iter().enumerate().all(|(index, actual)| {
+                        let at = block_index * Q + index;
+                        let expected = if (2 * Q..2 * Q + 32).contains(&at) {
+                            let gain = if location == 1 { 1.5 } else { 0.5 };
+                            [0.25 * gain, -0.5 * gain]
+                        } else { [0.0; 2] };
+                        *actual == expected
+                    });
+                    if !delivered || !correct || reply.is_none() {
+                        failure = Some((block_index, delivered, correct, reply));
+                        break;
+                    }
+                    if block_index >= WARM {
+                        wall.push(elapsed);
+                        cpu.push(cpu_elapsed);
+                        replies.push(reply.unwrap());
+                    }
+                    target = next_target;
+                }
+            }).join().unwrap();
+        });
+        let returned = dispose(f);
+        assert!(returned.error.is_none());
+        assert_eq!(failure, None, "ordinary native profile failure");
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(retired)
+            if retired.status.success() && retired.terminal.is_some_and(|terminal|
+                (terminal.blocks, terminal.frames) == ((WARM + N) as u64, ((WARM + N) * Q) as u64)))
+        );
+        wall.sort_unstable();
+        cpu.sort_unstable();
+        replies.sort_unstable();
+        println!(
+            "ordinary native profile location={location} rate=48000 quantum={Q} warmup={WARM} measured={N} wall_ns[p50,p99,max]={:?} cpu_ns[p50,p99,max]={:?} reply_ns[p50,p99,max]={:?}",
+            [wall[N / 2], wall[N * 99 / 100], wall[N - 1]],
+            [cpu[N / 2], cpu[N * 99 / 100], cpu[N - 1]],
+            [replies[N / 2], replies[N * 99 / 100], replies[N - 1]]
+        );
+    }
+}
