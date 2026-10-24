@@ -506,3 +506,91 @@ fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
         "unselected later note is excluded"
     );
 }
+
+#[test]
+fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
+    for midi in [false, true] {
+        for range in [false, true] {
+            let folder = Folder::new();
+            let (mut session, track, clip) = if midi {
+                let (mut session, track, clip) = fixture();
+                session
+                    .command(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::from_ratio(1, 4).unwrap(),
+                        pitch: 67,
+                        channel: 0,
+                        velocity: 83,
+                    })
+                    .unwrap();
+                (session, track, clip)
+            } else {
+                let mut session = Session::new(48_000, 32, 2_000_000).unwrap();
+                let audio = Audio::new(
+                    48_000,
+                    (0..24_000)
+                        .map(|i| {
+                            let x = (i as f32 * 0.173).sin() * (i as f32 / 48_000.0);
+                            [x, -x]
+                        })
+                        .collect(),
+                )
+                .unwrap();
+                let prepared = PreparedImport {
+                    path: folder.0.join("source.wav"),
+                    source_sample_rate: 48_000,
+                    source_frames: 24_000,
+                    conversion_version: hex_project::IDENTITY_CONVERSION,
+                    waveform: waveform::summarize(&audio, 1_024).unwrap(),
+                    source_audio: audio.clone(),
+                    audio,
+                };
+                let Created::Imported { track, clip, .. } = session.import(prepared).unwrap()
+                else {
+                    panic!("import")
+                };
+                (session, track, clip)
+            };
+            let forward = pcm(session.compile_prepared_revision(None).unwrap(), 80_000);
+            session.command(Command::ReverseClips(vec![clip])).unwrap();
+            let revision = session.compile_prepared_revision(None).unwrap();
+            let expected = pcm(revision.clone(), 80_000);
+            assert_ne!(expected, forward, "asymmetric fixture exercises reflection");
+            let target = if range {
+                let start = if midi { 30_013 } else { 1_013 };
+                BounceTarget::Range(
+                    hex_project::TimeRange::new(vec![track], start, start + 10_007).unwrap(),
+                )
+            } else {
+                BounceTarget::Clips(vec![clip])
+            };
+            let (_, bounced) = session
+                .bounce_arrangement(
+                    target,
+                    !range,
+                    &folder.0,
+                    &hex_export::ExportControl::default(),
+                    Some(&revision),
+                )
+                .unwrap();
+            let (actual, expected) = if range {
+                let audio = &session.project().tracks()[1].clips()[0];
+                (
+                    session.audio(audio.asset()).unwrap().frames().to_vec(),
+                    expected[audio.start() as usize..(audio.start() + audio.duration()) as usize]
+                        .to_vec(),
+                )
+            } else {
+                (pcm(bounced, 80_000), expected)
+            };
+            let error = actual
+                .iter()
+                .flatten()
+                .zip(expected.iter().flatten())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(error < 1e-5, "directed source survives bounce: {error}");
+        }
+    }
+}
