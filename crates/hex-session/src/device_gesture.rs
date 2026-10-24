@@ -1951,11 +1951,6 @@ fn mix_value(value: ParameterValue, min: f32, max: f32) -> Result<f32, SessionEr
 }
 
 fn static_track_gain(session: &Session, track: TrackId) -> Result<f32, SessionError> {
-    if session.audio_mode() != crate::DocumentAudioMode::Resident {
-        return Err(SessionError::Invalid(
-            "held track gain requires resident audio mode",
-        ));
-    }
     let source = session
         .project()
         .track(track)

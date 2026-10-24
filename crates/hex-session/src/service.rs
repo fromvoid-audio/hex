@@ -248,6 +248,9 @@ pub struct Event {
     pub tuning_library: Option<TuningLibraryResult>,
 }
 
+mod verified_gain;
+pub use verified_gain::VerifiedTrackGainSource;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DevicePreviewIdentity {
     pub project_generation: u64,

@@ -12,6 +12,7 @@ mod resident_sections;
 mod sampler;
 mod track_clipboard;
 mod track_reorder;
+mod verified_gain;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -52,6 +53,8 @@ struct Observation {
         hex_engine::AudioCandidateIdentity,
         hex_engine::AudioCandidateIdentity,
     )>,
+    received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
+    replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     fail_gain_open: bool,
     expire_gain_fence: bool,
     cancel_edit_after_seal: Option<Arc<AtomicBool>>,
@@ -330,6 +333,13 @@ impl WorkerAudioSink for ObservedSink {
         }
         self.inner.canonical_changed(source);
     }
+    fn verified_track_gain_source(
+        &mut self,
+        source: Arc<hex_session::service::VerifiedTrackGainSource>,
+    ) {
+        self.inner.verified_track_gain_source(Arc::clone(&source));
+        self.observation.lock().unwrap().received_verified_gain = Some(source);
+    }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.inner.native_sampler_input(input);
         let mut observation = self.observation.lock().unwrap();
@@ -443,6 +453,10 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.restart_audio(generation, request)
     }
     fn poll(&mut self) {
+        let replay = self.observation.lock().unwrap().replay_verified_gain.take();
+        if let Some(source) = replay {
+            self.inner.verified_track_gain_source(source);
+        }
         let hook = self.observation.lock().unwrap().pause_poll.take();
         if let Some((entered, release)) = hook {
             entered.send(()).unwrap();
