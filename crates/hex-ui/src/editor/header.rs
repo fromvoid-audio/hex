@@ -6,8 +6,9 @@ use std::path::Path;
 pub(super) const TITLE_HEIGHT: f32 = 22.0;
 pub(super) const TOOLBAR_HEIGHT: f32 = 26.0;
 // Keep every transport action, full view name and useful output status at the
-// minimum window width. Wide windows retain one compact toolbar line.
-pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_000.0;
+// minimum window width. Reserve the wide line for the longest input policy,
+// position readout and output/loading indicators as well as fixed controls.
+pub(super) const WIDE_TOOLBAR_MIN_WIDTH: f32 = 1_200.0;
 pub(super) fn toolbar_height(width: f32) -> f32 {
     if width < WIDE_TOOLBAR_MIN_WIDTH {
         // Two full rows plus the existing bottom divider.
@@ -387,6 +388,7 @@ mod ui_tests {
         cx: &mut TestAppContext,
     ) {
         use super::super::EditorMode;
+        use hex_project::InputQuantization::{Adaptive, Off, Sixteenth};
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).unwrap(),
@@ -440,7 +442,23 @@ mod ui_tests {
                         cx.notify();
                     })
                 });
-                for width in [880.0, 881.0, 960.0, 999.0, 1_000.0, 1440.0, 880.0] {
+                for (width, input) in [
+                    (880.0, Off),
+                    (881.0, Adaptive),
+                    (960.0, Sixteenth),
+                    (999.0, Adaptive),
+                    (1_000.0, Off),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH - 1.0, Adaptive),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Adaptive),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Off),
+                    (super::WIDE_TOOLBAR_MIN_WIDTH, Sixteenth),
+                    (1440.0, Adaptive),
+                    (880.0, Off),
+                ] {
+                    editor.update(&mut visual, |view, cx| {
+                        view.set_input_quantization(input);
+                        cx.notify();
+                    });
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
@@ -466,11 +484,18 @@ mod ui_tests {
                     assert!(restart.right() <= status.left());
                     assert!(status.right() <= toolbar.right() - px(8.0));
                     assert!(status.size.height <= toolbar.size.height);
+                    let policy = visual.debug_bounds("input-quantization").unwrap();
+                    let label_chars = format!("in {} ▾", input.label()).chars().count();
+                    assert!(
+                        policy.size.width >= name.size.width * (label_chars as f32 / 12.0),
+                        "the complete input policy label remains visible"
+                    );
                     for selector in [
                         "arrange-zoom-fit",
                         "arrange-zoom-back",
                         "section-autoplay-toggle",
                         "global-launch-quantization",
+                        "input-quantization",
                         "section-focus-control",
                     ] {
                         let control = visual.debug_bounds(selector).unwrap();
@@ -565,7 +590,17 @@ mod ui_tests {
                     v.set_mode(mode);
                     cx.notify();
                 });
-                for width in [880.0, 881.0, 960.0, 999.0, 1_000.0, 1440.0, 880.0] {
+                for width in [
+                    880.0,
+                    881.0,
+                    960.0,
+                    999.0,
+                    1_000.0,
+                    super::WIDE_TOOLBAR_MIN_WIDTH - 1.0,
+                    super::WIDE_TOOLBAR_MIN_WIDTH,
+                    1440.0,
+                    880.0,
+                ] {
                     visual.simulate_resize(size(px(width), px(540.0)));
                     visual.run_until_parked();
                     let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
