@@ -69,6 +69,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
             || self.save_dialog_open
