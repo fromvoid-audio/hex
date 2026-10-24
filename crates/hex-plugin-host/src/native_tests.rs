@@ -681,15 +681,40 @@ fn real_immutable_quantum_adapter_has_exact_two_quantum_positions_and_rejects_ho
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presentation() {
     let case = Case::new();
+    let build = build();
+    let selected = source();
+    let bound = selected
+        .preparation_storage_bound_on_control(&build, None)
+        .unwrap();
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            assert_eq!(
+                selected.preparation_storage_bound_on_control(&build, None),
+                Some(bound)
+            );
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+    }
     let mut pending = Pending::prepare(
-        &build(),
-        source(),
+        &build,
+        selected,
         options().preparation,
         PreparationCancellation::new_on_control().unwrap(),
         case.setup(0),
     )
     .unwrap();
     let storage = pending.retained_storage_on_control().unwrap();
+    assert!(storage.data_bytes <= bound.max_pending_data_bytes);
+    assert_eq!(
+        pending.config.bundle.capacity(),
+        pending.config.bundle.len()
+    );
+    assert_eq!(
+        pending.config.executable.capacity(),
+        pending.config.executable.len()
+    );
     assert_eq!((storage.shared_groups, storage.shared_handle_bound), (2, 2));
     assert_eq!(
         storage.inventory_node_lifetime_bound,
@@ -731,6 +756,9 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
     let mut instance = pending
         .complete_on_control(Some(options().presentation))
         .unwrap();
+    assert!(
+        instance.retained_storage_on_control().unwrap().data_bytes <= bound.max_prepared_data_bytes
+    );
     let captured = decode(&instance.ready().initial_state)
         .unwrap()
         .component
@@ -1165,8 +1193,12 @@ fn startup_state(selected: &Source, controller: bool, latency: u32) -> NativeDev
 fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() {
     let selected = source();
     let saved = startup_state(&selected, false, 0);
+    let build = build();
+    let bound = selected
+        .preparation_storage_bound_on_control(&build, Some(&saved))
+        .unwrap();
     let pending = Pending::prepare_restored_on_control(
-        &build(),
+        &build,
         selected,
         options().preparation,
         saved.clone(),
@@ -1177,6 +1209,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     assert!(pending.facts().restored);
     assert_eq!(pending.facts().algorithmic_latency_frames, 0);
     let pending_storage = pending.retained_storage_on_control().unwrap();
+    assert!(pending_storage.data_bytes <= bound.max_pending_data_bytes);
     assert_eq!(pending_storage.shared_groups, 3);
     let provenance_bytes = pending.source.metadata_backing().unwrap()
         + pending.build.retained_storage().unwrap().data_bytes;
@@ -1186,6 +1219,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     assert!(instance.ready().restored);
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
     let storage = instance.retained_storage_on_control().unwrap();
+    assert!(storage.data_bytes <= bound.max_prepared_data_bytes);
     assert_eq!(
         storage.data_bytes,
         pending_storage.data_bytes - provenance_bytes

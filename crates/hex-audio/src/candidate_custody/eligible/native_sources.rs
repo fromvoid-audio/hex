@@ -266,8 +266,8 @@ impl Custody {
         let Ok(mut work) = self.work.try_lock() else {
             return Err("native preparation is busy");
         };
-        let input_data = source
-            .preparation_input_data_bytes_on_control(build, restore.as_ref())
+        let storage_bound = source
+            .preparation_storage_bound_on_control(build, restore.as_ref())
             .ok_or("native source input storage is invalid or overflowing")?;
         let (index, binding) = {
             let mut bank = lock(&self.bank);
@@ -278,8 +278,11 @@ impl Custody {
                 .sources
                 .limits
                 .ok_or("native source data is not reserved")?;
-            if input_data > limits.max_retained_data_bytes {
+            if storage_bound.input_data_bytes > limits.max_retained_data_bytes {
                 return Err("native source input exceeds retained data reservation");
+            }
+            if storage_bound.max_retained_data_bytes() > limits.max_retained_data_bytes {
+                return Err("native preparation exceeds retained data reservation");
             }
             let index = bank
                 .sources

@@ -5,7 +5,7 @@ pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 mod storage;
-pub use storage::{PendingStorage, PreparedStorage};
+pub use storage::{PendingStorage, PreparationStorageBound, PreparedStorage};
 
 use crate::transport::Block;
 use crate::{
@@ -299,16 +299,25 @@ impl Pending {
             quantum: options.quantum,
             input_channels: options.input_channels,
             output_channels: options.output_channels,
-            bundle: source
-                .bundle
-                .canonical_path
-                .to_str()
-                .ok_or(Error::Protocol("bundle path encoding"))
-                .map_err(PreparationFailure::before_native)?
-                .to_owned(),
-            executable: source.executable.relative_path.clone(),
+            bundle: storage::copy_configuration_path(
+                source
+                    .bundle
+                    .canonical_path
+                    .to_str()
+                    .ok_or(Error::Protocol("bundle path encoding"))
+                    .map_err(PreparationFailure::before_native)?,
+            )
+            .map_err(PreparationFailure::before_native)?,
+            executable: storage::copy_configuration_path(&source.executable.relative_path)
+                .map_err(PreparationFailure::before_native)?,
         };
         let request = config.encode().map_err(PreparationFailure::before_native)?;
+        // Establish the eventual Pending's bounded provenance copy before any
+        // probe or instance child starts, never through a late derived Clone.
+        let owned_build = build
+            .try_copy_on_control()
+            .map_err(Error::Source)
+            .map_err(PreparationFailure::before_native)?;
         source
             .unchanged()
             .map_err(PreparationFailure::before_native)?;
@@ -423,7 +432,7 @@ impl Pending {
             limits: options.limits,
             packet,
             source,
-            build: build.clone(),
+            build: owned_build,
         })
     }
     pub fn facts(&self) -> Facts {

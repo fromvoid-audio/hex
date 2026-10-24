@@ -234,6 +234,46 @@ fn actual_input_over_native_allowance_refuses_before_cancellation_or_child_const
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_preparation_retained_bound_is_checked_before_reservation_or_child() {
+    let (build, source, preparation) = input();
+    let bound = source
+        .preparation_storage_bound_on_control(&build, None)
+        .unwrap();
+    let limit = bound.max_retained_data_bytes() - 1;
+    assert!(bound.input_data_bytes <= limit, "request input alone fits");
+    let root = root();
+    root.configure_native_sources(
+        1,
+        NativeSourceDataReservation {
+            max_retained_data_bytes: limit,
+            max_construction_peak_data_bytes: limit + hex_plugin_scan::MAX_BINARY as usize,
+        },
+    )
+    .unwrap();
+    let before = root.usage();
+    let result = root.begin_native_source_between(
+        identity(),
+        12,
+        &build,
+        source,
+        preparation,
+        None,
+        native::TrustUserCode::Acknowledged,
+        || panic!("preparation over budget must not construct cancellation or child"),
+        || panic!("preparation over budget must not reserve a slot"),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        "native preparation exceeds retained data reservation"
+    );
+    assert_eq!(root.usage(), before);
+    let bank = lock(&root.bank);
+    assert!(!bank.sources.occupied());
+    assert_eq!(bank.sources.next_epoch, 1);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_recovery() {
     let root = root();
     root.configure_native_sources(1, source_reservation())

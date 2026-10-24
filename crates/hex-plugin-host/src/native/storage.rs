@@ -31,6 +31,42 @@ pub struct PendingStorage {
     pub inventory_node_lifetime_bound: usize,
 }
 
+/// Known retained DATA for request input, Pending and final Prepared phases.
+/// Helper/path copies use exact-length producers before native startup; final
+/// captured state uses the shared codec's limit. No I/O or allocation occurs in
+/// this query. Revalidation/encoding/capture peaks, diagnostics and opaque
+/// resource lifetimes remain separate; this cannot seal Root/publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparationStorageBound {
+    pub input_data_bytes: usize,
+    pub max_pending_data_bytes: usize,
+    pub max_prepared_data_bytes: usize,
+}
+impl PreparationStorageBound {
+    pub fn max_retained_data_bytes(self) -> usize {
+        self.input_data_bytes
+            .max(self.max_pending_data_bytes)
+            .max(self.max_prepared_data_bytes)
+    }
+}
+
+pub(super) fn copy_configuration_path(source: &str) -> Result<String> {
+    if source.is_empty() || source.len() > 4096 || source.contains('\0') {
+        return Err(Error::Protocol("unsupported instance configuration"));
+    }
+    let mut target = String::new();
+    target
+        .try_reserve_exact(source.len())
+        .map_err(|_| Error::Protocol("instance configuration allocation refused"))?;
+    if target.capacity() != source.len() {
+        return Err(Error::Protocol(
+            "instance configuration allocation bound differs",
+        ));
+    }
+    target.push_str(source);
+    Ok(target)
+}
+
 fn immutable_backing(
     config: &Configuration,
     captured: Option<&NativeDeviceState>,
@@ -59,25 +95,44 @@ fn immutable_backing(
 }
 
 impl Source {
-    /// Existing request-input footprint charged against a cell allowance. The
-    /// borrowed helper metadata is charged prospectively for its copy, without
-    /// predicting clone capacity. Configuration copies, capture and transient
-    /// resources remain separate; this is not a complete preparation bound.
-    pub fn preparation_input_data_bytes_on_control(
+    /// Bound the actual input and both retained native preparation phases.
+    /// Borrowed helper capacity conservatively covers its exact-length copy;
+    /// configuration copies are length-controlled and final capture is bounded
+    /// by the codec. These DATA components do not authorize native admission.
+    pub fn preparation_storage_bound_on_control(
         &self,
         build: &InstanceBuild,
         restore: Option<&NativeDeviceState>,
-    ) -> Option<usize> {
+    ) -> Option<PreparationStorageBound> {
         let asset_bytes = restore.map_or(Some(0), |state| {
             state
                 .asset_references()
                 .len()
                 .checked_mul(std::mem::size_of::<DeviceAssetReference>())
         })?;
-        self.metadata_backing()?
+        let restore_bytes = restore
+            .map_or(0, |state| state.payload().len())
+            .checked_add(asset_bytes)?;
+        let input_data_bytes = self
+            .metadata_backing()?
             .checked_add(build.retained_storage()?.data_bytes)?
-            .checked_add(restore.map_or(0, |state| state.payload().len()))?
-            .checked_add(asset_bytes)
+            .checked_add(restore_bytes)?;
+        let config_paths = self
+            .bundle
+            .canonical_path
+            .as_os_str()
+            .len()
+            .checked_add(self.executable.relative_path.len())?;
+        let config_data = config_paths
+            .checked_add(std::mem::size_of::<UnixStream>())?
+            .checked_add(std::mem::size_of::<AtomicBool>())?;
+        Some(PreparationStorageBound {
+            input_data_bytes,
+            max_pending_data_bytes: input_data_bytes.checked_add(config_data)?,
+            max_prepared_data_bytes: config_data
+                .checked_add(restore_bytes)?
+                .checked_add(hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES)?,
+        })
     }
     pub(super) fn metadata_backing(&self) -> Option<usize> {
         self.bundle
