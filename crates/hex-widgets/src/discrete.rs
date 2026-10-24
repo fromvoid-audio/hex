@@ -10,29 +10,39 @@ pub struct ToggleChanged {
     pub checked: bool,
 }
 
-/// Presentation-only density for the shared boolean/choice entities.
+/// Boolean presentations; selector-only geometry cannot be supplied here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DiscreteControlAppearance {
+pub enum ToggleAppearance {
     #[default]
     Standard,
     CompactButton,
-    /// Unlabelled square activator; caller supplies the surrounding label.
     CompactSquare,
-    /// Smaller marker in the same operable square hit region.
     MicroSquare,
     CompactIconButton,
+}
+/// Choice presentations; boolean-only geometry cannot be supplied here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectorAppearance {
+    #[default]
+    Standard,
     CompactSelector,
-    /// Equal-width directly selectable options without a popup.
     CompactSegments,
 }
 
 /// Validated toggle construction data for an infallible GPUI entity factory.
+/// Choice-only presentations are rejected by the type system:
+/// ```compile_fail
+/// use hex_widgets::{ToggleConfig, SelectorAppearance};
+/// fn wrong_family(config: ToggleConfig) {
+///     config.with_appearance(SelectorAppearance::CompactSelector);
+/// }
+/// ```
 pub struct ToggleConfig {
     id: SharedString,
     label: SharedString,
     checked: bool,
     style: ControlStyle,
-    appearance: DiscreteControlAppearance,
+    appearance: ToggleAppearance,
 }
 
 impl ToggleConfig {
@@ -47,11 +57,11 @@ impl ToggleConfig {
             label: label.into(),
             checked,
             style: style.validate()?,
-            appearance: DiscreteControlAppearance::Standard,
+            appearance: ToggleAppearance::Standard,
         })
     }
 
-    pub fn with_appearance(mut self, appearance: DiscreteControlAppearance) -> Self {
+    pub fn with_appearance(mut self, appearance: ToggleAppearance) -> Self {
         self.appearance = appearance;
         self
     }
@@ -67,7 +77,7 @@ pub struct Toggle {
     checked: bool,
     enabled: bool,
     style: ControlStyle,
-    appearance: DiscreteControlAppearance,
+    appearance: ToggleAppearance,
     tab_navigation: bool,
     focus: FocusHandle,
 }
@@ -168,6 +178,21 @@ impl Toggle {
         }
     }
 
+    fn foreground(&self) -> u32 {
+        if self.checked
+            && matches!(
+                self.appearance,
+                ToggleAppearance::CompactButton | ToggleAppearance::CompactIconButton
+            )
+        {
+            self.style.accent_text
+        } else if self.enabled {
+            self.style.text
+        } else {
+            self.style.muted
+        }
+    }
+
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.enabled {
             self.checked = !self.checked;
@@ -223,8 +248,7 @@ impl gpui::Render for Toggle {
             .h(px(
                 if matches!(
                     self.appearance,
-                    DiscreteControlAppearance::CompactButton
-                        | DiscreteControlAppearance::CompactIconButton
+                    ToggleAppearance::CompactButton | ToggleAppearance::CompactIconButton
                 ) {
                     14.0
                 } else {
@@ -234,34 +258,28 @@ impl gpui::Render for Toggle {
             .px(px(
                 if matches!(
                     self.appearance,
-                    DiscreteControlAppearance::CompactButton
-                        | DiscreteControlAppearance::CompactIconButton
+                    ToggleAppearance::CompactButton | ToggleAppearance::CompactIconButton
                 ) {
                     1.0
                 } else {
                     3.0
                 },
             ))
-            .gap(px(
-                if self.appearance == DiscreteControlAppearance::CompactButton {
-                    3.0
-                } else {
-                    5.0
-                },
-            ))
+            .gap(px(if self.appearance == ToggleAppearance::CompactButton {
+                3.0
+            } else {
+                5.0
+            }))
             .items_center()
-            .rounded(px(
-                if self.appearance == DiscreteControlAppearance::CompactButton {
-                    1.5
-                } else {
-                    2.0
-                },
-            ))
+            .rounded(px(if self.appearance == ToggleAppearance::CompactButton {
+                1.5
+            } else {
+                2.0
+            }))
             .bg(rgb(
                 if matches!(
                     self.appearance,
-                    DiscreteControlAppearance::CompactButton
-                        | DiscreteControlAppearance::CompactIconButton
+                    ToggleAppearance::CompactButton | ToggleAppearance::CompactIconButton
                 ) && self.checked
                 {
                     self.style.accent
@@ -354,9 +372,9 @@ impl gpui::Render for Toggle {
         );
         if matches!(
             self.appearance,
-            DiscreteControlAppearance::CompactSquare | DiscreteControlAppearance::MicroSquare
+            ToggleAppearance::CompactSquare | ToggleAppearance::MicroSquare
         ) {
-            let marker_size = if self.appearance == DiscreteControlAppearance::MicroSquare {
+            let marker_size = if self.appearance == ToggleAppearance::MicroSquare {
                 9.0
             } else {
                 12.0
@@ -386,13 +404,8 @@ impl gpui::Render for Toggle {
                         })),
                 );
         }
-        if self.appearance == DiscreteControlAppearance::CompactIconButton {
-            let enabled = self.enabled;
-            let icon_color = rgb(if enabled {
-                self.style.text
-            } else {
-                self.style.muted
-            });
+        if self.appearance == ToggleAppearance::CompactIconButton {
+            let icon_color = rgb(self.foreground());
             root = root.child(
                 canvas(
                     |_, _, _| (),
@@ -432,7 +445,7 @@ impl gpui::Render for Toggle {
                 )
                 .size(px(10.0)),
             );
-        } else if self.appearance == DiscreteControlAppearance::CompactButton {
+        } else if self.appearance == ToggleAppearance::CompactButton {
             root = root.child(
                 div()
                     .flex_1()
@@ -440,11 +453,7 @@ impl gpui::Render for Toggle {
                     .overflow_hidden()
                     .text_center()
                     .text_size(px(8.0))
-                    .text_color(rgb(if self.enabled {
-                        self.style.text
-                    } else {
-                        self.style.muted
-                    }))
+                    .text_color(rgb(self.foreground()))
                     .child(self.label.clone()),
             );
         } else {
@@ -469,7 +478,7 @@ impl gpui::Render for Toggle {
         }
         if matches!(
             self.appearance,
-            DiscreteControlAppearance::CompactButton | DiscreteControlAppearance::CompactIconButton
+            ToggleAppearance::CompactButton | ToggleAppearance::CompactIconButton
         ) {
             root = root.w_full();
         }
@@ -484,13 +493,20 @@ pub struct SelectorChanged {
 }
 
 /// Validated choice construction data for an infallible GPUI entity factory.
+/// Boolean-only presentations are rejected by the type system:
+/// ```compile_fail
+/// use hex_widgets::{SelectorConfig, ToggleAppearance};
+/// fn wrong_family(config: SelectorConfig) {
+///     config.with_appearance(ToggleAppearance::CompactButton);
+/// }
+/// ```
 pub struct SelectorConfig {
     accessibility_name: SharedString,
     id: SharedString,
     choices: Vec<SharedString>,
     selected: usize,
     style: ControlStyle,
-    appearance: DiscreteControlAppearance,
+    appearance: SelectorAppearance,
 }
 
 impl SelectorConfig {
@@ -513,7 +529,7 @@ impl SelectorConfig {
             choices,
             selected,
             style: style.validate()?,
-            appearance: DiscreteControlAppearance::Standard,
+            appearance: SelectorAppearance::Standard,
         })
     }
 
@@ -523,7 +539,7 @@ impl SelectorConfig {
         self
     }
 
-    pub fn with_appearance(mut self, appearance: DiscreteControlAppearance) -> Self {
+    pub fn with_appearance(mut self, appearance: SelectorAppearance) -> Self {
         self.appearance = appearance;
         self
     }
@@ -541,7 +557,7 @@ pub struct Selector {
     open: bool,
     enabled: bool,
     style: ControlStyle,
-    appearance: DiscreteControlAppearance,
+    appearance: SelectorAppearance,
     tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
@@ -778,7 +794,7 @@ impl Selector {
         if !self.enabled {
             return;
         }
-        if self.appearance == DiscreteControlAppearance::CompactSegments {
+        if self.appearance == SelectorAppearance::CompactSegments {
             let next = match event.keystroke.key.as_str() {
                 "right" | "down" | "space" => (self.selected + 1) % self.choices.len(),
                 "left" | "up" => (self.selected + self.choices.len() - 1) % self.choices.len(),
@@ -834,7 +850,7 @@ impl gpui::Render for Selector {
                 }
             }));
         }
-        if self.appearance == DiscreteControlAppearance::CompactSegments {
+        if self.appearance == SelectorAppearance::CompactSegments {
             let mut row = div()
                 .id(self.id.clone())
                 .debug_selector(|| self.id.to_string())
@@ -873,11 +889,15 @@ impl gpui::Render for Selector {
                             self.style.surface
                         }))
                         .when(self.enabled && index != self.selected, |option| {
-                            option.hover(|hover| hover.bg(rgb(self.style.hover)))
+                            option.hover(|hover| {
+                                hover
+                                    .bg(rgb(self.style.hover))
+                                    .text_color(rgb(self.style.hover_text))
+                            })
                         })
                         .text_size(px(8.0))
                         .text_color(rgb(if index == self.selected {
-                            self.style.background
+                            self.style.accent_text
                         } else {
                             self.style.text
                         }))
@@ -917,14 +937,14 @@ impl gpui::Render for Selector {
                 div()
                     .flex()
                     .h(px(
-                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                        if self.appearance == SelectorAppearance::CompactSelector {
                             10.0
                         } else {
                             20.0
                         },
                     ))
                     .px(px(
-                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                        if self.appearance == SelectorAppearance::CompactSelector {
                             2.0
                         } else {
                             4.0
@@ -933,7 +953,7 @@ impl gpui::Render for Selector {
                     .gap(px(4.0))
                     .items_center()
                     .rounded(px(
-                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                        if self.appearance == SelectorAppearance::CompactSelector {
                             1.5
                         } else {
                             2.0
@@ -943,7 +963,7 @@ impl gpui::Render for Selector {
                     .border_color(rgb(self.style.border))
                     .bg(rgb(self.style.raised))
                     .text_size(px(
-                        if self.appearance == DiscreteControlAppearance::CompactSelector {
+                        if self.appearance == SelectorAppearance::CompactSelector {
                             8.0
                         } else {
                             self.style.font_size
@@ -979,13 +999,13 @@ impl gpui::Render for Selector {
             .top(px(0.0))
             .bottom(px(0.0)),
         );
-        if self.appearance == DiscreteControlAppearance::CompactSelector {
+        if self.appearance == SelectorAppearance::CompactSelector {
             root = root.w_full();
         }
         if self.open && self.enabled {
             let options = self.choices.clone();
             let current = self.selected;
-            let compact = self.appearance == DiscreteControlAppearance::CompactSelector;
+            let compact = self.appearance == SelectorAppearance::CompactSelector;
             let field_height = if compact { 16.0 } else { 22.0 };
             let option_height = if compact { 18.0 } else { 19.0 };
             let style = self.style;
@@ -1060,9 +1080,15 @@ impl gpui::Render for Selector {
                         } else {
                             self.style.surface
                         }))
-                        .hover(move |hover| hover.bg(rgb(style.hover)))
+                        .hover(move |hover| {
+                            hover.bg(rgb(style.hover)).text_color(rgb(style.hover_text))
+                        })
                         .text_size(px(self.style.font_size))
-                        .text_color(rgb(self.style.text))
+                        .text_color(rgb(if index == current {
+                            style.hover_text
+                        } else {
+                            style.text
+                        }))
                         .cursor(gpui::CursorStyle::PointingHand)
                         .on_mouse_down(MouseButton::Left, listener)
                         .child(choice)
@@ -1130,3 +1156,26 @@ pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -
 
 #[cfg(test)]
 mod selector_tests;
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+    use crate::tests::STYLE;
+    #[gpui::test]
+    fn checked_compact_labels_and_icons_use_dark_ink_on_bright_fill(cx: &mut gpui::TestAppContext) {
+        for appearance in [
+            ToggleAppearance::CompactButton,
+            ToggleAppearance::CompactIconButton,
+        ] {
+            let toggle = cx.new(|cx| {
+                Toggle::from_config(
+                    cx,
+                    ToggleConfig::new("contrast", "on", true, STYLE)
+                        .unwrap()
+                        .with_appearance(appearance),
+                )
+            });
+            toggle.read_with(cx, |toggle, _| assert_eq!(toggle.foreground(), 0x202020));
+        }
+    }
+}

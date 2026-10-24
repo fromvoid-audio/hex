@@ -1,6 +1,6 @@
 use crate::{
-    ControlStyle, DialLayout, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, Selector, Toggle,
+    ControlStyle, DialLayout, NumericControl, NumericControlConfig, NumericControlKind,
+    NumericControlPresentation, NumericScale, NumericSpec, ResponseGraph, Selector, Toggle,
 };
 use gpui::{
     AppContext, Context, Empty, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
@@ -12,7 +12,7 @@ use std::{
     rc::Rc,
 };
 
-const STYLE: ControlStyle = ControlStyle {
+pub(super) const STYLE: ControlStyle = ControlStyle {
     background: 0x202020,
     surface: 0x303030,
     raised: 0x383838,
@@ -21,6 +21,9 @@ const STYLE: ControlStyle = ControlStyle {
     text: 0xe0e0e0,
     muted: 0xaaaaaa,
     accent: 0x55ddee,
+    accent_text: 0x202020,
+    numeric_fill: 0x31515a,
+    hover_text: 0xe0e0e0,
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,
@@ -250,7 +253,7 @@ fn open_numeric_control_with_spec(
     spec: NumericSpec,
     value: f64,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
-    open_numeric_control_appearance(cx, kind, spec, value, NumericControlAppearance::Standard)
+    open_numeric_control_appearance(cx, kind, spec, value, kind.into())
 }
 
 fn open_numeric_control_appearance(
@@ -258,7 +261,7 @@ fn open_numeric_control_appearance(
     kind: NumericControlKind,
     spec: NumericSpec,
     value: f64,
-    appearance: NumericControlAppearance,
+    appearance: NumericControlPresentation,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
     open_numeric_control_layout(cx, kind, spec, value, appearance, DialLayout::ReadoutGap)
 }
@@ -268,7 +271,7 @@ fn open_numeric_control_layout(
     kind: NumericControlKind,
     spec: NumericSpec,
     value: f64,
-    appearance: NumericControlAppearance,
+    appearance: NumericControlPresentation,
     layout: DialLayout,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {
     cx.update(crate::bind_numeric_control_keys);
@@ -280,7 +283,7 @@ fn open_numeric_control_layout(
                 let config =
                     NumericControlConfig::new("test-control", "gain", kind, spec, value, STYLE)
                         .expect("numeric control")
-                        .with_appearance(appearance)
+                        .with_presentation(appearance)
                         .with_dial_layout(layout);
                 NumericControl::from_config(cx, config)
             });
@@ -318,7 +321,7 @@ fn open_micro_dial(cx: &mut TestAppContext) -> gpui::AnyWindowHandle {
                 STYLE,
             )
             .expect("valid MicroDial config")
-            .with_appearance(NumericControlAppearance::MicroDial);
+            .with_presentation(NumericControlPresentation::MicroDial);
             NumericControl::from_config(cx, config)
         });
         window.replace_root(cx, |_, cx| TestRoot {
@@ -1574,12 +1577,12 @@ fn value_cursor_cancellation_focus_loss_and_removal_release_override(cx: &mut Te
 #[gpui::test]
 fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAppContext) {
     for appearance in [
-        NumericControlAppearance::Standard,
-        NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MicroDial,
-        NumericControlAppearance::InlineValue,
+        NumericControlPresentation::Knob,
+        NumericControlPresentation::CompactDial,
+        NumericControlPresentation::MicroDial,
+        NumericControlPresentation::InlineValue,
     ] {
-        let kind = if appearance == NumericControlAppearance::InlineValue {
+        let kind = if appearance == NumericControlPresentation::InlineValue {
             NumericControlKind::HorizontalSlider
         } else {
             NumericControlKind::Knob
@@ -1603,7 +1606,7 @@ fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAp
                 "test-control-value"
             })
             .expect("target");
-        if appearance == NumericControlAppearance::MicroDial {
+        if appearance == NumericControlPresentation::MicroDial {
             assert_eq!(
                 idle.size,
                 size(px(crate::MICRO_DIAL_WIDTH), px(crate::MICRO_DIAL_HEIGHT))
@@ -1704,9 +1707,9 @@ fn numeric_focus_corners_preserve_tile_geometry_hits_and_editing(cx: &mut TestAp
 #[gpui::test]
 fn numeric_dial_bounds_stay_fixed_through_press_drag_text_and_release(cx: &mut TestAppContext) {
     for appearance in [
-        NumericControlAppearance::Standard,
-        NumericControlAppearance::CompactDial,
-        NumericControlAppearance::MicroDial,
+        NumericControlPresentation::Knob,
+        NumericControlPresentation::CompactDial,
+        NumericControlPresentation::MicroDial,
     ] {
         let spec = NumericSpec::new(
             20.0,
@@ -1767,7 +1770,7 @@ fn pan_marker_resets_to_neutral_without_starting_drag(cx: &mut TestAppContext) {
         NumericControlKind::Knob,
         spec,
         0.75,
-        NumericControlAppearance::CompactDial,
+        NumericControlPresentation::CompactDial,
         DialLayout::Pan,
     );
     let phases = Rc::new(RefCell::new(Vec::new()));
@@ -1819,7 +1822,7 @@ fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut Te
             NumericControlKind::VerticalSlider,
             spec,
             -12.0,
-            NumericControlAppearance::DeviceMeters,
+            NumericControlPresentation::DeviceMeters,
         );
         control.update(cx, |control, cx| {
             control.set_meter_readout(
@@ -2500,19 +2503,19 @@ fn fixed_numeric_presentations_match_their_public_tile_dimensions(cx: &mut TestA
     for (kind, appearance, width, height) in [
         (
             NumericControlKind::Knob,
-            NumericControlAppearance::CompactDial,
+            NumericControlPresentation::CompactDial,
             crate::COMPACT_DIAL_WIDTH,
             crate::COMPACT_DIAL_HEIGHT,
         ),
         (
             NumericControlKind::Knob,
-            NumericControlAppearance::MicroDial,
+            NumericControlPresentation::MicroDial,
             crate::MICRO_DIAL_WIDTH,
             crate::MICRO_DIAL_HEIGHT,
         ),
         (
             NumericControlKind::HorizontalSlider,
-            NumericControlAppearance::InlineValue,
+            NumericControlPresentation::InlineValue,
             crate::INLINE_VALUE_WIDTH,
             crate::INLINE_VALUE_HEIGHT,
         ),

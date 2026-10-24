@@ -6,9 +6,9 @@ use crate::editor::pending_edit::{Disposition, Receipt};
 use gpui::{Entity, FocusHandle, Focusable, Subscription, Window};
 use hex_session::service::{Event, Request};
 use hex_widgets::{
-    DiscreteControlAppearance, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale, NumericSpec, Toggle,
-    ToggleChanged, ToggleConfig,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec, Toggle,
+    ToggleAppearance, ToggleChanged, ToggleConfig,
 };
 use std::collections::BTreeMap;
 
@@ -379,7 +379,7 @@ pub(super) fn number(
             NumericControl::from_config(
                 cx,
                 config
-                    .with_appearance(NumericControlAppearance::FilledSlider)
+                    .with_presentation(NumericControlPresentation::FilledSlider)
                     .with_command_fine_steps(),
             )
         });
@@ -474,10 +474,7 @@ pub(super) fn toggle(
             return div();
         };
         let entity = cx.new(|cx| {
-            Toggle::from_config(
-                cx,
-                config.with_appearance(DiscreteControlAppearance::CompactSquare),
-            )
+            Toggle::from_config(cx, config.with_appearance(ToggleAppearance::CompactSquare))
         });
         entity.update(cx, |t, cx| t.set_tab_navigation(true, cx));
         let sub = cx.subscribe(&entity, move |view, _, _: &ToggleChanged, cx| {

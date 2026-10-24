@@ -2,7 +2,7 @@ use super::*;
 use crate::theme;
 use gpui::{Div, div, prelude::*, px};
 use hex_widgets::{
-    NumericControlAppearance, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlConfig, NumericControlEvent, NumericControlKind, NumericControlPresentation,
     NumericEventPhase, NumericScale, NumericSpec,
 };
 
@@ -41,7 +41,7 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
                 )
             });
         let config = match config {
-            Ok(config) => config.with_appearance(NumericControlAppearance::InlineValue),
+            Ok(config) => config.with_presentation(NumericControlPresentation::InlineValue),
             Err(reason) => {
                 view.gain_lane.error = Some(reason.to_string());
                 return div();

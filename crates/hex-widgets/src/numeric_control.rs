@@ -99,9 +99,66 @@ pub enum NumericControlKind {
     VerticalSlider,
 }
 
+/// A complete visual presentation. Each variant determines both control kind
+/// and geometry, so a knob cannot be paired with a slider-only appearance.
+/// All presentations retain the same shared numeric edit entity and events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericControlPresentation {
+    Knob,
+    CompactDial,
+    MicroDial,
+    WideMicroDial,
+    HorizontalSlider,
+    InlineValue,
+    CompactSlider,
+    LabeledSlider,
+    FilledSlider,
+    VerticalSlider,
+    DeviceMeters,
+}
+impl NumericControlPresentation {
+    pub fn kind(self) -> NumericControlKind {
+        match self {
+            Self::Knob | Self::CompactDial | Self::MicroDial | Self::WideMicroDial => {
+                NumericControlKind::Knob
+            }
+            Self::HorizontalSlider
+            | Self::InlineValue
+            | Self::CompactSlider
+            | Self::LabeledSlider
+            | Self::FilledSlider => NumericControlKind::HorizontalSlider,
+            Self::VerticalSlider | Self::DeviceMeters => NumericControlKind::VerticalSlider,
+        }
+    }
+    fn appearance(self) -> NumericControlAppearance {
+        match self {
+            Self::Knob | Self::HorizontalSlider | Self::VerticalSlider => {
+                NumericControlAppearance::Standard
+            }
+            Self::CompactDial => NumericControlAppearance::CompactDial,
+            Self::MicroDial => NumericControlAppearance::MicroDial,
+            Self::WideMicroDial => NumericControlAppearance::WideMicroDial,
+            Self::InlineValue => NumericControlAppearance::InlineValue,
+            Self::CompactSlider => NumericControlAppearance::CompactSlider,
+            Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
+            Self::FilledSlider => NumericControlAppearance::FilledSlider,
+            Self::DeviceMeters => NumericControlAppearance::DeviceMeters,
+        }
+    }
+}
+impl From<NumericControlKind> for NumericControlPresentation {
+    fn from(kind: NumericControlKind) -> Self {
+        match kind {
+            NumericControlKind::Knob => Self::Knob,
+            NumericControlKind::HorizontalSlider => Self::HorizontalSlider,
+            NumericControlKind::VerticalSlider => Self::VerticalSlider,
+        }
+    }
+}
+
 /// Presentation-only geometry that keeps the same shared edit entity and events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NumericControlAppearance {
+enum NumericControlAppearance {
     #[default]
     Standard,
     CompactDial,
@@ -166,23 +223,24 @@ impl NumericControlConfig {
     pub fn new(
         id: impl Into<SharedString>,
         label: impl Into<SharedString>,
-        kind: NumericControlKind,
+        presentation: impl Into<NumericControlPresentation>,
         spec: NumericSpec,
         value: f64,
         style: ControlStyle,
     ) -> Result<Self, NumericError> {
+        let presentation = presentation.into();
         spec.validate(value)?;
         style.validate().map_err(|_| NumericError::InvalidStyle)?;
         let text = spec.format(value)?;
         Ok(Self {
             id: id.into(),
             label: label.into(),
-            kind,
+            kind: presentation.kind(),
             spec,
             value,
             text,
             style,
-            appearance: NumericControlAppearance::Standard,
+            appearance: presentation.appearance(),
             dial_layout: DialLayout::ReadoutGap,
             command_fine_steps: false,
             value_drag_steps: false,
@@ -213,8 +271,10 @@ impl NumericControlConfig {
         self
     }
 
-    pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
-        self.appearance = appearance;
+    /// Replace the complete presentation, including its kind, as one valid value.
+    pub fn with_presentation(mut self, presentation: NumericControlPresentation) -> Self {
+        self.kind = presentation.kind();
+        self.appearance = presentation.appearance();
         self
     }
 }
@@ -2086,11 +2146,11 @@ fn filled_slider(
         .w(relative((value - origin).abs()))
         .h_full()
         .bg(rgb(if field.enabled {
-            field.style.accent
+            field.style.numeric_fill
         } else {
             field.style.muted
         }))
-        .opacity(0.35);
+        .when(!field.enabled, |fill| fill.opacity(0.35));
     div()
         .debug_selector(move || slider_id.clone())
         .relative()

@@ -81,7 +81,7 @@ impl Workspace {
                 value,
                 style,
             )
-            .map(|c| c.with_appearance(NumericControlAppearance::FilledSlider))
+            .map(|c| c.with_presentation(NumericControlPresentation::FilledSlider))
             .map_err(|e| e.to_string())
         };
         let text_kind = if let Kind::Text(kind) = kind {
@@ -579,11 +579,10 @@ impl Workspace {
                     _ => "+",
                 };
                 let style = if self.active {
-                    ActionStyle {
-                        background: theme::control_style().accent,
-                        text: theme::control_style().background,
-                        ..theme::action_style()
-                    }
+                    theme::action_style().with_state_colors(
+                        theme::control_style().accent,
+                        theme::control_style().accent_text,
+                    )
                 } else {
                     theme::action_style()
                 };
@@ -656,11 +655,10 @@ impl Workspace {
                         action(
                             theme::text(format!("local row {}", i + 1)),
                             if self.count == i as u64 {
-                                ActionStyle {
-                                    background: theme::control_style().accent,
-                                    text: theme::control_style().background,
-                                    ..theme::action_style()
-                                }
+                                theme::action_style().with_state_colors(
+                                    theme::control_style().accent,
+                                    theme::control_style().accent_text,
+                                )
                             } else {
                                 theme::action_style()
                             },
@@ -770,6 +768,44 @@ mod tests {
         let visual = VisualTestContext::from_window(*handle, cx);
         visual.run_until_parked();
         (visual, entity)
+    }
+    #[gpui::test]
+    fn active_glyphs_keep_their_state_fill_while_hovered(cx: &mut TestAppContext) {
+        struct Restore(hex_preferences::ThemePreferences);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                theme::apply_preferences(self.0);
+            }
+        }
+        let _restore = Restore(theme::preferences());
+        for palette in [
+            hex_preferences::ThemePreferences::default(),
+            hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(225, 229, 238),
+                text: hex_preferences::RgbColor::new(24, 27, 34),
+                primary: hex_preferences::RgbColor::new(145, 25, 45),
+                secondary: hex_preferences::RgbColor::new(16, 70, 145),
+            },
+        ] {
+            theme::apply_preferences(palette);
+            for name in ["fold", "play", "arm"] {
+                let (mut visual, view) = fixture(cx, Kind::Button(name));
+                let bounds = visual.debug_bounds("workspace-button").unwrap();
+                visual.simulate_click(bounds.center(), Modifiers::default());
+                visual.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::default());
+                visual.run_until_parked();
+                let active = visual.rendered_background("workspace-button");
+                assert_eq!(active, Some(rgb(theme::control_style().accent).into()));
+                visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(
+                    visual.rendered_background("workspace-button"),
+                    active,
+                    "{name}"
+                );
+                view.read_with(&visual, |s, _| assert!(s.active));
+            }
+        }
     }
     #[gpui::test]
     fn actual_popup_composition_is_foreground_at_window_coordinates(cx: &mut TestAppContext) {
