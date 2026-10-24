@@ -1499,9 +1499,24 @@ impl Session {
                 // Existing live compensation/active-loop gates cannot rebind a
                 // changed tempo map. Refuse before canonical history/publication,
                 // rather than committing a candidate the callback must reject.
-                if source.tempo_map() != project.tempo_map() {
+                let clock_changed = source.tempo_map() != project.tempo_map();
+                let global_tempo = source.tempo_map().tempo_at(hex_project::BeatTime::ZERO);
+                let constant_tempo = source
+                    .tempo_map()
+                    .points()
+                    .iter()
+                    .chain(project.tempo_map().points())
+                    .all(|point| point.tempo() == global_tempo);
+                // Splices can add same-tempo boundary points. Ordinary zero-delay
+                // inheritance already anchors their exact fractional clock; these
+                // are not authored tempo changes. Compensated clocks still need
+                // the existing exact-map proof and must refuse before commit.
+                let compensated = snapshot.prepared.arrangement().main_latency_frames() != 0
+                    || current
+                        .is_some_and(|old| old.prepared.arrangement().main_latency_frames() != 0);
+                if clock_changed && (!constant_tempo || compensated) {
                     return Err(SessionError::Invalid(
-                        "live section edits across tempo changes require stopped playback",
+                        "live section edits across tempo changes or compensated clock changes require stopped playback",
                     ));
                 }
                 // Keep the launched loop at its musical timeline range. A section
