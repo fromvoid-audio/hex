@@ -81,7 +81,7 @@ impl Workspace {
                 value,
                 style,
             )
-            .map(|c| c.with_appearance(NumericControlAppearance::FilledSlider))
+            .map(|c| c.with_presentation(NumericControlPresentation::FilledSlider))
             .map_err(|e| e.to_string())
         };
         let text_kind = if let Kind::Text(kind) = kind {

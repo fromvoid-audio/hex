@@ -6,14 +6,15 @@
 //! this catalog mounts their shared controls rather than a competing DAW model.
 use super::workspace::{Kind as WorkspaceKind, MeterChannels, RoundActionKind};
 use hex_widgets::{
-    DeviceLayout, DeviceSectionSurface, DialLayout, DiscreteControlAppearance as Discrete,
-    NumericControlAppearance as Appearance, NumericControlKind as Kind, NumericScale as Scale,
+    DeviceLayout, DeviceSectionSurface, DialLayout, NumericControlKind as Kind,
+    NumericControlPresentation as Appearance, NumericScale as Scale, SelectorAppearance,
+    ToggleAppearance,
 };
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Demo {
-    Numeric(Kind, Appearance, DialLayout, Scale),
-    Toggle(Discrete),
-    Selector(Discrete),
+    Numeric(Appearance, DialLayout, Scale),
+    Toggle(ToggleAppearance),
+    Selector(SelectorAppearance),
     Bars,
     Graph,
     Color,
@@ -44,8 +45,8 @@ pub(super) struct Page {
 impl Item {
     pub fn page(self) -> Page {
         let (name, category, owner) = match self.demo {
-            Demo::Numeric(kind, ..) => (
-                match kind {
+            Demo::Numeric(presentation, ..) => (
+                match presentation.kind() {
                     Kind::Knob => "knob",
                     Kind::HorizontalSlider => "horizontal slider",
                     Kind::VerticalSlider => "vertical slider",
@@ -107,9 +108,13 @@ impl Item {
     }
     pub fn subgroup(self) -> &'static str {
         match self.demo {
-            Demo::Numeric(Kind::Knob, ..) => "knob configurations",
-            Demo::Numeric(Kind::HorizontalSlider, ..) => "horizontal slider configurations",
-            Demo::Numeric(Kind::VerticalSlider, ..) => "vertical slider configurations",
+            Demo::Numeric(p, ..) if p.kind() == Kind::Knob => "knob configurations",
+            Demo::Numeric(p, ..) if p.kind() == Kind::HorizontalSlider => {
+                "horizontal slider configurations"
+            }
+            Demo::Numeric(p, ..) if p.kind() == Kind::VerticalSlider => {
+                "vertical slider configurations"
+            }
             Demo::Workspace(WorkspaceKind::Button(_)) => "glyph and state configurations",
             Demo::Workspace(WorkspaceKind::RoundAction(_)) => "round momentary configurations",
             Demo::Frame(_) => "composed layout fixtures",
@@ -119,12 +124,11 @@ impl Item {
     }
     pub fn configuration(self) -> String {
         match self.demo {
-            Demo::Numeric(kind, appearance, layout, scale) => format!(
-                "kind: {kind:?} · appearance: {appearance:?} · layout: {layout:?} · scale: {scale:?}"
-            ),
-            Demo::Toggle(appearance) | Demo::Selector(appearance) => {
-                format!("appearance: {appearance:?}")
+            Demo::Numeric(presentation, layout, scale) => {
+                format!("presentation: {presentation:?} · layout: {layout:?} · scale: {scale:?}")
             }
+            Demo::Toggle(appearance) => format!("appearance: {appearance:?}"),
+            Demo::Selector(appearance) => format!("appearance: {appearance:?}"),
             Demo::Layout(layout) => format!("layout: {layout:?}"),
             Demo::Section(density, surface) => format!(
                 "density: {} · surface: {surface:?}",
@@ -159,7 +163,7 @@ pub(super) fn inventory() -> Vec<Item> {
         })
     };
     for (name, appearance) in [
-        ("standard knob", Appearance::Standard),
+        ("standard knob", Appearance::Knob),
         ("compact dial", Appearance::CompactDial),
         ("micro dial", Appearance::MicroDial),
         ("wide micro dial", Appearance::WideMicroDial),
@@ -167,105 +171,86 @@ pub(super) fn inventory() -> Vec<Item> {
         add(
             "numeric",
             name,
-            Demo::Numeric(
-                Kind::Knob,
-                appearance,
-                DialLayout::ReadoutGap,
-                Scale::Linear,
-            ),
+            Demo::Numeric(appearance, DialLayout::ReadoutGap, Scale::Linear),
         );
     }
-    for (name, kind, appearance, layout, scale) in [
+    for (name, appearance, layout, scale) in [
         (
             "inline value",
-            Kind::HorizontalSlider,
             Appearance::InlineValue,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
         (
             "horizontal slider",
-            Kind::HorizontalSlider,
-            Appearance::Standard,
+            Appearance::HorizontalSlider,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
         (
             "vertical slider",
-            Kind::VerticalSlider,
-            Appearance::Standard,
+            Appearance::VerticalSlider,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
         (
             "compact slider",
-            Kind::HorizontalSlider,
             Appearance::CompactSlider,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
         (
             "labeled slider",
-            Kind::HorizontalSlider,
             Appearance::LabeledSlider,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
         (
             "filled slider",
-            Kind::HorizontalSlider,
             Appearance::FilledSlider,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
         (
             "device meters",
-            Kind::VerticalSlider,
             Appearance::DeviceMeters,
             DialLayout::ReadoutGap,
             Scale::LinearAmplitudeDecibels,
         ),
         (
             "bottom gap dial",
-            Kind::Knob,
             Appearance::CompactDial,
             DialLayout::BottomGap,
             Scale::Linear,
         ),
         (
             "pan dial · bipolar",
-            Kind::Knob,
-            Appearance::Standard,
+            Appearance::Knob,
             DialLayout::Pan,
             Scale::Bipolar,
         ),
         (
             "frequency dial · logarithmic",
-            Kind::Knob,
             Appearance::CompactDial,
             DialLayout::ReadoutGap,
             Scale::Logarithmic,
         ),
     ] {
-        add(
-            "numeric",
-            name,
-            Demo::Numeric(kind, appearance, layout, scale),
-        );
+        add("numeric", name, Demo::Numeric(appearance, layout, scale));
     }
     for (name, appearance) in [
-        ("standard toggle", Discrete::Standard),
-        ("compact button", Discrete::CompactButton),
-        ("compact square", Discrete::CompactSquare),
-        ("micro square", Discrete::MicroSquare),
-        ("compact icon button", Discrete::CompactIconButton),
+        ("standard toggle", ToggleAppearance::Standard),
+        ("compact button", ToggleAppearance::CompactButton),
+        ("compact square", ToggleAppearance::CompactSquare),
+        ("micro square", ToggleAppearance::MicroSquare),
+        ("compact icon button", ToggleAppearance::CompactIconButton),
     ] {
         add("discrete", name, Demo::Toggle(appearance));
     }
     for (name, appearance) in [
-        ("standard selector", Discrete::Standard),
-        ("compact selector", Discrete::CompactSelector),
-        ("compact segments", Discrete::CompactSegments),
+        ("standard selector", SelectorAppearance::Standard),
+        ("compact selector", SelectorAppearance::CompactSelector),
+        ("compact segments", SelectorAppearance::CompactSegments),
     ] {
         add("discrete", name, Demo::Selector(appearance));
     }
