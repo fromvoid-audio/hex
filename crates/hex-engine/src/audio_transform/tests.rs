@@ -2166,6 +2166,70 @@ fn warp_map_coalesces_partial_cycles_and_tempo_crossings_but_preserves_authored_
     );
 }
 #[test]
+fn faster_tempo_coalesces_supported_authored_markers_with_exact_root_endpoints() {
+    let (mut editor, clip, _) = fixture(false);
+    let mut settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    let tick = BeatTime::ONE.raw() / 8_000;
+    for (source_frame, beat) in [
+        (1, tick),
+        (4_000, BeatTime::ONE.raw() / 2),
+        (4_001, BeatTime::ONE.raw() / 2 + tick),
+        (7_999, BeatTime::ONE.raw() - tick),
+    ] {
+        settings.markers.insert(
+            settings.markers.len() - 1,
+            hex_project::WarpMarker {
+                source_frame,
+                beat: BeatTime::from_raw(beat),
+            },
+        );
+    }
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::new(480_000_000).unwrap(),
+        })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let (map, _) =
+        mapping::prepare_map(edit, editor.project().tempo_map(), &AtomicBool::new(false)).unwrap();
+    assert_eq!(map.segments().len(), 2);
+    assert_eq!(
+        map.segments()[0],
+        hex_warp::MapSegment {
+            output_start: 0,
+            output_end: 1_000,
+            source_start_q32: 0,
+            source_end_q32: 4_001_i128 << 32,
+        }
+    );
+    assert_eq!(
+        map.segments()[1],
+        hex_warp::MapSegment {
+            output_start: 1_000,
+            output_end: 2_000,
+            source_start_q32: 4_001_i128 << 32,
+            source_end_q32: 8_000_i128 << 32,
+        }
+    );
+    assert_eq!(
+        edit.domain.warp.as_ref().unwrap().markers.len(),
+        6,
+        "quantization must not rewrite authored markers"
+    );
+}
+
+#[test]
 fn warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation() {
     for (middle, pitch) in [
         (BeatTime::ONE.raw() / 2, 0),

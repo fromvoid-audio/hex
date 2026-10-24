@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const MAX_BOUNCE_FRAMES: u64 = 8_000_000;
+const MAX_BOUNCE_FRAMES: u64 = hex_engine::session_playback::MAX_FINITE_BOUNCE_FRAMES;
 static NEXT_BOUNCE: AtomicU64 = AtomicU64::new(0);
 
 impl Session {
