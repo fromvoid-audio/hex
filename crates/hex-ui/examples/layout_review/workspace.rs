@@ -693,7 +693,7 @@ impl Workspace {
                     theme::action_style()
                 };
                 div().child(
-                    action(theme::text(glyph), style)
+                    toggle_action(theme::text(glyph), style)
                         .id("workspace-button")
                         .debug_selector({
                             let id = self.id("workspace-button");
@@ -881,7 +881,7 @@ mod tests {
         (visual, entity)
     }
     #[gpui::test]
-    fn active_glyphs_keep_their_state_fill_while_hovered(cx: &mut TestAppContext) {
+    fn glyph_toggles_keep_small_corners_and_show_hover_feedback(cx: &mut TestAppContext) {
         struct Restore(hex_preferences::ThemePreferences);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -899,9 +899,21 @@ mod tests {
             },
         ] {
             theme::apply_preferences(palette);
-            for name in ["fold", "play", "arm"] {
+            for name in [
+                "play", "stop", "record", "arm", "mute", "solo", "track", "fold",
+            ] {
                 let (mut visual, view) = fixture(cx, Kind::Button(name));
                 let bounds = visual.debug_bounds("workspace-button").unwrap();
+                let scale = visual.update(|window, _| window.scale_factor());
+                assert_eq!(
+                    visual
+                        .rendered_surface_geometry("workspace-button")
+                        .unwrap()
+                        .0
+                        .top_left,
+                    px(TOGGLE_CORNER_RADIUS).scale(scale),
+                    "idle {name}"
+                );
                 visual.simulate_click(bounds.center(), Modifiers::default());
                 visual.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::default());
                 visual.run_until_parked();
@@ -909,10 +921,26 @@ mod tests {
                 assert_eq!(active, Some(rgb(theme::control_style().accent).into()));
                 visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
                 visual.run_until_parked();
+                assert_ne!(
+                    visual.rendered_background("workspace-button"),
+                    active,
+                    "hover {name}"
+                );
+                visual.simulate_mouse_move(point(px(10.0), px(10.0)), None, Modifiers::default());
+                visual.run_until_parked();
                 assert_eq!(
                     visual.rendered_background("workspace-button"),
                     active,
-                    "{name}"
+                    "leave {name}"
+                );
+                assert_eq!(
+                    visual
+                        .rendered_surface_geometry("workspace-button")
+                        .unwrap()
+                        .0
+                        .top_left,
+                    px(TOGGLE_CORNER_RADIUS).scale(scale),
+                    "active {name}"
                 );
                 view.read_with(&visual, |s, _| assert!(s.active));
             }

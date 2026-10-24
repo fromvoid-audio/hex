@@ -34,6 +34,7 @@ pub fn device_state_indicator(
         .items_center()
         .justify_center()
         .cursor_pointer()
+        .hover(|hover| hover.opacity(0.8))
         .child(
             div()
                 .debug_selector(move || indicator.clone())

@@ -54,7 +54,9 @@ pub(super) fn assert_power_paint(visual: &mut VisualTestContext, device: DeviceI
 }
 
 #[gpui::test]
-fn header_power_toggle_hover_and_cancelled_press_keep_canonical_color(cx: &mut TestAppContext) {
+fn header_power_toggle_hover_feedback_and_cancelled_press_keep_canonical_state(
+    cx: &mut TestAppContext,
+) {
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let before = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
@@ -69,11 +71,11 @@ fn header_power_toggle_hover_and_cancelled_press_keep_canonical_color(cx: &mut T
     visual.simulate_mouse_move(target.center(), None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(visual.rendered_background(selector), None);
-    assert_eq!(visual.rendered_background(indicator), paint);
+    assert_ne!(visual.rendered_background(indicator), paint);
     visual.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(visual.rendered_background(selector), None);
-    assert_eq!(visual.rendered_background(indicator), paint);
+    assert_ne!(visual.rendered_background(indicator), paint);
     visual.simulate_mouse_up(
         point(px(0.0), px(0.0)),
         MouseButton::Left,

@@ -49,7 +49,10 @@ impl EditorView {
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
             )
-            .child(self.icon("■", "stop · escape", Stop, cx))
+            .child(
+                self.icon("■", "stop · escape", Stop, cx)
+                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS)),
+            )
             .child(
                 self.control_icon(
                     "●",
