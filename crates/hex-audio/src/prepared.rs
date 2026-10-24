@@ -1273,6 +1273,7 @@ fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
     })
 }
 
+#[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
 impl PublicationControl {
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
