@@ -1,0 +1,187 @@
+use super::*;
+use crate::editor::clip_drag_ui_test::{audio_project, editor_window, midi_project};
+use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+use std::sync::Arc;
+
+#[gpui::test]
+fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    for midi in [false, true] {
+        let (project, track, _, clip) = if midi {
+            midi_project()
+        } else {
+            audio_project()
+        };
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        editor.update(visual, |view, cx| {
+            view.selected_track = Some(track);
+            view.selected_clip = Some(clip);
+            view.clip_view_open = true;
+            view.device_panel_active = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let body_selector = if midi {
+            "midi-note-roll"
+        } else {
+            "arrangement-audio-clip-view"
+        };
+        let before = visual
+            .debug_bounds(body_selector)
+            .expect("rendered clip canvas");
+        let divider = visual
+            .debug_bounds("clip-detail-resize")
+            .expect("clip resize divider");
+        let down = divider.center();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        let up = point(down.x, down.y - px(60.0));
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        let larger = visual.debug_bounds(body_selector).unwrap();
+        assert!(
+            larger.size.height > before.size.height,
+            "canvas grows during capture"
+        );
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        let remembered = editor.read_with(visual, |view, _| view.clip_detail_body_height);
+        let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        let closed = point(down.x, down.y + px(remembered + 40.0));
+        visual.simulate_mouse_up(closed, MouseButton::Left, Modifiers::default());
+        assert!(visual.debug_bounds(body_selector).is_none());
+        let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
+        visual.simulate_click(toggle, Modifiers::default());
+        assert_eq!(
+            editor.read_with(visual, |view, _| view.clip_detail_body_height),
+            remembered
+        );
+        let restored = visual.debug_bounds(body_selector).unwrap();
+        assert_eq!(restored.size.height, larger.size.height);
+        let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x, down.y - px(30.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_keystrokes("escape");
+        assert_eq!(
+            visual.debug_bounds(body_selector).unwrap().size.height,
+            restored.size.height
+        );
+        let device_tab = visual.debug_bounds("device-detail-tab").unwrap().center();
+        visual.simulate_click(device_tab, Modifiers::default());
+        assert!(
+            visual.debug_bounds("clip-detail-resize").is_none(),
+            "device pane has no resize affordance"
+        );
+        assert_eq!(
+            editor.read_with(visual, |view, _| view.project_spectrum.detail_height),
+            Some(crate::editor::device_panel::DEVICE_PANEL_HEIGHT)
+        );
+        editor.read_with(visual, |view, _| {
+            assert!(view.pending_requests.is_empty());
+            assert!(view.pending_audio_commands.is_empty());
+        });
+    }
+}
+
+#[gpui::test]
+fn clip_detail_resize_minimum_window_budget_blur_and_resize_cancel(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1100.0), px(800.0)));
+    editor.update(visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let original = visual
+        .debug_bounds("arrangement-audio-clip-view")
+        .unwrap()
+        .size
+        .height;
+    let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    // Between the collapse threshold and the useful minimum, keep a useful canvas.
+    let minimum = point(down.x, down.y + original - px(60.0));
+    visual.simulate_mouse_move(minimum, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        visual
+            .debug_bounds("arrangement-audio-clip-view")
+            .unwrap()
+            .size
+            .height,
+        px(128.0)
+    );
+    // Passing through minimum before collapse still restores the gesture's original size.
+    let closed = point(down.x, down.y + original);
+    visual.simulate_mouse_move(closed, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(closed, MouseButton::Left, Modifiers::default());
+    let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
+    visual.simulate_click(toggle, Modifiers::default());
+    assert_eq!(
+        visual
+            .debug_bounds("arrangement-audio-clip-view")
+            .unwrap()
+            .size
+            .height,
+        original
+    );
+
+    for blur in [true, false] {
+        let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x, down.y - px(40.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        if blur {
+            visual.update(|window, cx| editor.read(cx).browser.search.read(cx).focus(window));
+            visual.run_until_parked();
+        } else {
+            visual.simulate_resize(gpui::size(px(1100.0), px(780.0)));
+        }
+        assert!(!editor.read_with(visual, |view, _| view.clip_detail_resize.is_active()));
+        assert_eq!(
+            visual
+                .debug_bounds("arrangement-audio-clip-view")
+                .unwrap()
+                .size
+                .height,
+            original
+        );
+    }
+    // An extreme upward release is clamped, preserving Arrangement space.
+    let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(
+        point(down.x, px(-5000.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-content")
+            .unwrap()
+            .size
+            .height
+            >= px(44.0)
+    );
+    visual.simulate_resize(gpui::size(px(880.0), px(540.0)));
+    assert!(
+        visual
+            .debug_bounds("arrangement-content")
+            .unwrap()
+            .size
+            .height
+            >= px(44.0)
+    );
+    let pane = visual.debug_bounds("clip-view").unwrap();
+    assert!(pane.bottom() <= px(540.0));
+}

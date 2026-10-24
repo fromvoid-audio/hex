@@ -46,7 +46,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let mut row = div()
         .id("session-audio-source-panel")
         .w_full()
-        .h(px(DETAIL_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .flex_shrink_0()
         .flex()
         .items_center()
