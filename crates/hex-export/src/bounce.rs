@@ -1,9 +1,10 @@
-//! Float WAV bounce using the canonical linear runtime and create-new publication.
+//! Bounded float WAV source bounce with source loops and create-new publication.
 use super::*;
 
 /// Render an isolated source revision to lossless float32 PCM. Preroll chases
 /// mutable instrument history at nonzero placements; no mix clamp/quantization.
-/// Callers bound the source range before invoking this control-worker operation.
+/// Source loops retain phase; transport wrapping and Session commands are disabled.
+/// Output is limited to `hex_engine::session_playback::MAX_FINITE_BOUNCE_FRAMES`.
 pub fn render_bounce_new(
     path: &Path,
     revision: Arc<PreparedRevision>,
@@ -14,7 +15,7 @@ pub fn render_bounce_new(
     render_bounce_using(path, revision, None, start, frames, source_gain)
 }
 
-/// Float32 bounce through the same ordinary scoped linear/preroll runtime as controlled export.
+/// Float32 source bounce through the ordinary scoped renderer and bounded preroll.
 /// The caller supplies an isolated admitted revision and pins its exact resource set. No monitor
 /// inputs are captured, and source gain remains a final unclamped float multiplication.
 pub fn render_bounce_new_with_device_resources(
@@ -49,7 +50,7 @@ fn render_bounce_using(
         || {
             let control = ExportControl::default();
             let playback =
-                controlled::prepare_runtime(revision, resources, start, frames, &control)?;
+                controlled::prepare_bounce_runtime(revision, resources, start, frames, &control)?;
             Ok(BounceRenderer(playback, source_gain))
         },
     )
