@@ -88,7 +88,7 @@ fn render_state(v: &EditorView) -> Vec<hex_engine::Frame> {
 }
 
 #[gpui::test]
-fn resampled_source_partial_duplicate_matches_normalized_pcm_offsets(cx: &mut TestAppContext) {
+fn resampled_source_range_paste_matches_normalized_pcm_offsets(cx: &mut TestAppContext) {
     let (files, mut visual, editor, _) = open(cx);
     let (old_track, path) = editor.read_with(&visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
@@ -134,7 +134,20 @@ fn resampled_source_partial_duplicate_matches_normalized_pcm_offsets(cx: &mut Te
     visual.run_until_parked();
     let baseline = editor.read_with(&visual, |v, _| render_state(v));
     select(&mut visual, 0.125, 0.375);
-    visual.simulate_keystrokes("cmd-d");
+    visual.simulate_keystrokes("cmd-c");
+    select(&mut visual, 0.375, 0.375);
+    visual.simulate_keystrokes("cmd-v");
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.audio_event_editor
+                .pending
+                .as_ref()
+                .unwrap()
+                .waveform
+                .is_some()
+        )
+    });
     pump(&editor, &mut visual);
     let mut expected = baseline.clone();
     expected[36_000..60_000].copy_from_slice(&baseline[12_000..36_000]);
@@ -373,6 +386,45 @@ fn cut_publishes_clipboard_on_ack_and_paste_survives_save_reopen_with_original_m
         assert_eq!(v.audio_event_editor.range, Some((60_000, 84_000)));
         assert_eq!(v.state.as_ref().unwrap().project, cut);
     });
+    editor.read_with(&visual, |v, _| {
+        let waveform = &v
+            .audio_event_editor
+            .pending
+            .as_ref()
+            .unwrap()
+            .waveform
+            .as_ref()
+            .unwrap()
+            .waveform;
+        assert_eq!(waveform.source_frames, 24_000);
+        assert!(waveform.bins.len() <= 1_024);
+        assert_eq!(
+            waveform.peaks_for_frames(0, 24_000),
+            Some(
+                [hex_session::CachedPeak {
+                    min: 0.25,
+                    max: 0.25
+                }; 2]
+            )
+        );
+    });
+    let pasted_event = editor.read_with(&visual, |v, _| {
+        v.audio_event_editor
+            .pending
+            .as_ref()
+            .unwrap()
+            .preview
+            .events
+            .iter()
+            .find(|e| e.start == 60_000 && e.source_start == 12_000)
+            .unwrap()
+            .id
+    });
+    let waveform = Box::leak(format!("audio-event-waveform-{pasted_event}").into_boxed_str());
+    assert!(
+        visual.debug_bounds(waveform).is_some(),
+        "pasted cut material has a waveform before ACK"
+    );
     pump(&editor, &mut visual);
     let pasted = editor.read_with(&visual, |v, _| {
         Arc::clone(&v.state.as_ref().unwrap().project)

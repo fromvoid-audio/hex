@@ -13,6 +13,7 @@ pub(super) struct Pending {
     intent: Option<u64>,
     before: Selection,
     pub(super) clipboard: Option<Clipboard>,
+    pub(super) waveform: Option<waveform_preview::Preview>,
 }
 #[derive(Clone, Copy)]
 struct Selection {
@@ -83,6 +84,7 @@ impl EditorView {
             intent: self.selection_intent_epoch,
             before,
             clipboard: None,
+            waveform: None,
         });
         if !self.enqueue(Request::Edit(Command::EditAudioEvents { clip, operation })) {
             self.retire_pending_audio_events();

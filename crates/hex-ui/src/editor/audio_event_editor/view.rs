@@ -165,12 +165,33 @@ pub(in crate::editor) fn view(
             })))
             .bg(rgb(theme::color(theme::PaletteRole::Clip)))
             .cursor(gpui::CursorStyle::OpenHand);
-        if let Some(original) = events.events.iter().find(|e| e.id == event.id).or_else(|| {
-            events.events.iter().find(|e| {
-                e.source_start <= event.source_start
-                    && event.source_start < e.source_start + e.length()
+        if let Some(pasted) = view
+            .audio_event_editor
+            .pending
+            .as_ref()
+            .filter(|p| p.owner == owner)
+            .and_then(|p| p.waveform.as_ref())
+            .filter(|p| event.start >= p.start && event.end <= p.end)
+        {
+            element = element.child(
+                waveform::waveform_source_segment_gain_view_cached(
+                    std::sync::Arc::clone(&pasted.waveform),
+                    0,
+                    visible_start.saturating_sub(pasted.frame_start),
+                    visible_end.saturating_sub(pasted.frame_start),
+                    clip.gain(),
+                    std::rc::Rc::clone(&view.waveform_geometry_cache),
+                )
+                .debug_selector(move || format!("audio-event-waveform-{event_id}")),
+            );
+        } else if let Some(original) =
+            events.events.iter().find(|e| e.id == event.id).or_else(|| {
+                events.events.iter().find(|e| {
+                    e.source_start <= event.source_start
+                        && event.source_start < e.source_start + e.length()
+                })
             })
-        }) {
+        {
             let source_raw = prepared_waveform_position(*event, *original, raw_a)?;
             let source_root = frame_at(source_raw)?;
             let source_frame = clip
@@ -179,22 +200,28 @@ pub(in crate::editor) fn view(
                 .checked_add(visible_start - start)?;
             let end_frame = source_frame.checked_add(visible_end - visible_start)?;
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
-                element = element.child(waveform::waveform_source_segment_gain_view_cached(
-                    std::sync::Arc::clone(&prepared.waveform),
-                    0,
-                    source_root + (visible_start - start),
-                    source_root + (visible_end - start),
-                    clip.gain(),
-                    std::rc::Rc::clone(&view.waveform_geometry_cache),
-                ));
+                element = element.child(
+                    waveform::waveform_source_segment_gain_view_cached(
+                        std::sync::Arc::clone(&prepared.waveform),
+                        0,
+                        source_root + (visible_start - start),
+                        source_root + (visible_end - start),
+                        clip.gain(),
+                        std::rc::Rc::clone(&view.waveform_geometry_cache),
+                    )
+                    .debug_selector(move || format!("audio-event-waveform-{event_id}")),
+                );
             } else if let Some(wave) = state.waveforms.get(&clip.asset()) {
-                element = element.child(waveform::waveform_view_cached(
-                    wave,
-                    &clip,
-                    source_frame,
-                    end_frame,
-                    std::rc::Rc::clone(&view.waveform_geometry_cache),
-                ));
+                element = element.child(
+                    waveform::waveform_view_cached(
+                        wave,
+                        &clip,
+                        source_frame,
+                        end_frame,
+                        std::rc::Rc::clone(&view.waveform_geometry_cache),
+                    )
+                    .debug_selector(move || format!("audio-event-waveform-{event_id}")),
+                );
             }
         }
         element = element.child(

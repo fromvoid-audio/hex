@@ -3,6 +3,7 @@ mod pending;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
 mod view;
+mod waveform_preview;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workflow_tests;
 use super::{EditorView, musical_time::SnapGrid, viewport::Viewport};
@@ -37,6 +38,7 @@ struct Clipboard {
     root: AudioClipEdit,
     length: u64,
     events: Vec<AudioEvent>,
+    waveform: Option<waveform_preview::Source>,
 }
 #[derive(Clone)]
 pub(super) struct Gesture {
@@ -84,7 +86,10 @@ impl EditorView {
             .map(|e| (e.start, e.end))
     }
     fn event_copy(&mut self, cut: bool) {
-        if self.edit_pending() || !self.event_context_current() {
+        if self.edit_pending()
+            || self.audio_event_editor.pending.is_some()
+            || !self.event_context_current()
+        {
             return;
         }
         let Some((clip, root, _)) = self.event_context() else {
@@ -101,6 +106,7 @@ impl EditorView {
         };
         let clipboard = Clipboard {
             owner: (clip, self.project_generation),
+            waveform: waveform_preview::Source::capture(clip, &root, state, start, end),
             root,
             length: end - start,
             events: match source.editable_audio_events() {
@@ -122,6 +128,12 @@ impl EditorView {
         }
     }
     fn event_paste(&mut self, insert: bool) {
+        if self.edit_pending()
+            || self.audio_event_editor.pending.is_some()
+            || !self.event_context_current()
+        {
+            return;
+        }
         let Some((clip, mut root, _)) = self.event_context() else {
             return;
         };
@@ -169,7 +181,20 @@ impl EditorView {
                 events: clipboard.events.clone(),
             }
         };
+        let waveform = self.state.as_ref().and_then(|state| {
+            clipboard.waveform.as_ref().and_then(|source| {
+                source.preview(
+                    &root,
+                    state.project.tempo_map(),
+                    self.audio_event_editor.cursor,
+                    clipboard.length,
+                )
+            })
+        });
         self.event_commit(operation);
+        if let Some(pending) = &mut self.audio_event_editor.pending {
+            pending.waveform = waveform;
+        }
     }
     fn event_delete(&mut self) {
         if let Some((start, end)) = self.event_range() {
