@@ -1010,6 +1010,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_track_reorder();
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
+                    visible_change |= self.retire_pending_gain();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     break;
@@ -1037,6 +1038,7 @@ impl EditorView {
                 let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
+                let gain_request = self.pending_gain_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -1082,6 +1084,9 @@ impl EditorView {
                         if fade_request {
                             self.fade_submitted();
                         }
+                        if gain_request {
+                            self.gain_submitted();
+                        }
                     }
                     Err(SubmitError::Full(request)) => {
                         self.pending_requests.push_front(request);
@@ -1125,6 +1130,9 @@ impl EditorView {
                         }
                         if fade_request {
                             self.retire_pending_fade();
+                        }
+                        if gain_request {
+                            self.retire_pending_gain();
                         }
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1193,6 +1201,9 @@ impl EditorView {
                         }
                         if fade_request {
                             self.retire_pending_fade();
+                        }
+                        if gain_request {
+                            self.retire_pending_gain();
                         }
                         break;
                     }
@@ -1952,6 +1963,7 @@ impl EditorView {
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
         self.fade_request_complete(&event);
+        self.gain_request_complete(&event);
         self.eq_creation_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
@@ -3154,6 +3166,7 @@ impl EditorView {
         let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
+        let gain_request = self.pending_gain_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
@@ -3193,6 +3206,9 @@ impl EditorView {
                 }
                 if fade_request {
                     self.fade_submitted();
+                }
+                if gain_request {
+                    self.gain_submitted();
                 }
                 true
             }

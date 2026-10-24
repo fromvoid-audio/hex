@@ -290,6 +290,12 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.automation_view.enabled
+            && self.mode == super::EditorMode::Arrangement
+            && self.focus.is_focused(window)
+        {
+            return false;
+        }
         if self.audio_event_focus.is_focused(window) {
             return self.event_fade_key_down(event, window, cx);
         }
