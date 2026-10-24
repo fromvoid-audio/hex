@@ -394,7 +394,7 @@ impl Render for EditorView {
         self.reconcile_clip_selection();
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
-        if self.clip_view_open && self.gain_lane.track.is_some() {
+        if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
         }
@@ -480,6 +480,16 @@ impl Render for EditorView {
                 "hex_project_tempo_editor hex_text_editing"
             } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
                 "hex_gain_numeric_editor"
+            } else if self.mode == super::EditorMode::Arrangement
+                && self.automation_view.enabled
+                && self.focus.is_focused(window)
+            {
+                "hex_editor hex_arrangement_automation"
+            } else if self.mode == super::EditorMode::Arrangement
+                && self.automation_view.enabled
+                && self.track_header_focused(window)
+            {
+                "hex_editor hex_automation_track_header"
             } else {
                 self.browser_key_context(window, cx)
             })
@@ -656,6 +666,10 @@ impl Render for EditorView {
                     return;
                 }
                 if view.reverse_clip_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if view.automation_view_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -1133,6 +1147,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
+                if view.delete_automation_point(window, cx) {
+                    return;
+                }
                 if view.delete_section(window) {
                     cx.notify();
                     return;

@@ -19,6 +19,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod automation_view;
 mod bounce;
 mod browser;
 mod browser_input;
@@ -540,6 +541,44 @@ fn bind_editor_keys(cx: &mut App) {
     ]);
     hex_widgets::bind_numeric_control_keys(cx);
     hex_widgets::bind_text_input_keys(cx);
+    // Background clip shortcuts have no target while the foreground gain lanes
+    // own Arrangement focus. Child text, MIDI and event contexts keep their keys.
+    cx.bind_keys(
+        [
+            "cmd-c",
+            "cmd-shift-c",
+            "cmd-x",
+            "cmd-v",
+            "cmd-shift-v",
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "cmd-r",
+            "cmd-d",
+            "cmd-e",
+            "b",
+            "cmd-b",
+            "r",
+            "g",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_arrangement_automation"))),
+    );
+    // Header commands retain track clipboard/rename semantics; these general
+    // Arrangement commands would otherwise edit the retained background clips.
+    cx.bind_keys(
+        [
+            "left",
+            "right",
+            "shift-left",
+            "shift-right",
+            "cmd-shift-m",
+            "b",
+            "cmd-b",
+        ]
+        .map(|key| KeyBinding::new(key, gpui::NoAction, Some("hex_automation_track_header"))),
+    );
 }
 
 fn escape_binding() -> KeyBinding {
@@ -662,6 +701,7 @@ pub(super) struct EditorView {
     selected_track: Option<TrackId>,
     track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
+    automation_view: automation_view::AutomationView,
     audio_clip_controls: arrangement_audio_panel::controls::Controls,
     sample_bpm_control: Option<musical_audio_controls::sample_bpm::Binding>,
     project_tempo_control: Option<tempo_input::Binding>,
@@ -1326,6 +1366,7 @@ impl EditorView {
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
             gain_lane: gain_lane::GainLane::default(),
+            automation_view: automation_view::AutomationView::default(),
             audio_clip_controls: Default::default(),
             sample_bpm_control: None,
             project_tempo_control: None,
