@@ -1029,8 +1029,7 @@ impl EditorView {
                 TrimEdge::Right => ("midi-trim-right", "midi-clip-trim-right"),
             },
         };
-        let looping = payload.clip.looping();
-        loop_handles::base(edge, clip_width, control, looping)
+        loop_handles::base(edge, clip_width, control)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control))
@@ -1150,8 +1149,7 @@ impl EditorView {
                 TrimEdge::Right => ("trim-right", "clip-trim-right"),
             },
         };
-        let looping = loop_handles::audio_repeats(&payload.clip);
-        loop_handles::base(edge, clip_width, control, looping)
+        loop_handles::base(edge, clip_width, control)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control))

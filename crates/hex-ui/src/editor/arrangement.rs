@@ -512,7 +512,7 @@ impl EditorView {
                         let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
                             if view.sections.held() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
-                                    view.update_section_pointer(x, y, event.modifiers.platform)
+                                    view.update_section_pointer(x, y, event.modifiers)
                                 } else {
                                     view.cancel_section_pointer()
                                 };
@@ -561,7 +561,7 @@ impl EditorView {
                             let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
-                            if view.finish_section_pointer(x, y, event.modifiers.platform) {
+                            if view.finish_section_pointer(x, y, event.modifiers) {
                                 cx.stop_propagation();
                                 cx.notify();
                                 return (true, false);
