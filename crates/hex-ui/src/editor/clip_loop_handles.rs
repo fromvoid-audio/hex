@@ -2,7 +2,7 @@
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
 use super::*;
 use crate::theme;
-use gpui::{rgb, rgba};
+use gpui::{CursorStyle, rgb, rgba};
 
 pub(in crate::editor) const BOTTOM_RADIUS: f32 = 3.0;
 const WIDTH: f32 = 8.0;
@@ -140,25 +140,17 @@ pub(in crate::editor) fn midi_controls(
     )
 }
 
-pub(super) fn surface(
-    surface: Stateful<Div>,
-    edge: TrimEdge,
-    width: f32,
-    control: Option<LoopControl>,
-) -> Stateful<Div> {
+pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>) -> Div {
     let Some(control) = control else {
-        return surface
-            .absolute()
-            .top(px(-1.0))
-            .bottom(px(-1.0))
-            .w(px(handle_width(width)))
-            .when(edge == TrimEdge::Left, |d| d.left(px(-1.0)))
-            .when(edge == TrimEdge::Right, |d| d.right(px(-1.0)))
-            .cursor(bracket_cursor(edge));
+        return hex_widgets::rectangle_edge(
+            super::super::drag::rectangle_part(Some(edge)),
+            handle_width(width),
+            -1.0,
+        );
     };
     // Absolute children start inside border_1; the shared hit zones use outer
     // clip coordinates, so remove that border inset exactly once here.
-    surface
+    div()
         .absolute()
         .left(px(control.left - 1.0))
         .top(px(control.top - 1.0))
@@ -170,7 +162,6 @@ pub(super) fn surface(
         .justify_center()
         .text_size(px(8.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-        .hover(|s| s.bg(rgba(0xffffff22)))
         .child(if control.kind == LoopHandleKind::Outer {
             div().child(theme::text("↻"))
         } else {
@@ -179,6 +170,14 @@ pub(super) fn surface(
                 .h_full()
                 .bg(rgb(theme::color(theme::PaletteRole::Text)))
         })
+}
+
+pub(super) fn decorate(surface: Stateful<Div>, control: Option<LoopControl>) -> Stateful<Div> {
+    let Some(control) = control else {
+        return surface;
+    };
+    surface
+        .hover(|s| s.bg(rgba(0xffffff22)))
         .tooltip(move |_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
                 description: if control.kind == LoopHandleKind::Outer {

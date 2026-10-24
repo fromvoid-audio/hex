@@ -2231,6 +2231,13 @@ impl EditorView {
             &event.state.project,
             event.project_replaced,
         );
+        // Initial population may choose the first clip. Subsequent control
+        // acknowledgements must not recreate a deliberately empty selection.
+        let initialize_clip_selection = self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.project.tracks().is_empty())
+            && !event.state.project.tracks().is_empty();
         self.state = Some(event.state);
         self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
@@ -2374,6 +2381,13 @@ impl EditorView {
                             && self.normalized_time_selection().is_some()));
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+                if initialize_clip_selection
+                    && self.selected_clip.is_none()
+                    && let Some((_, track, clip)) = selection::neighbor(&state.project, None, true)
+                {
+                    self.selected_track = Some(track);
+                    self.selected_clip = clip;
+                }
                 if time_range_owns_selection {
                     self.selected_clip = None;
                 }

@@ -245,7 +245,13 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
     pump(&editor, &mut visual);
     let clip = editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
+        let clip = view.state.as_ref().unwrap().project.tracks()[0].clips()[0].id();
+        assert_eq!(
+            view.selected_clip,
+            Some(clip),
+            "canonical import selects its initial clip"
+        );
+        clip
     });
     editor.update(&mut visual, |view, cx| {
         view.clip_view_open = true;

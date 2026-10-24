@@ -14,6 +14,14 @@ pub fn action(label: SharedString, style: ActionStyle) -> Div {
     action_surface(style).rounded_full().child(label)
 }
 
+/// Rectangular latched control with small corners. Owners supply acknowledged
+/// state colors, dimensions and handlers; this surface owns no toggle state.
+pub fn toggle_action(label: SharedString, style: ActionStyle) -> Div {
+    action_surface(style)
+        .rounded(px(crate::TOGGLE_CORNER_RADIUS))
+        .child(label)
+}
+
 /// The same action surface with caller-composed content, such as a swatch,
 /// label and current-item marker. Owners retain input and command dispatch.
 pub fn action_surface(style: ActionStyle) -> Div {

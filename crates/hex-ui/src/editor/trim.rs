@@ -1,6 +1,6 @@
 //! Native pointer trim gesture state and bounded canonical dispatch.
 use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
-use gpui::{Context, CursorStyle, Div, MouseButton, Stateful, Window, div, prelude::*, px};
+use gpui::{Context, Div, MouseButton, Stateful, Window, div, prelude::*, px};
 use hex_project::{
     BeatTime, Clip, Command, MidiClip, MidiClipLoopResize, MidiClipStretch, MidiClipTrim,
     MidiSourcePlayback, Project, TrackId, TrimEdge,
@@ -200,6 +200,7 @@ fn replace_midi_trim_preview(
 pub(super) struct TrimDrag {
     loop_kind: Option<LoopHandleKind>,
     canceled: Rc<Cell<bool>>,
+    capture: Rc<Cell<Option<super::drag::PointerDown>>>,
     pub(super) stretch_modifier: Rc<Cell<bool>>,
     project_generation: u64,
     revision: u64,
@@ -227,6 +228,7 @@ pub(super) struct TrimDrag {
 pub(super) struct MidiTrimDrag {
     loop_kind: Option<LoopHandleKind>,
     canceled: Rc<Cell<bool>>,
+    capture: Rc<Cell<Option<super::drag::PointerDown>>>,
     pub(super) project_generation: u64,
     pub(super) revision: u64,
     pub(super) source_track: TrackId,
@@ -687,17 +689,11 @@ fn preview_is_noop(original: &Clip, preview: &Clip) -> bool {
 }
 
 pub(super) fn handle_width(clip_width: f32) -> f32 {
-    if !clip_width.is_finite() || clip_width <= 0.0 {
-        return 0.0;
+    hex_widgets::RectangleEdges {
+        width: HANDLE_WIDTH,
+        minimum_body: MIN_MOVE_WIDTH,
     }
-    HANDLE_WIDTH.min((clip_width - MIN_MOVE_WIDTH).max(0.0) / 2.0)
-}
-
-fn bracket_cursor(edge: TrimEdge) -> CursorStyle {
-    match edge {
-        TrimEdge::Left => CursorStyle::ResizeLeftBracket,
-        TrimEdge::Right => CursorStyle::ResizeRightBracket,
-    }
+    .handle_width(clip_width)
 }
 
 pub(super) fn rendered_clip_width(lane_width: f32, width_fraction: f64, minimum: f32) -> f32 {
@@ -939,6 +935,7 @@ impl EditorView {
         let drag = MidiTrimDrag {
             loop_kind: None,
             canceled: Rc::new(Cell::new(false)),
+            capture: Rc::new(Cell::new(None)),
             project_generation: self.project_generation,
             revision: state.revision,
             source_track: track,
@@ -1032,10 +1029,10 @@ impl EditorView {
                 TrimEdge::Right => ("midi-trim-right", "midi-clip-trim-right"),
             },
         };
-        div()
+        loop_handles::base(edge, clip_width, control)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
-            .map(|surface| loop_handles::surface(surface, edge, clip_width, control))
+            .map(|surface| loop_handles::decorate(surface, control))
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.midi_trim_drag_current(&pointer_payload) {
@@ -1057,7 +1054,7 @@ impl EditorView {
                 });
             })
             .on_drag(payload, move |payload, _, window, cx| {
-                let original_down_x = drag_start_entity.update(cx, |view, _| {
+                let capture = drag_start_entity.update(cx, |view, _| {
                     if view.midi_trim_drag_current(payload) {
                         view.take_pointer_down(clip_generation, clip_id, Some(edge))
                     } else {
@@ -1065,6 +1062,8 @@ impl EditorView {
                         None
                     }
                 });
+                payload.capture.set(capture);
+                let original_down_x = capture.map(|capture| capture.origin_x);
                 let pointer_beat = original_down_x
                     .and_then(|x| midi_pointer_beat(&project_tempo, x, lane, viewport));
                 let delta =
@@ -1100,6 +1099,7 @@ impl EditorView {
         TrimDrag {
             loop_kind: None,
             canceled: Rc::new(Cell::new(false)),
+            capture: Rc::new(Cell::new(None)),
             stretch_modifier: Rc::new(Cell::new(false)),
             project_generation: self.project_generation,
             revision: state.revision,
@@ -1149,10 +1149,10 @@ impl EditorView {
                 TrimEdge::Right => ("trim-right", "clip-trim-right"),
             },
         };
-        div()
+        loop_handles::base(edge, clip_width, control)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
-            .map(|surface| loop_handles::surface(surface, edge, clip_width, control))
+            .map(|surface| loop_handles::decorate(surface, control))
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.trim_drag_current(&pointer_payload) {
@@ -1178,7 +1178,7 @@ impl EditorView {
                 });
             })
             .on_drag(payload, move |payload, _cursor_offset, window, cx| {
-                let original_down_x = drag_start_entity.update(cx, |view, _| {
+                let capture = drag_start_entity.update(cx, |view, _| {
                     if view.trim_drag_current(payload) {
                         view.take_pointer_down(
                             payload.project_generation,
@@ -1194,6 +1194,8 @@ impl EditorView {
                         None
                     }
                 });
+                payload.capture.set(capture);
+                let original_down_x = capture.map(|capture| capture.origin_x);
                 let pointer_frame = original_down_x.and_then(|x| frame_at_x(x, lane, viewport));
                 let delta = pointer_frame
                     .zip(audio_grab_frame(payload, &project))
@@ -1322,6 +1324,9 @@ impl EditorView {
         pointer_x: f32,
         cx: &mut Context<Self>,
     ) -> bool {
+        let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+            return false;
+        };
         let Some(state) = self.state.as_ref() else {
             return false;
         };
@@ -1405,6 +1410,9 @@ impl EditorView {
         pointer_x: f32,
         cx: &mut Context<Self>,
     ) -> bool {
+        let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+            return false;
+        };
         let Some(state) = self.state.as_ref() else {
             return false;
         };
@@ -2203,6 +2211,7 @@ mod tests {
         TrimDrag {
             loop_kind: None,
             canceled: Rc::new(Cell::new(false)),
+            capture: Rc::new(Cell::new(None)),
             stretch_modifier: Rc::new(Cell::new(false)),
             project_generation: 4,
             revision: 7,
