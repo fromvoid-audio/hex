@@ -33,6 +33,7 @@ pub(super) enum Kind {
     Splitter(SplitterAxis),
     Button(&'static str),
     ScrollingList,
+    TimeMarkers,
 }
 pub(super) struct Prepared {
     kind: Kind,
@@ -726,6 +727,61 @@ impl Workspace {
                             }
                         })),
                 )
+            }
+            Kind::TimeMarkers => {
+                let first = self.numbers[0].read(cx).value() as f32 / 100.0;
+                let second = self.numbers[1].read(cx).value() as f32 / 100.0;
+                let start = first.min(second);
+                let end = first.max(second);
+                let mut preview = div()
+                    .relative()
+                    .w_full()
+                    .h(px(100.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Background)))
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(24.0))
+                            .w_full()
+                            .h(px(2.0))
+                            .bg(rgb(theme::color(theme::PaletteRole::Primary))),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(28.0))
+                            .bottom(px(8.0))
+                            .left(gpui::relative(start))
+                            .w(gpui::relative(end - start))
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .opacity(theme::TIME_SELECTION_OPACITY),
+                    );
+                for edge in [TimeMarkerEdge::Top, TimeMarkerEdge::Bottom] {
+                    preview = preview.children(time_position_marker(
+                        format!("sandbox-marker-{edge:?}-start").into(),
+                        start,
+                        if start == end {
+                            TimeMarkerEndpoint::Point
+                        } else {
+                            TimeMarkerEndpoint::Start
+                        },
+                        edge,
+                        theme::time_position_marker_color(),
+                    ));
+                    if start != end {
+                        preview = preview.children(time_position_marker(
+                            format!("sandbox-marker-{edge:?}-end").into(),
+                            end,
+                            TimeMarkerEndpoint::End,
+                            edge,
+                            theme::time_position_marker_color(),
+                        ));
+                    }
+                }
+                div()
+                    .w_full()
+                    .child(preview)
+                    .children(self.numbers.iter().cloned())
             }
             Kind::ScrollingList => div().child(
                 div()
