@@ -371,11 +371,7 @@ impl SessionPlayback {
     // conversion, history reset or alternate scheduler is introduced.
     fn capture_cut_supported(&self) -> bool {
         (self.linear_arrangement_export
-            || !self
-                .revision
-                .arrangement()
-                .loop_region()
-                .is_some_and(|region| region.enabled()))
+            || !self.loop_region().is_some_and(|region| region.enabled()))
             && self.routes.iter().all(|route| {
                 route.owner == super::RouteOwner::Arrangement && route.pending.is_none()
             })

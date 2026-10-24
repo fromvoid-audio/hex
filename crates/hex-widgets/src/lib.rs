@@ -9,7 +9,7 @@
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
 //! previews do not become authored state until the owner accepts a validated event.
 mod action;
-pub use action::{action, action_surface, round_action_surface};
+pub use action::{ROUND_ACTION_SIZE, action, action_surface, round_action_surface};
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorMode, BarEditorPhase};
 mod color_picker;
@@ -19,6 +19,7 @@ mod device_parts;
 pub use device_parts::{
     DEVICE_HEADER_ACTION_SIZE, device_action, device_badge, device_caption, device_divider,
     device_focus_target, device_identity_marker, device_inline_caption, device_segment,
+    device_state_indicator,
 };
 mod dial;
 mod discrete;
@@ -98,3 +99,12 @@ pub use meter_indicator::{
     METER_INDICATOR_TICKS_DBFS, MeterChannelReadout, MeterIndicatorReadout, MeterIndicatorStyle,
     meter_indicator,
 };
+
+mod rectangle;
+pub use rectangle::{
+    RectangleCapture, RectangleEdges, RectangleIntent, RectanglePart, RectanglePhase,
+    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
+    rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
+};
+#[cfg(test)]
+mod rectangle_tests;

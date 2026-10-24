@@ -412,6 +412,18 @@ impl super::EditorView {
         } else {
             input
         };
+        let input = if self.midi_recorder.preparing() {
+            match input.with_recording_support() {
+                Ok(input) => input,
+                Err(reason) => {
+                    self.error = Some(reason.to_string().into());
+                    self.computer_keyboard.suspended = true;
+                    return true;
+                }
+            }
+        } else {
+            input
+        };
         let input = std::sync::Arc::new(input);
         self.computer_keyboard.prepared = false;
         self.computer_keyboard.input = Some(std::sync::Arc::clone(&input));

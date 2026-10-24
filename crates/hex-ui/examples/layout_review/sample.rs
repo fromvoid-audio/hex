@@ -1,4 +1,6 @@
 //! Disposable owners for widget events. All edits stop at this view's local values.
+#[path = "rectangle_demo.rs"]
+mod rectangle_demo;
 #[path = "response_demo.rs"]
 mod response_demo;
 use super::catalog::{Demo, Item};
@@ -8,6 +10,7 @@ use gpui::{
     Context, Div, Entity, Focusable, Render, Subscription, Window, div, prelude::*, px, rgb,
 };
 use hex_widgets::*;
+use rectangle_demo::RectangleDemo;
 use response_demo::ResponseDemo;
 
 pub(super) struct Prepared {
@@ -27,6 +30,7 @@ pub(super) struct Sample {
     selector: Entity<Selector>,
     graph: Entity<ResponseGraph>,
     response: ResponseDemo,
+    rectangle: Entity<RectangleDemo>,
     bars: Entity<BarEditor>,
     values: [f32; 64],
     bars_before: Option<[f32; 64]>,
@@ -208,6 +212,13 @@ impl Sample {
             s.status = format!("color · #{:06x} · hue {:.1}", e.color.packed(), e.hsv.hue);
             cx.notify();
         }));
+        let rectangle = cx.new(|cx| {
+            RectangleDemo::new(
+                matches!(item.demo, Demo::Rectangle(true)),
+                format!("{prefix}sandbox-rectangle"),
+                cx,
+            )
+        });
         let mut s = Self {
             item,
             prefix,
@@ -216,6 +227,7 @@ impl Sample {
             selector,
             graph,
             response,
+            rectangle,
             bars,
             values,
             bars_before: None,
@@ -340,6 +352,8 @@ impl Sample {
         cx.notify();
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.rectangle
+            .update(cx, |rectangle, cx| rectangle.cancel(cx));
         if let Some(w) = &self.workspace {
             w.update(cx, |w, cx| w.cancel(cx));
         }
@@ -373,6 +387,8 @@ impl Sample {
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.cancel(cx);
         self.enabled = enabled;
+        self.rectangle
+            .update(cx, |rectangle, cx| rectangle.set_enabled(enabled, cx));
         if let Some(w) = &self.workspace {
             w.update(cx, |w, cx| w.set_enabled(enabled, cx));
         }
@@ -449,6 +465,7 @@ impl Sample {
             }
             Demo::Color => {}
             Demo::Selector(_) => self.selector.focus_handle(cx).focus(window),
+            Demo::Rectangle(_) => self.rectangle.focus_handle(cx).focus(window),
             Demo::Bars => self.bars.focus_handle(cx).focus(window),
             Demo::Graph => self.graph.focus_handle(cx).focus(window),
             _ => {
@@ -558,6 +575,7 @@ impl Sample {
             }
             Demo::Toggle(_) => div().w(px(180.0)).h(px(28.0)).child(self.toggle.clone()),
             Demo::Selector(_) => div().w(px(220.0)).h(px(28.0)).child(self.selector.clone()),
+            Demo::Rectangle(_) => div().w_full().h(px(180.0)).child(self.rectangle.clone()),
             Demo::Bars => div().w_full().h(px(180.0)).child(self.bars.clone()),
             Demo::Graph => div().w_full().h(px(220.0)).child(self.graph.clone()),
             Demo::Color => div().w(px(240.0)).h(px(220.0)).child(self.picker.clone()),
@@ -655,7 +673,7 @@ impl Render for Sample {
             .child(div().id("widget-preview").debug_selector({let id = self.id("widget-preview"); move || id.clone()}).w_full().max_w(px(if self.narrow{260.0}else{680.0})).p(px(8.0)).overflow_x_scroll().border_1().border_color(rgb(theme::control_style().border)).child(self.content(cx)))
             .child(theme::text(&self.status))
             .when(!matches!(self.item.demo, Demo::Graph), |sample| sample.child(theme::text("numeric: drag / double-click to type / arrows / escape · tab and shift-tab move focus")))
-            .child(theme::text(match self.item.demo {Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
+            .child(theme::text(match self.item.demo {Demo::Rectangle(_)=>"drag body / brackets / touching seam · shift selects · escape cancels held input · accept or refuse pending paint",Demo::Workspace(_)=>"shared workspace controls and actual menu/status compositions · local values only",Demo::Graph=>"drag a diamond to shape the curve · click and drag empty space to add · up to 16 points · backspace removes · escape cancels · flat line: 0 db reference · illustration only, no dsp",Demo::Bars=>"paint bars with pointer or arrows · right-drag clears crossed bars · escape restores the stroke",Demo::Color=>"drag saturation / brightness and hue · local color feedback below",Demo::Curve|Demo::Spectrum=>"read-only plot · edit middle value to change fixture points",Demo::Chrome(_)=>"appearance primitive · surrounding owner supplies the local click counter",_=>"local values only · columns start at minimum / middle / maximum"}))
             .child(theme::text(if matches!(self.item.demo,Demo::Color){"this widget has no disabled API; enable control applies to the other interactive widgets"}else{"disable controls to inspect the library's disabled state"}))
     }
 }

@@ -22,7 +22,10 @@ use gpui::{
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
 use hex_session::service::{Event, Request};
-use hex_widgets::TextInput;
+use hex_widgets::{
+    RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
+    TextInput,
+};
 
 const INNER_EDGE_WIDTH: f32 = 5.0;
 const SHARED_EDGE_RADIUS: f32 = 1.0;
@@ -73,13 +76,14 @@ enum Mode {
     ContentEnd(SectionId),
 }
 struct Gesture {
+    launch_eligible: bool,
     generation: u64,
     revision: u64,
     viewport: Viewport,
     snap: SnapGrid,
     layout: [f32; 4],
     anchor: BeatTime,
-    anchor_x: f32,
+    capture: RectangleCapture<(u64, Option<SectionId>)>,
     original: Option<Marker>,
     mode: Mode,
     display: Display,
@@ -436,7 +440,7 @@ impl EditorView {
         for pair in sections.windows(2) {
             if pair[0].end() == pair[1].start()
                 && position(pair[0].end())
-                    .is_some_and(|edge| (x - edge).abs() <= SHARED_EDGE_RADIUS)
+                    .is_some_and(|edge| RectangleEdges::seam_hit(x, edge, SHARED_EDGE_RADIUS))
             {
                 return Some(SectionEdge::Shared(pair[0].id(), pair[1].id()));
             }
@@ -446,19 +450,18 @@ impl EditorView {
             else {
                 continue;
             };
-            if start <= x && x <= end {
-                let from_start = x - start;
-                let from_end = end - x;
-                if from_start.min(from_end) <= INNER_EDGE_WIDTH {
-                    return Some(SectionEdge::Single(
-                        section.id(),
-                        if from_start <= from_end {
-                            hex_project::TrimEdge::Left
-                        } else {
-                            hex_project::TrimEdge::Right
-                        },
-                    ));
-                }
+            let part = RectangleEdges {
+                width: INNER_EDGE_WIDTH,
+                minimum_body: 0.0,
+            }
+            .hit(x, start, end);
+            let edge = match part {
+                Some(RectanglePart::Leading) => Some(hex_project::TrimEdge::Left),
+                Some(RectanglePart::Trailing) => Some(hex_project::TrimEdge::Right),
+                _ => None,
+            };
+            if let Some(edge) = edge {
+                return Some(SectionEdge::Single(section.id(), edge));
             }
         }
         None
@@ -480,9 +483,16 @@ impl EditorView {
         modifiers: gpui::Modifiers,
         cx: &Context<Self>,
     ) -> bool {
-        let extend = modifiers.shift;
+        let extend =
+            RectangleSelectionPolicy::Toggle.intent(modifiers) == RectangleSelection::Toggle;
         let free = modifiers.platform;
         let marker_only = modifiers.alt;
+        let launch_eligible = self.section_autoplay
+            && !double
+            && !extend
+            && !marker_only
+            && !free
+            && !modifiers.control;
         // This capture also sees clicks on track headers and the focus toggle.
         // Let their focus owners finish before reconciliation decides whether
         // to clear section selection; an armed filter retains its driving IDs.
@@ -569,11 +579,14 @@ impl EditorView {
             } else if marker_only {
                 Mode::Move(id)
             } else {
-                if self
-                    .audio
-                    .as_ref()
-                    .and_then(|audio| audio.control.status())
-                    .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
+                if !launch_eligible
+                    && self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.status())
+                        .is_some_and(|status| {
+                            status.playing.load(std::sync::atomic::Ordering::Acquire)
+                        })
                 {
                     self.select_section_metadata(Some(id));
                     self.error = Some("stop playback before reordering sections".into());
@@ -621,14 +634,24 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
         };
+        let part = match edge {
+            Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
+            Some(SectionEdge::Single(_, edge)) => super::drag::rectangle_part(Some(edge)),
+            None => RectanglePart::Body,
+        };
+        let Some(capture) = RectangleCapture::begin((self.project_generation, id), part, x, true)
+        else {
+            return false;
+        };
         self.sections.gesture = Some(Gesture {
+            launch_eligible,
             generation: self.project_generation,
             revision: state.revision,
             viewport,
             snap: self.snap_grid,
             layout,
             anchor,
-            anchor_x: x,
+            capture,
             original,
             mode,
             display,
@@ -662,6 +685,10 @@ impl EditorView {
             return true;
         }
         g.command = None;
+        if g.capture.update(x).is_none() {
+            self.sections.gesture = Some(g);
+            return true;
+        }
         let Some(beat) = self.section_pointer(x, y, free) else {
             self.sections.gesture = Some(g);
             return true;
@@ -680,10 +707,19 @@ impl EditorView {
         };
         match g.mode {
             Mode::Reorder(id) => {
+                if g.capture.displaced(4.0)
+                    && self.audio_status().is_some_and(|status| {
+                        status.playing.load(std::sync::atomic::Ordering::Acquire)
+                    })
+                {
+                    self.error = Some("stop playback before reordering sections".into());
+                    self.sections.gesture = Some(g);
+                    return true;
+                }
                 // Structural destinations are fixed edges, independent of grid snap.
                 // A click must never move music, even when it snaps outside its marker.
                 let raw_beat = self.section_pointer(x, y, true).unwrap_or(beat);
-                if (x - g.anchor_x).abs() >= 4.0
+                if g.capture.displaced(4.0)
                     && let Some((target, after)) = insertion_target(&state.project, id, raw_beat)
                 {
                     let preview = if after {
@@ -718,7 +754,7 @@ impl EditorView {
                 right,
                 marker_only,
             } => {
-                if (x - g.anchor_x).abs() >= 4.0 {
+                if g.capture.displaced(4.0) {
                     let command = Command::ResizeArrangementSectionBoundary {
                         left,
                         right,
@@ -737,7 +773,7 @@ impl EditorView {
                 }
             }
             Mode::ContentStart(id) | Mode::ContentEnd(id) => {
-                if (x - g.anchor_x).abs() >= 4.0
+                if g.capture.displaced(4.0)
                     && let Some(marker) = &g.original
                 {
                     let edge = if matches!(g.mode, Mode::ContentStart(_)) {
@@ -869,12 +905,19 @@ impl EditorView {
         let Some(g) = self.sections.gesture.take() else {
             return true;
         };
+        let Some(released) = g.capture.finish(x) else {
+            return true;
+        };
         self.suppress_cursor_click = true;
-        if self.section_current(&g)
-            && self.section_pointer(x, y, free).is_some()
-            && let Some(command) = g.command
-        {
-            self.submit_section(command, g.display, g.generation, g.revision);
+        if self.section_current(&g) && self.section_pointer(released.pointer_x, y, free).is_some() {
+            if let Some(command) = g.command {
+                self.submit_section(command, g.display, g.generation, g.revision);
+            } else if g.launch_eligible
+                && !g.capture.displaced(4.0)
+                && let Mode::Reorder(id) = g.mode
+            {
+                self.launch_arrangement_section(id);
+            }
         }
         true
     }
@@ -1456,18 +1499,15 @@ impl EditorView {
             let colors = theme::section_colors(m.color, selected, false);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
-            let mut element = div()
+            let mut element = hex_widgets::rectangle_surface(
+                (start - viewport.start) as f32 / viewport.length as f32,
+                (end - start) as f32 / viewport.length as f32, 0.0,
+            )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
-                .absolute()
                 .top(px(3.0))
                 .bottom(px(3.0))
-                .left(relative(
-                    (start - viewport.start) as f32 / viewport.length as f32,
-                ))
-                .w(relative((end - start) as f32 / viewport.length as f32))
-                .cursor(gpui::CursorStyle::OpenHand)
-                .overflow_hidden()
+                .cursor(RectanglePart::Body.cursor())
                 .border_1()
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
@@ -1507,17 +1547,14 @@ impl EditorView {
                 }));
             }
             for right in [false, true] {
-                let edge = div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(INNER_EDGE_WIDTH))
-                    .cursor(if right {
-                        gpui::CursorStyle::ResizeRightBracket
-                    } else {
-                        gpui::CursorStyle::ResizeLeftBracket
-                    });
-                element = element.children([if right { edge.right_0() } else { edge.left_0() }]);
+                let part = if right {
+                    RectanglePart::Trailing
+                } else {
+                    RectanglePart::Leading
+                };
+                // Preserve the existing section cursor overlay within its border.
+                element =
+                    element.children([hex_widgets::rectangle_edge(part, INNER_EDGE_WIDTH, 0.0)]);
             }
             elements.push(element.into_any_element());
         }
@@ -1532,7 +1569,7 @@ impl EditorView {
                 continue;
             }
             elements.push(
-                div()
+                hex_widgets::rectangle_edge(RectanglePart::Seam, 2.0 * SHARED_EDGE_RADIUS, 0.0)
                     .debug_selector(|| "section-shared-edge".into())
                     .absolute()
                     .top(px(3.0))
@@ -1541,8 +1578,6 @@ impl EditorView {
                         (frame - viewport.start) as f32 / viewport.length as f32,
                     ))
                     .ml(px(-SHARED_EDGE_RADIUS))
-                    .w(px(2.0 * SHARED_EDGE_RADIUS))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .into_any_element(),
             );
         }
@@ -2340,6 +2375,107 @@ mod tests {
             assert_eq!(actual, before);
         });
     }
+    #[gpui::test]
+    fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::Arc;
+        let (handle, editor, ids) = fixture(cx);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut output, mut backend) = loop {
+            match hex_audio::worker_fixture::open(48_000) {
+                Ok(output) => break output,
+                Err(error)
+                    if error == "audio output is open or still shutting down"
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let source = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &source,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(!prepared.arrangement_seek_requires_preroll());
+        let audio_revision = output
+            .publication
+            .control()
+            .unwrap()
+            .publish(
+                hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(
+                    &prepared,
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        backend.render(&mut [[0.0; 2]; 1]).unwrap();
+        let client = output.take_client().unwrap();
+        editor.update(cx, |view, cx| {
+            view.audio = Some(crate::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "test audio".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            let state = Arc::clone(view.state.as_ref().unwrap());
+            view.applied_project_revision = Some(state.revision);
+            view.audible_playback = Some(super::super::PlaybackCandidate {
+                worker_requires_preroll: Some(false),
+                observation: None,
+                audio_revision,
+                project_generation: view.project_generation,
+                state,
+                prepared_revision: Some(prepared),
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            view.session_quantization = hex_engine::LaunchQuantization::QuarterTriplet;
+            view.toggle_section_autoplay();
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let clicked = editor.read_with(cx, |view, _| position(view, 1));
+        visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
+        editor.update(cx, |view, _| {
+            let pending = view
+                .prepared_seek
+                .as_ref()
+                .expect("stationary section click prepares a seek even without stateful devices");
+            let section = pending.section.unwrap();
+            assert_eq!(
+                section.region,
+                hex_project::LoopRegion::new(0, 96_000, true).unwrap()
+            );
+            assert_eq!(
+                section.quantization,
+                hex_engine::LaunchQuantization::QuarterTriplet
+            );
+            assert_eq!(view.sections.selected, Some(ids[0]));
+            assert_eq!(
+                view.state.as_ref().unwrap().project,
+                source,
+                "launch has no canonical edit or history"
+            );
+            let cancellation = Arc::clone(&pending.worker_cancel);
+            view.toggle_section_autoplay();
+            assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
+            assert!(view.latched_seek_intent.is_none());
+            assert!(!view.section_autoplay);
+        });
+    }
+
     #[gpui::test]
     fn stationary_non_grid_content_edge_click_does_not_change_music(cx: &mut TestAppContext) {
         let (handle, editor, ids) = fixture(cx);

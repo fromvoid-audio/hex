@@ -35,6 +35,7 @@ mod clip_selection;
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
+mod section_launch;
 mod track_header;
 mod track_header_device_drop;
 mod workspace_view;
@@ -90,6 +91,7 @@ mod fades;
 mod gain_lane;
 mod gain_recording;
 mod header;
+mod input_quantization;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
@@ -110,6 +112,7 @@ mod midi_marquee;
 mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;
+mod midi_recording;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -640,12 +643,14 @@ pub(super) struct EditorView {
     project_tempo_control: Option<tempo_input::Binding>,
     track_gain_controls: track_gain::Controls,
     gain_recorder: gain_recording::Recorder,
+    midi_recorder: midi_recording::Recorder,
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
     sections: arrangement_sections::Sections,
+    section_autoplay: bool,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -843,6 +848,7 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
+    input_quantization: hex_project::InputQuantization,
     #[cfg(test)]
     test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
@@ -1297,12 +1303,14 @@ impl EditorView {
             project_tempo_control: None,
             track_gain_controls: track_gain::Controls::default(),
             gain_recorder: gain_recording::Recorder::default(),
+            midi_recorder: midi_recording::Recorder::default(),
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
             clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
             sections: arrangement_sections::Sections::default(),
+            section_autoplay: false,
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -1489,6 +1497,7 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
+            input_quantization: hex_project::InputQuantization::Off,
             #[cfg(test)]
             test_environment,
             browser,

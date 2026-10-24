@@ -177,6 +177,15 @@ pub(crate) fn device_header_action_style(selected: bool, role: DeviceActionRole)
     }
 }
 
+/// Existing enabled-red/bypassed-gray palette tokens for the boolean header
+/// indicator. Selection and transient input never replace the acknowledged color.
+pub(crate) fn device_enable_colors() -> (u32, u32) {
+    (
+        device_header_action_style(false, DeviceActionRole::Enabled).background,
+        device_header_action_style(false, DeviceActionRole::Bypassed).background,
+    )
+}
+
 pub(crate) fn device_segment_style(selected: bool) -> ActionStyle {
     let background = color(if selected {
         PaletteRole::Secondary

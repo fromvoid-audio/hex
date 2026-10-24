@@ -28,6 +28,7 @@ pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
+pub mod midi_capture;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -3190,6 +3191,7 @@ pub mod live_expression;
 mod midi_activity;
 mod playback_observation;
 pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
+mod launch_quantization;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
