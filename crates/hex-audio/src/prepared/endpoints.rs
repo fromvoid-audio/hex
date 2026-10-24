@@ -435,6 +435,33 @@ impl Client {
             .owner_ref()
             .and_then(|e| e.spectrum_target.desired())
     }
+    /// Current complete analyzer membership for this guarded output incarnation.
+    pub fn spectrum_desired_targets(&self) -> Option<&spectrum_target::SpectrumTargets> {
+        self.endpoints
+            .owner_ref()
+            .map(|e| e.spectrum_target.desired_targets())
+    }
+    pub fn spectrum_set_targets(
+        &mut self,
+        requests: &[spectrum_target::SpectrumTargetRequest],
+    ) -> Result<spectrum_target::TargetUpdate, spectrum_target::TargetError> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(spectrum_target::TargetError::OutputClosed)?
+            .spectrum_target
+            .set_targets(requests)
+    }
+    /// Fresh independent pairs, filtered by this endpoint's exact desired tokens,
+    /// generation, rate and publication floors. The bounded cache lives on control.
+    pub fn spectrum_latest_pairs(&mut self) -> Vec<crate::spectrum_worker::PublishedSpectra> {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return Vec::new();
+        };
+        let Some(reader) = endpoints.spectrum_reader.as_mut() else {
+            return Vec::new();
+        };
+        reader.try_latest_pairs_at(Instant::now(), endpoints.spectrum_target.desired_targets())
+    }
     pub fn spectrum_select(
         &mut self,
         identity: PostNodeIdentity,

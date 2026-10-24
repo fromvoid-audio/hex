@@ -37,21 +37,58 @@ use std::{
 pub(crate) fn validate_constructor_project(
     project: &hex_project::Project,
 ) -> Result<(), AudioStorageError> {
-    if crate::native_device_resources::current_sampler::validate_project(project)? {
+    validate_constructor_project_with_effects(project, None)
+}
+pub(crate) fn validate_constructor_project_with_effects(
+    project: &hex_project::Project,
+    effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+) -> Result<(), AudioStorageError> {
+    let supported = |d: &hex_project::Device| {
+        d.state().asset_references().is_empty()
+            && (d.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID
+                || effects.is_some_and(|r| r.definition(d.state().type_id()).is_some()))
+    };
+    if effects.is_some()
+        && project
+            .tracks()
+            .iter()
+            .flat_map(|t| t.devices())
+            .chain(project.return_tracks().iter().flat_map(|r| r.devices()))
+            .chain(project.main_devices())
+            .any(|d| !supported(d))
+    {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
+    let sampler = if effects.is_some() {
+        crate::native_device_resources::current_sampler::validate_project_with_effects(
+            project, true,
+        )?
+    } else {
+        crate::native_device_resources::current_sampler::validate_project(project)?
+    };
+    if sampler {
         crate::gain_envelope::validate_project(project)
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         return Ok(());
     }
     if project.tracks().iter().any(|t| {
-        t.devices().iter().any(|d| {
-            d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
-                || !d.state().asset_references().is_empty()
-        }) || t.instrument().is_some()
+        t.devices().iter().any(|d| !supported(d))
+            || t.instrument().is_some()
             || !t.midi_clips().is_empty()
     }) || project
         .return_tracks()
         .iter()
-        .any(|t| !t.devices().is_empty())
+        .any(|t| t.devices().iter().any(|d| !supported(d)))
+        || project.main_devices().iter().any(|d| !supported(d))
+    {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
+    if effects.is_none()
+        && (!project.main_devices().is_empty()
+            || project
+                .return_tracks()
+                .iter()
+                .any(|r| !r.devices().is_empty()))
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
@@ -120,10 +157,17 @@ pub struct AudioArrangementStartRefusal {
     pub reason: AudioStorageError,
     pub capacity: AudioArrangementCapacity,
 }
+/// Borrowed compiler selections, not source custody or publication authority.
+#[derive(Clone, Copy, Default)]
+struct ConstructorResources<'a> {
+    sampler: Option<(u64, &'a std::sync::atomic::AtomicBool)>,
+    effects: Option<&'a hex_lattice::NativeDeviceRegistry<'a>>,
+}
 struct ReservedStages {
     slots: Vec<SourceSlot>,
     capacity: AudioArrangementCapacity,
     next: u64,
+    signal_graph: bool,
 }
 #[derive(Clone, Copy, Default)]
 struct Stages {
@@ -152,6 +196,7 @@ pub struct AudioArrangementInput<'a> {
     inputs: OwnedAudioInputs,
     stages: Stages,
     source_context: Option<AudioSourceContext>,
+    effects: Option<&'a hex_lattice::NativeDeviceRegistry<'a>>,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -168,7 +213,17 @@ impl<'a> AudioArrangementInput<'a> {
             inputs,
             stages: Stages::default(),
             source_context: None,
+            effects: None,
         }
+    }
+    /// Borrow foreign effect facts for the same closed constructor. No provider
+    /// owner survives preparation and no native source/publication is admitted.
+    pub fn with_effect_registry(
+        mut self,
+        effects: &'a hex_lattice::NativeDeviceRegistry<'a>,
+    ) -> Self {
+        self.effects = Some(effects);
+        self
     }
     /// Low-level correlation bridge. Prefer a Session-owned immutable snapshot
     /// that derives the Project and these counters together; this grants no
@@ -394,6 +449,7 @@ impl AudioPreparationCustody {
             input.generation,
             input.inputs,
             input.stages,
+            input.effects,
         );
         if result.is_ok() {
             self.source_context = input.source_context;
@@ -454,7 +510,7 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(project, generation, inputs, Stages::default())
+        self.begin_stages_on_control(project, generation, inputs, Stages::default(), None)
     }
     fn begin_stages_on_control(
         &mut self,
@@ -462,9 +518,21 @@ impl AudioPreparationCustody {
         generation: u64,
         inputs: OwnedAudioInputs,
         stages: Stages,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        match self.reserve_stages_on_control(project, generation, &inputs, stages) {
-            Ok(reserved) => Ok(self.construct_reserved_on_control(Some(inputs), stages, reserved)),
+        match self.reserve_stages_with_resources(
+            project,
+            generation,
+            &inputs,
+            stages,
+            ConstructorResources {
+                sampler: None,
+                effects,
+            },
+        ) {
+            Ok(reserved) => {
+                Ok(self.construct_reserved_on_control(Some(inputs), stages, reserved, project))
+            }
             Err(refusal) => Err(Box::new(AudioArrangementRefusal {
                 reason: refusal.reason,
                 inputs,
@@ -494,12 +562,12 @@ impl AudioPreparationCustody {
         inputs: &mut Option<OwnedAudioInputs>,
         after_reserve: impl FnOnce(),
     ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
-        self.begin_prepared_revision_with_sampler(
+        self.begin_prepared_revision_with_resources(
             project,
             generation,
             context,
             inputs,
-            None,
+            ConstructorResources::default(),
             after_reserve,
         )
     }
@@ -512,22 +580,46 @@ impl AudioPreparationCustody {
         work: u64,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
-        self.begin_prepared_revision_with_sampler(
+        self.begin_prepared_revision_with_resources(
             project,
             generation,
             context,
             inputs,
-            Some((work, cancel)),
+            ConstructorResources {
+                sampler: Some((work, cancel)),
+                effects: None,
+            },
             || {},
         )
     }
-    fn begin_prepared_revision_with_sampler(
+    pub(crate) fn begin_effect_revision_in_place_on_control(
         &mut self,
         project: &hex_project::Project,
         generation: u64,
         context: AudioSourceContext,
         inputs: &mut Option<OwnedAudioInputs>,
         sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
+        self.begin_prepared_revision_with_resources(
+            project,
+            generation,
+            context,
+            inputs,
+            ConstructorResources {
+                sampler,
+                effects: Some(effects),
+            },
+            || {},
+        )
+    }
+    fn begin_prepared_revision_with_resources(
+        &mut self,
+        project: &hex_project::Project,
+        generation: u64,
+        context: AudioSourceContext,
+        inputs: &mut Option<OwnedAudioInputs>,
+        resources: ConstructorResources<'_>,
         after_reserve: impl FnOnce(),
     ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
         let stages = Stages {
@@ -548,7 +640,7 @@ impl AudioPreparationCustody {
         };
         let reserved = match catch_unwind(AssertUnwindSafe(|| {
             let reserved =
-                self.reserve_stages_with_sampler(project, generation, bank, stages, sampler)?;
+                self.reserve_stages_with_resources(project, generation, bank, stages, resources)?;
             after_reserve();
             Ok::<_, Box<AudioArrangementStartRefusal>>(reserved)
         })) {
@@ -562,27 +654,19 @@ impl AudioPreparationCustody {
                 }));
             }
         };
-        let token = self.construct_reserved_on_control(inputs.take(), stages, reserved);
+        let token = self.construct_reserved_on_control(inputs.take(), stages, reserved, project);
         self.source_context = Some(context);
         Ok(token)
     }
-    fn reserve_stages_on_control(
+    fn reserve_stages_with_resources(
         &mut self,
         project: &hex_project::Project,
         generation: u64,
         inputs: &OwnedAudioInputs,
         stages: Stages,
+        resources: ConstructorResources<'_>,
     ) -> Result<ReservedStages, Box<AudioArrangementStartRefusal>> {
-        self.reserve_stages_with_sampler(project, generation, inputs, stages, None)
-    }
-    fn reserve_stages_with_sampler(
-        &mut self,
-        project: &hex_project::Project,
-        generation: u64,
-        inputs: &OwnedAudioInputs,
-        stages: Stages,
-        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
-    ) -> Result<ReservedStages, Box<AudioArrangementStartRefusal>> {
+        let ConstructorResources { sampler, effects } = resources;
         let Stages {
             include_session,
             assemble_session,
@@ -601,7 +685,7 @@ impl AudioPreparationCustody {
             inputs,
             &mut slots,
             &mut capacity,
-            sampler.is_some(),
+            resources,
         );
         let next = match result {
             Ok(next) => next,
@@ -646,8 +730,14 @@ impl AudioPreparationCustody {
                         )
                         .map(|(a, b)| a.min(b))
                         .ok_or(AudioStorageError::ReservationExceeded)?;
-                    self.current_sampler
-                        .prepare_metadata(inputs, project, work, allowance, cancel)?;
+                    self.current_sampler.prepare_metadata(
+                        inputs,
+                        project,
+                        work,
+                        allowance,
+                        cancel,
+                        effects.is_some(),
+                    )?;
                 }
 
                 if self.current_sampler.metadata().is_some() {
@@ -656,6 +746,7 @@ impl AudioPreparationCustody {
                         generation,
                         inputs,
                         slots.len(),
+                        effects.is_some(),
                     )?;
                 } else {
                     self.session
@@ -672,10 +763,17 @@ impl AudioPreparationCustody {
                 self.tempo.reserve(project)?;
                 if assemble_revision {
                     if let Some(metadata) = self.current_sampler.metadata() {
-                        self.revision
-                            .reserve_with_sampler(project, Some(metadata.id))?;
+                        self.revision.reserve_with_sampler_and_effects(
+                            project,
+                            Some(metadata.id),
+                            effects.is_some(),
+                        )?;
                     } else {
-                        self.revision.reserve(project)?;
+                        self.revision.reserve_with_sampler_and_effects(
+                            project,
+                            None,
+                            effects.is_some(),
+                        )?;
                     }
                 }
                 let track_handles = if assemble_tracks {
@@ -691,8 +789,11 @@ impl AudioPreparationCustody {
                     project
                         .tracks()
                         .iter()
-                        .try_fold(0usize, |n, t| {
-                            n.checked_add(t.devices().len().checked_mul(4)?)
+                        .map(|t| t.devices())
+                        .chain(project.return_tracks().iter().map(|r| r.devices()))
+                        .chain(std::iter::once(project.main_devices()))
+                        .try_fold(0usize, |n, devices| {
+                            n.checked_add(devices.len().checked_mul(4)?)
                         })
                         .ok_or(AudioStorageError::Overflow)?
                 } else {
@@ -772,13 +873,8 @@ impl AudioPreparationCustody {
                         })
                         .transpose()?;
 
-                    if samplers.is_some() {
-                        self.arrangement_clips
-                            .reserve_with_sampler(&slots, inputs, project, stages, samplers)?;
-                    } else {
-                        self.arrangement_clips
-                            .reserve(&slots, inputs, project, stages)?;
-                    }
+                    self.arrangement_clips
+                        .reserve_with_effects(&slots, inputs, project, stages, samplers, effects)?;
                 }
                 Ok(())
             }));
@@ -824,9 +920,9 @@ impl AudioPreparationCustody {
                     shared_observation?;
                     assembly_observation?;
                     if assemble_project {
-                        // Quote the exact empty Main allocation BEFORE its birth.
+                        // Quote the actual selected Main chain BEFORE its birth.
                         capacity.arrangement_clips.root.main_prepared_bytes =
-                            ArrangementClips::main_carrier_bytes()?;
+                            self.arrangement_clips.main_quote(project)?.0;
                     }
                     capacity.native_source_metadata_bytes = self.current_sampler.bytes()?;
                     let mut current = capacity
@@ -920,13 +1016,18 @@ impl AudioPreparationCustody {
                         capacity.arrangement_clips = self.arrangement_clips.capacity(true)?;
                         if assemble_project {
                             capacity.arrangement_clips.root.main_prepared_bytes =
-                                ArrangementClips::main_carrier_bytes()?;
+                                self.arrangement_clips.main_quote(project)?.0;
                         }
                         current = current
                             .checked_sub(old)
                             .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
                             .ok_or(AudioStorageError::Overflow)?;
                     }
+                    capacity
+                        .arrangement_clips
+                        .root
+                        .main_construction_overlap_bytes =
+                        self.arrangement_clips.main_quote(project)?.1;
                     capacity.retained_stage_bytes = capacity
                         .retained_stage_bytes
                         .checked_sub(previous_session_bytes?)
@@ -950,6 +1051,20 @@ impl AudioPreparationCustody {
                         .and_then(|n| {
                             n.checked_add(capacity.arrangement_clips.previous_growth_backing_bytes)
                         })
+                        .and_then(|n| {
+                            n.checked_add(
+                                capacity
+                                    .arrangement_clips
+                                    .root
+                                    .main_construction_overlap_bytes
+                                    .checked_add(
+                                        capacity
+                                            .arrangement_clips
+                                            .root
+                                            .signal_graph_construction_overlap_bytes,
+                                    )?,
+                            )
+                        })
                         .ok_or(AudioStorageError::Overflow)?;
                     // Keep the admitted conservative compiler reservation in
                     // the aggregate report even when actual vectors are smaller.
@@ -966,7 +1081,8 @@ impl AudioPreparationCustody {
                         return Err(AudioStorageError::ReservationExceeded);
                     }
                     if assemble_project {
-                        self.arrangement_clips.reserve_main_carrier()?;
+                        self.arrangement_clips
+                            .reserve_main_carrier(project, effects)?;
                     }
                     Ok(())
                 }),
@@ -1006,6 +1122,7 @@ impl AudioPreparationCustody {
             slots,
             capacity,
             next,
+            signal_graph: effects.is_some(),
         })
     }
     fn construct_reserved_on_control(
@@ -1013,11 +1130,13 @@ impl AudioPreparationCustody {
         inputs: Option<OwnedAudioInputs>,
         stages: Stages,
         reserved: ReservedStages,
+        canonical: &hex_project::Project,
     ) -> AudioPreparationToken {
         let ReservedStages {
             slots,
             capacity,
             next,
+            signal_graph,
         } = reserved;
         let Stages {
             include_session,
@@ -1073,6 +1192,9 @@ impl AudioPreparationCustody {
             }
             if assemble_project {
                 self.arrangement_clips.construct_root(&mut self.shared)?;
+                if signal_graph {
+                    self.arrangement_clips.prepare_signal_graph(canonical)?;
+                }
             }
             if assemble_project {
                 self.arrangement_clips.validate_root_sources(
@@ -1159,8 +1281,10 @@ impl AudioPreparationCustody {
         inputs: &OwnedAudioInputs,
         slots: &mut Vec<SourceSlot>,
         capacity: &mut AudioArrangementCapacity,
-        allow_sampler: bool,
+        resources: ConstructorResources<'_>,
     ) -> Result<u64, AudioStorageError> {
+        let effects = resources.effects;
+        let allow_sampler = resources.sampler.is_some();
         if self.phase != AudioPreparationPhase::Vacant
             || self.bank.is_some()
             || !self.slots.is_empty()
@@ -1174,7 +1298,7 @@ impl AudioPreparationCustody {
         if generation == 0 {
             return Err(AudioStorageError::SourceMismatch);
         }
-        validate_constructor_project(project)?;
+        validate_constructor_project_with_effects(project, effects)?;
         if allow_sampler
             && inputs
                 .sources
@@ -1184,7 +1308,10 @@ impl AudioPreparationCustody {
             return Err(AudioStorageError::UnsupportedGraph);
         }
         if !allow_sampler
-            && crate::native_device_resources::current_sampler::validate_project(project)?
+            && crate::native_device_resources::current_sampler::validate_project_with_effects(
+                project,
+                effects.is_some(),
+            )?
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
@@ -1282,6 +1409,38 @@ impl AudioPreparationCustody {
             || capacity.construction_peak_bytes > inputs.reservation.max_construction_data_bytes
         {
             return Err(AudioStorageError::ReservationExceeded);
+        }
+        if effects.is_some() {
+            let mut retained = 0usize;
+            let mut overlap = 0usize;
+            for devices in project
+                .tracks()
+                .iter()
+                .map(|t| t.devices())
+                .chain(project.return_tracks().iter().map(|r| r.devices()))
+                .chain(std::iter::once(project.main_devices()))
+            {
+                let (data, scratch) = arrangement_clips::chains::ChainCustody::default()
+                    .quote(devices, project.sample_rate())?;
+                retained = retained
+                    .checked_add(data)
+                    .ok_or(AudioStorageError::Overflow)?;
+                overlap = overlap
+                    .checked_add(scratch)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+            if capacity
+                .retained_stage_bytes
+                .checked_add(retained)
+                .is_none_or(|n| n > inputs.reservation.max_prepared_data_bytes)
+                || capacity
+                    .construction_peak_bytes
+                    .checked_add(retained)
+                    .and_then(|n| n.checked_add(overlap))
+                    .is_none_or(|n| n > inputs.reservation.max_construction_data_bytes)
+            {
+                return Err(AudioStorageError::ReservationExceeded);
+            }
         }
         for track in project.tracks() {
             for clip in track.clips() {

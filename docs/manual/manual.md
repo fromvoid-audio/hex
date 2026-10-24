@@ -103,6 +103,13 @@ selection, these keys toggle the existing loop. **command+l** uses the same acti
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 
+drag a section header to move its musical content. hold **option** before or
+during the drag to adjust only its marker; the music stays in place. option-resize
+an edge to trim or remove overlapping section markers. grid snapping remains
+active when enabled; **command** temporarily inverts it. after entering option
+adjustment, releasing option keeps that drag marker-only. release outside the
+section lane to accept the last valid preview, or press **escape** to cancel.
+
 turn on **section autoplay and loop** in the top toolbar, then click the body of
 an arrange section to play it repeatedly. the launch dropdown beside it also
 sets quantization for console clip and scene launches: **none**, **8 bars**,
@@ -194,6 +201,33 @@ instead of repeatedly clicking a busy action.
 in console, select the intended clip or scene before launching it. **return**
 launches the selected console item when that workspace has focus. check the
 transport and audible result; a selected item is not evidence that it is playing.
+
+## arrangement automation view
+
+press **a** with arrangement focus, or use the toolbar's **a** control, to show
+track-gain automation over faded clips. press **a** again to return to clip
+editing. switching views preserves clips, selection, automation and undo history.
+**0** remains the clip activation shortcut outside automation view. text fields
+and the computer midi keyboard keep their own input.
+
+click a gain curve to add a point, drag a point to change its time or value, and
+release to apply the edit. **command** gives free beat placement. **escape**
+cancels a held edit; **backspace** removes the selected automation point.
+one undo restores a completed change. background clip edits are unavailable
+while the automation lanes own arrangement focus.
+
+this view currently shows track gain. recorded touch spans are displayed but
+read-only: leave automation view and use the track's gain editor to clear the
+lane before editing its base curve. device-parameter lanes are not offered here.
+
+## clip loop resizing
+
+hover the lower part of a clip's right edge to show the loop cursor, then drag
+to repeat its source. the rest of the edge keeps ordinary trimming. audio and
+midi clips use the same gesture; no loop icon is painted inside the clip. looped
+clips have rounded bottom corners. drag the first repeat boundary to change the
+cycle while keeping the outer duration; directed clips retain only the outer
+repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
 
 ## audio event fades
 
@@ -347,6 +381,11 @@ keep the button held to position the new band in the same gesture. vertical
 movement changes q for a cut or notch, or the gain of a bell. existing
 nodes keep their own selection and drag targets. press **escape** to cancel.
 
+each visible eq has its own live spectrum, including eqs on return and main
+tracks. selecting another device keeps these spectra running. use **spectrum**
+on an eq to turn only its analyzer off or on. a hidden device panel stops its
+analyzer; missing or stale audio clears the live curve.
+
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual
 does not promise a complete third-party plugin-hosting workflow.
@@ -412,6 +451,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
+| arrangement automation view | a |
+| activate selected clips | 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

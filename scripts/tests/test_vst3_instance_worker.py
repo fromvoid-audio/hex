@@ -17,11 +17,14 @@ CID = bytes([0x48, 0x45, 0x58, 0x50, *range(1, 13)])
 
 class Session:
     def __init__(self, binary, bundle, trace, *, variant=0, channels=(2, 2), maximum=256,
-                 rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None):
+                 rate=48000, cid=CID, corrupt_hash=False, precision=0, config_frame=None, auto_present=True, startup_state=None, startup_frame=None, tail_frames=None):
         self.socket, peer = socket.socketpair()
         self.socket.settimeout(10)  # deadlock guard, not a sample/timing oracle
         env = {**os.environ, "HEX_ORIGINAL_INSTANCE_VARIANT": str(variant),
                "HEX_ORIGINAL_INSTANCE_TRACE": str(trace)}
+        self.tail_frames = tail_frames if tail_frames is not None else 0
+        if tail_frames is not None:
+            env["HEX_ORIGINAL_TAIL_FRAMES"] = str(tail_frames)
         if variant >= 37:
             env["HEX_ORIGINAL_RESTORE_TRACE"] = str(trace) + "-restore"
         self.process = subprocess.Popen([str(binary)], stdin=peer, stdout=subprocess.DEVNULL,
@@ -69,9 +72,11 @@ class Session:
         if length > 8192:
             raise AssertionError("unbounded helper control reply")
         body = self.exact(length)
-        if magic == b"HXVIFA02" and self.auto_present:
-            if len(body) != 131 + len(self.restore_suffix) or body[:126] != self.facts_prefix or body[130] not in (0, 1) or body[131:] != self.restore_suffix:
+        if magic == b"HXVIFA03" and self.auto_present:
+            if len(body) != 135 + len(self.restore_suffix) or body[:126] != self.facts_prefix or body[134] not in (0, 1) or body[135:] != self.restore_suffix:
                 raise AssertionError("wrong source/configuration preparation facts")
+            if struct.unpack_from("<I", body, 130)[0] != self.tail_frames:
+                raise AssertionError("wrong source tail report")
             self.auto_present = False
             self.presentation((77, 91))
             return self.message()
@@ -139,15 +144,16 @@ class NativeInstanceTests(unittest.TestCase):
 
     def ready(self, session):
         magic, body = session.message()
-        self.assertEqual(magic, b"HXVIRD03", body)
+        self.assertEqual(magic, b"HXVIRD04", body)
         self.assertEqual(struct.unpack_from("<H4Q", body), (1, *BINDING))
         self.assertEqual(body[34:50], CID)
-        self.assertEqual(body[66:68], bytes([1, 1]))  # applied; known contributions echoed
-        self.assertEqual(struct.unpack_from("<II", body, 68), (77, 91))
-        self.assertEqual(body[76:78], bytes([bool(session.restore_suffix[0]), 1]))
-        size = struct.unpack_from("<H", body, 78)[0]
-        self.assertEqual(size, len(body) - 80)
-        state = body[80:]
+        self.assertEqual(struct.unpack_from("<I", body, 66)[0], session.tail_frames)
+        self.assertEqual(body[70:72], bytes([1, 1]))  # applied; known contributions echoed
+        self.assertEqual(struct.unpack_from("<II", body, 72), (77, 91))
+        self.assertEqual(body[80:82], bytes([bool(session.restore_suffix[0]), 1]))
+        size = struct.unpack_from("<H", body, 82)[0]
+        self.assertEqual(size, len(body) - 84)
+        state = body[84:]
         self.assertEqual(state[:8], b"HXVS\x01\x01\x00\x00")
         self.assertEqual(state[8:24], CID)
         self.assertEqual(state[24:56], session.exe_hash)
@@ -190,9 +196,9 @@ class NativeInstanceTests(unittest.TestCase):
         captured = self.startup_state()
         session = self.session(variant=37, auto_present=False, startup_state=captured)
         magic, facts = session.message()
-        self.assertEqual(magic, b"HXVIFA02")
-        self.assertEqual(struct.unpack_from("<IB", facts, 126), (3, 1))
-        self.assertEqual(facts[131:], session.restore_suffix)
+        self.assertEqual(magic, b"HXVIFA03")
+        self.assertEqual(struct.unpack_from("<IIB", facts, 126), (3, 0, 1))
+        self.assertEqual(facts[135:], session.restore_suffix)
         before = self.restore_observation()
         self.assertEqual(before[:3], (1, 1, 1))
         self.assertGreaterEqual(before[3], 1)
@@ -203,9 +209,9 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual((self.observation()[8], self.observation()[10]), (0, 0))
         session.presentation((77, 91))
         magic, ready = session.message()
-        self.assertEqual(magic, b"HXVIRD03")
-        self.assertEqual(ready[76:78], b"\x01\x01")
-        state = ready[80:]
+        self.assertEqual(magic, b"HXVIRD04")
+        self.assertEqual(ready[80:82], b"\x01\x01")
+        state = ready[84:]
         self.assertEqual(struct.unpack_from("<II", state, 88), (32, 8))
         self.assertEqual(struct.unpack_from("<If", state, 100), (3, .75))
         self.assertEqual(state[128:], struct.pack("<4sI", b"HXCT", 91))
@@ -225,13 +231,13 @@ class NativeInstanceTests(unittest.TestCase):
 
     def test_fresh_controller_sync_uses_the_one_capture_after_actual_presentation(self):
         session = self.session(variant=37, auto_present=False)
-        self.assertEqual(session.message()[0], b"HXVIFA02")
+        self.assertEqual(session.message()[0], b"HXVIFA03")
         self.assertEqual(self.restore_observation()[:3], (0, 0, 0))
         self.assertEqual(self.restore_observation()[10:12], (0, 0))
         session.presentation((77, 91))
         magic, ready = session.message()
-        self.assertEqual(magic, b"HXVIRD03")
-        self.assertEqual(ready[76], 0)
+        self.assertEqual(magic, b"HXVIRD04")
+        self.assertEqual(ready[80], 0)
         observed = self.restore_observation()
         self.assertEqual(observed[:3], (0, 1, 0))
         self.assertEqual(observed[10:12], (1, 1))
@@ -267,9 +273,9 @@ class NativeInstanceTests(unittest.TestCase):
     def test_startup_absent_controller_and_empty_chunks_keep_distinct_actual_meanings(self):
         session = self.session(variant=55, startup_state=self.startup_state(controller=False))
         magic, ready = session.message()
-        self.assertEqual(magic, b"HXVIRD03")
-        self.assertEqual(ready[76], 1)
-        self.assertEqual(struct.unpack_from("<II", ready, 168), (32, 0))
+        self.assertEqual(magic, b"HXVIRD04")
+        self.assertEqual(ready[80], 1)
+        self.assertEqual(struct.unpack_from("<II", ready, 172), (32, 0))
         self.terminal(session, 0, message=session.stop())
         for component_empty in [True, False]:
             with self.subTest(component_empty=component_empty):
@@ -300,9 +306,9 @@ class NativeInstanceTests(unittest.TestCase):
     def test_facts_precede_all_presentation_capture_and_processing_then_acknowledge_exact_values(self):
         session = self.session(auto_present=False)
         magic, body = session.message()
-        self.assertEqual(magic, b"HXVIFA02")
+        self.assertEqual(magic, b"HXVIFA03")
         self.assertEqual(body[:126], session.facts_prefix)
-        self.assertEqual(struct.unpack_from("<IB", body, 126), (0, 1))
+        self.assertEqual(struct.unpack_from("<IIB", body, 126), (0, 0, 1))
         observed = self.observation()
         self.assertEqual(observed[0], 14)  # queried before any setter call
         self.assertEqual(observed[2:4], (1, 1))
@@ -312,11 +318,28 @@ class NativeInstanceTests(unittest.TestCase):
         session.render(8)
         self.terminal(session, 0, message=session.stop())
 
+    def test_source_tail_report_crosses_facts_and_ready_without_changing_pcm_extent(self):
+        for tail in (0, 3, 0xffffffff):
+            with self.subTest(tail=tail):
+                session = self.session(auto_present=False, tail_frames=tail)
+                magic, facts = session.message()
+                self.assertEqual(magic, b"HXVIFA03")
+                self.assertEqual(struct.unpack_from("<IIB", facts, 126), (0, tail, 1))
+                self.assertEqual(facts[135:], session.restore_suffix)
+                self.assertEqual(self.observation()[10], 0)
+                session.presentation((77, 91))
+                self.ready(session)
+                header, inputs, (magic, output) = session.render(8)
+                self.assertEqual((magic, output[:64]), (b"HXVB", header))
+                self.assertEqual(struct.unpack("<16f", output[64:]), tuple(v*.5 for v in inputs))
+                terminal = self.terminal(session, 0, message=session.stop())
+                self.assertEqual(terminal[5:7], (1, 8))
+
     def test_unavailable_stale_and_wrong_phase_presentation_never_start_dsp(self):
         for case in ("unknown", "stale", "pcm"):
             with self.subTest(case=case):
                 session = self.session(auto_present=False)
-                self.assertEqual(session.message()[0], b"HXVIFA02")
+                self.assertEqual(session.message()[0], b"HXVIFA03")
                 if case == "unknown":
                     session.presentation(None)
                 elif case == "stale":
@@ -329,7 +352,7 @@ class NativeInstanceTests(unittest.TestCase):
 
     def test_presentation_changed_latency_invalidates_the_plan_before_processing(self):
         session = self.session(variant=36, auto_present=False)
-        self.assertEqual(session.message()[0], b"HXVIFA02")
+        self.assertEqual(session.message()[0], b"HXVIFA03")
         session.presentation((77, 91))
         self.error(session, 5)
         self.terminal(session, 5)
@@ -364,11 +387,11 @@ class NativeInstanceTests(unittest.TestCase):
         cid = bytes.fromhex("48455833010203040506070809101100")
         session = self.session(cid=cid, maximum=64)
         magic, body = session.message()
-        self.assertEqual(magic, b"HXVIRD03", body)
-        self.assertEqual(body[66:68], bytes([0, 1]))  # optional absent; missing != empty
-        self.assertEqual(body[80:88], b"HXVS\x01\x00\x00\x00")
-        self.assertEqual(struct.unpack_from("<II", body, 168), (0, 0))
-        self.assertEqual(len(body), 176)
+        self.assertEqual(magic, b"HXVIRD04", body)
+        self.assertEqual(body[70:72], bytes([0, 1]))  # optional absent; missing != empty
+        self.assertEqual(body[84:92], b"HXVS\x01\x00\x00\x00")
+        self.assertEqual(struct.unpack_from("<II", body, 172), (0, 0))
+        self.assertEqual(len(body), 180)
         header, inputs, (magic, output) = session.render(7)
         self.assertEqual((magic, output[:64]), (b"HXVB", header))
         self.assertEqual(struct.unpack("<14f", output[64:]), tuple(v*.5 for v in inputs))
@@ -486,7 +509,7 @@ class NativeInstanceTests(unittest.TestCase):
                 session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
                                                    *BINDING, 0, 0))
                 magic, body = session.message()
-                self.assertEqual(magic, b"HXVIQF01")
+                self.assertEqual(magic, b"HXVIQF02")
                 self.assertEqual(struct.unpack_from("<QQ", body, len(body)-16), (0, 0))
                 session.socket.sendall(packet)
                 self.error(session, 8)
@@ -610,7 +633,7 @@ class NativeInstancePackageTests(unittest.TestCase):
         binary = self.app / delivery.DISCOVERY_ROOT / BOOT.INSTANCE_EXECUTABLE
         session = Session(binary, bundle, self.root / "trace")
         self.addCleanup(session.close)
-        self.assertEqual(session.message()[0], b"HXVIRD03")
+        self.assertEqual(session.message()[0], b"HXVIRD04")
         header, inputs, (magic, output) = session.render(7)
         self.assertEqual((magic, output[:64]), (b"HXVB", header))
         self.assertEqual(struct.unpack("<14f", output[64:]), tuple(v*.5 for v in inputs))

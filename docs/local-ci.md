@@ -37,6 +37,12 @@ and normal repository runner for guarded checks. A stale result requires freezin
 the intended candidate and rerunning its required plan. Diagnostic presentation
 does not change exit codes, qualification, skipped steps or ownership cleanup.
 
+The copied plugin transport probes live in `hex-plugin-host`; run
+`cargo test -p hex-plugin-host --features allocation-probe --locked` alongside
+the audio allocation checks when changing that boundary. The local runner
+includes both owners; enabling a dependency feature alone does not execute its
+unit tests. The counter stays dev-only and native worker I/O stays off callback.
+
 ## Merge selection
 
 Plans containing self-tests run the existing changelog, architecture, dependency,

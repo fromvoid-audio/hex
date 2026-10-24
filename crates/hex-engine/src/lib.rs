@@ -42,9 +42,10 @@ mod audio_storage;
 pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateDraft,
-    AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation, AudioCandidateRefusal,
-    AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
+    AudioCandidateEffects, AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation,
+    AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
+    ClaimedAudioCandidateRuntime,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
@@ -380,6 +381,10 @@ fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -
         Error::RuntimeAllocation => "native device runtime allocation failed",
         Error::UnsupportedProcessingClass => "native device processing class is not admitted",
         Error::AssetResourcesUnavailable => "native device asset resources are unavailable",
+        Error::ForeignProcessingUnavailable => {
+            "foreign processing resources are unavailable for this graph"
+        }
+        Error::ForeignProcessingFailed => "foreign processor exchange failed",
     })
 }
 

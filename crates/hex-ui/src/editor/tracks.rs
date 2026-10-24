@@ -548,7 +548,18 @@ impl EditorView {
                         .bg(edge),
                 );
         }
-        clip_area = clip_area.child(content);
+        clip_area = clip_area.child(
+            div()
+                .absolute()
+                .inset_0()
+                .debug_selector(move || format!("arrangement-clip-layer-{}", track_id.value()))
+                .opacity(if self.automation_view.enabled {
+                    0.22
+                } else {
+                    1.0
+                })
+                .child(content),
+        );
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         let live_midi_trim_preview = self.midi_trim_display(track_id, None);
@@ -1552,6 +1563,15 @@ impl EditorView {
                 view.open_track_color_context_menu(event.position, track_id, window, cx);
             }),
         );
+        if self.automation_view.enabled {
+            let width = self
+                .drag_lanes
+                .get(&track_id)
+                .map_or(0.0, |lane| lane.width);
+            clip_area = clip_area.children(super::gain_lane::inline(
+                self, state, track_id, viewport, width, cx,
+            ));
+        }
         div()
             .w_full()
             .h(px(self.track_height(track_id)))
@@ -1965,7 +1985,7 @@ impl EditorView {
         grid: Option<super::waveform::WaveformGrid>,
     ) -> Div {
         let waveform = state.waveforms.get(&clip.asset());
-        if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+        let body = if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
             // The immutable prepared peaks cover the retained root. Cropping
             // changes its visible offset, never its processing/source origin.
             let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
@@ -2020,7 +2040,8 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text("missing media")),
             }
-        }
+        };
+        super::waveform::clip_waveform_activity(body, clip.active())
     }
 
     fn waveform_grid(

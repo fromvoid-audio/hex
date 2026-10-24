@@ -5021,13 +5021,15 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
         .as_mut()
         .expect("actual release suffix chain");
     actual_chain.begin_block();
-    actual_chain.process_block(&mut actual_tail_pcm);
+    actual_chain.process_block(&mut actual_tail_pcm).unwrap();
     actual_chain.commit_block();
     let reference_chain = reference_candidate.tail_groups[reference_slot]
         .as_mut()
         .expect("reference release suffix chain");
     reference_chain.begin_block();
-    reference_chain.process_block(&mut reference_tail_pcm);
+    reference_chain
+        .process_block(&mut reference_tail_pcm)
+        .unwrap();
     reference_chain.commit_block();
     assert_eq!(
         actual_tail_pcm, reference_tail_pcm,
@@ -11939,6 +11941,9 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
     // Both prepared and runtime Main are real populated chains, not placeholders.
     assert!(!main.revision.arrangement().main_device_chain.is_empty());
     assert!(main.main_chain.storage_view().entries().next().is_some());
+    // Fresh matched Main storage is now supported; owning handoff remains
+    // separately refused until its origin transfer is represented.
+    main.visit_candidate_groups(&mut |_, _, _| Ok(())).unwrap();
     let refuses_without_emitting = |runtime: &SessionPlayback| {
         let mut emitted = 0;
         assert_eq!(
@@ -11950,7 +11955,6 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
         );
         assert_eq!(emitted, 0);
     };
-    refuses_without_emitting(&main);
     std::mem::swap(&mut empty.main_chain, &mut main.main_chain);
     refuses_without_emitting(&empty); // runtime-only population
     refuses_without_emitting(&main); // prepared-only population

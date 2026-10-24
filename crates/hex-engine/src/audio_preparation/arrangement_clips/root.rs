@@ -1,5 +1,6 @@
 //! Private final Arrangement value and its persistent, reversible staging.
 use super::*;
+mod signal;
 use crate::{
     PreparedMasterGain, Project, ReturnBus, Track, owned_shared::OwnedShared,
     return_feed_plan::ReturnFeedPlan, shared_analytic::SharedAnalyticContextTable,
@@ -10,6 +11,14 @@ pub struct ArrangementRootCapacity {
     pub track_container_bytes: usize,
     pub return_container_bytes: usize,
     pub main_prepared_bytes: usize,
+    /// Temporary closed chain Vec/payload overlap, excluded from retained DATA.
+    pub main_construction_overlap_bytes: usize,
+    /// Retained ceiling selected before any closed topology construction.
+    pub signal_graph_reserved_bytes: usize,
+    pub signal_graph_data_bytes: usize,
+    /// Known construction DATA policy; opaque builder contexts are separately
+    /// bounded by the existing node/edge cardinalities, not allocator/RSS bytes.
+    pub signal_graph_construction_overlap_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -20,6 +29,12 @@ impl ArrangementRootCapacity {
         self.track_container_bytes
             .checked_add(self.return_container_bytes)
             .and_then(|n| n.checked_add(self.main_prepared_bytes))
+            .and_then(|n| {
+                n.checked_add(
+                    self.signal_graph_reserved_bytes
+                        .max(self.signal_graph_data_bytes),
+                )
+            })
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -43,6 +58,15 @@ pub(super) struct ArrangementRootAssembly {
     feed: ReturnFeedPlan,
     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
     main_chain: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
+    main_declaration: Option<crate::owned_shared::SharedDeclaration>,
+    main_custody: super::chains::ChainCustody,
+    main_handle: u64,
+    main_disposal: Disposal,
+    signal_graph: Option<Arc<crate::signal_graph::SignalGraph>>,
+    signal_declaration: Option<crate::owned_shared::SharedDeclaration>,
+    signal_handle: u64,
+    signal_disposal: Disposal,
+    signal_reserved: bool,
     has_feed: bool,
     scalars: Option<Scalars>,
     growth: usize,
@@ -59,6 +83,7 @@ impl ArrangementRootAssembly {
     ) -> Result<ArrangementRootCapacity, AudioStorageError> {
         self.capacity_at(growth, None)
     }
+    #[cfg(test)]
     pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
         let (payload, overhead) =
             OwnedShared::<[hex_lattice::PreparedRuntimeInstance]>::declared_slice_parts(0)
@@ -67,14 +92,44 @@ impl ArrangementRootAssembly {
             .checked_add(overhead)
             .ok_or(AudioStorageError::Overflow)
     }
-    pub(super) fn reserve_main_carrier(&mut self) -> Result<(), AudioStorageError> {
+    pub(super) fn main_quote(
+        &self,
+        project: &hex_project::Project,
+    ) -> Result<(usize, usize), AudioStorageError> {
+        self.main_custody
+            .quote(project.main_devices(), project.sample_rate())
+    }
+    pub(super) fn reserve_main_carrier(
+        &mut self,
+        project: &hex_project::Project,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+    ) -> Result<(), AudioStorageError> {
         if self.scalars.is_none() || self.project.is_some() {
             return Err(AudioStorageError::Capacity);
         }
         // Arc::new([T; 0]) has the exact sized-zero-array layout quoted above;
         // unsizing transfers this allocation without a second birth.
+        if self
+            .main_chain
+            .as_ref()
+            .is_some_and(|chain| chain.is_empty())
+            && !project.main_devices().is_empty()
+        {
+            self.main_chain = None;
+            self.main_declaration = None;
+        }
         if self.main_chain.is_none() {
-            self.main_chain = Some(Arc::new([]));
+            self.main_handle = crate::audio_only_inputs::handle()?;
+            self.main_disposal = Disposal::Unstarted;
+            let chain = self.main_custody.prepare_with_effects(
+                project.main_devices(),
+                hex_lattice::ProcessorChainOwner::Main,
+                project.sample_rate(),
+                effects,
+            )?;
+            let (chain, declaration) = chain.into_paired_parts_on_control();
+            self.main_chain = Some(chain);
+            self.main_declaration = Some(declaration);
         }
         Ok(())
     }
@@ -89,22 +144,18 @@ impl ArrangementRootAssembly {
             && self.tracks.capacity() == 0
             && self.returns.capacity() == 0
             && self.main_chain.is_none()
+            && self.signal_graph.is_none()
             && self.contexts.is_none()
             && self.feed.has_no_owned_storage()
     }
     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
         self.project = source.take();
     }
-    pub(super) fn reserve(
-        &mut self,
-        project: &hex_project::Project,
-    ) -> Result<(), AudioStorageError> {
-        self.reserve_with_sampler(project, false)
-    }
-    pub(super) fn reserve_with_sampler(
+    pub(super) fn reserve_with_effects(
         &mut self,
         project: &hex_project::Project,
         sampler: bool,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         if self.project.is_some()
             || !self.tracks.is_empty()
@@ -118,22 +169,25 @@ impl ArrangementRootAssembly {
         // Eligibility is audited again here rather than inferred from an empty
         // mutable-descriptor destination or from a legacy compiler outcome.
         if sampler {
-            if !crate::native_device_resources::current_sampler::validate_project(project)? {
+            if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+                project,
+                effects.is_some(),
+            )? {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
         } else {
-            if !project.main_devices().is_empty()
+            if (effects.is_none() && !project.main_devices().is_empty())
                 || project.tracks().iter().any(|t| {
-                    t.devices()
-                        .iter()
-                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                        || t.instrument().is_some()
+                    t.devices().iter().any(|d| {
+                        effects.is_none()
+                            && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                    }) || t.instrument().is_some()
                         || !t.midi_clips().is_empty()
                 })
                 || project
                     .return_tracks()
                     .iter()
-                    .any(|r| !r.devices().is_empty())
+                    .any(|r| effects.is_none() && !r.devices().is_empty())
             {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
@@ -148,6 +202,7 @@ impl ArrangementRootAssembly {
                 .ok_or(AudioStorageError::Overflow)?;
             end = Some(end.map_or(value, |previous: u64| previous.max(value)));
         }
+        self.signal_reserved = effects.is_some();
         self.growth = 0;
         for (old, count, stride) in [
             (
@@ -190,18 +245,17 @@ impl ArrangementRootAssembly {
         &'a self,
         external: Option<&'a Project>,
     ) -> Result<RootStorageView<'a>, AudioStorageError> {
+        self.signal_data_bytes(external)?;
         if self.project.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(project) = self.project.as_ref().or(external) {
             if project.audio_clip_views.capacity() != 0
-                || project.signal_graph.is_some()
                 || project.tempo_map.is_some()
                 || project.midi_routing.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
                 || self.main_chain.is_some()
-                || !project.main_device_chain.is_empty()
                 || self.contexts.is_some()
                 || !self.feed.has_no_owned_storage()
             {
@@ -256,7 +310,34 @@ impl ArrangementRootAssembly {
                 || self.project.is_some()
                 || external.is_some()
             {
-                Self::main_carrier_bytes()?
+                let main = self
+                    .project
+                    .as_ref()
+                    .or(external)
+                    .map(|p| &p.main_device_chain)
+                    .or(self.main_chain.as_ref())
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                let (payload, overhead) = self
+                    .main_declaration
+                    .as_ref()
+                    .and_then(|d| d.parts(main))
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                payload
+                    .checked_add(overhead)
+                    .and_then(|n| n.checked_add(self.main_custody.bytes(main).ok()?))
+                    .ok_or(AudioStorageError::Overflow)?
+            } else {
+                self.main_custody.metadata_bytes()?
+            },
+            main_construction_overlap_bytes: self.main_custody.construction_overlap(),
+            signal_graph_reserved_bytes: if self.signal_reserved {
+                crate::compensation::MAX_COMPENSATION_BYTES
+            } else {
+                0
+            },
+            signal_graph_data_bytes: self.signal_data_bytes(external)?,
+            signal_graph_construction_overlap_bytes: if self.signal_reserved {
+                crate::compensation::MAX_COMPENSATION_BYTES
             } else {
                 0
             },
@@ -373,7 +454,7 @@ impl ArrangementRootAssembly {
         if let Some(Project {
             project_track_ids: _,
             audio_clip_views: _,
-            signal_graph: _,
+            signal_graph,
             main_output_latency_frames: _,
             tempo_map: _,
             tempo_max_micro_bpm: _,
@@ -390,6 +471,7 @@ impl ArrangementRootAssembly {
             shared_contexts,
         }) = self.project.take()
         {
+            self.signal_graph = signal_graph.or(self.signal_graph.take());
             self.main_chain = Some(main_device_chain);
             self.tracks = tracks;
             self.returns = return_buses;
@@ -401,6 +483,36 @@ impl ArrangementRootAssembly {
         tracks.restore_root_rows(&mut self.tracks);
         self.has_feed = false;
         self.scalars = None;
+        Ok(())
+    }
+    pub(super) fn dispose_main_on_control(&mut self) -> Result<(), AudioStorageError> {
+        if self.main_disposal == Disposal::Pending {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        // The accepted zero-element carrier has no device owners and remains
+        // reusable with the same constructor identity across empty revisions.
+        if self
+            .main_chain
+            .as_ref()
+            .is_some_and(|chain| chain.is_empty())
+        {
+            return Ok(());
+        }
+        if self.main_chain.is_none() {
+            self.main_custody.clear();
+            self.main_declaration = None;
+            self.main_handle = 0;
+            return Ok(());
+        }
+        if self.project.is_some() || self.main_disposal != Disposal::Unstarted {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        self.main_disposal = Disposal::Pending;
+        drop(self.main_chain.take());
+        self.main_disposal = Disposal::Complete;
+        self.main_custody.clear();
+        self.main_declaration = None;
+        self.main_handle = 0;
         Ok(())
     }
     #[cfg(test)]
@@ -436,6 +548,15 @@ impl ArrangementRootAssembly {
             feed,
             contexts: _,
             main_chain,
+            main_declaration,
+            main_custody,
+            main_handle,
+            main_disposal: _,
+            signal_graph: _,
+            signal_declaration: _,
+            signal_handle: _,
+            signal_disposal: _,
+            signal_reserved: _,
             has_feed: _,
             scalars: _,
             growth,
@@ -445,10 +566,12 @@ impl ArrangementRootAssembly {
                 panic_after: _,
         } = self;
         let view = self.view_at(external)?;
+        self.visit_signal_storage(l, external)?;
         l.vec(tracks)?;
         l.vec(returns)?;
         feed.visit_audio_storage(l)?;
         l.growth(*growth)?;
+        main_custody.visit_metadata(l)?;
         let actual_main = project
             .as_ref()
             .or(external)
@@ -457,11 +580,12 @@ impl ArrangementRootAssembly {
         if let Some(main) = actual_main {
             l.shared(
                 main,
-                OwnedShared::<[hex_lattice::PreparedRuntimeInstance]>::declared_slice_parts(0),
+                main_declaration.as_ref().and_then(|d| d.parts(main)),
                 crate::audio_storage::Owner::exclusive(main),
-                crate::audio_only_inputs::handle()?,
+                *main_handle,
                 None,
             )?;
+            main_custody.visit(main, l)?;
         }
         if let Some(project) = project.as_ref().or(external) {
             let Project {

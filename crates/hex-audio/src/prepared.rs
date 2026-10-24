@@ -42,7 +42,11 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+mod native_effects;
+pub(crate) use native_effects::NativeEffectWindow;
 mod midi_recording;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native_sources;
 mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
@@ -58,8 +62,16 @@ mod runtime_view;
 mod sampler_edit;
 mod sampler_keyboard;
 mod section_launch;
+#[cfg(test)]
+mod spectrum_multi_tests;
+#[cfg(test)]
+mod spectrum_profile;
+mod spectrum_stages;
 pub use applied_source::AppliedAudioSource;
 pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
+#[cfg(test)]
+use spectrum_stages::SpectrumStage;
+use spectrum_stages::SpectrumStages;
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
@@ -243,12 +255,16 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Native(crate::candidate_custody::NativeEndpointEnvelope),
     Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
@@ -967,7 +983,8 @@ pub struct Control {
 }
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
-    output_transport_reaper: Option<crate::plugin_transport::Reaper>,
+    requested_physical_callback_frames: Option<u16>,
+    output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -1006,7 +1023,10 @@ pub(crate) enum OutputTransportDelivery {
 }
 
 pub struct Callback {
-    output_transport: Option<Box<crate::plugin_transport::Callback>>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    native_sources: crate::candidate_custody::NativeEndpointBank,
+    requested_physical_callback_frames: Option<u16>,
+    output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
@@ -1023,7 +1043,7 @@ pub struct Callback {
     gain_recording: crate::gain_recording::Callback,
     midi_recording: crate::midi_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
-    spectrum_stage: SpectrumStage,
+    spectrum_stages: SpectrumStages,
     active: Option<ActivePublication>,
     #[cfg(test)]
     test_admit_candidate: bool,
@@ -1050,6 +1070,17 @@ pub struct Callback {
     test_after_fresh_runtime_apply_decision: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
     test_after_spectrum_target_boundary: Option<std::sync::Arc<std::sync::Barrier>>,
+}
+
+pub(crate) fn native_endpoint_bank_storage_quote() -> Option<usize> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::candidate_custody::NativeEndpointBank::data_quote()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Some(0)
+    }
 }
 
 /// Allocate channels/telemetry on the control side. Initial graph must be
@@ -1096,6 +1127,7 @@ pub fn channel_with_spectrum(
             midi_recording,
             command_ticket: 0,
             publication: PublicationControl {
+                requested_physical_callback_frames: None,
                 output_transport_reaper: None,
                 candidate_root: candidate_root.clone(),
                 native_custody: false,
@@ -1115,6 +1147,9 @@ pub fn channel_with_spectrum(
             },
         },
         Callback {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            native_sources: crate::candidate_custody::NativeEndpointBank::new().map_err(Invalid)?,
+            requested_physical_callback_frames: None,
             output_transport: None,
             output_transport_cancelled: false,
             transport_setup_open: true,
@@ -1132,7 +1167,7 @@ pub fn channel_with_spectrum(
             gain_recording: callback_gain_recording,
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
-            spectrum_stage: SpectrumStage::default(),
+            spectrum_stages: SpectrumStages::new()?,
             active: None,
             #[cfg(test)]
             test_admit_candidate: false,
@@ -1162,110 +1197,6 @@ pub fn channel_with_spectrum(
     ))
 }
 
-struct SpectrumStage {
-    frames: [[f32; 2]; 256],
-    input_frames: [[f32; 2]; 256],
-    seen: [u64; 4],
-    input_seen: [u64; 4],
-    expected: usize,
-    observed: bool,
-    valid: bool,
-    target: Option<spectrum_target::SpectrumTarget>,
-    epoch: u64,
-}
-
-impl Default for SpectrumStage {
-    fn default() -> Self {
-        Self {
-            frames: [[0.0; 2]; 256],
-            input_frames: [[0.0; 2]; 256],
-            seen: [0; 4],
-            input_seen: [0; 4],
-            expected: 0,
-            observed: false,
-            valid: false,
-            target: None,
-            epoch: 0,
-        }
-    }
-}
-
-impl SpectrumStage {
-    fn begin(&mut self, target: spectrum_target::SpectrumTarget, epoch: u64, expected: usize) {
-        self.frames.fill([0.0; 2]);
-        self.input_frames.fill([0.0; 2]);
-        self.seen.fill(0);
-        self.input_seen.fill(0);
-        self.expected = expected;
-        self.observed = false;
-        self.valid = expected <= self.frames.len();
-        self.target = Some(target);
-        self.epoch = epoch;
-    }
-
-    fn observe_signal(
-        &mut self,
-        identity: PostNodeIdentity,
-        phase: hex_engine::NodeSignalPhase,
-        offset: usize,
-        frames: &[[f32; 2]],
-    ) {
-        let Some(target) = self.target else {
-            return;
-        };
-        if identity != target.identity {
-            return;
-        }
-        self.observed = true;
-        let Some(end) = offset.checked_add(frames.len()) else {
-            self.valid = false;
-            return;
-        };
-        if end > self.expected || end > self.frames.len() {
-            self.valid = false;
-            return;
-        }
-        let (samples, seen) = match phase {
-            hex_engine::NodeSignalPhase::Input => (&mut self.input_frames, &mut self.input_seen),
-            hex_engine::NodeSignalPhase::Output => (&mut self.frames, &mut self.seen),
-        };
-        for (relative, frame) in frames.iter().enumerate() {
-            let index = offset + relative;
-            let word = index / 64;
-            let mask = 1_u64 << (index % 64);
-            let Some(bits) = seen.get_mut(word) else {
-                self.valid = false;
-                return;
-            };
-            if *bits & mask != 0 {
-                self.valid = false;
-                return;
-            }
-            *bits |= mask;
-            samples[index] = *frame;
-        }
-    }
-
-    fn complete(&self) -> bool {
-        self.valid
-            && self.observed
-            && self.target.is_some()
-            && (0..self.expected).all(|index| {
-                let mask = 1_u64 << (index % 64);
-                self.seen[index / 64] & mask != 0 && self.input_seen[index / 64] & mask != 0
-            })
-    }
-
-    fn clear(&mut self) {
-        self.target = None;
-        self.expected = 0;
-        self.observed = false;
-        self.valid = false;
-        self.seen.fill(0);
-        self.input_seen.fill(0);
-    }
-}
-
 fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
     let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
     let snapshot = status.session_routes(&mut routes)?;
@@ -1281,6 +1212,40 @@ impl PublicationControl {
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
+    }
+    /// The fixed device buffer requested by this output's actual constructor.
+    /// This is not proof of delivered callback shape or a physical deadline;
+    /// every foreign callback must still validate its real complete extent.
+    pub fn requested_physical_callback_frames_on_control(&self) -> Option<u16> {
+        self.requested_physical_callback_frames
+    }
+    /// Bind only while both exact constructor endpoints remain unexposed.
+    /// Device construction requests this fixed size before backend creation;
+    /// headless constructor fixtures may use the same finite delivery profile.
+    pub(crate) fn configure_physical_callback_request(
+        &mut self,
+        callback: &mut Callback,
+        frames: u16,
+    ) -> Result<(), Invalid> {
+        if frames == 0
+            || usize::from(frames) > hex_plugin_host::transport::MAX_FRAMES
+            || self.requested_physical_callback_frames.is_some()
+            || callback.requested_physical_callback_frames.is_some()
+            || self.revision != 0
+            || self.native_custody
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || !callback.transport_setup_open
+            || !callback.belongs_to_candidate_root(&self.candidate_root)
+            || !callback.matches_native_status(&self.status)
+        {
+            return Err(Invalid(
+                "physical callback request requires its vacant constructor",
+            ));
+        }
+        self.requested_physical_callback_frames = Some(frames);
+        callback.requested_physical_callback_frames = Some(frames);
+        Ok(())
     }
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
@@ -1649,6 +1614,13 @@ impl PublicationControl {
                 break;
             };
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.candidate_root.ingest_native_endpoint(endpoint) {
+                        self.held_control_return = Some(ReturnedPublication::Native(endpoint));
+                        break;
+                    }
+                }
                 ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.candidate_root.ingest_pages(pages) {
                         self.held_control_return = Some(ReturnedPublication::Domain(pages));
@@ -1923,13 +1895,14 @@ impl PublicationControl {
     pub fn prepare_output_transport_worker_on_control(
         &mut self,
         callback: &mut Callback,
-        binding: crate::plugin_transport::Binding,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
         quantum: u16,
         process: impl FnMut(
-            crate::plugin_transport::Block,
-        )
-            -> Result<crate::plugin_transport::Block, crate::plugin_transport::Fault>
-        + Send
+            hex_plugin_host::transport::Block,
+        ) -> Result<
+            hex_plugin_host::transport::Block,
+            hex_plugin_host::transport::Fault,
+        > + Send
         + 'static,
     ) -> Result<(), Invalid> {
         if self.native_custody
@@ -1948,7 +1921,7 @@ impl PublicationControl {
             binding.epoch,
             quantum,
         )?;
-        match crate::plugin_transport::spawn(control, worker, process) {
+        match crate::plugin_worker::spawn(control, worker, process) {
             Ok(reaper) => {
                 self.output_transport_reaper = Some(reaper);
                 Ok(())
@@ -1965,7 +1938,7 @@ impl PublicationControl {
     pub fn output_transport_completed_blocks_on_control(&self) -> Option<u64> {
         self.output_transport_reaper
             .as_ref()
-            .map(crate::plugin_transport::Reaper::completed_blocks)
+            .map(crate::plugin_worker::Reaper::completed_blocks)
     }
 }
 
@@ -1983,8 +1956,8 @@ impl Callback {
         quantum: u16,
     ) -> Result<
         (
-            crate::plugin_transport::Control,
-            crate::plugin_transport::Worker,
+            hex_plugin_host::transport::Control,
+            hex_plugin_host::transport::Worker,
         ),
         Invalid,
     > {
@@ -2000,13 +1973,13 @@ impl Callback {
                 "output transport requires an unexposed empty callback",
             ));
         }
-        let binding = crate::plugin_transport::Binding {
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
             root: self.candidate_root.root_id(),
             instance,
             graph: graph_revision,
             epoch,
         };
-        let (control, callback, worker) = crate::plugin_transport::channel(binding, quantum)
+        let (control, callback, worker) = hex_plugin_host::transport::channel(binding, quantum)
             .map_err(|_| Invalid("invalid output transport configuration"))?;
         self.output_transport = Some(Box::new(callback));
         Ok((control, worker))
@@ -2019,6 +1992,7 @@ impl Callback {
     }
 
     pub(crate) fn revoke_output_transport(&mut self) {
+        self.revoke_native_effects();
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
@@ -2033,7 +2007,7 @@ impl Callback {
             frames.fill([0.0; 2]);
             if self.status.playing.load(Relaxed) {
                 if let Some(transport) = self.output_transport.as_mut() {
-                    transport.reject(crate::plugin_transport::Fault::Revoked);
+                    transport.reject(hex_plugin_host::transport::Fault::Revoked);
                 }
                 return false;
             }
@@ -2045,14 +2019,14 @@ impl Callback {
         if transport.binding().graph != self.status.applied_revision.load(Acquire)
             || transport.binding().epoch != self.status.transport_epoch.load(Acquire)
         {
-            transport.reject(crate::plugin_transport::Fault::Identity);
+            transport.reject(hex_plugin_host::transport::Fault::Identity);
             return false;
         }
-        if self.gain_recording.has_take() || frames.len() > crate::plugin_transport::MAX_FRAMES {
-            transport.reject(crate::plugin_transport::Fault::Protocol);
+        if self.gain_recording.has_take() || frames.len() > hex_plugin_host::transport::MAX_FRAMES {
+            transport.reject(hex_plugin_host::transport::Fault::Protocol);
             return false;
         }
-        let mut input = [[0.0; 2]; crate::plugin_transport::MAX_FRAMES];
+        let mut input = [[0.0; 2]; hex_plugin_host::transport::MAX_FRAMES];
         input[..frames.len()].copy_from_slice(frames);
         // This finite stereo-output profile has no MIDI destination. Refuse
         // output events rather than silently claiming they reached a device.
@@ -2068,7 +2042,7 @@ impl Callback {
         };
         if transport
             .fault()
-            .is_some_and(|fault| fault != crate::plugin_transport::Fault::Revoked)
+            .is_some_and(|fault| fault != hex_plugin_host::transport::Fault::Revoked)
         {
             return Refused;
         }
@@ -2098,9 +2072,13 @@ impl Callback {
     }
     pub(crate) fn output_transport_error(&self) -> Option<Invalid> {
         self.output_transport
-            .as_ref()?
-            .fault()
+            .as_ref()
+            .and_then(|transport| transport.fault())
             .map(|fault| Invalid(fault.message()))
+            .or_else(|| {
+                self.native_effects_revoked()
+                    .then_some(Invalid("native effect callback refused"))
+            })
     }
 
     pub(crate) fn native_spectrum_receipt(
@@ -2124,7 +2102,12 @@ impl Callback {
             .plus(self.gain_recording.constructor_channel_storage()?)?
             .plus(self.midi_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
-            .plus(self.processor_audition.constructor_channel_storage()?)
+            .plus(self.processor_audition.constructor_channel_storage()?)?
+            .plus(crate::native_callback_owner::ChannelStorage {
+                data_bytes: self.spectrum_stages.heap_data_bytes()?,
+                shared_groups: 0,
+                shared_handles: 0,
+            })
     }
 
     fn install_candidate(
@@ -2147,6 +2130,16 @@ impl Callback {
         self.active = Some(ActivePublication::Candidate(active));
         self.status.publication_pending.store(false, Release);
         Ok(())
+    }
+    pub(crate) fn native_endpoint_bank_data_bytes(&self) -> Option<usize> {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.native_sources.data_bytes()
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            Some(0)
+        }
     }
     pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
         Arc::ptr_eq(&self.status, status)
@@ -2257,6 +2250,10 @@ impl Callback {
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
                         self.publications.pop().ok().map(|queued| match queued {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            QueuedPublication::Native(endpoint) => {
+                                ReturnedPublication::Native(endpoint)
+                            }
                             QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
                             QueuedPublication::Eligible(value) => {
                                 ReturnedPublication::Eligible(value.reject_before_install())
@@ -2277,6 +2274,12 @@ impl Callback {
                 self.terminal_disposal_pending = false;
             } else if let Some(value) = self.held_retirement.take() {
                 let refused = match value {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    ReturnedPublication::Native(endpoint) => self
+                        .candidate_root
+                        .ingest_native_endpoint(endpoint)
+                        .err()
+                        .map(ReturnedPublication::Native),
                     ReturnedPublication::Domain(pages) => {
                         if let Some(index) = pages.index_for(self.candidate_root.root_id())
                             && self.domain_pages[index].is_none()
@@ -2351,6 +2354,8 @@ impl Callback {
             }
         }
         self.return_requested_domain_pages();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.return_requested_native_sources();
         if self.status.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
@@ -2394,6 +2399,11 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                        QueuedPublication::Native(endpoint) => {
+                            self.return_publication(ReturnedPublication::Native(endpoint));
+                            return;
+                        }
                         QueuedPublication::Domain(pages) => {
                             self.return_publication(ReturnedPublication::Domain(pages));
                             return;
@@ -2452,6 +2462,17 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                QueuedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self
+                        .native_sources
+                        .install(self.candidate_root.root_id(), endpoint)
+                    {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                    }
+                    self.consume_commands();
+                    return;
+                }
                 QueuedPublication::Domain(pages) => {
                     if let Some(index) = pages.index_for(self.candidate_root.root_id())
                         && self.domain_pages[index].is_none()
@@ -3027,6 +3048,14 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.native_effects_revoked() {
+            output.fill([0.0; 2]);
+            return if self.status.playing.load(Relaxed) {
+                Err(Invalid("native effect callback is revoked"))
+            } else {
+                Ok(())
+            };
+        }
         self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.status.closing.load(Acquire) {
@@ -3051,27 +3080,25 @@ impl Callback {
         }
         self.reconcile_processor_audition();
         self.begin_project_spectrum(output.len());
-        self.spectrum_stage.clear();
-        if let Some(target) = self
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let targets = self
             .spectrum_capture
             .as_ref()
-            .and(self.spectrum_target.current())
-        {
-            let epoch = self.spectrum_target.current_epoch();
-            let matches = self
-                .active
-                .as_ref()
-                .and_then(ActivePublication::current)
-                .is_some_and(|active| {
+            .and(self.spectrum_target.current_targets());
+        self.spectrum_stages.begin(
+            targets,
+            self.spectrum_target.current_epoch(),
+            output.len(),
+            |target| {
+                active.as_ref().is_some_and(|active| {
                     active.control_context_generation == target.project_generation
                         && active.revision >= target.activation_floor
                         && active.playback.sample_rate() == target.sample_rate_hz
                         && target.sample_rate_hz == self.rate
-                });
-            self.spectrum_stage.begin(target, epoch, output.len());
-            self.spectrum_stage.valid &= matches;
-        }
-        let node_observed = self.spectrum_stage.target.is_some() && self.spectrum_stage.valid;
+                })
+            },
+        );
+        let node_observed = self.spectrum_stages.observing();
         let project_observed = self
             .spectrum_capture
             .as_ref()
@@ -3084,9 +3111,10 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
-        let stage = &mut self.spectrum_stage;
+        let stages = &mut self.spectrum_stages;
+        let targets = self.spectrum_target.current_targets();
         let mut observe = |identity, phase, offset, frames: &[Frame]| {
-            stage.observe_signal(identity, phase, offset, frames)
+            stages.observe_signal(targets, identity, phase, offset, frames)
         };
         let mut project_capture = self
             .spectrum_capture
@@ -3109,16 +3137,24 @@ impl Callback {
         } else {
             None
         };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed_with_project(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 node,
                 project.as_mut(),
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3132,9 +3168,12 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active
-                .playback
-                .render_with_signal_observers(output, node, project.as_mut())?;
+            active.playback.render_with_signal_observers(
+                output,
+                node,
+                project.as_mut(),
+                foreign,
+            )?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -3148,15 +3187,24 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let foreign: Option<&mut dyn hex_lattice::ForeignProcessors> = self
+            .native_sources
+            .has_endpoints()
+            .then_some(&mut self.native_sources);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let foreign = None;
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed(
+            let outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 None,
+                None,
+                foreign,
             );
             streaming::record_outcome(
                 &self.status,
@@ -3199,7 +3247,9 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            active.playback.render(output)?;
+            active
+                .playback
+                .render_with_signal_observers(output, None, None, foreign)?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -3282,7 +3332,9 @@ impl Callback {
 
     /// Accept or reject the staged post-node signal after the caller has
     /// validated the complete final output block. A skipped attempt consumes a
-    /// capture sequence so the next accepted window cannot bridge the gap.
+    /// per-target sequence so the next accepted window cannot bridge the gap.
+    /// Finalizes every target; the return value describes the first active slot
+    /// for single-target callers. Native delivery does not depend on this value.
     pub fn finish_spectrum_block(
         &mut self,
         captured_start: Instant,
@@ -3295,50 +3347,60 @@ impl Callback {
         captured_start: Instant,
         output_valid: bool,
     ) -> Option<crate::spectrum_worker::CaptureOutcome> {
-        let target = self.spectrum_stage.target?;
-        let complete = self.spectrum_stage.complete();
-        let current = self.spectrum_target.current();
-        let current_epoch = self.spectrum_target.current_epoch();
-        let valid = output_valid
-            && complete
-            && current == Some(target)
-            && current_epoch == self.spectrum_stage.epoch
-            && self
-                .active
-                .as_ref()
-                .and_then(ActivePublication::current)
-                .is_some_and(|active| {
-                    active.control_context_generation == target.project_generation
-                        && active.revision >= target.activation_floor
-                        && active.playback.sample_rate() == target.sample_rate_hz
+        let active = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .map(|active| {
+                (
+                    active.control_context_generation,
+                    active.revision,
+                    active.playback.sample_rate(),
+                )
+            });
+        let mut first = None;
+        for (slot, stage) in self.spectrum_stages.iter() {
+            let Some(target) = stage.target else {
+                continue;
+            };
+            let valid = output_valid
+                && stage.complete()
+                && self
+                    .spectrum_target
+                    .current_targets()
+                    .and_then(|targets| targets.get(slot))
+                    == Some(target)
+                && self.spectrum_target.current_epoch() == stage.epoch
+                && active.is_some_and(|(generation, revision, rate)| {
+                    generation == target.project_generation
+                        && revision >= target.activation_floor
+                        && rate == target.sample_rate_hz
                 })
-            && target.sample_rate_hz == self.rate;
-        let outcome = if let Some(capture) = self.spectrum_capture.as_mut() {
-            if valid {
-                let stamp = SpectrumStamp {
-                    target: target.token,
-                    generation: target.project_generation,
-                    sample_rate_hz: target.sample_rate_hz,
-                    applied_revision: self
-                        .active
-                        .as_ref()
-                        .and_then(ActivePublication::current)
-                        .map_or(0, |active| active.revision),
-                };
-                Some(capture.submit_pair_at(
-                    stamp,
-                    &self.spectrum_stage.input_frames[..self.spectrum_stage.expected],
-                    &self.spectrum_stage.frames[..self.spectrum_stage.expected],
-                    captured_start,
-                ))
-            } else {
-                Some(capture.skip())
+                && target.sample_rate_hz == self.rate;
+            let outcome = self.spectrum_capture.as_mut().map(|capture| {
+                if valid {
+                    capture.submit_pair_for_slot_at(
+                        slot,
+                        SpectrumStamp {
+                            target: target.token,
+                            generation: target.project_generation,
+                            sample_rate_hz: target.sample_rate_hz,
+                            applied_revision: active.map_or(0, |(_, revision, _)| revision),
+                        },
+                        &stage.input_frames[..stage.expected],
+                        &stage.frames[..stage.expected],
+                        captured_start,
+                    )
+                } else {
+                    capture.skip_slot(slot)
+                }
+            });
+            if first.is_none() {
+                first = outcome;
             }
-        } else {
-            None
-        };
-        self.spectrum_stage.clear();
-        outcome
+        }
+        self.spectrum_stages.clear();
+        first
     }
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
@@ -3520,7 +3582,8 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?
-        .checked_add(endpoints::constructor_endpoint_storage_quote()?)
+        .checked_add(endpoints::constructor_endpoint_storage_quote()?)?
+        .checked_add(SpectrumStages::storage_quote()?)
 }
 pub(crate) fn worker_publication_queue_storage_quote() -> Option<usize> {
     use crate::native_callback_owner::ChannelStorage;
@@ -3576,7 +3639,23 @@ mod tests {
         gain_db: f32,
         q: f32,
     ) -> (Playback, PostNodeIdentity) {
-        spectrum_eq_graph_with_params(playing, mode, gain_db, q, false)
+        spectrum_eq_graph_with_params(playing, mode, gain_db, q, false, false)
+    }
+
+    pub(super) fn spectrum_bus_graph() -> (Playback, [PostNodeIdentity; 3]) {
+        let (playback, track) = spectrum_eq_graph_with_params(true, 0, 12.0, 1.0, false, true);
+        (
+            playback,
+            [
+                track,
+                PostNodeIdentity::new(
+                    hex_engine::ProcessorChainOwner::Return(3),
+                    12,
+                    track.device_type,
+                ),
+                PostNodeIdentity::new(hex_engine::ProcessorChainOwner::Main, 13, track.device_type),
+            ],
+        )
     }
 
     fn spectrum_eq_graph_with_params(
@@ -3585,6 +3664,7 @@ mod tests {
         gain_db: f32,
         q: f32,
         flexible: bool,
+        effect_buses: bool,
     ) -> (Playback, PostNodeIdentity) {
         use hex_lattice_contract::DeviceTypeId;
         use hex_project::{
@@ -3684,14 +3764,23 @@ mod tests {
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
             arrangement_sections: Vec::new(),
-            main_devices: Vec::new(),
+            main_devices: if effect_buses {
+                vec![DeviceSnapshot {
+                    comparison: None,
+                    id: DEVICE_ID + 2,
+                    bypassed: false,
+                    state: state.clone(),
+                }]
+            } else {
+                Vec::new()
+            },
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
-            next_id: DEVICE_ID + 2,
+            next_id: DEVICE_ID + if effect_buses { 3 } else { 2 },
             assets: vec![AssetSnapshot {
                 original_source: None,
                 id: ASSET_ID,
@@ -3736,7 +3825,14 @@ mod tests {
                     source_phase: 0,
                     fade: ClipFade::neutral(FRAMES).unwrap(),
                 }]),
-                sends: Vec::new(),
+                sends: if effect_buses {
+                    vec![hex_project::SendLevelSnapshot {
+                        return_track: 3,
+                        gain: 0.5,
+                    }]
+                } else {
+                    Vec::new()
+                },
             }],
             return_tracks: vec![ReturnTrackSnapshot {
                 id: 3,
@@ -3751,7 +3847,11 @@ mod tests {
                 }],
             }],
             session: SessionSnapshot::default(),
-            loop_region: None,
+            loop_region: if effect_buses {
+                Some(hex_project::LoopRegion::new(0, FRAMES, true).unwrap())
+            } else {
+                None
+            },
             master_gain: 1.0,
             tempo_points: vec![TempoPoint::new(hex_project::BeatTime::ZERO, Tempo::DEFAULT)],
             meter_points: vec![MeterPoint::new(
@@ -4983,7 +5083,7 @@ mod tests {
     fn sparse_eq_callback_publication_held_stable_audition_release_and_retirement_allocate_nothing()
     {
         let (mut control, mut callback) = channel(48000).unwrap();
-        let (playback, identity) = spectrum_eq_graph_with_params(true, 0, 3.0, 1.0, true);
+        let (playback, identity) = spectrum_eq_graph_with_params(true, 0, 3.0, 1.0, true, false);
         let first = control
             .publish_with_policy_and_context_generation(
                 playback,
@@ -5027,7 +5127,7 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        let (candidate, _) = spectrum_eq_graph_with_params(false, 0, 6.0, 2.0, true);
+        let (candidate, _) = spectrum_eq_graph_with_params(false, 0, 6.0, 2.0, true, false);
         let revision = control
             .publish_with_policy_and_context_generation(
                 candidate,
@@ -5610,16 +5710,19 @@ mod tests {
         #[cfg(not(feature = "allocation-probe"))]
         render();
         assert_eq!(actual, expected);
-        assert!(callback.spectrum_stage.complete());
-        assert_eq!(callback.spectrum_stage.input_frames, [[0.25, -0.4]; 256]);
-        assert_eq!(callback.spectrum_stage.frames, actual);
+        assert!(callback.spectrum_stages.get(0).unwrap().complete());
+        assert_eq!(
+            callback.spectrum_stages.get(0).unwrap().input_frames,
+            [[0.25, -0.4]; 256]
+        );
+        assert_eq!(callback.spectrum_stages.get(0).unwrap().frames, actual);
         assert!(actual.iter().any(|frame| (frame[0] - 0.25).abs() > 0.001));
         // Even a fully covered pair must be discarded if final caller validation fails.
         assert_eq!(
             callback.finish_spectrum_block(Instant::now(), false),
             Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
         );
-        assert!(!callback.spectrum_stage.complete());
+        assert!(!callback.spectrum_stages.get(0).unwrap().complete());
         assert!(reader.try_latest_pair().is_none());
         shutdown_spectrum_test_channel(control, callback, reaper);
     }
@@ -5687,7 +5790,7 @@ mod tests {
 
         let mut output = [[0.0; 2]; 16];
         callback.render(&mut output).unwrap();
-        assert!(callback.spectrum_stage.complete());
+        assert!(callback.spectrum_stages.get(0).unwrap().complete());
 
         let (playback_b, identity_b) = spectrum_eq8_graph();
         assert_eq!(identity_b, identity);
@@ -5724,10 +5827,13 @@ mod tests {
         assert_eq!(callback.spectrum_target.current(), Some(target_b));
         callback.render(&mut output).unwrap();
         assert!(
-            !callback.spectrum_stage.valid,
+            !callback.spectrum_stages.get(0).unwrap().valid,
             "activation floor is not reached"
         );
-        assert_eq!(callback.spectrum_stage.target, Some(target_b));
+        assert_eq!(
+            callback.spectrum_stages.get(0).unwrap().target,
+            Some(target_b)
+        );
         assert_eq!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 1 })
@@ -5745,7 +5851,7 @@ mod tests {
         assert_eq!(revision_c, revision_b + 1);
         callback.begin_block();
         callback.render(&mut output).unwrap();
-        assert!(callback.spectrum_stage.complete());
+        assert!(callback.spectrum_stages.get(0).unwrap().complete());
         assert!(matches!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 2 })
@@ -5778,7 +5884,7 @@ mod tests {
         callback.begin_block();
         assert_eq!(callback.spectrum_target.current(), Some(target_wrong_rate));
         callback.render(&mut output).unwrap();
-        assert!(!callback.spectrum_stage.valid);
+        assert!(!callback.spectrum_stages.get(0).unwrap().valid);
         assert_eq!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 4 })
@@ -5825,7 +5931,7 @@ mod tests {
         );
         let mut output = [[0.0; 2]; 16];
         callback.render(&mut output).unwrap();
-        assert!(!callback.spectrum_stage.valid);
+        assert!(!callback.spectrum_stages.get(0).unwrap().valid);
         assert_eq!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
@@ -5856,7 +5962,7 @@ mod tests {
             Some(generation_a)
         );
         callback.render(&mut output).unwrap();
-        assert!(!callback.spectrum_stage.valid);
+        assert!(!callback.spectrum_stages.get(0).unwrap().valid);
         assert_eq!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 1 })
@@ -5873,8 +5979,11 @@ mod tests {
             Some(generation_b)
         );
         callback.render(&mut output).unwrap();
-        assert!(callback.spectrum_stage.complete());
-        assert_eq!(callback.spectrum_stage.target, Some(target_b));
+        assert!(callback.spectrum_stages.get(0).unwrap().complete());
+        assert_eq!(
+            callback.spectrum_stages.get(0).unwrap().target,
+            Some(target_b)
+        );
         assert!(matches!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 2 })
@@ -5935,8 +6044,11 @@ mod tests {
             control.spectrum_target.desired()
         );
         callback.render(&mut output).unwrap();
-        assert!(!callback.spectrum_stage.valid);
-        assert_eq!(callback.spectrum_stage.target, Some(target_a));
+        assert!(!callback.spectrum_stages.get(0).unwrap().valid);
+        assert_eq!(
+            callback.spectrum_stages.get(0).unwrap().target,
+            Some(target_a)
+        );
         assert_eq!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
@@ -5950,8 +6062,11 @@ mod tests {
         assert_eq!(callback.spectrum_target.current(), Some(target_b));
         assert_eq!(target_b.project_generation, 1);
         callback.render(&mut output).unwrap();
-        assert!(callback.spectrum_stage.complete());
-        assert_eq!(callback.spectrum_stage.target, Some(target_b));
+        assert!(callback.spectrum_stages.get(0).unwrap().complete());
+        assert_eq!(
+            callback.spectrum_stages.get(0).unwrap().target,
+            Some(target_b)
+        );
         assert!(matches!(
             callback.finish_spectrum_block(Instant::now(), true),
             Some(crate::spectrum_worker::CaptureOutcome::Queued { sequence: 1 })

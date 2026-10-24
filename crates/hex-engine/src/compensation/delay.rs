@@ -36,7 +36,15 @@ impl<T: Copy + Default> RingPair<T> {
     }
 
     pub(super) fn storage_bytes(&self) -> Result<usize, CompensationError> {
-        add_bytes(vector_bytes(&self.committed)?, vector_bytes(&self.scratch)?)
+        let Self {
+            committed,
+            scratch,
+            committed_cursor: _,
+            scratch_cursor: _,
+            dirty_start: _,
+            dirty_len: _,
+        } = self;
+        add_bytes(vector_bytes(committed)?, vector_bytes(scratch)?)
     }
 
     pub(super) fn begin(&mut self) {
@@ -152,6 +160,15 @@ pub struct DelayPair {
 }
 
 impl DelayPair {
+    pub(super) fn owned_data_bytes(&self) -> Result<usize, CompensationError> {
+        let Self {
+            ring,
+            delay_frames: _,
+            storage_bytes: _,
+            transaction_active: _,
+        } = self;
+        ring.storage_bytes()
+    }
     pub fn new(delay_frames: u32, limits: CompensationLimits) -> Result<Self, CompensationError> {
         limits.validate()?;
         if delay_frames > limits.max_cumulative_frames {

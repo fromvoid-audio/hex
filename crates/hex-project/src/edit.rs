@@ -57,6 +57,13 @@ pub enum Command {
         section: crate::SectionId,
         start: crate::BeatTime,
     },
+    /// Resize one marker edge, carving overlapping markers without editing music.
+    /// Surviving fragments follow the same identity law as marker movement.
+    ResizeArrangementSectionMarker {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        boundary: crate::BeatTime,
+    },
     RenameArrangementSection {
         section: crate::SectionId,
         name: String,
@@ -1585,6 +1592,7 @@ impl Project {
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
+            | Command::ResizeArrangementSectionMarker { .. }
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)

@@ -468,6 +468,7 @@ impl EditorView {
     }
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
+        self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
         self.prepared_seek = None;
         self.playback_candidates.clear();
@@ -1009,6 +1010,7 @@ impl EditorView {
                     visible_change |= self.retire_pending_track_reorder();
                     visible_change |= self.retire_pending_midi_drag();
                     visible_change |= self.retire_pending_fade();
+                    visible_change |= self.retire_pending_gain();
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     break;
@@ -1036,6 +1038,7 @@ impl EditorView {
                 let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
+                let gain_request = self.pending_gain_matches(&request);
                 let eq_creation_request = self.pending_eq_creation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
@@ -1081,6 +1084,9 @@ impl EditorView {
                         }
                         if fade_request {
                             self.fade_submitted();
+                        }
+                        if gain_request {
+                            self.gain_submitted();
                         }
                         if let Some(device) = eq_creation_request {
                             self.eq_creation_submitted(device);
@@ -1128,6 +1134,9 @@ impl EditorView {
                         }
                         if fade_request {
                             self.retire_pending_fade();
+                        }
+                        if gain_request {
+                            self.retire_pending_gain();
                         }
                         if let Some(device) = eq_creation_request {
                             self.retire_pending_eq_creation(device);
@@ -1200,6 +1209,9 @@ impl EditorView {
                         if fade_request {
                             self.retire_pending_fade();
                         }
+                        if gain_request {
+                            self.retire_pending_gain();
+                        }
                         if let Some(device) = eq_creation_request {
                             self.retire_pending_eq_creation(device);
                         }
@@ -1229,22 +1241,26 @@ impl EditorView {
         if let Some(audio) = self.audio.as_mut() {
             let _ = audio.control.spectrum_retry_pending();
             let _ = audio.control.audition_retry_pending();
-            let desired_spectrum = audio.control.spectrum_desired();
-            let spectrum = audio.control.spectrum_latest_pair();
-            let spectrum = spectrum.filter(|result| {
-                desired_spectrum.is_some_and(|target| {
-                    result.output.stamp.target == target.token
-                        && result.output.stamp.generation == target.project_generation
-                        && result.output.stamp.sample_rate_hz == target.sample_rate_hz
-                        && result.output.stamp.applied_revision >= target.activation_floor
-                })
-            });
-            if self.device_panel.spectrum_result != spectrum {
-                self.device_panel.spectrum_result = spectrum;
+            let spectra = audio.control.spectrum_latest_pairs();
+            let changed = self.device_panel.spectrum_results.len() != spectra.len()
+                || spectra.iter().any(|result| {
+                    self.device_panel
+                        .spectrum_results
+                        .get(&result.output.stamp.target)
+                        != Some(result)
+                });
+            if changed {
+                self.device_panel.spectrum_results.clear();
+                self.device_panel.spectrum_results.extend(
+                    spectra
+                        .into_iter()
+                        .map(|result| (result.output.stamp.target, result)),
+                );
                 visible_change = true;
             }
             audio.control.reclaim_preview();
-        } else if self.device_panel.spectrum_result.take().is_some() {
+        } else if !self.device_panel.spectrum_results.is_empty() {
+            self.device_panel.spectrum_results.clear();
             visible_change = true;
         }
         if (self.prepared_seek.is_some() || self.latched_seek_intent.is_some())
@@ -1779,31 +1795,36 @@ impl EditorView {
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
-    fn spectrum_target_is_visible_and_current(
+    pub(in crate::editor) fn spectrum_target_is_visible_and_current(
         &self,
         target: hex_audio::spectrum_target::SpectrumTarget,
     ) -> bool {
+        self.spectrum_identity_is_visible_and_current(target.identity, target.project_generation)
+    }
+    pub(in crate::editor) fn spectrum_identity_is_visible_and_current(
+        &self,
+        identity: hex_engine::PostNodeIdentity,
+        generation: u64,
+    ) -> bool {
         if !self.clip_view_open
             || !self.device_panel_active
-            || self.project_generation != target.project_generation
-            || !matches!(
-                target.identity.device_type.as_str(),
-                Ok("hex.eq8" | "hex.eq")
-            )
+            || self.project_generation != generation
+            || !matches!(identity.device_type.as_str(), Ok("hex.eq8" | "hex.eq"))
         {
             return false;
         }
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let focused_owner = super::device_panel::selected_owner(self, state);
-        match (focused_owner, target.identity.owner) {
+        let focused_owner = super::device_panel::displayed_owner(self)
+            .or_else(|| super::device_panel::selected_owner(self, state));
+        match (focused_owner, identity.owner) {
             (
                 Some(super::device_panel::DevicePanelOwner::Main),
                 hex_engine::ProcessorChainOwner::Main,
             ) => state.project.main_devices().iter().any(|device| {
-                device.id().value() == target.identity.device_id
-                    && device.state().type_id() == target.identity.device_type
+                device.id().value() == identity.device_id
+                    && device.state().type_id() == identity.device_type
             }),
             (
                 Some(super::device_panel::DevicePanelOwner::Track(track_id)),
@@ -1811,8 +1832,8 @@ impl EditorView {
             ) if track_id.value() == owner_id => {
                 state.project.track(track_id).is_some_and(|track| {
                     track.devices().iter().any(|device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == target.identity.device_type
+                        device.id().value() == identity.device_id
+                            && device.state().type_id() == identity.device_type
                     })
                 })
             }
@@ -1826,8 +1847,8 @@ impl EditorView {
                 .find(|track| track.id() == return_id)
                 .is_some_and(|track| {
                     track.devices().iter().any(|device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == target.identity.device_type
+                        device.id().value() == identity.device_id
+                            && device.state().type_id() == identity.device_type
                     })
                 }),
             _ => false,
@@ -1835,22 +1856,7 @@ impl EditorView {
     }
 
     fn retire_stale_spectrum_target(&mut self) -> bool {
-        let eq_changed = super::device_panel::reconcile_eq_spectrum(self);
-        let target = self
-            .audio
-            .as_ref()
-            .and_then(|audio| audio.control.spectrum_desired());
-        if target.is_some_and(|target| !self.spectrum_target_is_visible_and_current(target)) {
-            if let Some(audio) = self.audio.as_mut() {
-                let _ = audio.control.spectrum_clear();
-            }
-            self.device_panel.spectrum_result = None;
-            return true;
-        }
-        if target.is_none() && self.device_panel.spectrum_result.take().is_some() {
-            return true;
-        }
-        eq_changed
+        super::device_panel::reconcile_eq_spectrum(self)
     }
 
     fn processor_audition_target_is_visible_and_current(
@@ -1968,6 +1974,7 @@ impl EditorView {
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
         self.fade_request_complete(&event);
+        self.gain_request_complete(&event);
         self.eq_creation_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
@@ -3170,6 +3177,7 @@ impl EditorView {
         let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
+        let gain_request = self.pending_gain_matches(&request);
         let eq_creation_request = self.pending_eq_creation_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
@@ -3210,6 +3218,9 @@ impl EditorView {
                 }
                 if fade_request {
                     self.fade_submitted();
+                }
+                if gain_request {
+                    self.gain_submitted();
                 }
                 if let Some(device) = eq_creation_request {
                     self.eq_creation_submitted(device);
