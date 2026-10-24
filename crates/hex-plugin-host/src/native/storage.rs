@@ -34,8 +34,9 @@ pub struct PendingStorage {
 /// Known retained DATA for request input, Pending and final Prepared phases.
 /// Helper/path copies use exact-length producers before native startup; final
 /// captured state uses the shared codec's limit. No I/O or allocation occurs in
-/// this query. Revalidation/encoding/capture peaks, diagnostics and opaque
-/// resource lifetimes remain separate; this cannot seal Root/publication.
+/// this query. `base_peak_data_bytes` adds file/protocol working components;
+/// complete revalidation metadata, diagnostics and opaque resource lifetimes
+/// remain separate. This cannot seal Root/publication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreparationStorageBound {
     pub input_data_bytes: usize,
@@ -47,6 +48,14 @@ impl PreparationStorageBound {
         self.input_data_bytes
             .max(self.max_pending_data_bytes)
             .max(self.max_prepared_data_bytes)
+    }
+    /// Retained phases, one bounded file snapshot and explicit protocol
+    /// buffers. Inventory/path/map working metadata, diagnostics and opaque
+    /// resources must be added separately before complete Root sealing.
+    pub fn base_peak_data_bytes(self) -> Option<usize> {
+        self.max_retained_data_bytes()
+            .checked_add(usize::try_from(hex_plugin_scan::MAX_BINARY).ok()?)?
+            .checked_add(protocol::MAX_WORKING_DATA_BYTES)
     }
 }
 

@@ -9,6 +9,12 @@ use std::io::Cursor;
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
 pub const PACKET_LIMIT: usize = CONFIG_LIMIT + 12;
+/// Explicit protocol DATA during the existing preparation/completion sequence:
+/// at most two outgoing frames, or a presentation frame plus both bounded
+/// Vec/Arc state payloads during capture. Fixed incoming Packet storage belongs
+/// to its enclosing owner. Source/configuration, file/inventory workspaces,
+/// errors and allocator/Arc/OS implementation overhead are separate.
+pub const MAX_WORKING_DATA_BYTES: usize = 2 * PACKET_LIMIT;
 
 #[derive(Clone, Debug)]
 pub struct Configuration {
@@ -51,15 +57,16 @@ impl Configuration {
     /// The worker validates both frames before entering the selected module.
     pub fn startup_request(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        let mut out = Vec::with_capacity(
+        let mut out = control_prefix(
+            *b"HXVIST01",
             37 + self
                 .restore
                 .as_ref()
                 .map_or(0, |state| state.payload().len()),
-        );
+        )?;
         stamp(&mut out, self.binding);
         self.append_restore_ack(&mut out);
-        control(*b"HXVIST01", &out)
+        finish_control(out)
     }
     fn append_restore_ack(&self, out: &mut Vec<u8>) {
         let payload = self
@@ -97,7 +104,12 @@ impl Configuration {
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        let mut out = Vec::with_capacity(146 + self.bundle.len() + self.executable.len());
+        // Version/binding, identity, format and two path lengths occupy138
+        // bytes. The independent wire fixture verifies this framing contract.
+        let mut out = control_prefix(
+            *b"HXVICF03",
+            138 + self.bundle.len() + self.executable.len(),
+        )?;
         stamp(&mut out, self.binding);
         out.extend(self.identity.class.bytes());
         out.extend(self.identity.binary.executable_sha256);
@@ -109,7 +121,7 @@ impl Configuration {
             out.extend((path.len() as u32).to_le_bytes());
             out.extend(path.as_bytes());
         }
-        control(*b"HXVICF03", &out)
+        finish_control(out)
     }
     pub fn validate_block(&self, block: &Block, sequence: u64) -> Result<()> {
         self.validate()?;
@@ -146,14 +158,14 @@ pub fn presentation_request(
     binding: Binding,
     value: Option<PresentationLatency>,
 ) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(43);
+    let mut out = control_prefix(*b"HXVIPR01", 35 + usize::from(value.is_some()) * 8)?;
     stamp(&mut out, binding);
     out.push(u8::from(value.is_some()));
     if let Some(value) = value {
         out.extend(value.input_frames.to_le_bytes());
         out.extend(value.output_frames.to_le_bytes());
     }
-    control(*b"HXVIPR01", &out)
+    finish_control(out)
 }
 /// Raw source-bound preparation facts. No state capture, processing start,
 /// canonical/graph admission or audio application is acknowledged by this type.
@@ -266,9 +278,12 @@ impl Ready {
         if count > 4096 {
             return Err(Error::Protocol("ready state exceeds envelope bound"));
         }
-        let initial_state = NativeDeviceState::new(TYPE_ID, STATE_VERSION, r.take(count)?.to_vec())
-            .map_err(|_| Error::Protocol("invalid ready state envelope"))?;
+        let payload = r.take(count)?;
         r.end()?;
+        let mut copied = buffer(count)?;
+        copied.extend_from_slice(payload);
+        let initial_state = NativeDeviceState::new(TYPE_ID, STATE_VERSION, copied)
+            .map_err(|_| Error::Protocol("invalid ready state envelope"))?;
         let state = hex_plugin_state::decode(&initial_state).map_err(Error::State)?;
         if state.identity != config.identity || state.component.is_some() != component {
             return Err(Error::Protocol("ready state source identity mismatch"));
@@ -321,18 +336,48 @@ impl Terminal {
 }
 
 pub fn control(magic: [u8; 8], body: &[u8]) -> Result<Vec<u8>> {
+    let mut out = control_prefix(magic, body.len())?;
+    out.extend_from_slice(body);
+    finish_control(out)
+}
+
+fn buffer(capacity: usize) -> Result<Vec<u8>> {
+    if capacity > PACKET_LIMIT {
+        return Err(Error::Protocol("protocol allocation exceeds frame bound"));
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(capacity)
+        .map_err(|_| Error::Protocol("protocol allocation refused"))?;
+    if out.capacity() != capacity {
+        return Err(Error::Protocol("protocol allocation bound differs"));
+    }
+    Ok(out)
+}
+
+fn control_prefix(magic: [u8; 8], body_len: usize) -> Result<Vec<u8>> {
     let limit = if &magic == b"HXVICF03" {
         CONFIG_LIMIT
     } else {
         CONTROL_LIMIT
     };
-    if body.len() > limit {
+    if body_len > limit {
         return Err(Error::Protocol("control frame exceeds bound"));
     }
-    let mut out = Vec::with_capacity(12 + body.len());
+    let mut out = buffer(12 + body_len)?;
     out.extend(magic);
-    out.extend((body.len() as u32).to_le_bytes());
-    out.extend(body);
+    out.extend((body_len as u32).to_le_bytes());
+    Ok(out)
+}
+fn finish_control(out: Vec<u8>) -> Result<Vec<u8>> {
+    let size = out
+        .get(8..12)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_le_bytes)
+        .and_then(|size| usize::try_from(size).ok())
+        .and_then(|size| size.checked_add(12));
+    if size != Some(out.len()) || out.capacity() != out.len() {
+        return Err(Error::Protocol("control construction extent differs"));
+    }
     Ok(out)
 }
 pub fn stop(binding: Binding, sequence: u64, frames: u64) -> [u8; 64] {
@@ -399,7 +444,7 @@ pub fn resume_request(
     let mut header = stop(config.binding, next.graph, next.epoch);
     header[..4].copy_from_slice(b"HXVR");
     header[10] = u8::from(presentation.is_some());
-    let mut out = Vec::with_capacity(72);
+    let mut out = buffer(64 + usize::from(presentation.is_some()) * 8)?;
     out.extend(header);
     if let Some(value) = presentation {
         out.extend(value.input_frames.to_le_bytes());

@@ -10,7 +10,9 @@ fn actual_root_effect_cannot_spend_beyond_its_native_pool_cell() {
         1,
         NativeSourceDataReservation {
             max_retained_data_bytes: limit,
-            max_construction_peak_data_bytes: limit + hex_plugin_scan::MAX_BINARY as usize,
+            // Startup buffers have a separate peak allowance; retain32KiB to
+            // exercise refusal of the later worker/queues, not startup.
+            max_construction_peak_data_bytes: source_reservation().max_construction_peak_data_bytes,
         },
     )
     .unwrap();

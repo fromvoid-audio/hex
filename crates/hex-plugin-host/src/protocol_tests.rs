@@ -67,6 +67,9 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
         controller: None,
     })
     .unwrap();
+    ready_body_with_state(config, &state)
+}
+fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> Vec<u8> {
     let mut out = Vec::new();
     stamp(&mut out, config.binding);
     out.extend(config.identity.class.bytes());
@@ -82,6 +85,93 @@ fn ready_body(config: &Configuration) -> Vec<u8> {
     out.extend((state.payload().len() as u16).to_le_bytes());
     out.extend(state.payload());
     out
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn protocol_frames_allocate_once_with_exact_bounded_capacity_and_capture_fits() {
+    let mut config = config();
+    config.bundle = "b".repeat(4096);
+    config.executable = "e".repeat(4096);
+    let component = vec![0; hex_plugin_state::MAX_OPAQUE_BYTES];
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(&component),
+        controller: None,
+    })
+    .unwrap();
+    assert_eq!(
+        state.payload().len(),
+        hex_lattice_contract::MAX_NATIVE_DEVICE_STATE_BYTES
+    );
+    config.restore = Some(state.clone());
+    let body = vec![0; CONTROL_LIMIT];
+    for presentation in [None, known()] {
+        for kind in 0..5 {
+            let mut frame = None;
+            let measured = allocation_counter::measure(|| {
+                frame = Some(
+                    match kind {
+                        0 => config.encode(),
+                        1 => config.startup_request(),
+                        2 => presentation_request(config.binding, presentation),
+                        3 => resume_request(
+                            &config,
+                            Binding {
+                                epoch: config.binding.epoch + 1,
+                                ..config.binding
+                            },
+                            presentation,
+                        ),
+                        _ => control(*b"HXVIPR01", &body),
+                    }
+                    .unwrap(),
+                );
+            });
+            let frame = frame.unwrap();
+            assert_eq!(frame.capacity(), frame.len());
+            assert!(frame.capacity() <= PACKET_LIMIT);
+            assert_eq!((measured.count_total, measured.count_current), (1, 1));
+            assert_eq!(
+                (measured.bytes_total, measured.bytes_current),
+                (frame.capacity() as u64, frame.capacity() as i64)
+            );
+        }
+    }
+    let ready_body = ready_body_with_state(&config, &state);
+    let mut ready = None;
+    let measured = allocation_counter::measure(|| {
+        ready = Some(Ready::decode(&ready_body, &config, known()).unwrap());
+    });
+    let ready = ready.unwrap();
+    assert_eq!(ready.initial_state.payload(), state.payload());
+    // The Vec copy is reclaimed while the single captured Arc group remains.
+    // Arc header/allocator layout is not guessed as DATA bytes.
+    assert_eq!((measured.count_total, measured.count_current), (2, 1));
+    assert_eq!(
+        i64::try_from(measured.bytes_total).unwrap() - measured.bytes_current,
+        state.payload().len() as i64
+    );
+    assert!(PACKET_LIMIT + 2 * state.payload().len() <= MAX_WORKING_DATA_BYTES);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn protocol_trailing_ready_and_oversized_frames_refuse_before_allocating() {
+    let config = config();
+    let mut body = ready_body(&config);
+    body.push(0);
+    let oversized = vec![0; CONTROL_LIMIT + 1];
+    let measured = allocation_counter::measure(|| {
+        assert!(matches!(
+            Ready::decode(&body, &config, known()),
+            Err(Error::Protocol("trailing control bytes"))
+        ));
+        assert!(control(*b"HXVIPR01", &oversized).is_err());
+        assert!(buffer(usize::MAX).is_err());
+    });
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
 }
 #[test]
 fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_latency() {

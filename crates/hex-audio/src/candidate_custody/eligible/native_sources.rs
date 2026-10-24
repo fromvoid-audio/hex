@@ -284,6 +284,13 @@ impl Custody {
             if storage_bound.max_retained_data_bytes() > limits.max_retained_data_bytes {
                 return Err("native preparation exceeds retained data reservation");
             }
+            if storage_bound
+                .base_peak_data_bytes()
+                .ok_or("native preparation peak storage overflow")?
+                > limits.max_construction_peak_data_bytes
+            {
+                return Err("native preparation exceeds known peak data reservation");
+            }
             let index = bank
                 .sources
                 .slots
