@@ -91,6 +91,7 @@ mod fades;
 mod gain_lane;
 mod gain_recording;
 mod header;
+mod input_quantization;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
@@ -847,6 +848,7 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_import_to_new_track: Option<(std::path::PathBuf, Option<TrackId>, u64)>,
     snap_grid: musical_time::SnapGrid,
+    input_quantization: hex_project::InputQuantization,
     #[cfg(test)]
     test_environment: Arc<test_environment::Environment>,
     browser: browser::BrowserState,
@@ -1495,6 +1497,7 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_import_to_new_track: None,
             snap_grid: musical_time::SnapGrid::default(),
+            input_quantization: hex_project::InputQuantization::Off,
             #[cfg(test)]
             test_environment,
             browser,
