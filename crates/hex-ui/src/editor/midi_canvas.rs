@@ -2023,7 +2023,7 @@ impl EditorView {
         });
     }
 
-    fn cycle_midi_grid(&mut self) {
+    pub(super) fn cycle_midi_grid(&mut self) {
         self.midi_snap_grid = self.midi_snap_grid.next();
         self.cancel_midi_note_gesture();
     }
