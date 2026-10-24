@@ -70,6 +70,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         audio_batch_failure: None,
         save_complete: false,
         document_format_upgrade_required: false,
+        save_confirmation_required: false,
         open_complete: false,
         project_replaced: false,
         stopped_playback_restore_complete: false,

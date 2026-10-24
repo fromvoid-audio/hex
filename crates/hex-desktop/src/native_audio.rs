@@ -24,6 +24,8 @@ mod resident;
 mod resident_files;
 mod sampler;
 mod section_edit;
+mod verified_gain;
+use verified_gain::{GainWatermark, VerifiedKey, VerifiedSource};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
 
@@ -48,14 +50,16 @@ impl Domain {
 }
 struct Submitted {
     resident_copy_frames: u64,
+    #[cfg(all(test, feature = "allocation-probe"))]
     context: AudioSourceContext,
+    key: VerifiedKey,
     ticket: AudioCandidateTicket,
     domain: Option<AudioCandidateDomainToken>,
 }
 struct Preparation {
     resident_copy_frames: u64,
     token: AudioCandidatePreparationToken,
-    snapshot: Arc<CanonicalAudioSourceSnapshot>,
+    snapshot: VerifiedSource,
     catalog: u64,
     domain: Option<AudioCandidateDomainToken>,
     bound: bool,
@@ -76,6 +80,10 @@ pub(super) struct NativeAudioSink {
     // never overwrite the exact tuple needed to complete keyboard/restore/gain/seek tracking.
     pending_status_observation: Option<EditorAudioEvent>,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
+    gain_source: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
+    gain_watermark: Option<GainWatermark>,
+    verified_last: Option<VerifiedKey>,
+    verified_blocked: Option<VerifiedKey>,
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
     output_identity: Option<u64>,
@@ -114,6 +122,10 @@ impl NativeAudioSink {
             pending_observation: None,
             pending_status_observation: None,
             desired: None,
+            gain_source: None,
+            gain_watermark: None,
+            verified_last: None,
+            verified_blocked: None,
             output: None,
             output_generation: None,
             output_identity: None,
@@ -161,6 +173,8 @@ impl NativeAudioSink {
         self.output_generation = None;
         self.output_identity = None;
         self.last_context = None;
+        self.verified_last = None;
+        self.verified_blocked = None;
         self.last_state = None;
         self.blocked = None;
         self.sampler_budget_wait = None;
@@ -299,6 +313,7 @@ impl NativeAudioSink {
     ) {
         let revision = match &state {
             EditorPublicationState::Submitted { audio_revision }
+            | EditorPublicationState::VerifiedPreviewSubmitted { audio_revision, .. }
             | EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
                 Some(*audio_revision)
             }
@@ -385,10 +400,20 @@ impl NativeAudioSink {
             return;
         };
         self.maintain_returns(control);
-        let Some(snapshot) = self.desired.as_ref().map(Arc::clone) else {
+        let Some(snapshot) = self
+            .gain_source
+            .as_ref()
+            .map(|source| VerifiedSource::Gain(Arc::clone(source)))
+            .or_else(|| {
+                self.desired
+                    .as_ref()
+                    .map(|source| VerifiedSource::Canonical(Arc::clone(source)))
+            })
+        else {
             return;
         };
         let context = snapshot.context();
+        let key = snapshot.key();
         if !control.audio_candidate_claims_available() {
             self.observe(
                 context,
@@ -410,14 +435,14 @@ impl NativeAudioSink {
         // A queued, uninstalled older canonical request is obsolete. TooLate
         // preserves a genuinely installed predecessor and its normal archive.
         for submitted in self.submitted.iter().flatten() {
-            if submitted.context != context {
+            if submitted.key != key {
                 control.cancel_audio_candidate(&submitted.ticket);
             }
         }
         if self
             .preparation
             .as_ref()
-            .is_some_and(|p| p.snapshot.context() != context)
+            .is_some_and(|p| p.snapshot.key() != key)
         {
             if let Some(p) = self.preparation.as_mut() {
                 control.cancel_audio_candidate_preparation(p.token);
@@ -444,13 +469,13 @@ impl NativeAudioSink {
             }) {
                 self.preparation = None;
             } else {
-                if self.blocked != Some(context) {
+                if self.verified_blocked != Some(key) {
                     self.observe(context, "busy", EditorPublicationState::Busy);
                 }
                 return;
             }
         }
-        if self.blocked == Some(context) || self.last_context == Some(context) {
+        if self.verified_blocked == Some(key) || self.verified_last == Some(key) {
             return;
         }
         let Ok(policy) = self.policy.as_ref().copied() else {
@@ -465,6 +490,7 @@ impl NativeAudioSink {
                 Ok(quote) => quote,
                 Err(error) => {
                     self.blocked = Some(context);
+                    self.verified_blocked = Some(key);
                     self.observe(
                         context,
                         "refused",
@@ -475,18 +501,20 @@ impl NativeAudioSink {
                     return;
                 }
             };
-            let input_bytes = snapshot
-                .required_sources()
-                .try_fold(0usize, |n, (_, source)| {
-                    let bytes = match source {
-                        AudioSourceBinding::Resident(audio) => audio
-                            .frames()
-                            .len()
-                            .checked_mul(std::mem::size_of::<hex_engine::Frame>())?,
-                        _ => 0,
-                    };
-                    n.checked_add(bytes)
-                });
+            let input_bytes =
+                snapshot
+                    .canonical()
+                    .required_sources()
+                    .try_fold(0usize, |n, (_, source)| {
+                        let bytes = match source {
+                            AudioSourceBinding::Resident(audio) => audio
+                                .frames()
+                                .len()
+                                .checked_mul(std::mem::size_of::<hex_engine::Frame>())?,
+                            _ => 0,
+                        };
+                        n.checked_add(bytes)
+                    });
             let storage = input_bytes.and_then(|bytes| {
                 let maximum = usize::try_from(MAX_RESIDENT_FRAMES)
                     .ok()?
@@ -499,6 +527,7 @@ impl NativeAudioSink {
             });
             let Some(storage) = storage else {
                 self.blocked = Some(context);
+                self.verified_blocked = Some(key);
                 self.observe(
                     context,
                     "refused",
@@ -508,10 +537,9 @@ impl NativeAudioSink {
                 );
                 return;
             };
-            let existing =
-                self.domains.iter().flatten().find(|d| {
-                    d.ready && !d.retiring && d.sources.covers(&snapshot, d.token, control)
-                });
+            let existing = self.domains.iter().flatten().find(|d| {
+                d.ready && !d.retiring && d.sources.covers(snapshot.canonical(), d.token, control)
+            });
             let domain = existing.map(|d| d.token);
             let catalog = if let Some(d) = existing {
                 d.sources.catalog_generation()
@@ -519,6 +547,7 @@ impl NativeAudioSink {
                 let current = self.next_catalog;
                 let Some(next) = current.checked_add(1) else {
                     self.blocked = Some(context);
+                    self.verified_blocked = Some(key);
                     self.observe(
                         context,
                         "refused",
@@ -532,7 +561,7 @@ impl NativeAudioSink {
             let domains = domain.into_iter().collect();
             match control.reserve_audio_candidate_preparation(
                 hex_audio::AudioCandidatePreparationReservation {
-                    source_capacity: snapshot.required_sources().count(),
+                    source_capacity: snapshot.canonical().required_sources().count(),
                     storage,
                     member_rows: quote.member_rows,
                     transfer_rows: quote.transfer_rows,
@@ -553,7 +582,7 @@ impl NativeAudioSink {
                     self.preparation = Some(Preparation {
                         resident_copy_frames: copied_frames,
                         token,
-                        snapshot: Arc::clone(&snapshot),
+                        snapshot: snapshot.clone(),
                         catalog,
                         domain,
                         bound: domain.is_some(),
@@ -598,12 +627,14 @@ impl NativeAudioSink {
                     self.observe(context, "busy", EditorPublicationState::Busy);
                     return;
                 };
-                let projection = DomainSources::capture(&pending.snapshot, pending.catalog)
-                    .and_then(|sources| {
-                        sources
-                            .definitions()
-                            .map(|definitions| (sources, definitions))
-                    });
+                let projection =
+                    DomainSources::capture(pending.snapshot.canonical(), pending.catalog).and_then(
+                        |sources| {
+                            sources
+                                .definitions()
+                                .map(|definitions| (sources, definitions))
+                        },
+                    );
                 let (sources, definitions) = match projection {
                     Ok(pair) => pair,
                     Err(error) => {
@@ -688,7 +719,7 @@ impl NativeAudioSink {
                 .domain
                 .and_then(|token| self.domains.iter().flatten().find(|d| d.token == token));
             let prepared = control.prepare_audio_candidate_on_control(pending.token, |cell| {
-                for (asset, source) in pending.snapshot.required_sources() {
+                for (asset, source) in pending.snapshot.canonical().required_sources() {
                     match source {
                         AudioSourceBinding::Resident(audio) => {
                             cell.copy_resident_source_on_control(asset, audio)?
@@ -741,18 +772,24 @@ impl NativeAudioSink {
                 let revision = control.submitted_revision();
                 self.submitted[index] = Some(Submitted {
                     resident_copy_frames: pending.resident_copy_frames,
+                    #[cfg(all(test, feature = "allocation-probe"))]
                     context,
+                    key: pending.snapshot.key(),
                     ticket,
                     domain: pending.domain,
                 });
                 self.last_context = Some(context);
-                self.observe(
-                    context,
-                    "submitted",
-                    EditorPublicationState::Submitted {
+                self.verified_last = Some(pending.snapshot.key());
+                let state = match pending.snapshot.preview_identity() {
+                    Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
+                        audio_revision: revision,
+                        identity,
+                    },
+                    None => EditorPublicationState::Submitted {
                         audio_revision: revision,
                     },
-                );
+                };
+                self.observe(context, "submitted", state);
             }
             Err(
                 "playback publication already pending"
@@ -772,6 +809,7 @@ impl NativeAudioSink {
         error: String,
     ) {
         let context = pending.snapshot.context();
+        let key = pending.snapshot.key();
         control.cancel_audio_candidate_preparation(pending.token);
         pending.cancelling = true;
         if let Some(token) = pending.domain {
@@ -786,6 +824,7 @@ impl NativeAudioSink {
         }
         self.preparation = Some(pending);
         self.blocked = Some(context);
+        self.verified_blocked = Some(key);
         self.observe(context, "refused", EditorPublicationState::Refused(error));
     }
 }
@@ -849,6 +888,12 @@ impl WorkerAudioSink for NativeAudioSink {
         context: AudioSourceContext,
     ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
         self.current_runtime_loop(context)
+    }
+    fn verified_track_gain_source(
+        &mut self,
+        source: Arc<hex_session::service::VerifiedTrackGainSource>,
+    ) {
+        self.receive_verified_gain(source);
     }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
@@ -999,6 +1044,19 @@ impl WorkerAudioSink for NativeAudioSink {
         }
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+        if self.desired.as_ref().is_none_or(|old| {
+            old.context().project_generation != source.context().project_generation
+        }) || source.audio_mode() != DocumentAudioMode::VerifiedStreaming
+        {
+            self.gain_watermark = None;
+        }
+        if self
+            .gain_source
+            .as_ref()
+            .is_some_and(|gain| !Arc::ptr_eq(gain.canonical(), &source))
+        {
+            self.gain_source = None;
+        }
         // Cancel stale preparation before any poll can classify a newly opened
         // ordinary output using the old sampler's phase.
         if self

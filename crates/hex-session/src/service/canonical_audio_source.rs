@@ -52,6 +52,9 @@ impl CanonicalAudioSourceSnapshot {
                     _ => false,
                 })
     }
+    pub(super) fn project_metadata(&self) -> &Project {
+        &self.project
+    }
     pub fn audio_mode(&self) -> crate::DocumentAudioMode {
         self.mode
     }

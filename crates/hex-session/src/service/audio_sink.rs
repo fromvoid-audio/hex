@@ -258,6 +258,10 @@ pub trait WorkerAudioSink: Send {
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
+    /// One coalesced verified gain overlay/terminal, constructed by the worker
+    /// from its actual canonical source and validated gesture. Metadata only;
+    /// acceptance is not callback application or new source admission.
+    fn verified_track_gain_source(&mut self, _source: Arc<VerifiedTrackGainSource>) {}
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
     /// A bounded stopped Arrangement handshake, shared by structural edits and
@@ -329,6 +333,9 @@ pub(super) struct WorkerEvents {
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
+    // Last delivered actor observation, not another editable gesture model.
+    // It proves ownership when a terminal (including a retired refusal) arrives.
+    last_verified_gain: Option<(crate::device_gesture::GestureKey, u64)>,
     startup_error: Option<String>,
 }
 impl WorkerEvents {
@@ -348,6 +355,7 @@ impl WorkerEvents {
             shutdown,
             audio,
             last_context: None,
+            last_verified_gain: None,
             startup_error: None,
         }
     }
@@ -437,6 +445,35 @@ impl WorkerEvents {
         if let Some(source) = &event.state.canonical_audio_source {
             self.canonical_source_changed(source);
         }
+        match VerifiedTrackGainSource::capture(&event, self.last_verified_gain) {
+            Ok(Some(source)) => {
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.verified_track_gain_source(Arc::new(source));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                event.error = Some(match event.error.take() {
+                    Some(previous) => format!("{previous}; {error}"),
+                    None => error.to_string(),
+                })
+            }
+        }
+        self.last_verified_gain = event
+            .active_device_gesture
+            .filter(|active| {
+                matches!(
+                    active.target,
+                    crate::device_gesture::GestureTarget::TrackGain { .. }
+                ) && event
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .is_some_and(|source| {
+                        source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                    })
+            })
+            .map(|active| (active.key, active.sequence));
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return false;

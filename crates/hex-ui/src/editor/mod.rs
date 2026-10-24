@@ -1753,23 +1753,6 @@ impl EditorView {
         self.enqueue(Request::Edit(Command::ToggleMute(track)));
     }
 
-    pub(super) fn gain_by(&mut self, track: TrackId, amount: f32) {
-        if self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.track(track))
-            .is_some_and(|track| {
-                !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
-            })
-        {
-            self.error = Some(
-                "automation owns gain · edit the gain lane or clear it for static fallback".into(),
-            );
-            return;
-        }
-        self.enqueue(Request::Edit(Command::GainBy { track, amount }));
-    }
-
     /// Ordinary creation follows the selected row; Return/Main and an absent or
     /// stale ordinary selection append within the ordinary-track section. Drops
     /// and context menus retain their explicitly captured insertion anchors.

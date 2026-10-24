@@ -213,6 +213,12 @@ right-click a track header or the track area and choose **insert track** or
 **insert return track**. return buses stay pinned above **main** in arrange;
 their headers provide volume, activation and removal controls.
 
+track volume uses the same numeric fader in resident and verified-streaming
+projects. dragging previews the absolute gain while the project stays unchanged;
+release commits one undo step and **escape** restores the current project gain.
+automation owns an automated track's gain. held pan and return-gain previews
+remain unavailable in verified mode.
+
 the lower detail area follows the selected clip or device. selecting another
 track can change the available controls. a pending edit or load may need to
 finish before another document operation is available; check the displayed status

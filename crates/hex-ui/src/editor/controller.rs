@@ -24,6 +24,8 @@ use std::{
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod verified_gain_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioEventDisposition {
@@ -408,6 +410,14 @@ impl EditorView {
                 true
             }
             PublicationObservationDisposition::Apply => {
+                if let crate::EditorPublicationState::VerifiedPreviewSubmitted { identity, .. } =
+                    &pending.state
+                    && self
+                        .device_publication_view(pending.context, *identity)
+                        .is_none()
+                {
+                    return false;
+                }
                 if let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
                     &pending.state
                     && metadata.device_preview.is_some() != metadata.tuning_preview.is_some()
@@ -425,6 +435,28 @@ impl EditorView {
         }
     }
 
+    fn device_publication_view(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        identity: hex_session::service::DevicePreviewIdentity,
+    ) -> Option<Arc<ViewState>> {
+        let current = self.state.as_ref()?;
+        if context.project_generation != self.project_generation
+            || current.audio_authoring_revision(context) != Some(current.revision)
+        {
+            return None;
+        }
+        self.resident_device_preview
+            .as_ref()
+            .filter(|preview| {
+                preview.identity == identity
+                    && identity.project_generation == self.project_generation
+                    && identity.canonical_revision == current.revision
+                    && preview.state.revision == current.revision
+            })
+            .map(|preview| Arc::clone(&preview.state))
+    }
+
     fn resident_publication_view(
         &self,
         metadata: hex_session::service::ResidentPublicationMetadata,
@@ -436,16 +468,7 @@ impl EditorView {
             return None;
         }
         match (metadata.device_preview, metadata.tuning_preview) {
-            (Some(identity), None) => self
-                .resident_device_preview
-                .as_ref()
-                .filter(|preview| {
-                    preview.identity == identity
-                        && identity.project_generation == self.project_generation
-                        && identity.canonical_revision == current.revision
-                        && preview.state.revision == current.revision
-                })
-                .map(|preview| Arc::clone(&preview.state)),
+            (Some(identity), None) => self.device_publication_view(metadata.context, identity),
             (None, Some(identity)) => self
                 .resident_tuning_preview
                 .as_ref()
@@ -498,6 +521,31 @@ impl EditorView {
             return;
         };
         match state {
+            crate::EditorPublicationState::VerifiedPreviewSubmitted {
+                audio_revision,
+                identity,
+            } => {
+                if let Some(state) = self.device_publication_view(context, identity)
+                    && !self.playback_candidates.iter().any(|candidate| {
+                        candidate.audio_revision == audio_revision
+                            && candidate.project_generation == context.project_generation
+                    })
+                    && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
+                {
+                    self.playback_candidates.push_back(PlaybackCandidate {
+                        worker_requires_preroll: None,
+                        observation: None,
+                        audio_revision,
+                        project_generation: context.project_generation,
+                        state,
+                        prepared_revision: None,
+                        seek_request_id: None,
+                        device_preview_identity: Some(identity),
+                        tuning_preview_identity: None,
+                    });
+                }
+                self.status = "publishing gain preview".into();
+            }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
                 self.status = "audio busy · waiting to publish".into()
@@ -969,10 +1017,11 @@ impl EditorView {
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
-                    let open_save = event.save_complete.then_some((
-                        event.error.is_none() && !event.state.unsaved,
-                        event.state.revision,
-                    ));
+                    let open_save = (event.save_complete && !event.save_confirmation_required)
+                        .then_some((
+                            event.error.is_none() && !event.state.unsaved,
+                            event.state.revision,
+                        ));
                     let saved_project_path =
                         (event.save_complete && event.error.is_none() && !event.state.unsaved)
                             .then(|| event.state.document_path.clone())
@@ -2258,7 +2307,12 @@ impl EditorView {
             .as_ref()
             .is_none_or(|state| state.project.tracks().is_empty())
             && !event.state.project.tracks().is_empty();
+        let save_confirmation_required =
+            event.save_confirmation_required && !event.project_replaced;
         self.state = Some(event.state);
+        if save_confirmation_required {
+            self.queue_save_confirmation();
+        }
         self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
             self.pending_loop = None;
