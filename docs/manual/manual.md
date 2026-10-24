@@ -432,6 +432,13 @@ keep the selected outputs separate. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+verified streaming projects export through a separate bounded media worker.
+keep original media available until export completes. hex verifies those files
+before reading and again before publishing; missing or changed media, unavailable
+pages and cancellation leave the previous destination intact. choose an export
+path separate from the original media. editing or opening another document does
+not change an export already in progress.
+
 # reversing clips
 
 select one or more audio or midi clips in arrangement, then press `r` to reverse
