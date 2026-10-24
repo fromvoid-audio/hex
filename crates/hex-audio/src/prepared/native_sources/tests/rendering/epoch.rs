@@ -241,9 +241,7 @@ fn actual_root_stop_returns_graph_and_endpoint_before_same_instance_successor_pc
             });
             control.reclaim();
             for (binding, state) in bindings.iter_mut().zip(&states) {
-                let next = on_control(|| {
-                    control.quiesce_native_source_preparation(*binding, binding.graph)
-                });
+                let next = renew_after_returns(&mut control, *binding);
                 assert!(next.epoch > binding.epoch);
                 assert_eq!(
                     (next.root, next.instance, next.graph),
@@ -344,6 +342,29 @@ pub(super) fn on_control<T>(mut operation: impl FnMut() -> Result<T, &'static st
                 std::thread::yield_now();
             }
             Err(reason) => panic!("actual control operation refused: {reason}"),
+        }
+    }
+}
+
+fn renew_after_returns(control: &mut Control, binding: Binding) -> Binding {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        // Endpoint ingestion may be refused while the existing lifecycle worker
+        // owns Work. Reclaim retains the exact original return for another poll.
+        control.reclaim();
+        match control.quiesce_native_source_preparation(binding, binding.graph) {
+            Ok(next) => return next,
+            Err(
+                reason @ ("native preparation is busy"
+                | "native epoch requires original graph and endpoint return"),
+            ) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "old owners did not return: {reason}"
+                );
+                std::thread::yield_now();
+            }
+            Err(reason) => panic!("native epoch refused: {reason}"),
         }
     }
 }
