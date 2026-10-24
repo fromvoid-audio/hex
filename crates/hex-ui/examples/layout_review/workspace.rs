@@ -970,7 +970,7 @@ mod tests {
             assert!(
                 visual.update(|window, cx| window.perform_accessibility_action(
                     id,
-                    gpui::AccessibilityAction::Press,
+                    &gpui::AccessibilityAction::Press,
                     cx
                 ))
             );
@@ -987,7 +987,7 @@ mod tests {
             assert!(
                 !visual.update(|window, cx| window.perform_accessibility_action(
                     id,
-                    gpui::AccessibilityAction::Press,
+                    &gpui::AccessibilityAction::Press,
                     cx
                 ))
             );
