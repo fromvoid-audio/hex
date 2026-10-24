@@ -243,7 +243,6 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
     }
     for track in project.tracks() {
         if !track.gain_lane().spans().is_empty()
-            || track.clips().iter().any(|c| c.audio_edit().is_some())
             || track.devices().iter().any(|d| {
                 d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
                     || !d.state().asset_references().is_empty()
@@ -279,7 +278,7 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
             .ok_or(AudioStorageError::SourceMismatch)?;
         // One source namespace cannot simultaneously mean original sampler PCM
         // and a project-rate clip derivative in this closed constructor.
-        if project.tracks().iter().any(|t| t.clips().iter().any(|c| c.asset() == asset.id()))
+        if project.tracks().iter().any(|t| t.clips().iter().any(|c| c.referenced_assets().any(|id| id == asset.id())))
             || project.session_cells().iter().any(|c| matches!(c.content(), hex_project::SessionCellContent::Audio(a) if a.asset() == asset.id()))
         { return Err(AudioStorageError::UnsupportedGraph) }
     }

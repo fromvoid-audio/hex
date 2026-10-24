@@ -9,6 +9,8 @@
 //! payload and remaining owners without retry or invented completion.
 mod claimed;
 mod draft;
+#[cfg(test)]
+mod grouped_audio_tests;
 mod preparation;
 mod reservation;
 pub use draft::AudioCandidateDraft;

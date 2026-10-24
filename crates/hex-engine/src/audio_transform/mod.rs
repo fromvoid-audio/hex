@@ -165,6 +165,15 @@ impl Default for AudioTransformPreparation {
     }
 }
 impl AudioTransformPreparation {
+    /// Native constructor bridge: no cache/domain/source owners survive this
+    /// one control-side clip compilation or enter the native storage ledger.
+    pub(crate) fn new_uncached_on_control() -> Self {
+        let mut preparation = Self::default();
+        preparation.cache_limit = 0;
+        preparation.source_limit = 0;
+        preparation.entry_limit = 0;
+        preparation
+    }
     pub fn new(shutdown: Arc<AtomicBool>) -> Self {
         Self {
             cache: RefCell::new(Cache {
@@ -759,3 +768,25 @@ fn warp_error(error: hex_warp::Error) -> Invalid {
 
 #[cfg(test)]
 mod tests;
+
+/// Conservative metadata envelope for one sequential uncached native transform.
+/// Bounded growable map boundaries, two maps, attack/gain points, group bindings
+/// and identities, tempo/projection copies and fixed wrappers are independent of
+/// PCM and of the warp library's separate scratch ceiling.
+pub(crate) fn native_metadata_workspace_bytes() -> Option<usize> {
+    use std::mem::size_of;
+    let maps = hex_warp::MAX_MAP_SEGMENTS.checked_mul(
+        4usize
+            .checked_mul(size_of::<(u64, bool)>())?
+            .checked_add(2usize.checked_mul(size_of::<(u64, u64)>())?)?
+            .checked_add(2usize.checked_mul(size_of::<hex_warp::MapSegment>())?)?,
+    )?;
+    let points = hex_project::MAX_AUDIO_POINTS
+        .checked_mul(4usize.checked_mul(size_of::<hex_warp::GainPoint>() + size_of::<u64>())?)?;
+    let sources = hex_project::MAX_AUDIO_EVENTS
+        .checked_mul(size_of::<GroupSource<'static>>() + size_of::<(Audio, u32, u32)>())?;
+    maps.checked_add(points)?
+        .checked_add(sources)?
+        .checked_add(hex_project::MAX_TEMPO_POINTS.checked_mul(128)?)?
+        .checked_add(64 * 1024)
+}

@@ -217,13 +217,17 @@ impl ArrangementClips {
                 .get(s.source)
                 .ok_or(AudioStorageError::SourceMismatch)?;
             if s.owner.is_some()
+                || s.prepared_origin.is_some()
                 || s.disposal != Disposal::Unstarted
                 || s.handle == 0
                 || s.end <= s.start
                 || s.source_length == 0
-                || s.source_offset
-                    .checked_add(s.source_length)
-                    .is_none_or(|n| u64::try_from(n).ok().is_none_or(|n| n > source.1.frames()))
+                || (!s.transformed
+                    && s.source_offset
+                        .checked_add(s.source_length)
+                        .is_none_or(|n| {
+                            u64::try_from(n).ok().is_none_or(|n| n > source.1.frames())
+                        }))
                 || (!s.looping && s.phase != 0)
                 || (s.looping && s.phase >= s.source_length as u64)
             {
@@ -351,12 +355,10 @@ impl ArrangementClips {
             return Err(AudioStorageError::Capacity);
         }
         for (slot, (r, s)) in self.rows.iter().zip(slots.iter()).enumerate() {
-            let source = inputs
-                .sources
-                .get(s.source)
-                .ok_or(AudioStorageError::SourceMismatch)?;
+            let source = s.source_owner(inputs)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
-            let required = matches!(&owner.kind, SourceKind::Streamed(_))
+            let required = s.gain != 1.0
+                || matches!(&owner.kind, SourceKind::Streamed(_))
                 || s.phase != 0
                 || !s.fade.is_neutral();
             if r.binding
@@ -376,14 +378,15 @@ impl ArrangementClips {
                 || r.metadata.is_some() != required
                 || r.metadata.as_ref().is_some_and(|m| {
                     m.streamed.is_some()
+                        || m.gain != s.gain
                         || m.source_phase != s.phase
                         || m.fade != (!s.fade.is_neutral()).then_some(s.fade)
                 })
                 || s.disposal != Disposal::Unstarted
                 || owner.handle != s.handle
-                || !crate::audio_input_storage::same(owner, &source.1)
+                || !crate::audio_input_storage::same(owner, source)
                 || crate::audio_input_storage::parts(owner)?
-                    != crate::audio_input_storage::parts(&source.1)?
+                    != crate::audio_input_storage::parts(source)?
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -455,17 +458,19 @@ impl ArrangementClips {
     }
     pub(super) fn validate_root_sources(
         &self,
+        slots: &[SourceSlot],
         bank: &OwnedAudioInputs,
     ) -> Result<(), AudioStorageError> {
-        self.validate_root_sources_at(bank, None)
+        self.validate_root_sources_at(slots, bank, None)
     }
     pub(super) fn validate_root_sources_at(
         &self,
+        slots: &[SourceSlot],
         bank: &OwnedAudioInputs,
         external: Option<&crate::Project>,
     ) -> Result<(), AudioStorageError> {
         self.tracks
-            .validate_root_sources(self.root.view_at(external)?.tracks, bank)
+            .validate_root_sources(self.root.view_at(external)?.tracks, slots, bank)
     }
     pub(crate) fn can_transfer_revision(&self) -> bool {
         self.root.project().is_some() && self.preview.can_transfer_revision()
