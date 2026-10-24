@@ -772,6 +772,11 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 section: intro,
                 start: BeatTime::from_quarters(5).unwrap(),
             },
+            Command::ResizeArrangementSectionMarker {
+                section: intro,
+                edge: hex_project::TrimEdge::Right,
+                boundary: BeatTime::from_quarters(5).unwrap(),
+            },
             Command::RenameTrack {
                 track,
                 name: "metadata".into(),
@@ -966,6 +971,11 @@ fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
         Command::MoveArrangementSectionMarker {
             section: intro,
             start: BeatTime::from_quarters(3).unwrap(),
+        },
+        Command::ResizeArrangementSectionMarker {
+            section: intro,
+            edge: hex_project::TrimEdge::Right,
+            boundary: BeatTime::from_quarters(6).unwrap(),
         },
         Command::RenameTrack {
             track,
