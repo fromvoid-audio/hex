@@ -115,14 +115,14 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
-    /// Arrangement-only H/Q after child input; modifiers, text and capture retain ownership.
+    /// Arrangement-only A/H/Q after child input; modifiers, text and capture retain ownership.
     pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !matches!(event.keystroke.key.as_str(), "h" | "q")
+        if !matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
             || event.keystroke.modifiers != Modifiers::default()
             || event.is_held
             || self.computer_keyboard.enabled
@@ -132,6 +132,9 @@ impl EditorView {
             || !self.arrangement_view_change_available(cx)
         {
             return false;
+        }
+        if event.keystroke.key == "a" {
+            return self.toggle_automation_view(cx);
         }
         if event.keystroke.key == "q" {
             self.toggle_arrangement_focus();
