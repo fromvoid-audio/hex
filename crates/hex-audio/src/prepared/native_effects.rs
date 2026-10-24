@@ -107,6 +107,9 @@ impl hex_lattice::ForeignProcessors for NativeEffectWindow<'_> {
         };
         self.inner.process_segment(node, offset, frames, clock)
     }
+    fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
+        self.inner.committed_tail_is_drained(node)
+    }
     fn reject_callback(&mut self) {
         self.inner.reject_callback();
     }

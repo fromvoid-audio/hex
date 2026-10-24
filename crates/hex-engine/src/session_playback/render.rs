@@ -610,6 +610,7 @@ impl SessionPlayback {
                     observer,
                     capture,
                     sources,
+                    foreign,
                 )?;
             }
             if current_first_frame {
@@ -815,6 +816,7 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
@@ -1331,7 +1333,14 @@ impl SessionPlayback {
             }
         }
         self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
-        self.render_return_buses(output, frame_offset, Some(&effect_clock), observer, capture)
+        self.render_return_buses(
+            output,
+            frame_offset,
+            Some(&effect_clock),
+            observer,
+            capture,
+            foreign,
+        )
     }
 
     fn render_return_buses(
@@ -1341,6 +1350,7 @@ impl SessionPlayback {
         effect_clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
@@ -1362,17 +1372,24 @@ impl SessionPlayback {
                             );
                         };
                     chain
-                        .process_range_tapped_with_clock(
+                        .process_range_tapped_with_foreign(
                             0..chain.len(),
                             frames,
                             frame_offset,
                             effect_clock,
+                            foreign,
                             &mut observe,
                         )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else {
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, effect_clock)
+                        .process_range_with_foreign(
+                            0..chain.len(),
+                            frames,
+                            frame_offset,
+                            effect_clock,
+                            foreign,
+                        )
                         .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 if let Some(matrix) = bus.matrix {
@@ -1409,7 +1426,7 @@ impl SessionPlayback {
             // Captured chains feed Main only, never any current or old edge.
             if self.playing {
                 self.return_effect_tails
-                    .render_chunk(output, frame_offset, capture)?;
+                    .render_chunk(output, frame_offset, capture, foreign)?;
             }
             return Ok(());
         }
@@ -1444,17 +1461,24 @@ impl SessionPlayback {
                     );
                 };
                 chain
-                    .process_range_tapped_with_clock(
+                    .process_range_tapped_with_foreign(
                         0..chain.len(),
                         frames,
                         frame_offset,
                         effect_clock,
+                        foreign,
                         &mut observe,
                     )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             } else {
                 chain
-                    .process_range_with_clock(0..chain.len(), frames, effect_clock)
+                    .process_range_with_foreign(
+                        0..chain.len(),
+                        frames,
+                        frame_offset,
+                        effect_clock,
+                        foreign,
+                    )
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
             if let Some(matrix) = bus.matrix {
@@ -1479,7 +1503,7 @@ impl SessionPlayback {
         }
         if self.playing {
             self.return_effect_tails
-                .render_chunk(output, frame_offset, capture)?;
+                .render_chunk(output, frame_offset, capture, foreign)?;
         }
         Ok(())
     }

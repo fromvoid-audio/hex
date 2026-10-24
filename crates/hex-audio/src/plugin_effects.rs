@@ -175,6 +175,21 @@ impl NativeEffect {
             instance.ready().algorithmic_latency_frames,
             u32::from(config.quantum) * 2,
         )
+        .map(|prepared| {
+            prepared.with_output_tail(if instance.ready().tail_frames == u32::MAX {
+                hex_lattice::OutputTail::Unbounded
+            } else {
+                hex_lattice::OutputTail::Finite {
+                    // Acceptance is observed on a later physical callback;
+                    // a visited endpoint must also finish its complete extent.
+                    // Two quanta bound that observation/coverage rounding. This
+                    // does not add algorithmic latency or delay audible samples.
+                    // SDK u32 + two validated u16 quanta fits this u64 bound.
+                    max_tail_frames: u64::from(instance.ready().tail_frames)
+                        + u64::from(config.quantum) * 2,
+                }
+            })
+        })
         .and_then(|prepared| prepared.with_binding(config.binding))
         .map_err(|_| Error::Protocol("native effect latency overflow"))?;
         if prepared.total_latency_frames() > hex_engine::compensation::MAX_COMPENSATION_FRAMES {
@@ -347,6 +362,11 @@ impl ForeignProcessors for NativeEffectCallback {
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
         }
         Ok(())
+    }
+    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+        self.matches(node)
+            && self.reported_tail_is_drained()
+            && self.transport.has_complete_staged_callback()
     }
     fn reject_callback(&mut self) {
         self.transport.reject(Fault::Revoked);

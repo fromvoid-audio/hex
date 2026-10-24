@@ -4,6 +4,14 @@ use crate::{
 };
 use hex_lattice_contract::DeviceContractError;
 
+/// Only the original borrowed provider can supply this observation. The
+/// ordinary chain transaction caches it beside its scalar facts; no foreign
+/// DSP state, source owner or acceptance authority is copied into the chain.
+pub(super) struct ForeignRuntime {
+    pub(super) prepared: crate::PreparedForeignProcessor,
+    pub(super) committed_drained: bool,
+    pub(super) scratch_drained: bool,
+}
 pub(super) enum RuntimeOwnership {
     Memoryless,
     Legacy {
@@ -11,7 +19,7 @@ pub(super) enum RuntimeOwnership {
         scratch: Box<dyn NativeProcessorRuntime>,
     },
     Owned(Box<dyn OwnedProcessorRuntime>),
-    Foreign(crate::PreparedForeignProcessor),
+    Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
     pub(super) fn prepare(
@@ -19,7 +27,11 @@ impl RuntimeOwnership {
     ) -> Result<Self, DeviceContractError> {
         match factory {
             None => Ok(Self::Memoryless),
-            Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(*v)),
+            Some(PreparedProcessorFactory::Foreign(v)) => Ok(Self::Foreign(ForeignRuntime {
+                prepared: *v,
+                committed_drained: false,
+                scratch_drained: false,
+            })),
             Some(PreparedProcessorFactory::Legacy(factory)) => Ok(Self::Legacy {
                 primary: factory.create_runtime(),
                 scratch: factory.create_runtime(),
@@ -64,7 +76,7 @@ impl RuntimeOwnership {
             Self::Memoryless => true,
             Self::Legacy { primary, .. } => primary.is_quiescent(),
             Self::Owned(v) => v.committed_is_quiescent(),
-            Self::Foreign(_) => false,
+            Self::Foreign(value) => value.committed_drained,
         }
     }
     pub(super) fn speculative_is_quiescent(&self) -> bool {
@@ -72,7 +84,7 @@ impl RuntimeOwnership {
             Self::Memoryless => true,
             Self::Legacy { scratch, .. } => scratch.is_quiescent(),
             Self::Owned(v) => v.speculative_is_quiescent(),
-            Self::Foreign(_) => false,
+            Self::Foreign(value) => value.scratch_drained,
         }
     }
     pub(super) fn can_inherit_from(&self, old: &Self) -> bool {
@@ -80,7 +92,7 @@ impl RuntimeOwnership {
             (Self::Memoryless, Self::Memoryless) => true,
             // Only scalar graph views are inherited here. Actual source/DSP
             // custody remains with the host's separately admitted endpoints.
-            (Self::Foreign(new), Self::Foreign(old)) => new == old,
+            (Self::Foreign(new), Self::Foreign(old)) => new.prepared == old.prepared,
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_copy_history_from(old.as_ref())
                     && scratch.can_copy_history_from(old.as_ref())
@@ -91,7 +103,7 @@ impl RuntimeOwnership {
     }
     pub(super) fn foreign_configuration_matches(&self, old: &Self) -> bool {
         match (self, old) {
-            (Self::Foreign(new), Self::Foreign(old)) => new == old,
+            (Self::Foreign(new), Self::Foreign(old)) => new.prepared == old.prepared,
             (Self::Foreign(_), _) | (_, Self::Foreign(_)) => false,
             _ => true,
         }
@@ -108,6 +120,10 @@ impl RuntimeOwnership {
     }
     pub(super) fn inherit_from(&mut self, old: &Self) {
         match (self, old) {
+            (Self::Foreign(new), Self::Foreign(old)) if new.prepared == old.prepared => {
+                new.committed_drained = old.committed_drained;
+                new.scratch_drained = old.committed_drained;
+            }
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 if primary.can_copy_history_from(old.as_ref())
                     && scratch.can_copy_history_from(old.as_ref())
@@ -132,14 +148,16 @@ impl RuntimeOwnership {
                 }
             }
             Self::Owned(v) => v.begin_block(),
-            Self::Memoryless | Self::Foreign(_) => {}
+            Self::Foreign(value) => value.scratch_drained = value.committed_drained,
+            Self::Memoryless => {}
         }
     }
     pub(super) fn commit(&mut self) {
         match self {
             Self::Legacy { primary, scratch } => std::mem::swap(primary, scratch),
             Self::Owned(v) => v.commit_block(),
-            Self::Memoryless | Self::Foreign(_) => {}
+            Self::Foreign(value) => value.committed_drained = value.scratch_drained,
+            Self::Memoryless => {}
         }
     }
     pub(super) fn rollback(&mut self) {
@@ -155,7 +173,11 @@ impl RuntimeOwnership {
                 scratch.reset();
             }
             Self::Owned(v) => v.reset(),
-            Self::Memoryless | Self::Foreign(_) => {}
+            Self::Foreign(value) => {
+                value.committed_drained = false;
+                value.scratch_drained = false;
+            }
+            Self::Memoryless => {}
         }
     }
 

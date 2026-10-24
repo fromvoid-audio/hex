@@ -288,7 +288,7 @@ impl SessionPlayback {
         if self.playing {
             self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
             self.return_effect_tails
-                .render_chunk(output, frame_offset, capture)?;
+                .render_chunk(output, frame_offset, capture, foreign)?;
         }
         Ok(())
     }

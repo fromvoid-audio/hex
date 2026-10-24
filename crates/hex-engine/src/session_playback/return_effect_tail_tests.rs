@@ -1082,15 +1082,21 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
 
     bank.begin_block();
     let mut failed_attempt = [[0.0; 2]; 1];
-    bank.render_chunk(&mut failed_attempt, 0, &mut None)
-        .unwrap();
+    bank.render_chunk(
+        &mut failed_attempt,
+        0,
+        &mut None,
+        &mut hex_lattice::RefuseForeign,
+    )
+    .unwrap();
     assert_eq!(failed_attempt[0], [0.375, -0.75]);
     bank.rollback_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);
 
     bank.begin_block();
     let mut retry = [[0.0; 2]; 1];
-    bank.render_chunk(&mut retry, 0, &mut None).unwrap();
+    bank.render_chunk(&mut retry, 0, &mut None, &mut hex_lattice::RefuseForeign)
+        .unwrap();
     assert_eq!(retry, failed_attempt);
     bank.commit_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);

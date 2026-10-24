@@ -525,7 +525,7 @@ impl NativeRuntimeEntryStorage<'_> {
     /// source custody and cannot classify another runtime family as foreign.
     pub fn foreign_processor(&self) -> Option<PreparedForeignProcessor> {
         match &self.entry.runtime {
-            RuntimeOwnership::Foreign(value) => Some(*value),
+            RuntimeOwnership::Foreign(value) => Some(value.prepared),
             _ => None,
         }
     }
@@ -928,7 +928,7 @@ impl NativeRuntimeChain {
                     && (left.bypassed == right.bypassed
                         || matches!((&left.runtime, &right.runtime),
                             (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
-                                if left == right))
+                                if left.prepared == right.prepared))
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
@@ -1009,6 +1009,18 @@ impl NativeRuntimeChain {
         })?;
         Some(OutputTail::Finite {
             max_tail_frames: finite_frames,
+        })
+    }
+
+    /// A foreign endpoint without a finite source/host drain bound cannot be
+    /// admitted into a finite retained-tail transition. Invalid ranges refuse
+    /// conservatively. Built-in unbounded runtimes retain their existing policy.
+    pub fn range_has_unbounded_foreign_tail(&self, range: std::ops::Range<usize>) -> bool {
+        self.entries.get(range).is_none_or(|entries| {
+            entries.iter().any(|entry| {
+                matches!(&entry.runtime, RuntimeOwnership::Foreign(value)
+                if value.prepared.output_tail() == OutputTail::Unbounded)
+            })
         })
     }
 
@@ -1450,26 +1462,28 @@ impl NativeRuntimeChain {
                 entry.meter.observe_input(frames);
             }
         }
-        if let RuntimeOwnership::Foreign(prepared) = &entry.runtime {
+        if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
                 .configuration
                 .as_deref()
                 .ok_or(DeviceContractError::ForeignProcessingUnavailable)?;
-            foreign.process_segment(
-                ForeignProcessorNode {
-                    owner: entry.owner,
-                    device_id: entry.device_id,
-                    device_type: entry.device_type,
-                    sample_rate: entry.sample_rate,
-                    configuration,
-                    prepared: *prepared,
-                    bypassed: entry.bypassed,
-                    input_gain: entry.input_gain,
-                },
-                frame_offset,
-                frames,
-                clock,
-            )?;
+            let node = ForeignProcessorNode {
+                owner: entry.owner,
+                device_id: entry.device_id,
+                device_type: entry.device_type,
+                sample_rate: entry.sample_rate,
+                configuration,
+                prepared: runtime.prepared,
+                bypassed: entry.bypassed,
+                input_gain: entry.input_gain,
+            };
+            // A failed stage supplies no new observation. Invalidate scratch
+            // first so an earlier quiet state cannot mask renewed input.
+            runtime.scratch_drained = false;
+            foreign.process_segment(node, frame_offset, frames, clock)?;
+            runtime.scratch_drained =
+                matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })
+                    && foreign.committed_tail_is_drained(node);
         } else if entry.bypassed {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {

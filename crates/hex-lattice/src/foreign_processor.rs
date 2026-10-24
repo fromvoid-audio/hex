@@ -17,6 +17,7 @@ pub struct PreparedForeignProcessor {
     bridge_latency: u32,
     total_latency: u32,
     binding: Option<ForeignProcessorBinding>,
+    output_tail: crate::OutputTail,
 }
 impl PreparedForeignProcessor {
     pub fn new(
@@ -36,6 +37,7 @@ impl PreparedForeignProcessor {
             bridge_latency,
             total_latency,
             binding: None,
+            output_tail: crate::OutputTail::Unbounded,
         })
     }
     /// Retain the exact existing source/endpoint binding in immutable graph
@@ -50,6 +52,16 @@ impl PreparedForeignProcessor {
         }
         self.binding = Some(binding);
         Ok(self)
+    }
+    /// Source-validated residual bound, excluding the fixed latency above.
+    /// This declaration alone cannot establish runtime quiescence or native
+    /// custody. Hosts must still match the actual source and accepted drain.
+    pub fn with_output_tail(mut self, tail: crate::OutputTail) -> Self {
+        self.output_tail = tail;
+        self
+    }
+    pub fn output_tail(self) -> crate::OutputTail {
+        self.output_tail
     }
     pub fn binding(self) -> Option<ForeignProcessorBinding> {
         self.binding
@@ -107,6 +119,13 @@ pub trait ForeignProcessors {
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError>;
+    /// Read an accepted drain observation from this exact retained endpoint.
+    /// Pending zeros must not advance the proof; pending renewed input must
+    /// invalidate it. Missing/unknown/revoked endpoints return false. This query
+    /// stages no work and grants no endpoint destruction/return authority.
+    fn committed_tail_is_drained(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        false
+    }
     /// Queue-independent, idempotent revocation of all staged foreign work for
     /// this physical callback. No native teardown/join may run on this lane.
     fn reject_callback(&mut self);

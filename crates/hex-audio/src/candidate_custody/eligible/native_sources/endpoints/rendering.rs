@@ -98,6 +98,22 @@ impl ForeignProcessors for NativeEndpointBank {
         }
         result
     }
+    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+        !self.cycle.revoked()
+            && node
+                .prepared
+                .binding()
+                .and_then(|binding| {
+                    self.routing[..self.routing_len]
+                        .binary_search_by_key(&Some(binding), |slot| {
+                            self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+                        })
+                        .ok()
+                        .map(|index| self.routing[index])
+                })
+                .and_then(|index| self.entries[index].as_ref()?.0.callback.as_ref())
+                .is_some_and(|entry| entry.callback().committed_tail_is_drained(node))
+    }
     fn reject_callback(&mut self) {
         self.reject_rendering();
     }

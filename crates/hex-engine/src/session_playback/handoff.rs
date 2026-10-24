@@ -7,6 +7,9 @@ fn validate_tail_suffix(
     sample_rate: u32,
 ) -> Result<usize, SessionPlaybackError> {
     let suffix_range = suffix_start..chain.len();
+    if chain.range_has_unbounded_foreign_tail(suffix_range.clone()) {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
     let tail = chain
         .zero_input_drain_for_range(suffix_range.clone())
         .ok_or(SessionPlaybackError::DeviceRuntime)?;

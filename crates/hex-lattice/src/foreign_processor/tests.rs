@@ -43,6 +43,7 @@ struct BorrowedEndpoint {
     fail: bool,
     revoked: bool,
     rejections: usize,
+    drained: bool,
 }
 impl ForeignProcessors for BorrowedEndpoint {
     fn process_segment(
@@ -84,6 +85,9 @@ impl ForeignProcessors for BorrowedEndpoint {
         }
         Ok(())
     }
+    fn committed_tail_is_drained(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        self.drained && !self.revoked
+    }
     fn reject_callback(&mut self) {
         self.revoked = true;
         self.rejections += 1;
@@ -99,6 +103,7 @@ fn endpoint(instance: &PreparedRuntimeInstance) -> BorrowedEndpoint {
         fail: false,
         revoked: false,
         rejections: 0,
+        drained: false,
     }
 }
 
@@ -300,4 +305,54 @@ fn malformed_foreign_declarations_refuse_before_any_endpoint_is_borrowed() {
             Err(DeviceContractError::ForeignProcessingUnavailable)
         ));
     }
+}
+
+#[test]
+fn finite_foreign_tail_requires_original_provider_observation_in_chain_transaction() {
+    let mut instance = declaration(ProcessorChainOwner::Main, false);
+    let facts = PreparedForeignProcessor::new(8, 3, 16)
+        .unwrap()
+        .with_output_tail(crate::OutputTail::Finite { max_tail_frames: 3 });
+    instance.definition = Some(PreparedProcessorFactory::Foreign(facts));
+    let mut foreign = endpoint(&instance);
+    let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    assert_eq!(
+        chain.zero_input_drain_for_range(0..1),
+        Some(crate::OutputTail::Finite {
+            max_tail_frames: 22
+        })
+    );
+    assert!(!chain.committed_range_is_quiescent(0..1));
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, &mut foreign)
+        .unwrap();
+    chain.commit_block();
+    assert!(
+        !chain.committed_range_is_quiescent(0..1),
+        "silence is not a host acceptance proof"
+    );
+    foreign.drained = true;
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, &mut foreign)
+        .unwrap();
+    assert!(chain.speculative_range_is_quiescent(0..1));
+    assert!(!chain.committed_range_is_quiescent(0..1));
+    chain.rollback_block();
+    assert!(!chain.speculative_range_is_quiescent(0..1));
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, &mut foreign)
+        .unwrap();
+    chain.commit_block();
+    assert!(chain.committed_range_is_quiescent(0..1));
+    foreign.drained = false;
+    chain.begin_block();
+    chain
+        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, &mut foreign)
+        .unwrap();
+    assert!(!chain.speculative_range_is_quiescent(0..1));
+    chain.commit_block();
+    assert!(!chain.committed_range_is_quiescent(0..1));
 }

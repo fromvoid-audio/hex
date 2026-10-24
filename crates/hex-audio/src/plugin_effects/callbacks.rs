@@ -209,6 +209,22 @@ impl ForeignProcessors for NativeEffectCallbacks {
         }
         result
     }
+    fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
+        !self.cycle.revoked()
+            && node
+                .prepared
+                .binding()
+                .and_then(|binding| {
+                    self.entries
+                        .binary_search_by_key(&binding, NativeEffectEntry::binding)
+                        .ok()
+                })
+                .is_some_and(|index| {
+                    self.entries[index]
+                        .callback()
+                        .committed_tail_is_drained(node)
+                })
+    }
     fn reject_callback(&mut self) {
         self.cycle.reject();
         for entry in &mut self.entries {

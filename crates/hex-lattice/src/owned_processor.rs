@@ -117,7 +117,7 @@ impl PreparedProcessorFactory {
         match self {
             Self::Legacy(v) => v.output_tail(),
             Self::Owned(v) => v.output_tail(),
-            Self::Foreign(_) => OutputTail::Unbounded, // no invented SDK tail/quiescence fact
+            Self::Foreign(value) => value.output_tail(),
         }
     }
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {

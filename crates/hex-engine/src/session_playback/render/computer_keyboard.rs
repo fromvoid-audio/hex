@@ -167,7 +167,14 @@ impl SessionPlayback {
                     capture.add(OutputCaptureId::Track(id), offset, frames)?;
                 }
             }
-            self.render_return_buses(chunk, offset, None, observer, capture)?;
+            self.render_return_buses(
+                chunk,
+                offset,
+                None,
+                observer,
+                capture,
+                &mut hex_lattice::RefuseForeign,
+            )?;
         }
         if self.compensation.is_none() {
             let main_clock = crate::effect_clock::ArrangementEffectClock::session(

@@ -36,6 +36,12 @@ impl fmt::Debug for ReturnEffectTail {
 }
 
 impl ReturnEffectTail {
+    fn active_start(&self) -> usize {
+        match self.destination {
+            TailDestination::Return(_) => 0,
+            TailDestination::Main { suffix_start, .. } => suffix_start,
+        }
+    }
     pub(super) fn return_id(&self) -> Option<ReturnId> {
         match self.destination {
             TailDestination::Return(id) => Some(id),
@@ -144,6 +150,7 @@ impl ReturnEffectTailBank {
         output: &mut [Frame],
         frame_offset: usize,
         capture: &mut Option<&mut dyn super::capture::CaptureSink>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let (slots, scratch) = (&mut self.slots, &mut self.scratch);
         for tail in slots.iter_mut().flatten() {
@@ -156,7 +163,13 @@ impl ReturnEffectTailBank {
             let frames = &mut scratch[..output.len()];
             frames.fill([0.0; 2]);
             tail.chain
-                .process_block(frames)
+                .process_range_with_foreign(
+                    0..tail.chain.len(),
+                    frames,
+                    frame_offset,
+                    None,
+                    foreign,
+                )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             tail.output_scratch = !tail
                 .chain
@@ -370,6 +383,7 @@ impl ReturnEffectTailPlan {
             plan.carry[source_slot] = Some((source_slot, target_slot));
             reserve_chain(
                 &tail.chain,
+                tail.active_start(),
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -427,6 +441,7 @@ impl ReturnEffectTailPlan {
             *capture = Some((old_index, target_slot));
             reserve_chain(
                 old_chain,
+                0,
                 sample_rate,
                 processor_count,
                 runtime_bytes,
@@ -487,6 +502,7 @@ impl ReturnEffectTailPlan {
         // prefix backing, although only the detached suffix is processed.
         reserve_chain(
             old,
+            start,
             sample_rate,
             processor_count,
             runtime_bytes,
@@ -667,14 +683,19 @@ impl ReturnEffectTailPlan {
 
 fn reserve_chain(
     chain: &NativeRuntimeChain,
+    active_start: usize,
     sample_rate: u32,
     processor_count: &mut usize,
     runtime_bytes: &mut usize,
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
+    let active = active_start..chain.len();
+    if chain.range_has_unbounded_foreign_tail(active.clone()) {
+        return Err(SessionPlaybackError::DeviceRuntime);
+    }
     match chain
-        .zero_input_drain_for_range(0..chain.len())
-        // The full range is validated by this caller; `None` therefore means
+        .zero_input_drain_for_range(active)
+        // The active range is validated by this caller; `None` therefore means
         // its serial finite declarations overflowed their aggregate bound.
         .ok_or(SessionPlaybackError::ReleaseBankFull)?
     {

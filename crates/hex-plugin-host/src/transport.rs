@@ -307,6 +307,13 @@ impl Callback {
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
     }
+    /// Whether the visited physical callback has complete staged coverage.
+    /// This is not final host acceptance and grants no dispatch authority.
+    pub fn has_complete_staged_callback(&self) -> bool {
+        self.staged
+            .as_ref()
+            .is_some_and(|stage| stage.staged_frames == stage.expected_frames)
+    }
     /// Current epoch revocation, including a worker/control request that the
     /// callback has not yet visited. This read grants no future liveness.
     pub fn is_revoked(&self) -> bool {

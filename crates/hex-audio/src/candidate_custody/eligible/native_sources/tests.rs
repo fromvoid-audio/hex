@@ -28,7 +28,7 @@ pub(crate) fn input() -> (InstanceBuild, native::Source, native::Preparation) {
         ],
     )
 }
-fn input_for(
+pub(crate) fn input_for(
     fixture: &str,
     class: [u8; 16],
 ) -> (InstanceBuild, native::Source, native::Preparation) {

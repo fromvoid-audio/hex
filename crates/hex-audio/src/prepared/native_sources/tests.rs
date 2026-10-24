@@ -1,6 +1,6 @@
 //! Real source/worker and actual callback-carrier transfer; no Hex app/device.
 use super::*;
-use crate::candidate_custody::native_source_test_fixture::{identity, input, source_reservation};
+use crate::candidate_custody::native_source_test_fixture::{identity, source_reservation};
 use crate::native_callback_owner::{
     ErrorCallbackOwner, Guard, NativeCallbackOwner, NativeRetirement,
 };
@@ -18,6 +18,18 @@ fn setup() -> (
 }
 fn setup_for_identity(
     source_identity: hex_lattice::ProcessorInstanceIdentity,
+) -> (
+    Control,
+    Guard<NativeCallbackOwner>,
+    Guard<ErrorCallbackOwner>,
+    NativeRetirement,
+    Binding,
+) {
+    setup_for_identity_with_fixture(source_identity, "processing")
+}
+fn setup_for_identity_with_fixture(
+    source_identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
 ) -> (
     Control,
     Guard<NativeCallbackOwner>,
@@ -73,11 +85,24 @@ fn setup_for_identity(
     control
         .configure_native_source_preparation(2, source_reservation())
         .unwrap();
-    let binding = source(&mut control, source_identity);
+    let binding = source_for_fixture(&mut control, source_identity, fixture);
     (control, data, errors, retirement, binding)
 }
 fn source(control: &mut Control, identity: hex_lattice::ProcessorInstanceIdentity) -> Binding {
-    let (build, source, preparation) = input();
+    source_for_fixture(control, identity, "processing")
+}
+fn source_for_fixture(
+    control: &mut Control,
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+) -> Binding {
+    let (build, source, preparation) =
+        crate::candidate_custody::native_source_test_fixture::input_for(
+            fixture,
+            [
+                0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+            ],
+        );
     let binding = control
         .begin_native_source_preparation(
             identity,
