@@ -1930,7 +1930,7 @@ fn prepare_with_waveforms_using(
             let preview_root = if let Some(clip) = project.clip(view.clip)
                 && clip
                     .audio_edit()
-                    .is_some_and(|edit| edit.placement.is_some())
+                    .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
             {
                 let source = media
                     .resident

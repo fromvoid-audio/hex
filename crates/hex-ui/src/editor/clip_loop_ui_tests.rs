@@ -124,8 +124,14 @@ fn drag(f: &mut Fixture, kind: &str, dx: f32, modifiers: Modifiers) -> gpui::Poi
 fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_edge(
     cx: &mut TestAppContext,
 ) {
-    for midi in [false, true] {
+    for (midi, reversed) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut f = fixture(cx, midi);
+        if reversed {
+            f.editor.update(&mut f.visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::ReverseClips(vec![f.clip]))));
+            });
+            pump(&f.editor, &mut f.visual);
+        }
         let before = f.editor.read_with(&f.visual, |v, _| {
             v.state.as_ref().unwrap().project.snapshot()
         });
@@ -229,8 +235,30 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             } else {
                 loop_handles::audio_repeats(project.clip(f.clip).unwrap())
             });
+            let directed = if midi {
+                project
+                    .midi_clip(f.clip)
+                    .unwrap()
+                    .content_view()
+                    .is_some_and(|v| v.reversed)
+            } else {
+                project
+                    .clip(f.clip)
+                    .unwrap()
+                    .audio_edit()
+                    .unwrap()
+                    .content_view
+                    .is_some_and(|v| v.window.reversed)
+            };
+            assert_eq!(directed, reversed, "loop resizing retains direction");
             project.snapshot()
         });
+        if reversed {
+            assert!(
+                f.visual.debug_bounds(selector(&f, "cycle")).is_none(),
+                "a directed seam is not a forward authoring handle"
+            );
+        }
         f.visual.simulate_keystrokes("cmd-z");
         pump(&f.editor, &mut f.visual);
         f.editor.read_with(&f.visual, |v, _| {
@@ -405,30 +433,38 @@ fn clip_loop_compact_track_corner_keeps_ordinary_edge_strip(cx: &mut TestAppCont
 fn clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body(
     cx: &mut TestAppContext,
 ) {
-    let mut f = fixture(cx, false);
-    f.editor.update(&mut f.visual, |v, _| {
-        v.waveform_geometry_cache.borrow_mut().clear()
-    });
-    let target = drag(&mut f, "outer", 70.0, Modifiers::default());
-    let held = f.visual.debug_bounds("trim-live-preview").unwrap();
-    for released in [false, true] {
-        if released {
-            f.visual
-                .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            f.visual.run_until_parked();
-            assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+    for reversed in [false, true] {
+        let mut f = fixture(cx, false);
+        if reversed {
+            f.editor.update(&mut f.visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(Command::ReverseClips(vec![f.clip]))));
+            });
+            pump(&f.editor, &mut f.visual);
         }
-        f.editor.read_with(&f.visual, |v, _| {
-            assert!(
-                v.waveform_geometry_cache
-                    .borrow()
-                    .painted_waveforms()
-                    .iter()
-                    .any(|p| p.bounds.right() >= held.right() - px(2.0)
-                        && p.ordinates.iter().any(|(lo, hi)| hi - lo > 1.0)),
-                "held loop must paint accepted nonzero peaks through its new outer edge"
-            );
+        f.editor.update(&mut f.visual, |v, _| {
+            v.waveform_geometry_cache.borrow_mut().clear()
         });
+        let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        let held = f.visual.debug_bounds("trim-live-preview").unwrap();
+        for released in [false, true] {
+            if released {
+                f.visual
+                    .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+                f.visual.run_until_parked();
+                assert_eq!(f.visual.debug_bounds("trim-live-preview"), Some(held));
+            }
+            f.editor.read_with(&f.visual, |v, _| {
+                assert!(
+                    v.waveform_geometry_cache
+                        .borrow()
+                        .painted_waveforms()
+                        .iter()
+                        .any(|p| p.bounds.right() >= held.right() - px(2.0)
+                            && p.ordinates.iter().any(|(lo, hi)| hi - lo > 1.0)),
+                    "held loop must paint accepted nonzero peaks through its new outer edge"
+                );
+            });
+        }
     }
 }
 

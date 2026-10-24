@@ -83,9 +83,42 @@ pub(super) fn loop_waveform_view(
             retimed = true;
         }
     }
-    let (source, accepted_origin, prepared) = if let Some(old) = request.original.audio_edit() {
+    let (source, accepted_origin, prepared) = accepted_loop_source(request)?;
+    let projection = Arc::new(LoopProjection {
+        original: request.original.clone(),
+        preview: request.preview.clone(),
+        tempo: request.tempo.clone(),
+        prepared,
+        accepted_origin,
+        retimed,
+    });
+    Some(waveform_canvas(
+        source,
+        WaveformMapping::Loop(projection),
+        start,
+        end,
+        Some(cache),
+        grid,
+    ))
+}
+
+/// A directed outer waveform already contains reflection. Loop gestures must
+/// sample its explicitly accepted forward processing root instead of mapping
+/// those finite output peaks as if they were untouched source content.
+fn accepted_loop_source(request: WaveformPreview<'_>) -> Option<(Arc<CachedWaveform>, i128, bool)> {
+    Some(if let Some(old) = request.original.audio_edit() {
+        let preview = request.preview.audio_edit()?;
+        // Accepted root peaks already include the forward container fade.
+        // Reflecting them would move that fade to the wrong side. Until a
+        // destination-fade-aware preview exists, keep real resize geometry
+        // and wait for the admitted candidate's waveform instead.
+        if preview.content_view.is_some()
+            && (!old.domain.fade.is_neutral() || !preview.domain.fade.is_neutral())
+        {
+            return None;
+        }
         let accepted = request.prepared?;
-        if old.placement.is_some() {
+        if old.placement.is_some() || old.content_view.is_some() {
             let root = accepted.preview_root.as_ref()?;
             (Arc::clone(&root.waveform), root.origin, true)
         } else {
@@ -108,23 +141,7 @@ pub(super) fn loop_waveform_view(
         }
     } else {
         (Arc::clone(request.asset?), 0, false)
-    };
-    let projection = Arc::new(LoopProjection {
-        original: request.original.clone(),
-        preview: request.preview.clone(),
-        tempo: request.tempo.clone(),
-        prepared,
-        accepted_origin,
-        retimed,
-    });
-    Some(waveform_canvas(
-        source,
-        WaveformMapping::Loop(projection),
-        start,
-        end,
-        Some(cache),
-        grid,
-    ))
+    })
 }
 
 impl LoopProjection {
@@ -200,6 +217,32 @@ impl LoopProjection {
         if start >= end {
             return None;
         }
+        if self.preview.audio_edit()?.content_view.is_some() {
+            let mut peaks: Option<[CachedPeak; 2]> = None;
+            // Directed occurrences retain base-placement coordinates. The
+            // canonical interval query reflects/crops/wraps in constant work
+            // and returns at most two processing-root ranges.
+            for range in p
+                .root_ranges_for_frames(start..end)
+                .ok()?
+                .into_iter()
+                .flatten()
+            {
+                let a = self.root_frame(range.start)?;
+                let b = self.root_frame(range.end)?.max(a.checked_add(1)?);
+                if let Some(next) = self.peaks_for_root(waveform, a..b) {
+                    if let Some(peaks) = peaks.as_mut() {
+                        for c in 0..2 {
+                            peaks[c].min = peaks[c].min.min(next[c].min);
+                            peaks[c].max = peaks[c].max.max(next[c].max);
+                        }
+                    } else {
+                        peaks = Some(next);
+                    }
+                }
+            }
+            return peaks;
+        }
         let mut lo = 0;
         let mut hi = p.occurrence_count();
         while lo < hi {
@@ -251,6 +294,242 @@ impl LoopProjection {
 mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project, TrimEdge};
+
+    fn directed_fixture() -> (Editor, hex_project::ClipId, Arc<CachedWaveform>) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        // Capture a retained full root before trimming; peaks below represent
+        // the accepted forward processing root, including its hidden prefix.
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 1 })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 0 })
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 2,
+            })
+            .unwrap();
+        let waveform = Arc::new(
+            CachedWaveform::from_peaks(
+                8,
+                (0..8)
+                    .map(|n| {
+                        [CachedPeak {
+                            min: n as f32 / 10.0,
+                            max: n as f32 / 10.0,
+                        }; 2]
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        (editor, clip, waveform)
+    }
+
+    #[test]
+    fn directed_phased_repeat_peaks_follow_reflected_trimmed_source_ranges() {
+        let (mut editor, clip, waveform) = directed_fixture();
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::RepeatOuterEnd { project_frame: 26 },
+            })
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 3,
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let original = editor.project().clip(clip).unwrap().clone();
+        assert_eq!(
+            original
+                .audio_edit()
+                .unwrap()
+                .content_view
+                .unwrap()
+                .base_placement
+                .unwrap()
+                .cycle_phase,
+            1
+        );
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 4,
+            })
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame: 24,
+            })
+            .unwrap();
+        let projection = LoopProjection {
+            original,
+            preview: editor.project().clip(clip).unwrap().clone(),
+            tempo: editor.project().tempo_map().clone(),
+            prepared: true,
+            accepted_origin: 0,
+            retimed: false,
+        };
+        // Literal forward cycle [2,3,4,5,6,7] at phase1, reversed and then
+        // cropped by one frame at the left: [6,5,4,3,2,7,...].
+        for (frame, expected) in [(4, 0.6), (5, 0.5), (8, 0.2), (9, 0.7), (10, 0.6)] {
+            let peak = projection.peaks(&waveform, frame..frame + 1).unwrap()[0];
+            assert_eq!((peak.min, peak.max), (expected, expected), "frame {frame}");
+        }
+        let peak = projection.peaks(&waveform, 4..24).unwrap()[0];
+        assert_eq!((peak.min, peak.max), (0.2, 0.7));
+        assert!(projection.peaks(&waveform, 0..4).is_none());
+        assert!(projection.peaks(&waveform, 24..30).is_none());
+    }
+
+    #[test]
+    fn first_directed_repeat_preview_selects_explicit_forward_root() {
+        let (mut editor, clip, root) = directed_fixture();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let original = editor.project().clip(clip).unwrap();
+        assert!(original.audio_edit().unwrap().placement.is_none());
+        let tempo = editor.project().tempo_map();
+        let preview = preview_audio_view_resize(
+            original,
+            tempo,
+            8,
+            AudioViewResizeOperation::RepeatOuterEnd { project_frame: 26 },
+        )
+        .unwrap();
+        // Accepted outer PCM is already reversed and cropped. It must never be
+        // relabeled as the full forward processing root during the first loop.
+        let outer = Arc::new(
+            CachedWaveform::from_peaks(
+                6,
+                vec![
+                    [CachedPeak {
+                        min: -1.0,
+                        max: -1.0
+                    }; 2];
+                    6
+                ],
+            )
+            .unwrap(),
+        );
+        let accepted = hex_session::service::AudioClipWaveform {
+            waveform: outer,
+            offset: 0,
+            length: original.duration(),
+            preview_root: Some(hex_session::service::AudioPreviewWaveform {
+                waveform: Arc::clone(&root),
+                origin: 0,
+            }),
+        };
+        let request = WaveformPreview {
+            original,
+            preview: &preview,
+            tempo,
+            asset: None,
+            prepared: Some(&accepted),
+        };
+        let (chosen, origin, prepared) = accepted_loop_source(request).unwrap();
+        assert!(Arc::ptr_eq(&chosen, &root));
+        let projection = LoopProjection {
+            original: original.clone(),
+            preview: preview.clone(),
+            tempo: tempo.clone(),
+            prepared,
+            accepted_origin: origin,
+            retimed: false,
+        };
+        assert_eq!(projection.peaks(&chosen, 2..3).unwrap()[0].max, 0.7);
+        let missing = hex_session::service::AudioClipWaveform {
+            preview_root: None,
+            ..accepted.clone()
+        };
+        assert!(
+            accepted_loop_source(WaveformPreview {
+                preview: &projection.preview,
+                prepared: Some(&missing),
+                ..request
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn directed_loop_preview_refuses_to_reflect_an_asymmetric_container_fade() {
+        let (mut editor, clip, _) = directed_fixture();
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 4,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let original = editor.project().clip(clip).unwrap();
+        let preview = preview_audio_view_resize(
+            original,
+            editor.project().tempo_map(),
+            8,
+            AudioViewResizeOperation::RepeatOuterEnd { project_frame: 26 },
+        )
+        .unwrap();
+        // A constant source with a left fade has these forward root peaks.
+        // Reflecting them would incorrectly put the fade on the right.
+        let root = Arc::new(
+            CachedWaveform::from_peaks(
+                8,
+                [0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0]
+                    .into_iter()
+                    .map(|value| {
+                        [CachedPeak {
+                            min: value,
+                            max: value,
+                        }; 2]
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let accepted = hex_session::service::AudioClipWaveform {
+            waveform: Arc::clone(&root),
+            offset: 0,
+            length: original.duration(),
+            preview_root: Some(hex_session::service::AudioPreviewWaveform {
+                waveform: root,
+                origin: 0,
+            }),
+        };
+        assert!(
+            accepted_loop_source(WaveformPreview {
+                original,
+                preview: &preview,
+                tempo: editor.project().tempo_map(),
+                asset: None,
+                prepared: Some(&accepted),
+            })
+            .is_none(),
+            "post-fade root peaks cannot represent destination-faded reversed output"
+        );
+    }
 
     #[test]
     fn loop_preview_wraps_the_captured_nonzero_source_crop_and_aggregates_dense_cycles() {

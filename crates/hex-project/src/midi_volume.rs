@@ -154,6 +154,32 @@ impl MidiClipVolume {
         if self.points().is_empty() {
             return Ok(Self::default());
         }
+        if let Some(forward) = playback.unreversed() {
+            // Enumerate the same bounded forward interval once, then reflect
+            // its complete curve. Reconstructing a forward law at the reversed
+            // initial phase would walk the wrong authored points and seams.
+            let duration = playback.arrangement_duration().raw();
+            let reflected_start = BeatTime::from_raw(duration - end.raw());
+            let reflected_end = BeatTime::from_raw(duration - start.raw());
+            let mut projected = self.materialized(forward, reflected_start, reflected_end)?;
+            if let Some(points) = &mut projected.points {
+                let points = Arc::make_mut(points);
+                points.reverse();
+                for point in points.iter_mut() {
+                    point.beat = BeatTime::from_raw(length - point.beat.raw());
+                    std::mem::swap(&mut point.incoming, &mut point.value);
+                }
+                if let Some(first) = points.first_mut() {
+                    first.incoming = first.value;
+                }
+                if let Some(last) = points.last_mut() {
+                    // The forward materializer normalizes its initial incoming
+                    // limit; recover that limit for the reflected end point.
+                    last.value = self.gain_at_elapsed(forward, reflected_start, true);
+                }
+            }
+            return Ok(projected);
+        }
         let mut boundaries = Vec::new();
         boundaries
             .try_reserve_exact(MAX_MIDI_VOLUME_POINTS_PER_CLIP)
@@ -607,6 +633,45 @@ mod tests {
                 .materialized(tiny_loop, BeatTime::ZERO, BeatTime::from_raw(1025))
                 .is_err()
         );
+    }
+    #[test]
+    fn reversed_materialization_retains_ramps_authored_jumps_and_loop_seam_limits() {
+        let b = BeatTime::from_raw;
+        let curve = MidiClipVolume::new(
+            vec![
+                point(0, 0.0, 0.0),
+                point(2, 1.0, 1.0),
+                point(4, 3.0, 2.5),
+                point(6, 0.5, 0.5),
+            ],
+            b(8),
+        )
+        .unwrap();
+        let playback = MidiSourcePlayback::new(b(8), b(2), Some((b(2), b(6))), b(8))
+            .unwrap()
+            .with_content_window(crate::ContentWindow::new(3, 11, true).unwrap())
+            .unwrap();
+        let reversed = curve.materialized(playback, b(0), b(8)).unwrap();
+        // The source ramp descends; both authored and loop discontinuities
+        // exchange their incoming/value sides under half-open reflection.
+        for (raw, gain) in [1.5, 3.0, 2.0, 0.5, 1.5, 3.0, 2.0, 0.5, 1.5]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(reversed.gain_at(b(raw as u64)).linear(), gain);
+        }
+        assert_eq!(reversed.gain_before(b(1)).linear(), 2.5);
+        assert_eq!(reversed.gain_before(b(3)).linear(), 1.0);
+        assert_eq!(
+            reversed.points().first().unwrap().incoming,
+            reversed.points().first().unwrap().value
+        );
+        let partial = curve.materialized(playback, b(1), b(7)).unwrap();
+        assert_eq!(partial.gain_at(b(0)).linear(), 3.0);
+        assert_eq!(partial.gain_before(b(2)).linear(), 1.0);
+        assert_eq!(partial.gain_at(b(2)).linear(), 0.5);
+        assert_eq!(partial.gain_at(b(6)).linear(), 0.5);
+        assert_eq!(curve.points()[2], point(4, 3.0, 2.5));
     }
     #[test]
     fn source_range_copy_replaces_only_destination_and_preserves_both_limits() {

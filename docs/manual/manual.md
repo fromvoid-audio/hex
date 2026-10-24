@@ -361,10 +361,28 @@ keep the selected outputs separate. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
+# reversing clips
+
+select one or more audio or midi clips in arrangement, then press `r` to reverse
+what is audible inside each clip. press `r` again to restore its original direction.
+one undo restores the whole selected group. text fields keep their normal typing behavior.
+
+original audio files and midi notes remain intact. trim, loop, pitch, source gain
+and warp settings stay editable. frame-based audio reverses in frames; musical
+audio and midi reverse in the clip's beat clock, so tempo changes can change the
+sound of musical audio. fades keep their timeline position.
+
+directed midi clips cannot yet be transferred to session, and midi recording requires
+a forward clip. directed clips retain the outer repeat handle; dragging their
+first repeat seam is not available. for directed clips with fades, loop resizing
+updates the waveform after the edit is accepted. an unsupported preparation refuses
+the complete edit.
+
 # useful shortcuts
 
 | action | shortcut |
 | --- | --- |
+| reverse selected arrangement clips | `r` |
 | new project | command+n |
 | open project | command+o |
 | save / save as | command+s / command+shift+s |

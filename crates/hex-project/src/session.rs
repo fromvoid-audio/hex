@@ -886,6 +886,7 @@ fn copy_arrangement_midi_to_session(
     scene: SceneId,
     destination: Option<TrackId>,
 ) -> Result<Created, Invalid> {
+    require_forward_arrangement_midi(project, source)?;
     let (track, source_note_count) = project
         .tracks
         .iter()
@@ -927,6 +928,20 @@ fn copy_arrangement_midi_to_session(
     });
     Ok(Created::SessionClip(id))
 }
+fn require_forward_arrangement_midi(
+    project: &crate::Project,
+    source: ClipId,
+) -> Result<(), Invalid> {
+    if project
+        .midi_clip(source)
+        .is_some_and(|clip| clip.content_view().is_some())
+    {
+        return Err(Invalid(
+            "directed arrangement midi cannot yet transfer to an ongoing session clip; use a forward clip",
+        ));
+    }
+    Ok(())
+}
 fn copy_to_new_session_track(
     project: &mut crate::Project,
     source: ClipId,
@@ -934,6 +949,10 @@ fn copy_to_new_session_track(
     scene: SessionSceneTarget,
     midi: bool,
 ) -> Result<Created, Invalid> {
+    // Refuse before allocating a track, scene or fresh source identities.
+    if midi {
+        require_forward_arrangement_midi(project, source)?;
+    }
     scene.validate(project)?;
     let name = if midi {
         project.midi_clip(source).map(|clip| clip.name().to_owned())
