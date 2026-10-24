@@ -11,6 +11,9 @@ const STYLE: ControlStyle = ControlStyle {
     text: 0xe0e0e0,
     muted: 0xaaaaaa,
     accent: 0x55ddee,
+    accent_text: 0x202020,
+    numeric_fill: 0x31515a,
+    hover_text: 0xe0e0e0,
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,
@@ -29,13 +32,17 @@ impl Render for Root {
                 .debug_selector(|| "compact-slot".into())
                 .flex()
                 .w(px(self.width))
-                .h(px(
-                    if self.control.read(cx).kind == NumericControlKind::VerticalSlider {
-                        90.0
-                    } else {
-                        21.0
-                    },
-                ))
+                .h(px(match self.control.read(cx).kind {
+                    NumericControlKind::VerticalSlider => 90.0,
+                    NumericControlKind::Knob => 72.0,
+                    NumericControlKind::HorizontalSlider
+                        if self.control.read(cx).appearance
+                            == NumericControlAppearance::LabeledSlider =>
+                    {
+                        32.0
+                    }
+                    NumericControlKind::HorizontalSlider => 21.0,
+                }))
                 .child(self.control.clone()),
         )
     }
@@ -63,7 +70,7 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::CompactSlider),
+                    .with_presentation(NumericControlPresentation::CompactSlider),
                 )
             });
             let root = window.replace_root(cx, |_, _| Root {
@@ -171,16 +178,16 @@ fn compact_slider_fits_header_slot_and_keeps_capture_cancel_and_text(cx: &mut Te
 }
 
 #[gpui::test]
-fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestAppContext) {
+fn horizontal_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestAppContext) {
     cx.update(bind_numeric_control_keys);
-    for (bipolar, kind) in [false, true].into_iter().flat_map(|b| {
+    for (bipolar, appearance) in [false, true].into_iter().flat_map(|b| {
         [
-            NumericControlKind::HorizontalSlider,
-            NumericControlKind::VerticalSlider,
+            NumericControlPresentation::FilledSlider,
+            NumericControlPresentation::LabeledSlider,
         ]
-        .map(|k| (b, k))
+        .map(|appearance| (b, appearance))
     }) {
-        let vertical = kind == NumericControlKind::VerticalSlider;
+        let kind = NumericControlKind::HorizontalSlider;
         let handle = *cx.add_window(|_, _| Empty);
         let (control, root) = cx
             .update_window(handle, |_, window, cx| {
@@ -217,7 +224,7 @@ fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestA
                             STYLE,
                         )
                         .unwrap()
-                        .with_appearance(NumericControlAppearance::FilledSlider),
+                        .with_presentation(appearance),
                     )
                 });
                 let root = window.replace_root(cx, |_, _| Root {
@@ -249,7 +256,7 @@ fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestA
                 let fill = visual.debug_bounds("filled-volume-bar-fill").unwrap();
                 assert_eq!(
                     bar.size.width,
-                    px(if vertical { 58.0 } else { width - 2.0 }),
+                    px(width - 2.0),
                     "retain shared focus-marker inset"
                 );
                 assert_eq!(
@@ -262,24 +269,17 @@ fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestA
                 assert!(visual.debug_bounds("filled-volume-slider-thumb").is_none());
                 assert!(bar.right() <= slot.right() && bar.bottom() <= slot.bottom());
                 assert!(fill.left() >= bar.left() && fill.right() <= bar.right());
-                let extent = if vertical {
-                    fill.size.height
-                } else {
-                    fill.size.width
-                };
-                let full_extent = if vertical {
-                    field.size.height
-                } else {
-                    field.size.width
-                };
+                assert_eq!(bar.size.height, px(14.0));
+                if appearance == NumericControlPresentation::LabeledSlider {
+                    let widget = visual.debug_bounds("filled-volume").unwrap();
+                    assert!(bar.top() >= widget.top() + px(15.0));
+                }
+                let extent = fill.size.width;
+                let full_extent = field.size.width;
                 assert!(fill.top() >= bar.top() && fill.bottom() <= bar.bottom());
                 if bipolar {
                     let center = visual.debug_bounds("filled-volume-bar-center").unwrap();
-                    if vertical {
-                        assert_eq!(center.bottom(), field.center().y);
-                    } else {
-                        assert_eq!(center.left(), field.center().x);
-                    }
+                    assert_eq!(center.left(), field.center().x);
                     assert!((extent - full_extent * (value as f32).abs() * 0.5).abs() <= px(1.0));
                 } else if value == 0.0 {
                     assert_eq!(extent, px(0.0));
@@ -288,6 +288,128 @@ fn filled_slider_centers_readout_and_bounds_gain_and_bipolar_fill(cx: &mut TestA
                 }
             }
         }
+    }
+}
+
+#[gpui::test]
+fn vertical_fader_keeps_handle_in_bounds_and_readout_below_with_shared_drag_lifecycle(
+    cx: &mut TestAppContext,
+) {
+    cx.update(bind_numeric_control_keys);
+    let handle = *cx.add_window(|_, _| Empty);
+    let control = cx
+        .update_window(handle, |_, window, cx| {
+            let config = NumericControlConfig::new(
+                "fader",
+                "gain",
+                NumericControlKind::VerticalSlider,
+                NumericSpec::new(
+                    -1.0,
+                    1.0,
+                    0.0,
+                    crate::NumericScale::Bipolar,
+                    2,
+                    None::<&str>,
+                )
+                .unwrap(),
+                0.0,
+                STYLE,
+            )
+            .unwrap();
+            let control = cx.new(|cx| NumericControl::from_config(cx, config));
+            window.replace_root(cx, |_, _| Root {
+                control: control.clone(),
+                width: 60.0,
+            });
+            control
+        })
+        .unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            captured.borrow_mut().push(*event)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(140.0)));
+    for value in [-1.0, 0.0, 1.0] {
+        control.update(cx, |control, cx| {
+            control.set_external_value(value, cx).unwrap()
+        });
+        visual.run_until_parked();
+        let rail = visual.debug_bounds("fader-slider").unwrap();
+        let thumb = visual.debug_bounds("fader-slider-thumb").unwrap();
+        let readout = visual.debug_bounds("fader-value").unwrap();
+        let widget = visual.debug_bounds("fader").unwrap();
+        assert_eq!(rail.size.width, px(10.0));
+        assert!(thumb.left() > rail.right());
+        assert!(thumb.top() >= widget.top() && thumb.bottom() < readout.top());
+        assert!(readout.top() > rail.bottom());
+        let expected = rail.bottom() - rail.size.height * ((value as f32 + 1.0) / 2.0);
+        assert!((thumb.center().y - expected).abs() <= px(1.0));
+        assert!(visual.debug_bounds("fader-bar-fill").is_none());
+    }
+    control.update(cx, |control, cx| {
+        control.set_external_value(0.0, cx).unwrap()
+    });
+    visual.run_until_parked();
+    let readout = visual.debug_bounds("fader-value").unwrap();
+    let start = visual.debug_bounds("fader-slider-thumb").unwrap().center();
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!((control.read_with(cx, |c, _| c.value()) - 0.4).abs() < 1e-6);
+    assert_eq!(visual.debug_bounds("fader-value").unwrap(), readout);
+    assert_eq!(
+        events.borrow().first().unwrap().phase,
+        NumericEventPhase::Begin
+    );
+    assert_eq!(
+        events.borrow().last().unwrap().phase,
+        NumericEventPhase::Commit
+    );
+
+    let start = visual.debug_bounds("fader-slider-thumb").unwrap().center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(start.x, start.y + px(12.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    control.update(cx, |control, cx| control.cancel(cx));
+    visual.run_until_parked();
+    assert!((control.read_with(cx, |c, _| c.value()) - 0.4).abs() < 1e-6);
+    assert_eq!(
+        events.borrow().last().unwrap().phase,
+        NumericEventPhase::Cancel
+    );
+    for deactivate in [false, true] {
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let start = visual.debug_bounds("fader-slider-thumb").unwrap().center();
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(start.x, start.y + px(12.0)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        if deactivate {
+            visual.deactivate_window();
+        } else {
+            visual.update(|window, _| window.blur());
+        }
+        visual.run_until_parked();
+        assert!(!control.read_with(cx, |c, _| c.is_interacting()));
+        assert!((control.read_with(cx, |c, _| c.value()) - 0.4).abs() < 1e-6);
+        assert_eq!(
+            events.borrow().last().unwrap().phase,
+            NumericEventPhase::Cancel
+        );
+        assert!(!visual.update(|window, _| window.has_hidden_cursor_override()));
     }
 }
 
@@ -319,7 +441,7 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::FilledSlider),
+                    .with_presentation(NumericControlPresentation::FilledSlider),
                 )
             });
             window.replace_root(cx, |_, _| Root {
@@ -398,23 +520,35 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
 }
 
 #[gpui::test]
-fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
-    cx: &mut TestAppContext,
-) {
+fn all_numeric_presentations_scrub_upward_and_ignore_horizontal_motion(cx: &mut TestAppContext) {
     cx.update(bind_numeric_control_keys);
-    for (kind, axis) in [
-        NumericControlKind::HorizontalSlider,
-        NumericControlKind::VerticalSlider,
-    ]
-    .into_iter()
-    .flat_map(|kind| {
-        [
-            None,
-            Some(NumericDragAxis::Horizontal),
-            Some(NumericDragAxis::Vertical),
-        ]
-        .map(|axis| (kind, axis))
-    }) {
+    for (kind, appearance) in [
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlPresentation::HorizontalSlider,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlPresentation::CompactSlider,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlPresentation::FilledSlider,
+        ),
+        (
+            NumericControlKind::HorizontalSlider,
+            NumericControlPresentation::LabeledSlider,
+        ),
+        (
+            NumericControlKind::VerticalSlider,
+            NumericControlPresentation::VerticalSlider,
+        ),
+        (NumericControlKind::Knob, NumericControlPresentation::Knob),
+        (
+            NumericControlKind::Knob,
+            NumericControlPresentation::MicroDial,
+        ),
+    ] {
         let handle = *cx.add_window(|_, _| Empty);
         let control = cx
             .update_window(handle, |_, window, cx| {
@@ -435,15 +569,11 @@ fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
                     STYLE,
                 )
                 .unwrap()
-                .with_appearance(NumericControlAppearance::FilledSlider);
-                let config = match axis {
-                    Some(axis) => config.with_drag_axis(axis),
-                    None => config,
-                };
+                .with_presentation(appearance);
                 let control = cx.new(|cx| NumericControl::from_config(cx, config));
                 window.replace_root(cx, |_, _| Root {
                     control: control.clone(),
-                    width: 86.0,
+                    width: 132.0,
                 });
                 control
             })
@@ -459,10 +589,6 @@ fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
         visual.simulate_resize(size(px(400.0), px(140.0)));
         visual.run_until_parked();
         let field = visual.debug_bounds("axis-pan-value").unwrap();
-        assert_eq!(
-            field.center(),
-            visual.debug_bounds("axis-pan-slider").unwrap().center()
-        );
         let start = field.center();
         for (dx, dy) in [(24.0, 0.0), (0.0, -24.0)] {
             control.update(cx, |control, cx| {
@@ -478,7 +604,7 @@ fn slider_scrubbing_is_always_vertical_even_with_legacy_axis_configuration(
             assert!(
                 (control.read_with(cx, |control, _| control.value()) - f64::from(expected)).abs()
                     < 1e-6,
-                "kind={kind:?} axis={axis:?} dx={dx} dy={dy}"
+                "kind={kind:?} appearance={appearance:?} dx={dx} dy={dy}"
             );
             let events = events.borrow();
             assert_eq!(
@@ -531,7 +657,7 @@ fn integer_readout_accumulates_small_pointer_moves_and_refuses_fractional_text(
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::InlineValue),
+                    .with_presentation(NumericControlPresentation::InlineValue),
                 )
             });
             window.replace_root(cx, |_, _| Root {
@@ -630,7 +756,7 @@ fn explicit_unit_readout_drag_accumulates_fine_motion_clamps_and_cancels(cx: &mu
                         STYLE,
                     )
                     .unwrap()
-                    .with_appearance(NumericControlAppearance::InlineValue)
+                    .with_presentation(NumericControlPresentation::InlineValue)
                     .with_value_drag_steps(1.0, 0.1)
                     .unwrap(),
                 )

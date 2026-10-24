@@ -245,8 +245,17 @@ impl Session {
                 ));
             }
         }
-        let (mut commands, console_cell) =
-            crate::import_batch::console::prefix(self.project(), destination, sources.len())?;
+        let track_name = sources
+            .first()
+            .and_then(|source| source.path().file_stem())
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "imported audio".into());
+        let (mut commands, console_cell) = crate::import_batch::console::prefix(
+            self.project(),
+            destination,
+            sources.len(),
+            &track_name,
+        )?;
         commands
             .try_reserve_exact(sources.len())
             .map_err(|_| SessionError::Allocation)?;

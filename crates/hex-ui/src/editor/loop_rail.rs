@@ -69,6 +69,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.context_menu.is_some()
+            || self.theme_settings.open
             || self.opening_project
             || self.close_prompt_open
             || self.save_dialog_open
@@ -390,7 +391,7 @@ pub(super) fn view(
                                     let started = down_entity.update(cx, |view, cx| {
                                         if view.track_name.is_editing() || view.clip_name_edit.is_some()
                                             || view.project_tempo_editing(cx) || view.gain_numeric_editing(cx)
-                                            || view.sample_bpm_editing(cx) { return false; }
+                                            || view.clip_numeric_editing(cx) { return false; }
                                         let started = view.begin_loop_rail_gesture(
                                             bounds,
                                             event.position,
@@ -665,7 +666,8 @@ fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
 /// Frame endpoints retain quantized musical intervals, not authored beat IDs.
 /// Accept exactly one binary Q32.32 duration whose canonical forward rounding can
 /// place its two beat endpoints at these stored frames (no pixel/epsilon test).
-fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
+/// Arrangement time-selection markers share this same read-only predicate.
+pub(super) fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
     let map = project.tempo_map();
     let interval = |frame: u64| -> Option<(u128, u128)> {
         let first = map.beat_lower_bound_for_frame(frame).ok()?;

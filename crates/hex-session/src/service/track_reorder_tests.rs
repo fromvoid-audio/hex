@@ -14,10 +14,10 @@ fn run(service: &Service, request: Request) -> Event {
     event
 }
 fn reorder(state: &ViewState, track: TrackId, before: Option<TrackId>) -> Request {
-    Request::ReorderTrack {
+    Request::ReorderTracks {
         project_generation: 0,
         revision: state.revision,
-        track,
+        tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
         before,
     }
 }
@@ -148,6 +148,61 @@ fn reorder_track_worker_preserves_cached_pcm_devices_and_one_history_edge() {
     }
     let redone = run(&service, Request::Redo);
     assert_eq!(redone.state.project, moved.state.project);
+
+    let third = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "empty".into(),
+        }),
+    );
+    let empty = third.state.project.tracks()[2].id();
+    let grouped = run(
+        &service,
+        Request::ReorderTracks {
+            project_generation: 0,
+            revision: third.state.revision,
+            // Input order differs from the current canonical MIDI/audio order.
+            tracks: hex_project::TrackSelectionIds::new(&[audio_track, midi_track]).unwrap(),
+            before: None,
+        },
+    );
+    assert_eq!(
+        order(&grouped.state.project),
+        [empty, midi_track, audio_track]
+    );
+    assert_eq!(grouped.state.revision, third.state.revision + 1);
+    for track in third.state.project.tracks() {
+        assert_eq!(grouped.state.project.track(track.id()), Some(track));
+    }
+    assert!(original_pcm.shares_pcm_with(&resident_pcm(&grouped)));
+    assert!(Arc::ptr_eq(
+        &grouped.state.waveforms[&asset],
+        &third.state.waveforms[&asset]
+    ));
+    let mut playback = Playback::from_prepared(prepared(&grouped));
+    playback.apply(hex_engine::PlaybackCommand::PlayFrom(0));
+    playback.render(&mut actual).unwrap();
+    assert_eq!(
+        actual, expected,
+        "the group path retains cached audio and MIDI signal"
+    );
+    let undo = run(&service, Request::Undo);
+    assert_eq!(undo.state.project, third.state.project);
+    let noop = run(
+        &service,
+        Request::ReorderTracks {
+            project_generation: 0,
+            revision: undo.state.revision,
+            tracks: hex_project::TrackSelectionIds::new(&[audio_track, midi_track]).unwrap(),
+            before: Some(audio_track),
+        },
+    );
+    assert_eq!(noop.state.revision, undo.state.revision);
+    assert!(noop.playback.is_none() && noop.state.can_redo);
+    assert_eq!(
+        run(&service, Request::Redo).state.project,
+        grouped.state.project
+    );
 }
 
 #[test]
@@ -176,17 +231,18 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
     );
     let missing = deleted.state.project.tracks()[2].id();
     let stable = run(&service, Request::Edit(Command::RemoveTrack(missing))).state;
-    for (generation, revision, track, before) in [
-        (1, stable.revision, second_id, Some(first_id)),
-        (0, stable.revision + 1, second_id, Some(first_id)),
-        (0, stable.revision, missing, Some(first_id)),
-        (0, stable.revision, second_id, Some(missing)),
+    for (generation, revision, members, before) in [
+        (1, stable.revision, vec![second_id], Some(first_id)),
+        (0, stable.revision + 1, vec![second_id], Some(first_id)),
+        (0, stable.revision, vec![missing], Some(first_id)),
+        (0, stable.revision, vec![second_id], Some(missing)),
+        (0, stable.revision, vec![first_id, missing], None),
     ] {
         service
-            .submit(Request::ReorderTrack {
+            .submit(Request::ReorderTracks {
                 project_generation: generation,
                 revision,
-                track,
+                tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
                 before,
             })
             .unwrap();
@@ -237,6 +293,30 @@ fn reorder_track_worker_refuses_stale_targets_and_keeps_active_gesture_uncommitt
     assert_eq!(refused.state.project, stable.project);
     assert_eq!(refused.state.revision, stable.revision);
     assert!(refused.playback.is_none());
+    let tracks = hex_project::TrackSelectionIds::new(&[first_id, second_id]).unwrap();
+    for action in [
+        TrackClipboardAction::Copy(tracks.clone()),
+        TrackClipboardAction::Cut(tracks.clone()),
+        TrackClipboardAction::Duplicate {
+            tracks,
+            without_clips: true,
+        },
+        TrackClipboardAction::Paste { before: None },
+    ] {
+        service
+            .submit(Request::TrackClipboard {
+                project_generation: 0,
+                revision: stable.revision,
+                action,
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.as_deref().unwrap().contains("active gesture"));
+        assert!(refused.active_device_gesture.is_some());
+        assert_eq!(refused.state.project, stable.project);
+        assert_eq!(refused.state.revision, stable.revision);
+        assert!(refused.playback.is_none());
+    }
     let canceled = run(
         &service,
         Request::DeviceGesture(GestureRequest::Cancel { key }),

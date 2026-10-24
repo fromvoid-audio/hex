@@ -378,7 +378,7 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
     });
     visual.simulate_input("p 🎹");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "p 🎹");
+        assert_eq!(view.browser.search.read(cx).text(), "p 🎹");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     visual.update(|window, cx| {
@@ -969,6 +969,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            section: None,
             recovery_generation: None,
             destination_frame: 128,
             start_playing: true,

@@ -98,7 +98,11 @@ fn pitch_at_y(y: f32, height: f32, low: u8, rows: u8) -> Option<u8> {
 }
 
 impl EditorView {
-    pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+    pub(super) fn midi_editor(
+        &mut self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let selected = self.detail_clip_id()?;
         let length = self
             .state
@@ -109,6 +113,7 @@ impl EditorView {
             .raw();
         let owner = (self.project_generation, selected);
         if self.piano_view_clip != Some(owner) {
+            self.retire_arrange_range_owner();
             self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
             self.clear_midi_time_selection();
@@ -125,6 +130,7 @@ impl EditorView {
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         }
+        self.reflect_arrange_clip_range(window, cx);
         let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
@@ -294,7 +300,13 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .track_focus(&self.midi_focus)
             .key_context("hex_midi")
-            .debug_selector(|| "midi-note-roll".into());
+            .debug_selector(|| "midi-note-roll".into())
+            .children(self.arrange_midi_highlights(
+                self.piano_beat_start.raw(),
+                self.piano_beat_span.raw(),
+                0.0,
+                "arrange-reflected-range",
+            ));
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
         roll = roll.children([canvas(
@@ -1518,7 +1530,9 @@ impl EditorView {
         .absolute()
         .inset_0()]);
         let mut panel = div()
-            .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+            .h(px((self.clip_detail_body_height
+                - self.midi_velocity.visible_height())
+            .max(64.0)))
             .flex_shrink_0()
             .flex()
             .flex_row()
@@ -1565,15 +1579,17 @@ impl EditorView {
                     .child(theme::text(format!("{displayed} {value_text}"))),
             );
             if field == super::midi_source_controls::SourceField::Looping {
-                group = group.children([self.midi_button_with_id(
-                    field.plus_id(),
-                    label,
-                    plus_tooltip,
-                    cx.listener(move |view, _, _, cx| {
-                        view.edit_midi_source(clip_id, revision, generation, field, 1);
-                        cx.notify();
-                    }),
-                )]);
+                group = group.children([self
+                    .midi_button_with_id(
+                        field.plus_id(),
+                        label,
+                        plus_tooltip,
+                        cx.listener(move |view, _, _, cx| {
+                            view.edit_midi_source(clip_id, revision, generation, field, 1);
+                            cx.notify();
+                        }),
+                    )
+                    .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))]);
             } else {
                 let minus_field = field;
                 let plus_field = field;
@@ -1690,7 +1706,7 @@ impl EditorView {
                     v.midi_group_gesture = None;
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_draw_pitch_locked {
                     "l"
@@ -1707,17 +1723,17 @@ impl EditorView {
                     v.cancel_midi_note_gesture();
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_audition.enabled { "a+" } else { "a" },
-                "toggle note audition · selection plays up to 17 notes · physical keyboard takes priority",
+                "toggle note audition · selection plays up to 17 notes · computer and hardware input take priority",
                 cx.listener(|v, _, window, cx| {
                     v.midi_audition.enabled = !v.midi_audition.enabled;
                     v.cancel_midi_audition();
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_step.enabled { "st" } else { "s" },
                 "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
@@ -1729,7 +1745,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 if self.midi_pan.enabled { "↔+" } else { "↔" },
                 "toggle pan mode · drag to move time and pitch · middle-drag always pans",
@@ -1740,7 +1756,7 @@ impl EditorView {
                     v.midi_focus.focus(window);
                     cx.notify();
                 }),
-            )])
+            ).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))])
             .children([self.midi_button(
                 "←",
                 "pan piano roll left",

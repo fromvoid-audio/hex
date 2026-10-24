@@ -34,7 +34,7 @@ impl EditorView {
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
             || self.gain_lane.pointer_is_active()
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.close_prompt_open
             || self.opening_project
             || self.project_open.busy()
@@ -47,6 +47,7 @@ impl EditorView {
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
             || self.project_spectrum.resize_is_active()
+            || self.clip_detail_resize.is_active()
             || self.device_panel.navigation.is_active()
             || self.clip_paint_gesture.is_some()
             || self.active_clip_drag.is_some()

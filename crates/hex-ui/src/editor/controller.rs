@@ -563,6 +563,11 @@ impl EditorView {
                         audio_revision,
                     );
                     if let Some(metadata) = metadata {
+                        self.midi_recording_published(
+                            context,
+                            metadata.computer_keyboard_request,
+                            audio_revision,
+                        );
                         self.gain_recorder
                             .published(metadata.gain_recording_track, audio_revision);
                     }
@@ -951,6 +956,7 @@ impl EditorView {
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
+        visible_change |= self.tick_midi_recording();
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
@@ -983,6 +989,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.midi_service_disconnected();
                     if self.cancel_new_preparation() {
                         visible_change |= replace_error(
                             &mut self.error,
@@ -993,7 +1000,10 @@ impl EditorView {
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
+                    visible_change |= self.pending_track_clipboard.take().is_some();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.retire_clip_detail();
+                    visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1017,10 +1027,13 @@ impl EditorView {
                 let resize_request = self.pending_trim_matches(&request);
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
+                let clip_detail_request = self.audio_clip_controls.matches(&request);
+                let audio_events_request = self.pending_audio_events_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
                 let duplicate_request = self.pending_duplicate_matches(&request);
+                let track_clipboard_request = self.pending_track_clipboard_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let fade_request = self.pending_fade_matches(&request);
                 let eq_creation_request = self.pending_eq_creation_matches(&request);
@@ -1041,6 +1054,13 @@ impl EditorView {
                         if group_copy_request {
                             self.group_copy_submitted();
                         }
+                        if clip_detail_request {
+                            self.audio_clip_controls
+                                .submitted(self.worker_requests_pending);
+                        }
+                        if audio_events_request {
+                            self.audio_events_submitted();
+                        }
                         if clip_move_request {
                             self.clip_move_submitted();
                         }
@@ -1049,6 +1069,9 @@ impl EditorView {
                         }
                         if track_reorder_request {
                             self.track_reorder_submitted();
+                        }
+                        if track_clipboard_request {
+                            self.track_clipboard_submitted();
                         }
                         if duplicate_request {
                             self.duplicate_submitted();
@@ -1068,6 +1091,7 @@ impl EditorView {
                         break;
                     }
                     Err(SubmitError::Busy(request)) => {
+                        self.midi_take_not_submitted(&request);
                         if resize_request {
                             self.retire_pending_trim();
                         }
@@ -1081,6 +1105,9 @@ impl EditorView {
                         if group_copy_request {
                             self.pending_group_copy = None;
                         }
+                        if audio_events_request {
+                            visible_change |= self.retire_pending_audio_events();
+                        }
                         if clip_move_request {
                             self.retire_pending_clip_move();
                         }
@@ -1089,6 +1116,9 @@ impl EditorView {
                         }
                         if track_reorder_request {
                             self.retire_pending_track_reorder();
+                        }
+                        if track_clipboard_request {
+                            self.pending_track_clipboard = None;
                         }
                         if duplicate_request {
                             self.duplicate_intent.reject();
@@ -1109,6 +1139,7 @@ impl EditorView {
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        self.midi_take_not_submitted(&request);
                         self.cancel_new_preparation();
                         if time_copy_request {
                             self.pending_created_note_selection = None;
@@ -1145,6 +1176,9 @@ impl EditorView {
                         if group_copy_request {
                             self.pending_group_copy = None;
                         }
+                        if audio_events_request {
+                            visible_change |= self.retire_pending_audio_events();
+                        }
                         if clip_move_request {
                             self.retire_pending_clip_move();
                         }
@@ -1153,6 +1187,9 @@ impl EditorView {
                         }
                         if track_reorder_request {
                             self.retire_pending_track_reorder();
+                        }
+                        if track_clipboard_request {
+                            self.pending_track_clipboard = None;
                         }
                         if duplicate_request {
                             self.duplicate_intent.reject();
@@ -1173,7 +1210,9 @@ impl EditorView {
         }
         visible_change |= self.pump_device_gesture();
         visible_change |= self.retire_abandoned_duplicate();
+        visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_clip_detail();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
         visible_change |= self.retire_abandoned_fade();
@@ -1263,7 +1302,17 @@ impl EditorView {
                 .clone()
                 .or_else(|| pending.playback.prepared_revision().cloned());
             let policy = if let Some(fence) = pending.fresh_runtime_fence {
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+                self.prepared_seek
+                    .as_ref()
+                    .filter(|seek| Some(seek.request_id) == pending.seek_request_id)
+                    .and_then(|seek| seek.section)
+                    .map_or(
+                        PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                        |section| PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: section.quantization,
+                        },
+                    )
             } else if pending.install_fresh_runtime {
                 PublicationPolicy::InstallFreshRuntime
             } else {
@@ -1907,6 +1956,13 @@ impl EditorView {
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
+        if self
+            .audio_clip_controls
+            .observe(self.project_generation, &event)
+        {
+            self.retire_sample_bpm_control();
+        }
+        self.audio_events_request_complete(&event);
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -1919,6 +1975,7 @@ impl EditorView {
         let midi_step_complete = self.take_completed_midi_step(&event);
         let created_note_selection = self.take_created_note_selection(&event);
         let duplicate_completion = self.take_duplicate_completion(&mut event);
+        let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -1999,7 +2056,7 @@ impl EditorView {
                 .is_some_and(|state| state.revision == event.state.revision)
                 && self.controller_input_matches(input)
             {
-                self.connect_prepared_controller();
+                self.controller_expression_prepared();
             } else {
                 input.cancel();
                 return None;
@@ -2050,7 +2107,7 @@ impl EditorView {
             let note_audition =
                 self.midi_audition_preparation_matches(request_id, event.state.revision);
             let current = note_audition
-                || (self.computer_keyboard.enabled
+                || ((self.computer_keyboard.enabled || self.controller_wants_live_notes())
                     && !self.computer_keyboard.suspended
                     && request_id == self.computer_keyboard.request_id
                     && self.computer_keyboard.target
@@ -2067,6 +2124,10 @@ impl EditorView {
                         .as_ref()
                         .is_some_and(|state| state.revision == event.state.revision));
             if current {
+                self.computer_keyboard.prepared = event.error.is_none();
+                if event.error.is_some() {
+                    self.midi_recording_preparation_failed();
+                }
                 let audition_ok = note_audition && event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
@@ -2182,7 +2243,15 @@ impl EditorView {
             &event.state.project,
             event.project_replaced,
         );
+        // Initial population may choose the first clip. Subsequent control
+        // acknowledgements must not recreate a deliberately empty selection.
+        let initialize_clip_selection = self
+            .state
+            .as_ref()
+            .is_none_or(|state| state.project.tracks().is_empty())
+            && !event.state.project.tracks().is_empty();
         self.state = Some(event.state);
+        self.observe_midi_take_completion(event.midi_take_complete);
         if loop_complete {
             self.pending_loop = None;
         }
@@ -2324,6 +2393,13 @@ impl EditorView {
                             && self.normalized_time_selection().is_some()));
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+                if initialize_clip_selection
+                    && self.selected_clip.is_none()
+                    && let Some((_, track, clip)) = selection::neighbor(&state.project, None, true)
+                {
+                    self.selected_track = Some(track);
+                    self.selected_clip = clip;
+                }
                 if time_range_owns_selection {
                     self.selected_clip = None;
                 }
@@ -2408,6 +2484,9 @@ impl EditorView {
                 generation: self.project_generation,
                 revision,
             });
+        if let Some(completion) = track_clipboard_completion {
+            self.complete_track_clipboard(completion);
+        }
         if let Some(completion) = duplicate_completion {
             self.complete_clip_duplicate(completion);
         } else if let Some(hex_project::Created::Scene(scene)) = event.created {
@@ -2445,6 +2524,8 @@ impl EditorView {
             self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
+            self.reconcile_arrangement_focus();
+            self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state
@@ -2797,6 +2878,21 @@ impl EditorView {
             self.error = Some("finish the current open action before editing".into());
             return false;
         }
+        let own_midi_request = match &request {
+            Request::CommitMidiTake { request_id, .. } => {
+                self.midi_recorder.accepts_commit(*request_id)
+            }
+            Request::PrepareComputerKeyboard { .. } | Request::PrepareLiveExpression { .. } => {
+                self.midi_recorder.preparing()
+            }
+            _ => false,
+        };
+        if self.midi_recorder.blocks_edits() && !own_midi_request {
+            self.error = Some(
+                "finish or explicitly discard the midi take before another project action".into(),
+            );
+            return false;
+        }
         if self.gain_recorder.blocks_edits() {
             self.error =
                 Some("finish or cancel gain recording before another project action".into());
@@ -2973,7 +3069,13 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
-                | Request::ReorderTrack { .. }
+                | Request::TrackClipboard {
+                    action: hex_session::service::TrackClipboardAction::Cut(_)
+                        | hex_session::service::TrackClipboardAction::Duplicate { .. }
+                        | hex_session::service::TrackClipboardAction::Paste { .. },
+                    ..
+                }
+                | Request::ReorderTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
@@ -3036,10 +3138,13 @@ impl EditorView {
         let resize_request = self.pending_trim_matches(&request);
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
+        let clip_detail_request = self.audio_clip_controls.matches(&request);
+        let audio_events_request = self.pending_audio_events_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
         let duplicate_request = self.pending_duplicate_matches(&request);
+        let track_clipboard_request = self.pending_track_clipboard_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let fade_request = self.pending_fade_matches(&request);
         let eq_creation_request = self.pending_eq_creation_matches(&request);
@@ -3055,6 +3160,13 @@ impl EditorView {
                 if group_copy_request {
                     self.group_copy_submitted();
                 }
+                if clip_detail_request {
+                    self.audio_clip_controls
+                        .submitted(self.worker_requests_pending);
+                }
+                if audio_events_request {
+                    self.audio_events_submitted();
+                }
                 if clip_move_request {
                     self.clip_move_submitted();
                 }
@@ -3063,6 +3175,9 @@ impl EditorView {
                 }
                 if track_reorder_request {
                     self.track_reorder_submitted();
+                }
+                if track_clipboard_request {
+                    self.track_clipboard_submitted();
                 }
                 if duplicate_request {
                     self.duplicate_submitted();
@@ -3611,6 +3726,11 @@ impl EditorView {
                         })
                 })
             });
+        self.finish_midi_recording();
+        // Publish the MIDI finish intent before any input prefix is revoked.
+        if let Some(audio) = &self.audio {
+            audio.control.stop();
+        }
         self.cancel_tuning_audition();
         self.stop_computer_keyboard();
         self.cancel_scrub();
@@ -3622,9 +3742,6 @@ impl EditorView {
         self.pending_seek_ticket = None;
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
-        if let Some(audio) = &self.audio {
-            audio.control.stop();
-        }
         self.status = "stopped · returned to start".into();
         if restore && self.enqueue(Request::RestoreStoppedPlayback) {
             self.stopped_playback_restore =

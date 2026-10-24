@@ -4,6 +4,7 @@ use gpui::{Context, Window};
 use hex_project::Command;
 use hex_project::{BeatTime, ClipId, Project, TrackId, TrimEdge};
 use hex_session::service::{AudioPreview, Request};
+use hex_widgets::{RectangleCapture, RectanglePart};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -44,7 +45,7 @@ pub(super) struct ClipDrag {
     pub(super) group: Rc<RefCell<ClipDragGroup>>,
     pub(super) position: ClipPosition,
     pub(super) grab_offset: Rc<Cell<Option<u64>>>,
-    pub(super) origin_pointer_x: Rc<Cell<Option<f32>>>,
+    pub(super) capture: Rc<Cell<Option<PointerDown>>>,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
     pub(super) scroll: super::drag_autoscroll::DragScroll,
@@ -195,28 +196,32 @@ fn lane_contains_pointer(pointer_x: f32, pointer_y: f32, lane: LaneBounds) -> bo
         && pointer_y < bottom
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct PointerDown {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClipPointerKey {
     pub(super) generation: u64,
     pub(super) clip: ClipId,
-    pub(super) edge: Option<TrimEdge>,
-    pub(super) x: f32,
 }
-
+pub(super) type PointerDown = RectangleCapture<ClipPointerKey>;
+pub(super) fn rectangle_part(edge: Option<TrimEdge>) -> RectanglePart {
+    match edge {
+        None => RectanglePart::Body,
+        Some(TrimEdge::Left) => RectanglePart::Leading,
+        Some(TrimEdge::Right) => RectanglePart::Trailing,
+    }
+}
+#[cfg(test)]
 fn take_pointer_down(
     pending: &mut Option<PointerDown>,
     generation: u64,
     clip: ClipId,
     edge: Option<TrimEdge>,
 ) -> Option<f32> {
-    let matches = pending.is_some_and(|down| {
-        down.generation == generation && down.clip == clip && down.edge == edge
-    });
-    if matches {
-        pending.take().map(|down| down.x)
-    } else {
-        None
-    }
+    PointerDown::take_matching(
+        pending,
+        ClipPointerKey { generation, clip },
+        rectangle_part(edge),
+    )
+    .map(|capture| capture.origin_x)
 }
 
 /// Convert the pointer's position in the visible part of a clip to its offset
@@ -321,10 +326,9 @@ fn candidate_position(
         ClipPosition::Midi { length, .. } => {
             if drag.scroll.get().viewport.is_none()
                 && target_track == Some(drag.source_track)
-                && drag
-                    .origin_pointer_x
-                    .get()
-                    .is_some_and(|origin| (pointer_x - origin).abs() < 0.5)
+                && drag.capture.get().is_some_and(|mut capture| {
+                    capture.update(pointer_x).is_some() && !capture.displaced(0.5)
+                })
             {
                 return Some(drag.position);
             }
@@ -580,12 +584,12 @@ impl super::EditorView {
         edge: Option<TrimEdge>,
         x: f32,
     ) {
-        self.pointer_down = x.is_finite().then_some(PointerDown {
-            generation,
-            clip,
-            edge,
+        self.pointer_down = PointerDown::begin(
+            ClipPointerKey { generation, clip },
+            rectangle_part(edge),
             x,
-        });
+            true,
+        );
     }
 
     pub(super) fn take_pointer_down(
@@ -593,8 +597,12 @@ impl super::EditorView {
         generation: u64,
         clip: ClipId,
         edge: Option<TrimEdge>,
-    ) -> Option<f32> {
-        take_pointer_down(&mut self.pointer_down, generation, clip, edge)
+    ) -> Option<PointerDown> {
+        PointerDown::take_matching(
+            &mut self.pointer_down,
+            ClipPointerKey { generation, clip },
+            rectangle_part(edge),
+        )
     }
 
     pub(super) fn clear_pointer_down(
@@ -603,11 +611,11 @@ impl super::EditorView {
         clip: ClipId,
         edge: Option<TrimEdge>,
     ) {
-        if self.pointer_down.is_some_and(|down| {
-            down.generation == generation && down.clip == clip && down.edge == edge
-        }) {
-            self.pointer_down = None;
-        }
+        PointerDown::take_matching(
+            &mut self.pointer_down,
+            ClipPointerKey { generation, clip },
+            rectangle_part(edge),
+        );
     }
 
     pub(super) fn drag_start_is_current(&self, drag: &ClipDrag) -> bool {
@@ -724,6 +732,11 @@ impl super::EditorView {
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
         drag.group.borrow_mut().invalidate();
+        let Some(pointer_x) = hex_widgets::rectangle_pointer(&drag.capture, pointer_x) else {
+            drag.destination.set(None);
+            drag.insertion_line_y.set(None);
+            return (None, false);
+        };
         if !self.drag_start_is_current(drag) {
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
@@ -776,7 +789,8 @@ impl super::EditorView {
         self.drag_lanes
             .iter()
             .filter(|(track, _)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.arrangement_track_visible(**track)
+                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find_map(|(track, lane)| {
                 lane_contains_pointer(pointer_x, pointer_y, *lane).then_some((*track, *lane))
@@ -1037,12 +1051,12 @@ impl super::EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        let tracks = state.project.tracks();
+        let tracks = self.arrangement_track_indices();
         if tracks.is_empty() {
             return Some((None, timeline, pointer_y));
         }
 
-        let first = tracks.first()?;
+        let first = state.project.tracks().get(*tracks.first()?)?;
         if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
             let first_lane = *self.drag_lanes.get(&first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
@@ -1053,8 +1067,8 @@ impl super::EditorView {
         }
 
         for index in 1..tracks.len() {
-            let previous = tracks.get(index - 1)?;
-            let next = tracks.get(index)?;
+            let previous = state.project.tracks().get(*tracks.get(index - 1)?)?;
+            let next = state.project.tracks().get(*tracks.get(index)?)?;
             if self.drag_lane_epochs.get(&previous.id()) != Some(&self.drag_layout_generation)
                 || self.drag_lane_epochs.get(&next.id()) != Some(&self.drag_layout_generation)
             {
@@ -1068,7 +1082,7 @@ impl super::EditorView {
             }
         }
 
-        let last = tracks.last()?;
+        let last = state.project.tracks().get(*tracks.last()?)?;
         if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
             return None;
         }
@@ -1602,7 +1616,7 @@ mod tests {
                 duration: 100,
             },
             grab_offset: Rc::new(Cell::new(Some(50))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 1_000,
             scroll: Default::default(),
@@ -1631,7 +1645,7 @@ mod tests {
                 length: BeatTime::from_quarters(4).expect("clip length"),
             },
             grab_offset: Rc::new(Cell::new(Some(BeatTime::ONE.raw()))),
-            origin_pointer_x: Rc::new(Cell::new(None)),
+            capture: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 288_000,
             scroll: Default::default(),
@@ -1698,12 +1712,15 @@ mod tests {
     #[test]
     fn move_grab_offset_uses_mouse_down_instead_of_threshold_crossing_position() {
         let (_, _, _, clip) = fixture();
-        let mut pending = Some(PointerDown {
-            generation: 3,
-            clip,
-            edge: None,
-            x: 790.0,
-        });
+        let mut pending = PointerDown::begin(
+            super::ClipPointerKey {
+                generation: 3,
+                clip,
+            },
+            hex_widgets::RectanglePart::Body,
+            790.0,
+            true,
+        );
         let threshold_crossing_x = 725.0;
         let captured_down_x =
             take_pointer_down(&mut pending, 3, clip, None).expect("captured original mouse-down");
@@ -1738,12 +1755,15 @@ mod tests {
         let (_, _, _, clip) = fixture();
         // The pending gesture lives on EditorView; replacing element callbacks on a
         // redraw does not replace this state. A trim handle consumes only its edge.
-        let mut pending = Some(PointerDown {
-            generation: 3,
-            clip,
-            edge: Some(TrimEdge::Right),
-            x: 790.0,
-        });
+        let mut pending = PointerDown::begin(
+            super::ClipPointerKey {
+                generation: 3,
+                clip,
+            },
+            hex_widgets::RectanglePart::Trailing,
+            790.0,
+            true,
+        );
         assert_eq!(
             take_pointer_down(&mut pending, 3, clip, Some(TrimEdge::Left)),
             None
@@ -1878,7 +1898,15 @@ mod tests {
             }
         ));
         payload.snap_grid = SnapGrid::Off;
-        payload.origin_pointer_x.set(Some(120.0));
+        payload.capture.set(PointerDown::begin(
+            super::ClipPointerKey {
+                generation: payload.project_generation,
+                clip: payload.clip,
+            },
+            hex_widgets::RectanglePart::Body,
+            120.0,
+            true,
+        ));
         assert_eq!(
             candidate_position(editor.project(), &payload, Some(source), 120.25, lane),
             Some(expected),

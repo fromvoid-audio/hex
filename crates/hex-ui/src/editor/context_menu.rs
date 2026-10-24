@@ -25,6 +25,11 @@ pub(super) struct UtilityModeAction {
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
     Section(super::arrangement_sections::MenuAction),
+    TrackClipboard {
+        generation: u64,
+        revision: u64,
+        action: hex_session::service::TrackClipboardAction,
+    },
     LoadFirstSampler(super::sampler_load::Target),
     CancelSamplerLoad {
         request_id: u64,
@@ -33,6 +38,14 @@ pub(super) enum EditorContextAction {
     AdaptiveGrid {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
+    },
+    InputQuantization {
+        generation: u64,
+        policy: hex_project::InputQuantization,
+    },
+    LaunchQuantization {
+        generation: u64,
+        quantization: hex_engine::LaunchQuantization,
     },
     PlaceIcon {
         path: std::path::PathBuf,
@@ -159,6 +172,66 @@ impl EditorView {
                 },
             ],
         });
+        let revision = state.revision;
+        let generation = self.project_generation;
+        let paste_before = if after_track.is_some_and(|id| self.track_selection.contains(id)) {
+            self.track_paste_anchor()
+        } else {
+            before_track
+        };
+        if let Some(tracks) = after_track.and_then(|id| self.track_membership(Some(id))) {
+            use hex_session::service::TrackClipboardAction as Action;
+            let choices = [
+                ("cut tracks · cmd+x", Action::Cut(tracks.clone())),
+                ("copy tracks · cmd+c", Action::Copy(tracks.clone())),
+                (
+                    "duplicate tracks · cmd+d",
+                    Action::Duplicate {
+                        tracks: tracks.clone(),
+                        without_clips: false,
+                    },
+                ),
+                (
+                    "duplicate tracks without clips",
+                    Action::Duplicate {
+                        tracks,
+                        without_clips: true,
+                    },
+                ),
+                (
+                    "paste tracks · cmd+v",
+                    Action::Paste {
+                        before: paste_before,
+                    },
+                ),
+            ];
+            if let Some(menu) = &mut self.context_menu {
+                menu.items
+                    .extend(choices.into_iter().map(|(label, action)| MenuItem {
+                        label,
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::TrackClipboard {
+                            generation,
+                            revision,
+                            action,
+                        },
+                    }));
+            }
+        } else if let Some(menu) = &mut self.context_menu {
+            menu.items.push(MenuItem {
+                label: "paste tracks · cmd+v",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::TrackClipboard {
+                    generation,
+                    revision,
+                    action: hex_session::service::TrackClipboardAction::Paste {
+                        before: before_track,
+                    },
+                },
+            });
+        }
         self.append_adaptive_grid_choices();
         cx.notify();
     }
@@ -368,6 +441,21 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::InputQuantization { generation, policy } => {
+                if generation == self.project_generation {
+                    self.set_input_quantization(policy);
+                    cx.notify();
+                }
+            }
+            EditorContextAction::LaunchQuantization {
+                generation,
+                quantization,
+            } => {
+                if generation == self.project_generation {
+                    self.session_quantization = quantization;
+                    cx.notify();
+                }
+            }
             EditorContextAction::Section(action) => self.section_menu_action(action, window, cx),
             EditorContextAction::LoadFirstSampler(target) => self.load_first_sampler(target, cx),
             EditorContextAction::CancelSamplerLoad { request_id } => {
@@ -388,6 +476,11 @@ impl EditorView {
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
+            EditorContextAction::TrackClipboard {
+                generation,
+                revision,
+                action,
+            } => self.start_track_clipboard(generation, revision, action),
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -547,11 +640,21 @@ impl EditorView {
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
                 }
+                EditorContextAction::TrackClipboard {
+                    generation,
+                    revision,
+                    ..
+                } => {
+                    *generation != self.project_generation
+                        || self.state.as_ref().is_none_or(|s| s.revision != *revision)
+                }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::InsertReturn { generation } => {
                     *generation != self.project_generation
                 }
-                EditorContextAction::AdaptiveGrid { generation, .. } => {
+                EditorContextAction::AdaptiveGrid { generation, .. }
+                | EditorContextAction::LaunchQuantization { generation, .. }
+                | EditorContextAction::InputQuantization { generation, .. } => {
                     *generation != self.project_generation
                 }
                 EditorContextAction::InsertScene {
@@ -792,6 +895,65 @@ mod tests {
     }
 
     #[gpui::test]
+    fn global_launch_dropdown_renders_all_choices_and_restores_focus_without_project_edits(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::AppContext;
+        cx.update(super::super::bind_editor_keys);
+        let (project, _, _, _) = audio_project();
+        let before = project.clone();
+        let directory = ColorTestDirectory::new();
+        let (handle, editor) = color_test_window(cx, project, &directory.0);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("global-launch-quantization").unwrap();
+        let position = bounds.center();
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let menu = view.context_menu.as_ref().unwrap();
+            assert_eq!(
+                menu.items.iter().map(|item| item.label).collect::<Vec<_>>(),
+                [
+                    "none", "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1/2t", "1/4", "1/4t",
+                    "1/8", "1/8t", "1/16", "1/16t", "1/32"
+                ]
+            );
+            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+        });
+        visual.simulate_keystrokes("down down down down enter");
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(view.context_menu.is_none());
+            assert_eq!(
+                view.session_quantization,
+                hex_engine::LaunchQuantization::OneBar
+            );
+            assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                let generation = view.project_generation;
+                view.project_generation += 1;
+                view.select_context_item(
+                    EditorContextAction::LaunchQuantization {
+                        generation,
+                        quantization: hex_engine::LaunchQuantization::Immediate,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    view.session_quantization,
+                    hex_engine::LaunchQuantization::OneBar
+                );
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
     fn track_header_offers_nine_non_gray_swatches_and_stale_clip_action_is_ignored(
         cx: &mut TestAppContext,
     ) {
@@ -817,7 +979,7 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 15);
+            assert_eq!(menu.items.len(), 20);
             assert_eq!(
                 menu.items
                     .iter()

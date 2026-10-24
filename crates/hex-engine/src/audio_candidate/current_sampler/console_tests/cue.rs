@@ -286,3 +286,60 @@ fn current_sampler_cue_release_reservation_refusal_preserves_incarnation_proofs_
     tested.cleanup_on_control().unwrap();
     oracle.cleanup_on_control().unwrap();
 }
+
+#[test]
+fn activation_inactive_current_sampler_keeps_cell_without_source_events() {
+    let (mut editor, asset, _, clip) = looping_source(
+        &[(BeatTime::ZERO, BeatTime::from_quarters(2).unwrap(), 60, 127)],
+        16,
+    );
+    let arrangement = editor.project().tracks()[0].midi_clips()[0].id();
+    editor
+        .execute(Command::SetClipActive {
+            clip: arrangement,
+            active: false,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipActive {
+            clip,
+            active: false,
+        })
+        .unwrap();
+    let mut cell = prepare(editor.project(), vec![(asset, source())]);
+    let owner = cell.owner_on_control().unwrap();
+    let revision = owner
+        .inner
+        .runtime
+        .as_ref()
+        .unwrap()
+        .playback
+        .prepared_revision()
+        .unwrap();
+    let prepared = revision.session().midi_clip(clip).unwrap();
+    assert!(!prepared.active);
+    assert_eq!(prepared.source_template().max_query_edges(), 0);
+    assert_eq!(prepared.work.active_voices, 0);
+    assert_eq!(prepared.work.query_onsets, 0);
+    owner
+        .test_apply_action(PlaybackAction::LaunchAndPlay(
+            SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            },
+        ))
+        .unwrap();
+    let mut pcm = [[9.0; 2]; 16];
+    owner.test_render(&mut pcm).unwrap();
+    assert_eq!(pcm, [[0.0; 2]; 16]);
+    assert_eq!(
+        owner
+            .inner
+            .runtime
+            .as_ref()
+            .unwrap()
+            .playback
+            .test_current_sampler_route_proofs(0),
+        Some((1, 0, 0))
+    );
+}

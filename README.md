@@ -24,12 +24,16 @@ See [native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
 
-For a specific debugging need:
+To run the optimized desktop directly from source:
 
 ```sh
-cargo run -p hex-desktop --locked
-cargo run -p hex-desktop --locked -- --demo
+cargo run -r --locked
+cargo run -r --locked -- --demo
 ```
+
+The desktop is the default workspace member. Plain `cargo build` and `cargo test`
+also select it; use `--workspace` to select all members or `-p` for a specific crate.
+Omit `-r` only for a specific debugging need.
 
 ## Native widget sandbox
 
@@ -38,7 +42,9 @@ cargo run -p hex-desktop --locked -- --demo
 ```
 
 One disposable native window catalogs the shared controls, appearance variants,
-chrome, layouts and device compositions. Select a named entry; edit its local
+chrome, layouts and device compositions. The workspace category includes native
+text/IME fields, the actual main-interface menu and sample-peak status, compact
+buttons, gauges and scrolling rows. Select a named entry; edit its local
 values, switch theme, disable supported controls, reset it or narrow the preview.
 Plots use editable fixture values; they do not process audio. No project, audio,
 file or preferences I/O occurs. The former `knob_review` app is included here.

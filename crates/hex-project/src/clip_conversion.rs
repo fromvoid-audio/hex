@@ -42,6 +42,7 @@ pub(crate) fn midi_to_audio(
     }) {
         let original = project.tracks[track].content.midi_clips.remove(index);
         project.tracks[track].content.audio_clips.push(Clip {
+            active: original.active,
             name: original.name,
             flavor: original.flavor,
             id,
@@ -71,6 +72,7 @@ pub(crate) fn midi_to_audio(
         return Err(Invalid("midi clip no longer exists"));
     };
     cell.content = SessionCellContent::Audio(SessionAudioClip {
+        active: clip.active,
         flavor: clip.flavor,
         id,
         name: clip.name.clone(),

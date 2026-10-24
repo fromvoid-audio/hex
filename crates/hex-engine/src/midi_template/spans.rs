@@ -68,6 +68,8 @@ pub struct PreparedMidiInstrumentTemplate {
     sample_rate: u32,
     admitted_max_micro_bpm: u64,
     first_pass: u64,
+    intro_iteration: u64,
+    repeat_iteration: u64,
     period: Option<u64>,
     release_raw: u64,
     intro: Vec<VoiceSpan>,
@@ -157,6 +159,9 @@ pub(crate) struct MidiOccurrenceSuppression {
     velocity: u8,
     kind: u8,
     padding: [u8; 4],
+    // Only kind2 carries an admitted retained-prefix gate cut. Separate from
+    // suppression expiry: merging expiry must never delay the NoteOff.
+    gate_cutoff_frame: u64,
 }
 
 impl MidiOccurrenceSuppression {
@@ -178,6 +183,7 @@ impl MidiOccurrenceSuppression {
             velocity: 0,
             kind: 0,
             padding: [0; 4],
+            gate_cutoff_frame: 0,
         }
     }
 
@@ -197,12 +203,40 @@ impl MidiOccurrenceSuppression {
         }
     }
 
+    pub(crate) const fn mutable_shortening(
+        signature: crate::mutable_instrument::MutableOccurrenceSignature,
+        until_frame: u64,
+        gate_cutoff_frame: u64,
+    ) -> Self {
+        Self {
+            kind: 2,
+            gate_cutoff_frame,
+            ..Self::mutable(signature, until_frame)
+        }
+    }
+    pub(crate) const fn gate_cutoff_frame(self) -> Option<u64> {
+        if self.kind == 2 {
+            Some(self.gate_cutoff_frame)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn merge_expiry_and_cutoff(&mut self, entry: Self) {
+        self.until_frame = self.until_frame.max(entry.until_frame);
+        if let Some(cutoff) = entry.gate_cutoff_frame() {
+            self.gate_cutoff_frame = self
+                .gate_cutoff_frame()
+                .map_or(cutoff, |old| old.min(cutoff));
+            self.kind = 2;
+        }
+    }
+
     /// Exact original value, including every key/beat/MIDI bit. No allocation
     /// or provider lookup, and no integer/beat/velocity precision reduction.
     pub(crate) const fn mutable_signature(
         self,
     ) -> Option<crate::mutable_instrument::MutableOccurrenceSignature> {
-        if self.kind == 1 {
+        if self.kind == 1 || self.kind == 2 {
             Some(
                 crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
                     crate::mutable_instrument::MutableOccurrenceKey {
@@ -618,6 +652,71 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn readmission_quote(&self) -> Result<(usize, usize), MidiTemplateError> {
+        let spans = self
+            .intro
+            .len()
+            .checked_add(self.repeats.len())
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let retained = std::mem::size_of::<Self>()
+            .checked_add(
+                spans
+                    .checked_mul(
+                        std::mem::size_of::<VoiceSpan>() + std::mem::size_of::<IntervalNode>(),
+                    )
+                    .ok_or(MidiTemplateError::ArithmeticOverflow)?,
+            )
+            .ok_or(MidiTemplateError::ArithmeticOverflow)?;
+        let scratch = density::current_sampler_workspace_quote(spans)
+            .map_err(|_| MidiTemplateError::ArithmeticOverflow)?;
+        Ok((retained, scratch))
+    }
+
+    pub(crate) fn retained_readmission_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                self.intro
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.repeats
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<VoiceSpan>())?,
+            )?
+            .checked_add(
+                self.intro_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )?
+            .checked_add(
+                self.repeat_nodes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<IntervalNode>())?,
+            )
+    }
+
+    pub(crate) fn reprepare_for_source_on_control(
+        &self,
+        source: &PreparedMidiSourceTemplate,
+        limits: Option<crate::midi_compile::MutableInstrumentLimits>,
+    ) -> Result<Self, MidiTemplateError> {
+        let result = Self::prepare_with_bank_mode(
+            source,
+            std::sync::Arc::clone(&self.bank),
+            std::sync::Arc::clone(&self.shared_contexts),
+            self.event_source.then_some(self.release_frames),
+            self.event_source,
+            limits,
+        )?;
+        if result
+            .retained_readmission_bytes()
+            .is_none_or(|bytes| bytes > self.readmission_quote().map_or(0, |quote| quote.0))
+        {
+            return Err(MidiTemplateError::Allocation);
+        }
+        Ok(result)
+    }
     /// Prepare original sine voices and interval indexes from an already
     /// admitted ongoing source template. Authored notes are never rescanned.
     pub fn prepare(
@@ -814,6 +913,8 @@ impl PreparedMidiInstrumentTemplate {
             sample_rate: source.sample_rate,
             admitted_max_micro_bpm: source.admitted_max_micro_bpm,
             first_pass: source.first_pass,
+            intro_iteration: source.intro_iteration,
+            repeat_iteration: source.repeat_iteration,
             period: source.period,
             release_raw,
             intro,

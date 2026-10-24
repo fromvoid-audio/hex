@@ -2,8 +2,51 @@
 use super::*;
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 
+fn config() -> TextInputConfig {
+    let style = crate::ControlStyle {
+        background: 0x202020,
+        surface: 0x303030,
+        raised: 0x383838,
+        rail: 0x282828,
+        border: 0x505050,
+        text: 0xe0e0e0,
+        muted: 0xaaaaaa,
+        accent: 0x55ddee,
+        accent_text: 0x202020,
+        numeric_fill: 0x31515a,
+        hover_text: 0xe0e0e0,
+        focus_marker: 0xaaaaaa,
+        dial_rail: 0,
+        hover: 0x404040,
+        font_size: 12.0,
+        text_case: crate::TextCase::Lowercase,
+    };
+    let action_style = crate::ActionStyle {
+        background: style.surface,
+        text: style.text,
+        hover_background: style.hover,
+        hover_text: None,
+    };
+    TextInputConfig {
+        id: "clip-name-input".into(),
+        kind: TextInputKind::Value,
+        style,
+        action_style,
+        font_family: "test".into(),
+        placeholder: "".into(),
+        clear_name: "clear".into(),
+        clear_glyph: "×".into(),
+        max_bytes: 1024,
+    }
+}
+fn name(content: String, cx: &mut Context<TextInput>) -> TextInput {
+    let mut input = TextInput::new(cx, config());
+    input.set_text(&content, cx);
+    input.select_all_text(cx);
+    input
+}
 struct NameCaseRoot {
-    input: Entity<BrowserSearch>,
+    input: Entity<TextInput>,
 }
 impl gpui::Render for NameCaseRoot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -15,13 +58,10 @@ impl gpui::Render for NameCaseRoot {
     }
 }
 
-fn fixture(
-    cx: &mut TestAppContext,
-    original: &str,
-) -> (gpui::AnyWindowHandle, Entity<BrowserSearch>) {
-    cx.update(crate::editor::bind_editor_keys);
+fn fixture(cx: &mut TestAppContext, original: &str) -> (gpui::AnyWindowHandle, Entity<TextInput>) {
+    cx.update(super::bind_text_input_keys);
     let handle = cx.add_window(|window, cx| {
-        let input = cx.new(|cx| BrowserSearch::for_clip_name(original.to_owned(), cx));
+        let input = cx.new(|cx| name(original.to_owned(), cx));
         input.update(cx, |input, _| input.focus(window));
         NameCaseRoot { input }
     });
@@ -40,10 +80,7 @@ fn name_case_paste_keyboard_clipboard_and_reopening_preserve_source(cx: &mut Tes
     visual.run_until_parked();
     input.read_with(visual, |input, _| {
         assert_eq!(input.content, original);
-        assert_eq!(
-            input.painted_text_for_test(),
-            Some(original.to_lowercase().as_str())
-        );
+        assert_eq!(input.painted_text(), Some(original.to_lowercase().as_str()));
     });
     visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(original.into())));
     visual.simulate_keystrokes("cmd-a cmd-v home right");
@@ -52,10 +89,7 @@ fn name_case_paste_keyboard_clipboard_and_reopening_preserve_source(cx: &mut Tes
     let expected = "İZA🎛 /Samples/Kick.WAV";
     input.read_with(visual, |input, _| {
         assert_eq!(input.content, expected);
-        assert_eq!(
-            input.painted_text_for_test(),
-            Some(expected.to_lowercase().as_str())
-        );
+        assert_eq!(input.painted_text(), Some(expected.to_lowercase().as_str()));
     });
     visual.simulate_keystrokes("cmd-a cmd-x cmd-v cmd-a cmd-c");
     visual.run_until_parked();
@@ -67,10 +101,7 @@ fn name_case_paste_keyboard_clipboard_and_reopening_preserve_source(cx: &mut Tes
     reopened_visual.run_until_parked();
     reopened.read_with(reopened_visual, |input, _| {
         assert_eq!(input.content, expected);
-        assert_eq!(
-            input.painted_text_for_test(),
-            Some(expected.to_lowercase().as_str())
-        );
+        assert_eq!(input.painted_text(), Some(expected.to_lowercase().as_str()));
     });
 }
 
@@ -88,7 +119,7 @@ fn name_case_marked_unicode_and_scrolled_caret_use_original_utf16(cx: &mut TestA
     visual.update(|window, cx| {
         input.update(cx, |input, cx| {
             assert_eq!(input.content, "İA🎹");
-            assert_eq!(input.painted_text_for_test(), Some("i\u{307}a🎹"));
+            assert_eq!(input.painted_text(), Some("i\u{307}a🎹"));
             assert_eq!(input.marked_text_range(window, cx), Some(0..4));
             assert_eq!(
                 input.selected_text_range(false, window, cx).unwrap().range,
@@ -118,10 +149,7 @@ fn name_case_marked_unicode_and_scrolled_caret_use_original_utf16(cx: &mut TestA
     visual.update(|window, cx| {
         input.update(cx, |input, cx| {
             assert_eq!(input.content, long);
-            assert_eq!(
-                input.painted_text_for_test(),
-                Some(long.to_lowercase().as_str())
-            );
+            assert_eq!(input.painted_text(), Some(long.to_lowercase().as_str()));
             let end = long.encode_utf16().count();
             let bounds = input.last_bounds.unwrap();
             let caret = input
@@ -229,4 +257,110 @@ fn name_case_double_click_and_composition_keep_raw_unicode_selection(cx: &mut Te
             Some("İ🎛")
         )
     });
+}
+
+#[gpui::test]
+fn search_limits_invalid_ranges_and_disabled_input_preserve_text(cx: &mut TestAppContext) {
+    cx.update(super::bind_text_input_keys);
+    let handle = cx.add_window(|window, cx| {
+        let input = cx.new(|cx| {
+            TextInput::new(
+                cx,
+                TextInputConfig {
+                    kind: TextInputKind::Search,
+                    id: "query-fixture".into(),
+                    max_bytes: 6,
+                    ..config()
+                },
+            )
+        });
+        input.update(cx, |input, _| input.focus(window));
+        NameCaseRoot { input }
+    });
+    let input = handle.read_with(cx, |r, _| r.input.clone()).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    visual.simulate_input("AB");
+    visual.simulate_input("1234567");
+    input.read_with(&visual, |i, _| assert_eq!(i.text(), "ab1234"));
+    input.update(&mut visual, |i, cx| i.set_text("ab", cx));
+    visual.update(|window, cx| {
+        input.update(cx, |i, cx| {
+            i.replace_text_in_range(None, "1234567", window, cx)
+        })
+    });
+    input.read_with(&visual, |i, _| assert_eq!(i.text(), "ab"));
+    visual.update(|window, cx| {
+        input.update(cx, |i, cx| {
+            i.replace_text_in_range(Some(std::ops::Range { start: 2, end: 1 }), "x", window, cx)
+        })
+    });
+    visual.update(|window, cx| {
+        input.update(cx, |i, cx| {
+            i.replace_and_mark_text_in_range(
+                None,
+                "x",
+                Some(std::ops::Range { start: 2, end: 1 }),
+                window,
+                cx,
+            )
+        })
+    });
+    input.read_with(&visual, |i, _| assert_eq!(i.text(), "ab"));
+    input.update(&mut visual, |i, cx| i.set_enabled(false, cx));
+    visual.run_until_parked();
+    visual.simulate_input("x");
+    visual.simulate_keystrokes("backspace cmd-x");
+    input.read_with(&visual, |i, _| {
+        assert_eq!(i.text(), "ab");
+        assert!(!i.has_committed_search_text());
+    });
+    input.update(&mut visual, |i, cx| i.set_enabled(true, cx));
+    visual.run_until_parked();
+    let clear = visual.debug_bounds("query-fixture-clear").unwrap();
+    visual.simulate_click(clear.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    input.read_with(&visual, |i, _| assert!(i.text().is_empty()));
+}
+
+#[gpui::test]
+fn block_caret_reserves_a_character_cell_at_empty_and_scrolled_end_positions(
+    cx: &mut TestAppContext,
+) {
+    for text in [
+        "",
+        "İA🎛 /Samples/a-very-long-name-that-scrolls-beyond-the-field.WAV",
+    ] {
+        let (handle, input) = fixture(cx, text);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_keystrokes("end");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            let bounds = input.read(cx).last_bounds.expect("painted input");
+            let mut element = TextInputElement {
+                input: input.clone(),
+            };
+            let state = element.prepaint(None, None, bounds, &mut (), window, cx);
+            let caret = state.cursor.expect("collapsed caret").bounds;
+            assert!(caret.size.width > px(1.0));
+            assert_eq!(caret.size.height, bounds.size.height);
+            assert!(caret.left() >= bounds.left() && caret.right() <= bounds.right());
+        });
+        if !text.is_empty() {
+            visual.simulate_keystrokes("cmd-a");
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                let bounds = input.read(cx).last_bounds.expect("painted input");
+                let mut element = TextInputElement {
+                    input: input.clone(),
+                };
+                assert!(
+                    element
+                        .prepaint(None, None, bounds, &mut (), window, cx)
+                        .cursor
+                        .is_none()
+                );
+            });
+        }
+    }
 }

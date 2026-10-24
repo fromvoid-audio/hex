@@ -367,6 +367,9 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let _navigation_timer =
+            super::navigation_metrics::Timer::start(super::navigation_metrics::Stage::Editor);
         self.reconcile_zoom_fit();
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
@@ -374,8 +377,13 @@ impl Render for EditorView {
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
+        super::browser_input::restyle(&self.browser.search, cx);
+        if let Some(input) = &self.tuning.name {
+            super::browser_input::restyle(input, cx);
+        }
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
+        self.reconcile_arrangement_focus();
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
@@ -432,6 +440,7 @@ impl Render for EditorView {
                     })),
             )
             .child(workspace_content.flex_1().min_w_0());
+        self.restore_clip_control_focus(window, cx);
         let modifier_entity = cx.entity();
         let console_drag_entity = cx.entity();
         let trim_pointer_entity = cx.entity();
@@ -446,6 +455,7 @@ impl Render for EditorView {
             .font_family(theme::FONT_FAMILY)
             .child(self.fade_pointer_events(cx))
             .child(self.project_spectrum_pointer_events(cx))
+            .child(self.clip_detail_pointer_events(cx))
             .track_focus(&self.focus)
             .key_context(if self.changelog.is_open() {
                 "hex_changelog"
@@ -463,7 +473,7 @@ impl Render for EditorView {
                 "hex_context_menu"
             } else if self.project_tempo_editing(cx) {
                 "hex_project_tempo_editor hex_text_editing"
-            } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
+            } else if self.gain_numeric_editing(cx) || self.clip_numeric_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
@@ -621,7 +631,11 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
-                if view.track_overview_key(event, window, cx) {
+                if view.arrangement_view_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if view.activation_key(event, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -776,7 +790,16 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
                     | view.cancel_loop_rail_gesture()
-                    | view.cancel_project_spectrum_resize(cx)
+                    | view.project_spectrum_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
+                    | view.clip_detail_splitter_event(
+                        hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),
+                        window,
+                        cx,
+                    )
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()
@@ -1147,6 +1170,12 @@ impl Render for EditorView {
                 {
                     return;
                 }
+                if view
+                    .track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Duplicate)
+                {
+                    cx.notify();
+                    return;
+                }
                 if view.duplicate_section(window) {
                     cx.notify();
                     return;
@@ -1354,7 +1383,7 @@ impl Render for EditorView {
                 view.request_quit(window, cx);
             }))
             .child(self.title_bar(cx))
-            .child(self.transport(cx))
+            .child(self.transport(window, cx))
             .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))

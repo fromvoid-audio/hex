@@ -338,6 +338,7 @@ fn impossible_resource_row_budget_refuses_before_allocating() {
         assert!(
             hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
                 reservation,
+                usize::MAX,
                 usize::MAX
             )
             .is_err()
@@ -733,6 +734,105 @@ fn exact_selection_bank_uses_ordinary_current_sampler_and_releases_without_callb
     assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
     assert!(input.is_cancelled());
     control.reclaim();
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[test]
+fn clip_activation_releases_real_sampler_gates_and_retriggers_window_without_callback_allocation() {
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state:
+                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                    1024, asset, 0.002,
+                )
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let (mut control, mut callback) = channel(8000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control.publish(compile(&editor, &sources)).unwrap();
+    control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let prefix = block(&mut callback);
+    assert!(prefix.iter().all(|frame| frame[0] > 0.0));
+    editor
+        .execute(Command::SetTimeRangeActive {
+            range: hex_project::TimeRange::new(vec![track], 64, 128).unwrap(),
+            active: false,
+        })
+        .unwrap();
+    let admitted = control.publish(compile(&editor, &sources)).unwrap();
+    let held = block(&mut callback);
+    assert_eq!(control.status.applied_revision.load(Acquire), admitted);
+    assert_eq!(held, prefix, "unmuted prefix keeps the held sample");
+    let release = block(&mut callback);
+    assert!(release[0][0] > 0.0);
+    assert_eq!(release[31], [0.0; 2]);
+    assert_eq!(
+        block(&mut callback),
+        [[0.0; 2]; 32],
+        "muted middle after normal release"
+    );
+    assert_eq!(
+        block(&mut callback),
+        prefix,
+        "right window chases remaining gate at frame128"
+    );
+    let right = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_clips()
+        .last()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::SetClipActive {
+            clip: right,
+            active: false,
+        })
+        .unwrap();
+    let muted = control.publish(compile(&editor, &sources)).unwrap();
+    let release = block(&mut callback);
+    assert_eq!(control.status.applied_revision.load(Acquire), muted);
+    assert!(release[0][0] > 0.0);
+    assert_eq!(release[31], [0.0; 2]);
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
     control.request_shutdown();
     callback.begin_block();
     control.reclaim();

@@ -440,6 +440,7 @@ where
     let delivery = callback.finish_native_effect_callback(valid);
     let valid = finish_transport_copy(delivery, valid, rendered.is_ok(), output, source, channels);
     let _ = callback.finish_spectrum_block(capture_start, valid);
+    callback.finish_midi_recording_quantum(valid);
     if !valid {
         output.fill(T::from_sample(0.0));
         source.fill([0.0; 2]);
@@ -997,3 +998,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "device_midi_recording_tests.rs"]
+mod midi_recording_tests;

@@ -392,6 +392,7 @@ impl ArrangementClips {
                 match kind {
                     SourceKind::Resident(audio) => {
                         r.clip = Some(Clip {
+                            active: s.active,
                             audio: Some(audio),
                             start: s.start,
                             end: s.end,
@@ -410,6 +411,7 @@ impl ArrangementClips {
                             target.streamed = r.stream.take();
                         }
                         r.clip = Some(Clip {
+                            active: s.active,
                             audio: None,
                             start: s.start,
                             end: s.end,
@@ -559,6 +561,7 @@ impl ArrangementClips {
             self.staged = true;
             let r = &mut self.rows[self.cursor];
             if let Some(Clip {
+                active: _,
                 audio,
                 metadata,
                 start: _,

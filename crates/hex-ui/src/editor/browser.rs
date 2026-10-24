@@ -8,7 +8,7 @@ mod plugins;
 mod samples;
 mod tree;
 
-use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
+use super::{EditorMode, EditorView, browser_input, drag};
 use crate::theme;
 use gpui::{
     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
@@ -19,6 +19,7 @@ use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_dir
 use hex_preferences::{BrowserBuiltin, BrowserPlaces};
 use hex_session::service::AudioPreview;
 use hex_session::service::Request;
+use hex_widgets::TextInput;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -184,7 +185,7 @@ pub(super) struct BrowserState {
     scans: ScanCoordinator,
     error: Option<String>,
     resizing: bool,
-    pub search: gpui::Entity<BrowserSearch>,
+    pub search: gpui::Entity<TextInput>,
     results_focus: gpui::FocusHandle,
     // Selection/highlight activity, independent of actual query/navigation focus.
     results_focused: bool,
@@ -197,7 +198,6 @@ pub(super) struct BrowserState {
     playback_in_flight: bool,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
-    insert_quantized: bool,
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
@@ -233,7 +233,7 @@ impl BrowserState {
         #[cfg(test)]
         let home = test_home.expect("editor test home must be resolved before startup");
         let music = home.join("Music");
-        let search = cx.new(BrowserSearch::new);
+        let search = cx.new(browser_input::search);
         let observer = cx.observe(&search, |view, _, cx| {
             view.sync_browser_query(cx);
             cx.notify();
@@ -281,7 +281,6 @@ impl BrowserState {
             history: history::History::default(),
             playback_generation: 0,
             auto_audition: true,
-            insert_quantized: false,
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
@@ -387,7 +386,7 @@ fn browser_audio_drag_ghost(
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .opacity(0.9);
     if let Some((lines, start, end)) = grid {
-        ghost = ghost.children([super::tracks::clip_grid_layer(&lines, start, end)]);
+        ghost = ghost.children(super::tracks::clip_grid_layer(&lines, start, end));
     }
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
@@ -1613,7 +1612,7 @@ impl EditorView {
         if self.browser_place_unavailable() {
             return Arc::new(Vec::new());
         }
-        let query = self.browser.search.read(cx).content.to_lowercase();
+        let query = self.browser.search.read(cx).text().to_lowercase();
         let listing = self
             .browser
             .listing
@@ -1668,7 +1667,7 @@ impl EditorView {
         ) {
             return Vec::new();
         }
-        let query = self.browser.search.read(cx).content.to_lowercase();
+        let query = self.browser.search.read(cx).text().to_lowercase();
         self.browser
             .device_catalog
             .as_ref()

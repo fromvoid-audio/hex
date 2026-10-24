@@ -1,6 +1,6 @@
 //! Typed ordinary/Return header focus and one view-only name draft over canonical rename edits.
 use super::{
-    CancelTrackName, CommitTrackName, EditorView, RemoveHeaderTracks, RenameTrack, browser_input::*,
+    CancelTrackName, CommitTrackName, EditorView, RemoveHeaderTracks, RenameTrack, browser_input,
 };
 use crate::theme;
 use gpui::{
@@ -9,6 +9,7 @@ use gpui::{
 };
 use hex_project::{Command, Project, ReturnId, ReturnTrack, Track, TrackId};
 use hex_session::service::Request;
+use hex_widgets::TextInput;
 use std::collections::BTreeMap;
 
 /// Stable naming owners; Return identities never pass through ordinary track APIs.
@@ -47,7 +48,7 @@ struct NameEdit {
     generation: u64,
     revision: u64,
     original: String,
-    input: Entity<BrowserSearch>,
+    input: Entity<TextInput>,
     _blur: Subscription,
 }
 impl TrackNameState {
@@ -74,20 +75,6 @@ pub(super) fn bind_keys(cx: &mut App) {
         ),
         KeyBinding::new("enter", CommitTrackName, Some("hex_track_name")),
         KeyBinding::new("escape", CancelTrackName, Some("hex_track_name")),
-        KeyBinding::new("backspace", BrowserBackspace, Some("hex_track_name")),
-        KeyBinding::new("delete", BrowserDelete, Some("hex_track_name")),
-        KeyBinding::new("left", BrowserLeft, Some("hex_track_name")),
-        KeyBinding::new("right", BrowserRight, Some("hex_track_name")),
-        KeyBinding::new("shift-left", BrowserSelectLeft, Some("hex_track_name")),
-        KeyBinding::new("shift-right", BrowserSelectRight, Some("hex_track_name")),
-        KeyBinding::new("cmd-a", BrowserSelectAll, Some("hex_track_name")),
-        KeyBinding::new("home", BrowserHome, Some("hex_track_name")),
-        KeyBinding::new("cmd-left", BrowserHome, Some("hex_track_name")),
-        KeyBinding::new("end", BrowserEnd, Some("hex_track_name")),
-        KeyBinding::new("cmd-right", BrowserEnd, Some("hex_track_name")),
-        KeyBinding::new("cmd-v", BrowserPaste, Some("hex_track_name")),
-        KeyBinding::new("cmd-c", BrowserCopy, Some("hex_track_name")),
-        KeyBinding::new("cmd-x", BrowserCut, Some("hex_track_name")),
     ]);
 }
 impl EditorView {
@@ -134,6 +121,12 @@ impl EditorView {
                 matches!(target, Target::Track(_)) && focus.is_focused(window)
             })
     }
+    pub(super) fn focused_header_target(&self, window: &Window) -> Option<Target> {
+        self.track_name
+            .focuses
+            .iter()
+            .find_map(|(target, focus)| focus.is_focused(window).then_some(*target))
+    }
     pub(super) fn focus_track_header_after_navigation(&self, track: TrackId, window: &mut Window) {
         self.track_name
             .focuses
@@ -142,6 +135,9 @@ impl EditorView {
             .focus(window);
     }
     pub(super) fn reconcile_track_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = &self.track_name.edit {
+            super::browser_input::restyle(&edit.input, cx);
+        }
         let current = self
             .state
             .as_ref()
@@ -232,7 +228,7 @@ impl EditorView {
         };
         let revision = state.revision;
         // This existing name-input mode preserves case/Unicode and selects all.
-        let input = cx.new(|cx| BrowserSearch::for_clip_name(original.clone(), cx));
+        let input = cx.new(|cx| browser_input::name(original.clone(), cx));
         let focus = input.read(cx).focus_handle().clone();
         let blur = cx.on_blur(&focus, window, |view, _, cx| view.commit_track_name(cx));
         self.track_name.edit = Some(NameEdit {
@@ -250,7 +246,7 @@ impl EditorView {
         let Some(edit) = self.track_name.edit.take() else {
             return;
         };
-        let name = edit.input.read(cx).content.clone();
+        let name = edit.input.read(cx).text().to_owned();
         if edit.generation == self.project_generation
             && !self.edit_pending()
             && self.state.as_ref().is_some_and(|state| {
@@ -277,7 +273,7 @@ impl EditorView {
         let Some(edit) = &self.track_name.edit else {
             return true;
         };
-        let name = &edit.input.read(cx).content;
+        let name = edit.input.read(cx).text();
         if self.edit_pending()
             || self.project_open.busy()
             || self.pending_open_path.is_some()
@@ -497,11 +493,12 @@ mod tests {
         editor.read_with(&visual, |view, cx| {
             let input = view.track_name.edit.as_ref().unwrap().input.read(cx);
             assert_eq!(
-                input.content, "Verse S 🎹",
+                input.text(),
+                "Verse S 🎹",
                 "display policy must preserve the submitted name"
             );
             assert_eq!(
-                input.painted_text_for_test(),
+                input.painted_text(),
                 Some("verse s 🎹"),
                 "editing and committed display must use the same lowercase policy"
             );

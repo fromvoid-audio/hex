@@ -1,4 +1,9 @@
 //! Local Console MIDI templates born in the same sealed CURRENT constructor.
+//!
+//! Each clip and its validation sidecar retain a canonical source identity. Charge
+//! its actual note capacity conservatively per owning token in preflight, installed
+//! or restored capacity, and the named control-metadata ledger allowance. These
+//! tokens were not born here: no shared declaration or lifetime authority is minted.
 use super::*;
 use crate::midi_template::CurrentSamplerEventCustody;
 use crate::native_device_resources::current_sampler::CurrentSamplerMetadata;
@@ -11,6 +16,8 @@ pub(super) struct MidiTarget {
     scope: u64,
     tuning: crate::shared_analytic::TuningIdentity,
     source_identity: MidiSourceIdentity,
+    active: bool,
+    playback_offset: hex_project::BeatTime,
     limits: crate::midi_compile::MutableInstrumentLimits,
     work: SessionWorkEnvelope,
     factory_address: usize,
@@ -21,17 +28,46 @@ pub(super) struct MidiTarget {
     events: CurrentSamplerEventCustody,
     handles: [u64; 2],
 }
+fn identity_metadata_bytes(identity: &MidiSourceIdentity) -> Result<usize, AudioStorageError> {
+    identity
+        .retained_control_metadata_bytes()
+        .ok_or(AudioStorageError::Overflow)
+}
+/// Both the prepared clip and its continuity sidecar retain the canonical source.
+/// Used by the caller reservation as well as the constructor's pre-birth quote.
+pub(crate) fn canonical_source_metadata_bytes(
+    project: &Project,
+) -> Result<usize, AudioStorageError> {
+    project
+        .session_cells()
+        .iter()
+        .try_fold(0usize, |total, cell| {
+            let SessionCellContent::Midi(clip) = cell.content() else {
+                return Ok(total);
+            };
+            identity_metadata_bytes(&clip.source_identity())?
+                .checked_mul(2)
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or(AudioStorageError::Overflow)
+        })
+}
 pub(crate) fn compiler_quote(project: &Project) -> Result<(usize, usize), AudioStorageError> {
-    let mut retained = 0usize;
+    let mut retained = canonical_source_metadata_bytes(project)?;
     let mut scratch = 0usize;
     for cell in project.session_cells() {
         let SessionCellContent::Midi(clip) = cell.content() else {
             continue;
         };
-        let (sr, ss) =
-            PreparedMidiSourceTemplate::current_sampler_quote(clip.source().notes().len())?;
-        let (ir, is) =
-            PreparedMidiInstrumentTemplate::current_sampler_quote(clip.source().notes().len())?;
+        let (sr, ss) = PreparedMidiSourceTemplate::current_sampler_quote(if clip.active() {
+            clip.source().notes().len()
+        } else {
+            0
+        })?;
+        let (ir, is) = PreparedMidiInstrumentTemplate::current_sampler_quote(if clip.active() {
+            clip.source().notes().len()
+        } else {
+            0
+        })?;
         retained = retained
             .checked_add(sr)
             .and_then(|n| n.checked_add(ir))
@@ -137,15 +173,17 @@ impl SessionAssembly {
                 hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
                     config.prepared.clone(),
                 );
-            for note in clip.source().notes() {
+            for note in clip.source().notes().iter().filter(|_| clip.active()) {
                 prepared
                     .validate_event_note(note.pitch(), note.velocity())
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
-            let source = PreparedMidiSourceTemplate::prepare_source_admitted(
+            let source = PreparedMidiSourceTemplate::prepare_source_window_admitted(
                 cell.track(),
                 clip.id(),
                 clip.source(),
+                clip.playback_offset(),
+                clip.active(),
                 project.sample_rate(),
                 u64::from(max),
             )
@@ -168,6 +206,8 @@ impl SessionAssembly {
                 scope: metadata.id,
                 tuning: contexts.tuning_identity(),
                 source_identity: clip.source_identity(),
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 limits,
                 work,
                 factory_address,
@@ -187,12 +227,14 @@ impl SessionAssembly {
                 scene: cell.scene(),
                 name: clone_string(clip.name()).map_err(|_| AudioStorageError::Allocation)?,
                 source_identity: clip.source_identity(),
+                active: clip.active(),
+                playback_offset: clip.playback_offset(),
                 source,
                 instrument,
                 instrument_id: Some(device.id()),
                 instrument_state: None,
                 tuning_identity: contexts.tuning_identity(),
-                instrument_enabled: true,
+                instrument_enabled: clip.active(),
                 mutable_limits: Some(limits),
                 work,
             };
@@ -238,7 +280,9 @@ impl SessionAssembly {
                 || clip.instrument_id != Some(row.device)
                 || clip.instrument_state.is_some()
                 || clip.tuning_identity != row.tuning
-                || !clip.instrument_enabled
+                || clip.active != row.active
+                || clip.playback_offset != row.playback_offset
+                || clip.instrument_enabled != row.active
                 || clip.work != row.work
                 || clip.mutable_limits != Some(row.limits)
                 || Some(clip.instrument.current_sampler_context_address())
@@ -324,7 +368,9 @@ impl SessionAssembly {
                     .ok_or(AudioStorageError::Overflow)?;
             }
             total = total
-                .checked_add(clip.name.capacity())
+                .checked_add(identity_metadata_bytes(&clip.source_identity)?)
+                .and_then(|n| n.checked_add(identity_metadata_bytes(&row.source_identity).ok()?))
+                .and_then(|n| n.checked_add(clip.name.capacity()))
                 .and_then(|n| n.checked_add(clip.source.current_sampler_bytes().ok()?))
                 .and_then(|n| {
                     n.checked_add(clip.instrument.current_sampler_bytes(&row.events).ok()?)
@@ -343,6 +389,18 @@ impl SessionAssembly {
         ledger.vec(&self.sampler_midi)?;
         for (clip, row) in values.iter().zip(&self.sampler_midi) {
             ledger.string(&clip.name)?;
+            // Borrow the token field as the allowance owner, not the canonical
+            // Arc allocation: two retained handles are intentionally charged twice.
+            for identity in [&clip.source_identity, &row.source_identity] {
+                ledger.bytes(
+                    Owner::exclusive(identity),
+                    crate::audio_storage::Location(
+                        "current-midi-source-control-metadata-allowance",
+                        0,
+                    ),
+                    identity_metadata_bytes(identity)?,
+                )?;
+            }
             ledger.shared(
                 &clip.source,
                 row.source_declaration.parts(&clip.source),

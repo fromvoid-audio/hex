@@ -57,6 +57,7 @@ fn fixture(count: usize) -> Result<Project, Box<dyn Error>> {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    active: true,
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     edit: None,

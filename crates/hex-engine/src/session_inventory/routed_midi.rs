@@ -27,13 +27,21 @@ impl RoutedMidiPlan {
                     .ok_or(crate::Invalid("Session MIDI template count overflow"))?;
                 count.1 = count
                     .1
-                    .checked_add(clip.source().notes().len())
+                    .checked_add(if clip.active() {
+                        clip.source().notes().len()
+                    } else {
+                        0
+                    })
                     .ok_or(crate::Invalid("Session MIDI note key count overflow"))?;
                 templates = templates
                     .checked_add(1)
                     .ok_or(crate::Invalid("Session MIDI template count overflow"))?;
                 notes = notes
-                    .checked_add(clip.source().notes().len())
+                    .checked_add(if clip.active() {
+                        clip.source().notes().len()
+                    } else {
+                        0
+                    })
                     .ok_or(crate::Invalid("Session MIDI note key count overflow"))?;
             }
         }
@@ -107,7 +115,8 @@ pub(super) fn prepare_clip(
         .as_deref()
         .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
         .transpose()?;
-    if mutable_limits.is_some()
+    if clip.active()
+        && mutable_limits.is_some()
         && let Some(instrument) = config.config.as_deref()
     {
         for note in clip.source().notes() {
@@ -118,10 +127,12 @@ pub(super) fn prepare_clip(
     }
     let instrument_id = config.device_id;
     let instrument_state = config.state.clone();
-    let instrument_enabled = config.config.is_some() && !config.bypassed;
+    let instrument_enabled = clip.active() && config.config.is_some() && !config.bypassed;
     let cached = cached.filter(|old| {
         old.track == destination
             && old.source_identity == source_identity
+            && old.active == clip.active()
+            && old.playback_offset == clip.playback_offset()
             && old.instrument_id == instrument_id
             && old.instrument_state == instrument_state
             && old.tuning_identity == config.tuning_identity
@@ -131,10 +142,12 @@ pub(super) fn prepare_clip(
         Arc::clone(&old.source)
     } else {
         Arc::new(
-            PreparedMidiSourceTemplate::prepare_source(
+            PreparedMidiSourceTemplate::prepare_source_window_active(
                 destination,
                 clip.id(),
                 clip.source(),
+                clip.playback_offset(),
+                clip.active(),
                 source_timing,
             )
             .map_err(template_error)?,
@@ -172,6 +185,8 @@ pub(super) fn prepare_clip(
         work_for(&source, &instrument)?
     };
     Ok(PreparedSessionMidiClip {
+        active: clip.active(),
+        playback_offset: clip.playback_offset(),
         id: clip.id(),
         track: destination,
         scene: cell.scene(),

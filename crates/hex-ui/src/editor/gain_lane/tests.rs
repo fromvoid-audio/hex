@@ -347,7 +347,7 @@ mod native {
         visual.simulate_keystrokes("down escape");
         entity.read_with(visual, |view, cx| {
             assert!(
-                view.browser.search.read(cx).content.is_empty(),
+                view.browser.search.read(cx).text().is_empty(),
                 "browser escape must resolve after cancelling gain edit"
             )
         });

@@ -29,6 +29,7 @@ struct ContentKey {
     lane: Option<LaneBounds>,
     drag_available: bool,
     fade_key_held: bool,
+    focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
 
 #[derive(Default)]
@@ -151,7 +152,8 @@ impl EditorView {
             && self.active_midi_trim_drag.is_none()
             && self.time_range_move_gesture.is_none()
             && self.pending_time_range_move.is_none()
-            && self.arrangement_pan.is_none()
+            // Panning changes the viewport/lane keys on each actual move. A
+            // held pointer alone does not invalidate an otherwise current scene.
             && self.loop_rail_gesture.is_none()
             && !self.theme_settings.open
     }
@@ -194,6 +196,7 @@ impl EditorView {
             selected_clips_epoch: self.clip_selection.epoch,
             lane: self.drag_lanes.get(&track.id()).copied(),
             fade_key_held: self.fade_key_held,
+            focus_ranges: self.arrangement_focus_ranges(),
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
         };
         let parent = cx.weak_entity();

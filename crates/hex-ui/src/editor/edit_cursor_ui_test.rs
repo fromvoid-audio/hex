@@ -179,6 +179,7 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let main_lane = visual.debug_bounds("main-track-lane").expect("main lane");
+    // Check Main's lower body first, then the section title rail separately.
     let click = point(
         main_lane.origin.x + main_lane.size.width * 0.1,
         main_lane.origin.y + main_lane.size.height * 0.7,
@@ -215,6 +216,17 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     let before = editor.read_with(cx, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
     });
+    assert!(visual.debug_bounds("section-edit-cursor").is_none());
+    // The lower body owns Main's all-track cursor/range. Section cursor and
+    // gap-split refusal belong to the header after the shared range split.
+    let header = point(
+        click.x,
+        main_lane.top()
+            + px(super::time_selection::header_hit_height(f32::from(main_lane.size.height)) * 0.5),
+    );
+    visual.simulate_mouse_down(header, MouseButton::Left, unsnapped);
+    visual.simulate_mouse_up(header, MouseButton::Left, unsnapped);
+    visual.run_until_parked();
     assert!(visual.debug_bounds("section-edit-cursor").is_some());
     visual.simulate_keystrokes("cmd-e");
     editor.read_with(cx, |view, _| {
@@ -1334,6 +1346,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         sampler_load_complete: None,
         sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        midi_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
@@ -1684,5 +1697,291 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
             "sampler uses ordinary pause without resetting the cursor"
         );
         assert_eq!(view.edit_cursor.unwrap().frame, 73_000);
+    });
+}
+
+#[gpui::test]
+fn time_selection_binary_dot_follows_drag_corner_and_true_visible_endpoint(
+    cx: &mut TestAppContext,
+) {
+    for main in [false, true] {
+        for tempo in [120_000_000, 333_123_456] {
+            let mut model = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+            let mut ids = Vec::new();
+            for index in 0..3 {
+                let Created::Track(id) = model
+                    .execute(Command::AddTrack {
+                        name: format!("track {index}"),
+                    })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                ids.push(id);
+            }
+            model
+                .execute(Command::SetProjectTempo {
+                    tempo: hex_project::Tempo::new(tempo).unwrap(),
+                })
+                .unwrap();
+            let before = model.project().clone();
+            let frame = |beat| {
+                before
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_quarters(beat).unwrap())
+                    .unwrap()
+            };
+            let viewport = super::viewport::Viewport {
+                start: 0,
+                length: frame(8),
+            };
+            let (handle, editor) = editor_window(cx, before.clone(), Arc::default());
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            editor.update(cx, |v, cx| {
+                v.snap_grid = super::musical_time::SnapGrid::Quarter;
+                v.viewport = Some(viewport);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let lane_selector = if main {
+                "main-track-lane"
+            } else {
+                Box::leak(format!("arrangement-lane-{}", ids[1].value()).into_boxed_str())
+            };
+            let selection_selector = if main {
+                "main-project-time-selection"
+            } else {
+                Box::leak(format!("edit-time-selection-{}", ids[1].value()).into_boxed_str())
+            };
+            for (start, end, binary) in [(2, 4, true), (4, 2, true), (2, 5, false)] {
+                let lane = visual.debug_bounds(lane_selector).unwrap();
+                let at = |beat| {
+                    point(
+                        lane.left()
+                            + lane.size.width * (frame(beat) as f32 / viewport.length as f32),
+                        lane.top() + lane.size.height * 0.75,
+                    )
+                };
+                visual.simulate_mouse_down(at(start), MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_move(at(end), MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                let selection = visual.debug_bounds(selection_selector).unwrap();
+                let marker = visual.debug_bounds("time-selection-binary-length-marker");
+                assert_eq!(
+                    marker.is_some(),
+                    binary,
+                    "main={main}, tempo={tempo}, {start}..{end}"
+                );
+                if let Some(marker) = marker {
+                    // Absolute child edges snap to the physical pixel grid.
+                    let pixel = visual.update(|window, _| 1.0 / window.scale_factor().max(1.0));
+                    assert_eq!(marker.size, gpui::size(px(5.0), px(5.0)));
+                    assert!((f32::from(marker.top() - selection.top()) - 2.0).abs() <= pixel);
+                    let gap = if end > start {
+                        marker.right() - selection.right()
+                    } else {
+                        marker.left() - selection.left()
+                    };
+                    assert!(
+                        f32::from(gap).abs() <= pixel,
+                        "marker follows dragged corner: main={main}, tempo={tempo}, {start}..{end}, marker={marker:?}, selection={selection:?}, gap={gap:?}"
+                    );
+                    assert_eq!(
+                        visual.rendered_background("time-selection-binary-length-marker"),
+                        Some(gpui::Background::from(gpui::rgb(crate::theme::color(
+                            crate::theme::PaletteRole::Background
+                        ))))
+                    );
+                }
+                if binary && end > start {
+                    // Reverse and cross a nonbinary length without releasing capture.
+                    visual.simulate_mouse_move(at(1), MouseButton::Left, Modifiers::default());
+                    visual.run_until_parked();
+                    let marker = visual
+                        .debug_bounds("time-selection-binary-length-marker")
+                        .unwrap();
+                    let selection = visual.debug_bounds(selection_selector).unwrap();
+                    let pixel = visual.update(|window, _| 1.0 / window.scale_factor().max(1.0));
+                    assert!(f32::from(marker.left() - selection.left()).abs() <= pixel);
+                    visual.simulate_mouse_move(at(5), MouseButton::Left, Modifiers::default());
+                    visual.run_until_parked();
+                    assert!(
+                        visual
+                            .debug_bounds("time-selection-binary-length-marker")
+                            .is_none()
+                    );
+                    visual.simulate_mouse_move(at(end), MouseButton::Left, Modifiers::default());
+                    visual.run_until_parked();
+                }
+                visual.simulate_mouse_up(at(end), MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(
+                    visual
+                        .debug_bounds("time-selection-binary-length-marker")
+                        .is_some(),
+                    binary
+                );
+                if binary {
+                    editor.update(cx, |v, cx| {
+                        v.viewport = Some(if end > start {
+                            super::viewport::Viewport {
+                                start: 0,
+                                length: frame(3),
+                            }
+                        } else {
+                            super::viewport::Viewport {
+                                start: frame(3),
+                                length: frame(8) - frame(3),
+                            }
+                        });
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    assert!(visual.debug_bounds(selection_selector).is_some());
+                    assert!(
+                        visual
+                            .debug_bounds("time-selection-binary-length-marker")
+                            .is_none(),
+                        "a clipped viewport edge is not the true selection endpoint"
+                    );
+                    editor.update(cx, |v, cx| {
+                        v.viewport = Some(viewport);
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                }
+                editor.read_with(cx, |v, _| {
+                    assert_eq!(*v.state.as_ref().unwrap().project, before);
+                    assert!(v.last_enqueued_edit.is_none());
+                });
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn time_selection_markers_split_live_above_loop_and_follow_visible_endpoints(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::bind_editor_keys);
+    let (project, _, target, _) = audio_project();
+    let original = project.clone();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane_id = Box::leak(format!("arrangement-lane-{}", target.value()).into_boxed_str());
+    let lane = visual.debug_bounds(lane_id).unwrap();
+    let start = point(lane.left() + lane.size.width * 0.25, lane.center().y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("time-marker-top-start")
+            .unwrap()
+            .size
+            .width,
+        px(10.0)
+    );
+    assert!(visual.debug_bounds("time-marker-top-end").is_none());
+    for fraction in [0.6, 0.1, 0.6] {
+        let pointer = point(lane.left() + lane.size.width * fraction, lane.center().y);
+        visual.simulate_mouse_move(pointer, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let (first, last, viewport) = editor.read_with(cx, |view, _| {
+            assert!(
+                view.time_selection_gesture.is_some(),
+                "paint updates before release"
+            );
+            let selection = view.time_selection.unwrap();
+            (
+                selection.anchor_frame.min(selection.end_frame),
+                selection.anchor_frame.max(selection.end_frame),
+                view.visible_viewport(view.state.as_ref().unwrap().timeline_frames),
+            )
+        });
+        let rail = visual.debug_bounds("arrangement-loop-rail").unwrap();
+        let bottom = visual.debug_bounds("edit-cursor-layer").unwrap().bottom();
+        for (name, frame, leading) in [("start", first, true), ("end", last, false)] {
+            let expected = lane.left() + lane.size.width * viewport.fraction(frame).unwrap();
+            for edge in ["top", "bottom"] {
+                let id = Box::leak(format!("time-marker-{edge}-{name}").into_boxed_str());
+                let bounds = visual.debug_bounds(id).unwrap();
+                let tip = if leading {
+                    bounds.right()
+                } else {
+                    bounds.left()
+                };
+                assert!((f32::from(tip - expected)).abs() < 1.0);
+                assert_eq!(bounds.size.width, px(5.0));
+                if edge == "top" {
+                    assert!(bounds.bottom() <= rail.top());
+                    assert!(
+                        rail.top() - bounds.bottom() <= px(1.0),
+                        "upper tips sit immediately above the loop row"
+                    );
+                } else {
+                    assert_eq!(bounds.bottom(), bottom);
+                }
+            }
+        }
+    }
+    let end = point(lane.left() + lane.size.width * 0.6, lane.center().y);
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("time-marker-top-end").is_some());
+    // Zebra colors are actually painted, with a visible distinction between adjacent bands.
+    let bands = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        super::musical_time::adaptive_grid_bands_for_grid(
+            &state.project,
+            view.visible_viewport(state.timeline_frames),
+            f32::from(lane.size.width),
+            view.snap_grid,
+        )
+    });
+    let mut colors = Vec::new();
+    for band in bands.iter().take(2) {
+        let id = Box::leak(format!("arrangement-grid-band-{}", band.start_frame).into_boxed_str());
+        let color = visual.rendered_background(id).unwrap();
+        assert_eq!(
+            color,
+            gpui::rgb(crate::theme::time_grid_band_color(band.alternate)).into()
+        );
+        colors.push(color);
+    }
+    assert_eq!(colors.len(), 2);
+    assert_ne!(colors[0], colors[1]);
+    editor.update(cx, |view, cx| {
+        let selection = view.time_selection.unwrap();
+        let first = selection.anchor_frame.min(selection.end_frame);
+        let last = selection.anchor_frame.max(selection.end_frame);
+        view.viewport = Some(super::viewport::Viewport {
+            start: (first + last) / 2,
+            length: last - first,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("time-marker-top-start").is_none());
+    assert!(visual.debug_bounds("time-marker-top-end").is_some());
+    assert!(visual.debug_bounds("time-marker-bottom-end").is_some());
+    // Escape rejoins the halves at the original point; restore its viewport first.
+    editor.update(cx, |view, cx| {
+        view.viewport = None;
+        cx.notify();
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("time-marker-top-start")
+            .unwrap()
+            .size
+            .width,
+        px(10.0)
+    );
+    assert!(visual.debug_bounds("time-marker-top-end").is_none());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original)
     });
 }

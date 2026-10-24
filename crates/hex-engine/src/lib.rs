@@ -28,6 +28,7 @@ pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
+pub mod midi_capture;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -482,6 +483,7 @@ impl Audio {
 
 #[derive(Debug, Clone)]
 pub struct Clip {
+    active: bool,
     audio: Option<Audio>,
     start: u64,
     end: u64,
@@ -575,6 +577,7 @@ impl Clip {
             }))
         };
         Ok(Self {
+            active: true,
             audio: Some(audio),
             start,
             end,
@@ -634,7 +637,7 @@ impl Clip {
     }
 
     fn at(&self, position: u64, source_phase: u64) -> Frame {
-        if position < self.start || position >= self.end {
+        if !self.active || position < self.start || position >= self.end {
             return [0.0; 2];
         }
         let offset = position - self.start;
@@ -708,6 +711,7 @@ impl Clip {
         fade.validate_segment(duration)
             .map_err(|error| Invalid(error.0))?;
         Ok(Self {
+            active: true,
             audio: None,
             start,
             end,
@@ -1628,6 +1632,9 @@ impl Track {
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
     ) {
+        if !clip.active {
+            return;
+        }
         let mut span_end = end_frame.min(clip.end);
         if !clip.looping {
             span_end = span_end.min(clip.start.saturating_add(clip.source_length as u64));
@@ -3189,6 +3196,7 @@ pub mod live_expression;
 mod midi_activity;
 mod playback_observation;
 pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
+mod launch_quantization;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;

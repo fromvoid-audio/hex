@@ -6,8 +6,8 @@ use hex_lattice_contract::ParameterValue;
 use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericDragAxis, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
@@ -206,7 +206,7 @@ impl EditorView {
             let entity = cx.new(|cx| {
                 NumericControl::from_config(
                     cx,
-                    config.with_appearance(NumericControlAppearance::FilledSlider),
+                    config.with_presentation(NumericControlPresentation::FilledSlider),
                 )
             });
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
@@ -223,7 +223,9 @@ impl EditorView {
                             != hex_session::DocumentAudioMode::Resident
                         {
                             Some("live track volume is unavailable in this project mode")
-                        } else if view.gain_recorder.blocks_edits() {
+                        } else if view.gain_recorder.blocks_edits()
+                            || view.midi_recorder.blocks_edits()
+                        {
                             Some("finish gain recording before changing track volume")
                         } else if view
                             .state
@@ -276,6 +278,7 @@ impl EditorView {
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !automated(track)
             && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.bindings[&id];
@@ -355,12 +358,7 @@ impl EditorView {
             ) else {
                 return div();
             };
-            let config = config.with_appearance(NumericControlAppearance::FilledSlider);
-            let config = if matches!(key, MixerKey::Balance(_)) {
-                config.with_drag_axis(NumericDragAxis::Vertical)
-            } else {
-                config
-            };
+            let config = config.with_presentation(NumericControlPresentation::FilledSlider);
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();
@@ -372,7 +370,8 @@ impl EditorView {
                     }
                     if event.phase == NumericEventPhase::Begin
                         && (view.document_audio_mode != hex_session::DocumentAudioMode::Resident
-                            || view.gain_recorder.blocks_edits()
+                            || (view.gain_recorder.blocks_edits()
+                                || view.midi_recorder.blocks_edits())
                             || view.edit_pending())
                     {
                         view.error = Some(
@@ -414,6 +413,7 @@ impl EditorView {
             });
         let enabled = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !self.gain_recorder.blocks_edits()
+            && !self.midi_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open;
         let binding = &self.track_gain_controls.mixer[&key];

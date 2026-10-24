@@ -29,10 +29,13 @@ mod audio_events;
 mod project_tempo;
 mod track_order;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+pub use track_order::TrackSelectionIds;
 mod audio_edit;
+mod clip_activation;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
+mod source_ranges;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioImportWarp, AudioProcessingProjection, AudioViewMode, AudioViewOccurrence,
@@ -47,6 +50,8 @@ mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
+mod track_clipboard;
+pub use track_clipboard::TrackClipboard;
 mod clip_clipboard;
 mod clip_copy;
 mod clip_duplicate;
@@ -117,6 +122,7 @@ mod snapshot;
 mod split_tracks;
 pub use session::{
     Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
+    SessionSceneTarget,
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
@@ -139,10 +145,11 @@ pub use snapshot::{
 };
 use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
-    BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
-    MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
-    Tempo, TempoMap, TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase,
-    TempoMapOwnedAllocationLayout, TempoPoint, query_beat_pulses,
+    BeatPulse, BeatTime, InputQuantization, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap,
+    MeterMapCopyCustody, MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout,
+    MeterPoint, MeterPosition, MusicalGridSegment, ResolvedInputGrid, Tempo, TempoMap,
+    TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase, TempoMapOwnedAllocationLayout,
+    TempoPoint, query_beat_pulses,
 };
 
 pub const MAX_TRACKS: usize = 256;
@@ -324,6 +331,7 @@ impl ClipGain {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
+    pub(crate) active: bool,
     pub(crate) name: String,
     pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
@@ -339,6 +347,10 @@ pub struct Clip {
     pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
+    /// Authored clip activation, independent of track mute or selection.
+    pub fn active(&self) -> bool {
+        self.active
+    }
     pub fn name(&self) -> &str {
         &self.name
     }

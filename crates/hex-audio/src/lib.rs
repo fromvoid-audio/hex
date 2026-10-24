@@ -35,6 +35,7 @@ pub use candidate_custody::{
 };
 pub mod gain_recording;
 mod lifecycle;
+pub mod midi_recording;
 mod native_callback_owner;
 pub use candidate_catalog::CandidateDomain;
 pub use candidate_custody::{

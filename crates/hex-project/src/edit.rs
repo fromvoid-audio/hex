@@ -15,6 +15,17 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Set one authored clip's activation across Arrangement or Session.
+    SetClipActive {
+        clip: ClipId,
+        active: bool,
+    },
+    /// Split only intersected Arrangement clips at the selected frame edges and
+    /// set the selected spans atomically, preserving both exterior fragments.
+    SetTimeRangeActive {
+        range: crate::TimeRange,
+        active: bool,
+    },
     /// Apply one clip-wide value to a frozen Arrangement selection atomically.
     EditClips {
         clips: Vec<ClipId>,
@@ -287,6 +298,11 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    /// Insert complete captured tracks in canonical order with fresh identities.
+    PasteTracks {
+        clipboard: std::sync::Arc<crate::TrackClipboard>,
+        before: Option<TrackId>,
+    },
     /// Paste complete clips, retaining relative timing and stable multi-track owners.
     PasteClips {
         clipboard: std::sync::Arc<crate::ClipClipboard>,
@@ -398,6 +414,13 @@ pub enum Command {
     /// Main is not a Track. Neither can be addressed by this typed command.
     MoveTrackBefore {
         track: TrackId,
+        before: Option<TrackId>,
+    },
+    /// Move complete selected ordinary tracks as one block in canonical order.
+    /// A selected anchor or an already-adjacent block is a no-op. Identity-owned
+    /// content, routing and automation remain attached; one history edit owns it.
+    MoveTracksBefore {
+        tracks: crate::TrackSelectionIds,
         before: Option<TrackId>,
     },
     RemoveTrack(TrackId),
@@ -700,6 +723,18 @@ pub enum Command {
         source: ClipId,
         scene: crate::SceneId,
     },
+    /// Create one normal track and optional scene, then copy through the same
+    /// Session law. Editor prepares the whole candidate and commits one history edge.
+    CopyArrangementAudioClipToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
+    CopyArrangementMidiToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
     MoveSessionCell {
         from_track: TrackId,
         from_scene: crate::SceneId,
@@ -916,6 +951,11 @@ pub struct MidiNoteInsert {
 pub enum Created {
     ArrangementSection(crate::SectionId),
     Track(TrackId),
+    /// Inclusive track-only ID range born in one atomic paste.
+    Tracks {
+        first: TrackId,
+        last: TrackId,
+    },
     ReturnTrack(ReturnId),
     Device(DeviceId),
     Asset(AssetId),
@@ -1159,6 +1199,7 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        active: true,
         name: clip.name.clone(),
         flavor: clip.flavor,
         gain: clip.gain,
@@ -1232,6 +1273,7 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        active: original.active,
         name: original.name.clone(),
         flavor: original.flavor,
         id: right_id,
@@ -1449,6 +1491,7 @@ impl Project {
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
             let mut clip = Clip {
+                active: true,
                 name: "clip".into(),
                 flavor: crate::ClipFlavor::default(),
                 id: ClipId(0),
@@ -1630,6 +1673,12 @@ impl Project {
                 self.track_mut(track)?.color = color;
                 Ok(Created::None)
             }
+            Command::SetClipActive { clip, active } => {
+                crate::clip_activation::set(self, clip, active)
+            }
+            Command::SetTimeRangeActive { range, active } => {
+                crate::clip_activation::set_range(self, &range, active)
+            }
             Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::ReplaceMidiClipVolume { clip, volume } => {
                 self.replace_midi_clip_volume(clip, volume)
@@ -1746,6 +1795,8 @@ impl Project {
             | Command::CreateSessionAudioClip { .. }
             | Command::CopyArrangementAudioClipToSession { .. }
             | Command::CopyArrangementMidiToSession { .. }
+            | Command::CopyArrangementAudioClipToNewSessionTrack { .. }
+            | Command::CopyArrangementMidiToNewSessionTrack { .. }
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
@@ -2089,6 +2140,9 @@ impl Project {
                 })
             }
             Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
+            Command::MoveTracksBefore { tracks, before } => {
+                self.move_tracks_before(&tracks, before)
+            }
             Command::RemoveTracks(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
                     return Err(Invalid("track removal needs a bounded selection"));
@@ -2403,6 +2457,7 @@ impl Project {
                 interval_valid(start, duration, source_offset, source_length, media)?;
                 let fade = ClipFade::neutral(duration)?;
                 let incoming = Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id: ClipId(0),
@@ -2471,6 +2526,9 @@ impl Project {
                 let track = insert_track_before(self, name, before_track)?;
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
+            }
+            Command::PasteTracks { clipboard, before } => {
+                crate::track_clipboard::paste(self, &clipboard, before)
             }
             Command::PasteClips {
                 clipboard,
@@ -2764,6 +2822,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id,
@@ -2827,6 +2886,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    active: true,
                     name: "clip".into(),
                     flavor: crate::ClipFlavor::default(),
                     id,

@@ -323,8 +323,8 @@ impl PublicationControl {
             Some("candidate constructor rate or phase differs")
         } else if policy != PublicationPolicy::InheritRuntime {
             Some("constructor fresh-runtime policy is not supported")
-        } else if self.status.publication_pending.gain_active() {
-            Some("finish gain recording before replacing playback")
+        } else if self.status.publication_pending.recording_active() {
+            Some("finish recording before replacing playback")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
         } else {

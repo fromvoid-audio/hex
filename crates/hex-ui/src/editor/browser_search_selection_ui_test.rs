@@ -72,7 +72,7 @@ fn search_focus_click_selects_query_and_replaces_after_real_workers(cx: &mut Tes
     assert_eq!(selection(&editor, visual), 0..9);
     visual.simulate_input("snare");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "snare");
+        assert_eq!(view.browser.search.read(cx).text(), "snare");
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
         assert_eq!(view.browser.playback_generation, 0);
@@ -91,7 +91,7 @@ fn search_focus_click_selects_query_and_replaces_after_real_workers(cx: &mut Tes
     assert_eq!(selection(&editor, visual), 0..4);
     visual.simulate_input("hat");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "hat")
+        assert_eq!(view.browser.search.read(cx).text(), "hat")
     });
 }
 
@@ -160,7 +160,7 @@ fn search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins(cx: &mut 
     visual.simulate_input("X");
     editor.read_with(visual, |view, cx| {
         assert_eq!(
-            view.browser.search.read(cx).content,
+            view.browser.search.read(cx).text(),
             "kick hats",
             "category click must leave actual text editing"
         )
@@ -175,7 +175,7 @@ fn search_mouse_drag_keeps_partial_selection_and_first_focus_drag_wins(cx: &mut 
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     visual.simulate_input("X");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "kx hats")
+        assert_eq!(view.browser.search.read(cx).text(), "kx hats")
     });
 }
 
@@ -214,13 +214,13 @@ fn search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership(
     );
     visual.simulate_keystrokes("shift-right shift-right shift-right cmd-c end cmd-v");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "kick hatsick")
+        assert_eq!(view.browser.search.read(cx).text(), "kick hatsick")
     });
     visual.simulate_keystrokes("cmd-a cmd-x");
     assert_eq!(selection(&editor, visual), 0..0);
     visual.simulate_keystrokes("cmd-v");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "kick hatsick")
+        assert_eq!(view.browser.search.read(cx).text(), "kick hatsick")
     });
     visual.simulate_keystrokes("cmd-f");
     visual.update(|window, cx| {
@@ -290,7 +290,7 @@ fn search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership(
     visual.simulate_input("x");
     visual.simulate_keystrokes("cmd-shift-t");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "x");
+        assert_eq!(view.browser.search.read(cx).text(), "x");
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
         assert_eq!(view.browser.playback_generation, 0);
@@ -405,7 +405,7 @@ fn search_double_click_toggles_against_selection_before_first_click(cx: &mut Tes
             "double gesture starting with click_count {count}"
         );
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).content, "kick hats");
+            assert_eq!(view.browser.search.read(cx).text(), "kick hats");
             assert_eq!(
                 (
                     view.browser.playback_generation,
@@ -479,7 +479,7 @@ fn search_empty_double_click_is_selection_only(cx: &mut TestAppContext) {
         assert_eq!(selection(&editor, visual), 0..0);
     }
     editor.read_with(visual, |view, cx| {
-        assert!(view.browser.search.read(cx).content.is_empty());
+        assert!(view.browser.search.read(cx).text().is_empty());
         assert_eq!(view.browser.playback_generation, 0);
         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
     });
@@ -525,7 +525,7 @@ fn invalidated_pair_caller(cx: &mut TestAppContext, invalidation: &str) {
     let at = caret_point(&editor, visual, 2);
     let before = editor.read_with(visual, |view, cx| {
         (
-            view.browser.search.read(cx).content.clone(),
+            view.browser.search.read(cx).text().to_owned(),
             view.browser.playback_generation,
             view.browser.preview_preparations,
             view.browser.tree.requests_started,
@@ -557,7 +557,7 @@ fn invalidated_pair_caller(cx: &mut TestAppContext, invalidation: &str) {
     editor.read_with(visual, |view, cx| {
         assert_eq!(
             (
-                view.browser.search.read(cx).content.clone(),
+                view.browser.search.read(cx).text().to_owned(),
                 view.browser.playback_generation,
                 view.browser.preview_preparations,
                 view.browser.tree.requests_started
@@ -714,7 +714,7 @@ fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppCont
         assert_eq!(selection(&editor, visual), 0..0);
         workers_and_ticks(&editor, visual, &directory.0);
         editor.read_with(visual, |view, cx| {
-            assert!(view.browser.search.read(cx).content.is_empty());
+            assert!(view.browser.search.read(cx).text().is_empty());
             assert_eq!(
                 (
                     view.browser.section.clone(),
@@ -729,7 +729,7 @@ fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppCont
         });
         visual.simulate_input("loop");
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).content, "loop")
+            assert_eq!(view.browser.search.read(cx).text(), "loop")
         });
     }
 }
@@ -771,7 +771,7 @@ fn clear_search_accessibility_refuses_old_text_and_uses_current_input_owner(
     assert_eq!(selection(&editor, visual), 0..0);
     visual.simulate_input("replacement");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "replacement")
+        assert_eq!(view.browser.search.read(cx).text(), "replacement")
     });
 }
 
@@ -813,12 +813,12 @@ fn clear_search_cancels_composition_and_resets_selection(cx: &mut TestAppContext
             .search
             .clone()
             .update(cx, |input, cx| {
-                assert!(input.content.is_empty());
+                assert!(input.text().is_empty());
                 assert!(input.marked_text_range(window, cx).is_none());
             })
     });
     visual.simulate_input("loop");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "loop")
+        assert_eq!(view.browser.search.read(cx).text(), "loop")
     });
 }

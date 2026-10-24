@@ -31,6 +31,7 @@ pub(super) struct TrackLayout {
     generation: u64,
     tracks: Vec<TrackId>,
     revision: Option<u64>,
+    focus_ranges: std::rc::Rc<[(u64, u64)]>,
 }
 impl TrackLayout {
     fn active_heights(&self) -> &BTreeMap<TrackId, f32> {
@@ -114,19 +115,38 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
-    /// Bubble after child editors; never register a global H or Cmd-H binding.
-    pub(super) fn track_overview_key(
+    /// Arrangement-only H/Q after child input; modifiers, text and capture retain ownership.
+    pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if event.keystroke.key != "h"
+        if !matches!(event.keystroke.key.as_str(), "h" | "q")
             || event.keystroke.modifiers != Modifiers::default()
             || event.is_held
-            || self.mode != super::EditorMode::Arrangement
             || self.computer_keyboard.enabled
-            || !(self.focus.is_focused(window) || self.track_header_focused(window))
+            || !(self.focus.is_focused(window)
+                || self.track_header_focused(window)
+                || self.section_focus_toggle_focused(window, cx))
+            || !self.arrangement_view_change_available(cx)
+        {
+            return false;
+        }
+        if event.keystroke.key == "q" {
+            self.toggle_arrangement_focus();
+            cx.notify();
+            return true;
+        }
+        if self.track_layout.overview.take().is_none() {
+            self.track_layout.overview = Some(BTreeMap::new());
+        }
+        self.track_scroll.remeasure();
+        cx.notify();
+        true
+    }
+    pub(super) fn arrangement_view_change_available(&self, cx: &Context<Self>) -> bool {
+        !(self.mode != super::EditorMode::Arrangement
             || !self.drag_available()
             || self.edit_pending()
             || self.track_name.is_editing()
@@ -146,7 +166,7 @@ impl EditorView {
             || self.gain_numeric_editing(cx)
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_lane.pointer_is_active()
-            || self.sample_bpm_editing(cx)
+            || self.clip_numeric_editing(cx)
             || self.project_open.busy()
             || self.pending_open_path.is_some()
             || self.export_dialog_open
@@ -155,6 +175,7 @@ impl EditorView {
             || self.arrangement_pan.is_some()
             || self.pointer_down.is_some()
             || self.project_spectrum.resize_is_active()
+            || self.clip_detail_resize.is_active()
             || self.device_panel.navigation.is_active()
             || self.clip_paint_gesture.is_some()
             || self.active_clip_drag.is_some()
@@ -168,16 +189,7 @@ impl EditorView {
             || self.loop_rail_gesture.is_some()
             || self.scrub_active()
             || cx.has_active_drag()
-            || self.state.is_none()
-        {
-            return false;
-        }
-        if self.track_layout.overview.take().is_none() {
-            self.track_layout.overview = Some(BTreeMap::new());
-        }
-        self.track_scroll.remeasure();
-        cx.notify();
-        true
+            || self.state.is_none())
     }
     fn maximum_header_width(&self) -> f32 {
         self.track_layout
@@ -206,6 +218,11 @@ impl EditorView {
                 TRACK_ROW_HEIGHT
             })
     }
+    /// Visibility can change with active-track selection without a project edit.
+    pub(super) fn invalidate_arrangement_track_layout(&mut self) {
+        self.track_layout.revision = None;
+    }
+
     pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
         if self.track_layout.generation != self.project_generation {
             self.track_layout.heights.clear();
@@ -217,18 +234,27 @@ impl EditorView {
             self.track_layout.revision = None;
         }
         let revision = self.state.as_ref().map(|state| state.revision);
-        if self.track_layout.revision == revision {
+        let focus_ranges = self.arrangement_focus_ranges();
+        if self.track_layout.revision == revision && self.track_layout.focus_ranges == focus_ranges
+        {
             return;
         }
         self.track_layout.revision = revision;
-        let ids = tracks.iter().map(|t| t.id()).collect::<Vec<_>>();
+        self.track_layout.focus_ranges = focus_ranges;
+        let ids = tracks
+            .iter()
+            .filter(|t| self.arrangement_track_visible(t.id()))
+            .map(|t| t.id())
+            .collect::<Vec<_>>();
         if self.track_layout.tracks != ids {
             if let Some(drag) = self.track_layout.drag.take() {
                 self.restore_track_resize(drag);
             }
-            self.track_layout.heights.retain(|id, _| ids.contains(id));
+            self.track_layout
+                .heights
+                .retain(|id, _| tracks.iter().any(|t| t.id() == *id));
             if let Some(heights) = self.track_layout.overview.as_mut() {
-                heights.retain(|id, _| ids.contains(id));
+                heights.retain(|id, _| tracks.iter().any(|t| t.id() == *id));
             }
             let mut top = self.track_scroll.list.logical_scroll_top();
             let anchor = self.track_layout.tracks.get(top.item_ix).copied();
@@ -251,6 +277,14 @@ impl EditorView {
             }
             self.track_scroll.list.scroll_to(top);
             self.track_layout.tracks = ids;
+        }
+        if let Some((id, offset)) = self.arrangement_focus.pending_restore.take()
+            && let Some(item_ix) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.list.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: offset,
+            });
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {

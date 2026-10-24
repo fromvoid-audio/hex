@@ -314,7 +314,7 @@ fn device_backspace_preserves_numeric_and_browser_text_focus(cx: &mut TestAppCon
                 .device(device)
                 .is_some()
         );
-        assert_eq!(view.browser.search.read(cx).content, "ab");
+        assert_eq!(view.browser.search.read(cx).text(), "ab");
         assert!(settled(view));
     });
 }
@@ -900,7 +900,7 @@ fn refused_release_respects_new_focus(cx: &mut TestAppContext, text: bool) {
     if text {
         visual.simulate_keystrokes("backspace");
         editor.read_with(cx, |view, cx| {
-            assert_eq!(view.browser.search.read(cx).content, "kee");
+            assert_eq!(view.browser.search.read(cx).text(), "kee");
             assert!(
                 view.state
                     .as_ref()
@@ -965,7 +965,7 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
     for device in [effect, instrument] {
         let point = title(&mut visual, device);
         visual.simulate_click(point, Modifiers::default());
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("a");
         pump_until(&editor, cx, settled);
         let changed = editor.read_with(cx, |view, _| {
             let actual = &view.state.as_ref().unwrap().project;
@@ -1148,7 +1148,7 @@ fn device_zero_preserves_numeric_and_browser_typing_and_modified_keys(cx: &mut T
     visual.simulate_keystrokes("0");
     pump_until(&editor, cx, settled);
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).content, "find0");
+        assert_eq!(view.browser.search.read(cx).text(), "find0");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
 }

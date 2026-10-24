@@ -54,6 +54,7 @@ impl SessionAssemblyCapacity {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ClipPlan {
+    pub(crate) active: bool,
     pub(crate) source_row: usize,
     pub(crate) bank_source: usize,
     pub(crate) handle: u64,
@@ -103,6 +104,7 @@ impl AudioTarget {
         };
         // No fallible call/destructor between source split and persistent install.
         self.clip = Some(PreparedSessionAudioClip {
+            active: self.plan.active,
             id: self.plan.clip,
             track: self.plan.track,
             scene: self.plan.scene,
@@ -126,6 +128,7 @@ impl AudioTarget {
             .ok_or(AudioStorageError::SourceMismatch)?;
         if self.actual_handle != Some(self.plan.handle)
             || *asset != self.plan.asset
+            || clip.active != self.plan.active
             || clip.id != self.plan.clip
             || clip.track != self.plan.track
             || clip.scene != self.plan.scene
@@ -1001,6 +1004,7 @@ impl SessionAssembly {
             }
             if let Some(clip) = clip.as_ref().or_else(|| clips.get(index)) {
                 let PreparedSessionAudioClip {
+                    active,
                     id,
                     track,
                     scene,
@@ -1011,7 +1015,8 @@ impl SessionAssembly {
                     gain,
                     source,
                 } = clip;
-                if *id != plan.clip
+                if *active != plan.active
+                    || *id != plan.clip
                     || *track != plan.track
                     || *scene != plan.scene
                     || *asset != plan.asset

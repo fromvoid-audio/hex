@@ -335,7 +335,7 @@ fn eq_real_selectors_keep_popup_anchor_keyboard_cancel_and_canonical_history(
 #[gpui::test]
 fn eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry(cx: &mut TestAppContext) {
     use hex_widgets::{
-        NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlKind,
+        NumericControl, NumericControlConfig, NumericControlKind, NumericControlPresentation,
         NumericScale, NumericSpec,
     };
     let config = NumericControlConfig::new(
@@ -355,7 +355,7 @@ fn eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry(cx: &mu
         theme::device_style(theme::DeviceStyleRole::Readout),
     )
     .unwrap()
-    .with_appearance(NumericControlAppearance::InlineValue);
+    .with_presentation(NumericControlPresentation::InlineValue);
     let window = cx.add_window(|_, cx| NumericControl::from_config(cx, config));
     let handle = *window;
     let control = window.root(cx).unwrap();

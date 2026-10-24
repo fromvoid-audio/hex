@@ -142,6 +142,7 @@ impl SessionPlayback {
             self.revision.contains_streamed_sources()
         };
         if self.playing && !output.is_empty() && contains_streamed_sources {
+            self.fail_midi_capture_render();
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
         let capture = project
@@ -346,9 +347,11 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        self.begin_midi_capture_render(output.len());
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
         {
+            self.fail_midi_capture_render();
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "sampler requires its exact source scope",
             ));
@@ -401,10 +404,10 @@ impl SessionPlayback {
         }
         let mut observer = observer;
         if let Some(compensation) = self.compensation.as_mut() {
-            compensation
-                .delays
-                .begin_transaction()
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            if compensation.delays.begin_transaction().is_err() {
+                self.fail_midi_capture_render();
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
         }
         if let Some(keyboard) = &mut self.computer_keyboard {
             keyboard.begin_block();
@@ -418,6 +421,7 @@ impl SessionPlayback {
             self.render_keyboard_monitor(output, &mut observer, &mut capture, sources, foreign)
         };
         if result.is_err() {
+            self.fail_midi_capture_render();
             for chain in self
                 .device_chains
                 .iter_mut()
@@ -450,17 +454,24 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
+            if let Some(compensation) = self.compensation.as_mut() {
+                if compensation.delays.commit_transaction().is_err() {
+                    self.fail_midi_capture_render();
+                    if let Some(keyboard) = &mut self.computer_keyboard {
+                        keyboard.rollback();
+                    }
+                    for keyboard in &mut self.current_sampler_keyboards {
+                        keyboard.rollback();
+                    }
+                    output.fill([0.0; 2]);
+                    return Err(SessionPlaybackError::DeviceRuntime);
+                }
+            }
             if let Some(keyboard) = &mut self.computer_keyboard {
                 keyboard.commit();
             }
             for keyboard in &mut self.current_sampler_keyboards {
                 keyboard.commit();
-            }
-            if let Some(compensation) = self.compensation.as_mut() {
-                compensation
-                    .delays
-                    .commit_transaction()
-                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
             // The ordinary current context already owns the target endpoint.
             // Retire only after the whole block commits; detached voices retain
@@ -477,6 +488,9 @@ impl SessionPlayback {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
             }
+        }
+        if result.is_ok() {
+            self.seal_midi_capture_render();
         }
         result
     }
@@ -533,7 +547,7 @@ impl SessionPlayback {
         let mut output_offset = 0;
         let mut route_changed = false;
         let region = (!self.linear_arrangement_export)
-            .then(|| self.revision.arrangement().loop_region())
+            .then(|| self.loop_region())
             .flatten()
             .filter(|loop_region| loop_region.enabled());
 
@@ -818,6 +832,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        let region = self.loop_region();
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
@@ -912,6 +927,10 @@ impl SessionPlayback {
                     render_route_source_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
+                            midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
@@ -985,6 +1004,10 @@ impl SessionPlayback {
                     render_route_source_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
+                            midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
                             route: midi_route,
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
@@ -1004,6 +1027,10 @@ impl SessionPlayback {
                     render_mutable_instrument_chunk(
                         MutableInstrumentChunkContext {
                             revision: &self.revision,
+                            midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
                             sources,
                             routes: &self.route_scratch,
                             runtimes: &mut self.mutable_instruments,
@@ -1017,10 +1044,7 @@ impl SessionPlayback {
                             loop_region: if self.linear_arrangement_export {
                                 None
                             } else {
-                                self.revision
-                                    .arrangement()
-                                    .loop_region()
-                                    .filter(|region| region.enabled())
+                                region.filter(|region| region.enabled())
                             },
                             timing: &timing,
                         },
@@ -1131,6 +1155,10 @@ impl SessionPlayback {
                         render_route_source_chunk(
                             RouteSourceContext {
                                 revision: &self.revision,
+                                midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                    self.revision.session(),
+                                    self.midi_admission.as_ref(),
+                                ),
                                 route: self.route_scratch[index],
                                 historical_floor: self.historical_floor_for(index),
                                 suppressions: &self.suppression_scratch,
@@ -1156,6 +1184,10 @@ impl SessionPlayback {
                     render_route_source_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
+                            midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
                             route: self.route_scratch[index],
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
@@ -1314,6 +1346,10 @@ impl SessionPlayback {
                 render_route_source_chunk(
                     RouteSourceContext {
                         revision: &self.revision,
+                        midi: crate::session_inventory::EffectiveSessionMidi::new(
+                            self.revision.session(),
+                            self.midi_admission.as_ref(),
+                        ),
                         route: self.route_scratch[index],
                         historical_floor: self.historical_floor_for(index),
                         suppressions: &self.suppression_scratch,
@@ -1821,6 +1857,7 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
     sources: Option<crate::native_device_resources::SamplerSourcesRef<'a>>,
     revision: &'a PreparedRevision,
+    midi: crate::session_inventory::EffectiveSessionMidi<'a>,
     routes: &'a [super::TrackRoute],
     runtimes: &'a mut [Option<MutableInstrumentTrackRuntime>],
     onsets: &'a mut MutableOnsetBuffer,
@@ -1841,6 +1878,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
 ) -> Result<(), SessionPlaybackError> {
     let MutableInstrumentChunkContext {
         revision,
+        midi,
         sources,
         routes,
         runtimes,
@@ -1934,8 +1972,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
             }
         }
         RouteOwner::Session { clip, origin } => {
-            let prepared = revision
-                .session()
+            let prepared = midi
                 .midi_clip_for_track(clip, track_id)
                 .ok_or(SessionPlaybackError::UnknownClip)?;
             if prepared.track != routes[index].id {
@@ -2010,6 +2047,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
 
 struct RouteSourceContext<'a, T> {
     revision: &'a PreparedRevision,
+    midi: crate::session_inventory::EffectiveSessionMidi<'a>,
     route: super::TrackRoute,
     historical_floor: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
@@ -2038,6 +2076,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
 ) -> Result<(), SessionPlaybackError> {
     let RouteSourceContext {
         revision,
+        midi,
         route,
         historical_floor,
         suppressions,
@@ -2124,8 +2163,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
             if matches!(stage, SourceStage::Audio) {
                 return Ok(());
             }
-            let prepared = revision
-                .session()
+            let prepared = midi
                 .midi_clip_for_track(clip, route.id)
                 .ok_or(SessionPlaybackError::UnknownClip)?;
             if prepared.track != route.id {
@@ -2154,6 +2192,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                 .ok_or(SessionPlaybackError::UnknownClip)?;
             if prepared.track != route.id {
                 return Err(SessionPlaybackError::ClipTrackMismatch);
+            }
+            if !prepared.active {
+                return Ok(());
             }
             match prepared.source() {
                 PreparedAudioSource::Resident(audio) => {

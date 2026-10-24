@@ -52,7 +52,7 @@ fn fixture(
     visual.run_until_parked();
     (visual, editor, ids)
 }
-fn bounds(visual: &mut VisualTestContext, id: TrackId) -> gpui::Bounds<gpui::Pixels> {
+pub(super) fn bounds(visual: &mut VisualTestContext, id: TrackId) -> gpui::Bounds<gpui::Pixels> {
     visual
         .debug_bounds(Box::leak(
             format!("track-name-{}", id.value()).into_boxed_str(),
@@ -105,7 +105,7 @@ fn live_fixture(
 ) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
     live_tracks(cx, 4, false)
 }
-fn live_tracks(
+pub(super) fn live_tracks(
     cx: &mut TestAppContext,
     count: usize,
     notes: bool,
@@ -169,7 +169,7 @@ fn live_tracks(
     visual.run_until_parked();
     (visual, editor, ids)
 }
-fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
+pub(super) fn receive(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
     editor.update(visual, |v, cx| {
         let event = next(&v.service);
         assert!(event.error.is_none(), "{:?}", event.error);
@@ -713,5 +713,155 @@ fn canonical_reorder_does_not_rebuild_every_offscreen_track(cx: &mut TestAppCont
             "one reordered row must not rebuild100track elements: {}",
             v.track_row_builds
         );
+    });
+}
+
+#[gpui::test]
+fn selected_track_group_drags_as_one_block_with_exact_ack_and_one_history_step(
+    cx: &mut TestAppContext,
+) {
+    for contiguous in [true, false] {
+        let (mut visual, editor, ids) = live_fixture(cx);
+        let first = bounds(&mut visual, ids[0]).center();
+        visual.simulate_click(first, Modifiers::default());
+        let last = bounds(&mut visual, ids[2]).center();
+        visual.simulate_click(
+            last,
+            Modifiers {
+                shift: contiguous,
+                platform: !contiguous,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        let members = if contiguous {
+            ids[..3].to_vec()
+        } else {
+            vec![ids[0], ids[2]]
+        };
+        let before = editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_track_ids(), members);
+            v.state.as_ref().unwrap().project.as_ref().clone()
+        });
+        let from = bounds(&mut visual, ids[2]).center();
+        let target = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-track-header-{}", ids[3].value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let to = point(from.x, target.bottom() - px(1.0));
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let line = visual.debug_bounds("track-insertion-line").unwrap();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_track_ids(), members);
+            assert_eq!(*v.state.as_ref().unwrap().project, before);
+        });
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(&mut visual, |v, _| next(&v.service));
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            assert_eq!(visual.debug_bounds("track-insertion-line"), Some(line));
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(*v.state.as_ref().unwrap().project, before)
+            });
+        }
+        let after = terminal.state.project.clone();
+        let expected = if contiguous {
+            vec![ids[3], ids[0], ids[1], ids[2]]
+        } else {
+            vec![ids[1], ids[3], ids[0], ids[2]]
+        };
+        assert_eq!(
+            after.tracks().iter().map(|t| t.id()).collect::<Vec<_>>(),
+            expected,
+            "all selected tracks move together"
+        );
+        editor.update(&mut visual, |v, cx| {
+            v.receive(terminal);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("track-insertion-line").is_none());
+        editor.read_with(&visual, |v, _| assert_eq!(v.selected_track_ids(), members));
+        for (request, expected) in [
+            (hex_session::service::Request::Undo, &before),
+            (hex_session::service::Request::Redo, after.as_ref()),
+        ] {
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(request)));
+            receive(&mut visual, &editor);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project.as_ref(), expected)
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn selected_group_noop_escape_and_stationary_click_keep_existing_selection_contract(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, ids) = live_fixture(cx);
+    let a = bounds(&mut visual, ids[0]).center();
+    let c = bounds(&mut visual, ids[2]).center();
+    visual.simulate_click(a, Modifiers::default());
+    visual.simulate_click(
+        c,
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        },
+    );
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    for cancel in [false, true] {
+        let target = visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "arrangement-track-header-{}",
+                    ids[if cancel { 3 } else { 0 }].value()
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap();
+        let to = point(
+            c.x,
+            if cancel {
+                target.bottom() - px(1.0)
+            } else {
+                target.top() + px(1.0)
+            },
+        );
+        visual.simulate_mouse_down(c, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("track-insertion-line").is_some(),
+            cancel
+        );
+        if cancel {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("track-insertion-line").is_none());
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.selected_track_ids(), [ids[0], ids[2]]);
+            assert_eq!(v.state.as_ref().unwrap().project, before);
+            assert!(!v.track_reorder_active());
+            assert_eq!(v.worker_requests_pending, 0);
+        });
+    }
+    // A stationary plain click still selects one member, rather than making a
+    // permanent group or changing the existing header-click modifier policy.
+    visual.simulate_click(c, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.selected_track_ids(), [ids[2]]);
+        assert_eq!(v.state.as_ref().unwrap().project, before);
+        assert_eq!(v.worker_requests_pending, 0);
     });
 }

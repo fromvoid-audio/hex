@@ -40,6 +40,7 @@ struct CacheSlot {
     disposal: Disposal,
 }
 struct CellSlot {
+    active: bool,
     track: hex_project::TrackId,
     scene: hex_project::SceneId,
     clip: hex_project::ClipId,
@@ -306,6 +307,7 @@ impl SessionSourceConstruction {
             // reserved directly in the persistent cell before source cloning.
             let index = self.cells.len();
             self.cells.push(CellSlot {
+                active: clip.active(),
                 track: cell.track(),
                 scene: cell.scene(),
                 clip: clip.id(),
@@ -537,6 +539,7 @@ impl SessionSourceConstruction {
         l.vec(cache)?;
         for row in cells {
             let CellSlot {
+                active: _,
                 track: _,
                 scene: _,
                 clip: _,
