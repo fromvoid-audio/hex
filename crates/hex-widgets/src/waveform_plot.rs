@@ -144,6 +144,10 @@ fn valid_span(points: [Point<Pixels>; 2]) -> bool {
         && f32::from(points[1].x - points[0].x).is_finite()
 }
 
+// Retained production geometry already stores two channels inline in one Rc/Arc.
+// Boxing only the stereo variant would add an allocation and indirection to every
+// cold production preparation; the smaller mono fixture remains bounded too.
+#[allow(clippy::large_enum_variant)]
 enum Channels {
     Mono(WaveformChannel),
     Stereo([WaveformChannel; 2]),
