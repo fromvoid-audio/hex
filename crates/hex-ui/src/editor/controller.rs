@@ -2476,7 +2476,15 @@ impl EditorView {
             self.midi_selection.clear();
             self.reconcile_arrangement_focus();
             self.arrangement_focus.reveal_created_track(track);
-        } else if let Some(hex_project::Created::Clip(clip)) = event.created {
+        } else if let Some(clip) = event.created.as_ref().and_then(|created| match created {
+            hex_project::Created::Clip(clip) => Some(*clip),
+            // A canonical import birth supplies initial selection; ordinary
+            // acknowledgements preserve an explicitly empty clip selection.
+            hex_project::Created::Imported { clip, .. } if self.selected_clip.is_none() => {
+                Some(*clip)
+            }
+            _ => None,
+        }) {
             let track = self.state.as_ref().and_then(|state| {
                 state
                     .project
