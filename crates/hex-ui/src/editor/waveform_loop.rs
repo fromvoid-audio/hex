@@ -20,6 +20,7 @@ pub(super) struct LoopProjection {
     tempo: TempoMap,
     prepared: bool,
     accepted_origin: i128,
+    retimed: bool,
 }
 
 pub(super) fn loop_waveform_view(
@@ -35,28 +36,51 @@ pub(super) fn loop_waveform_view(
         .audio_edit()
         .zip(request.preview.audio_edit())
         .is_some_and(|(a, b)| Arc::ptr_eq(&a.domain, &b.domain));
+    let mut retimed = false;
     if !same_root {
         let endpoint = request
             .preview
             .start()
             .checked_add(request.preview.duration())?;
-        let expected = preview_audio_view_resize(
+        let asset_frames = request.asset.map_or(
+            request
+                .original
+                .source_offset()
+                .checked_add(request.original.source_length())?,
+            |source| source.source_frames as u64,
+        );
+        let repeated = preview_audio_view_resize(
             request.original,
             request.tempo,
-            request.asset.map_or(
-                request
-                    .original
-                    .source_offset()
-                    .checked_add(request.original.source_length())?,
-                |source| source.source_frames as u64,
-            ),
+            asset_frames,
             AudioViewResizeOperation::RepeatOuterEnd {
                 project_frame: endpoint,
             },
         )
-        .ok()?;
-        if &expected != request.preview {
-            return None;
+        .ok();
+        if repeated.as_ref() != Some(request.preview) {
+            let edge = if request.original.start() == request.preview.start() {
+                hex_project::TrimEdge::Right
+            } else {
+                hex_project::TrimEdge::Left
+            };
+            let frame = if edge == hex_project::TrimEdge::Right {
+                endpoint
+            } else {
+                request.preview.start()
+            };
+            let stretched = hex_project::preview_audio_clip_stretch(
+                request.original,
+                edge,
+                frame,
+                request.tempo,
+                asset_frames,
+            )
+            .ok()?;
+            if &stretched != request.preview {
+                return None;
+            }
+            retimed = true;
         }
     }
     let (source, accepted_origin, prepared) = if let Some(old) = request.original.audio_edit() {
@@ -91,6 +115,7 @@ pub(super) fn loop_waveform_view(
         tempo: request.tempo.clone(),
         prepared,
         accepted_origin,
+        retimed,
     });
     Some(waveform_canvas(
         source,
@@ -107,6 +132,15 @@ impl LoopProjection {
         self.preview.gain()
     }
     fn root_frame(&self, clock: u64) -> Option<u64> {
+        if self.retimed {
+            return super::waveform_stretch::accepted_root_frame(
+                &self.original,
+                &self.preview,
+                &self.tempo,
+                self.prepared,
+                clock,
+            );
+        }
         let edit = self.preview.audio_edit()?;
         match edit.domain.clock {
             AudioDomainClock::Frames(_) => Some(clock),
@@ -266,6 +300,7 @@ mod tests {
             tempo: tempo.clone(),
             prepared: false,
             accepted_origin: 0,
+            retimed: false,
         };
         for range in [2..3, 8..9, 14..15] {
             assert_eq!(projection.peaks(&waveform, range).unwrap()[0].max, 0.2);
@@ -357,6 +392,7 @@ mod tests {
             tempo: tempo.clone(),
             prepared: true,
             accepted_origin: 0,
+            retimed: false,
         };
         for (a, b, expected) in [
             (0, 1, 0.0),
@@ -377,5 +413,92 @@ mod tests {
                 "beats {a}..{b}: later periods differ in frames but retain source phase"
             );
         }
+    }
+    #[test]
+    fn stretched_loop_preview_repeats_selected_root_and_excludes_hidden_tail_each_cycle() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 320,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 64,
+            })
+            .unwrap();
+        let tempo = editor.project().tempo_map().clone();
+        let repeated = preview_audio_view_resize(
+            editor.project().clip(clip).unwrap(),
+            &tempo,
+            320,
+            AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: 1100,
+            },
+        )
+        .unwrap();
+        let original = preview_audio_view_resize(
+            &repeated,
+            &tempo,
+            320,
+            AudioViewResizeOperation::CycleEnd { project_frame: 192 },
+        )
+        .unwrap();
+        let preview =
+            hex_project::preview_audio_clip_stretch(&original, TrimEdge::Right, 2112, &tempo, 320)
+                .unwrap();
+        let waveform = CachedWaveform::from_peaks(
+            256,
+            (0..256)
+                .map(|n| {
+                    let value = if n < 128 { 0.75 } else { 0.25 };
+                    [CachedPeak {
+                        min: value,
+                        max: value,
+                    }; 2]
+                })
+                .collect(),
+        )
+        .unwrap();
+        let projection = LoopProjection {
+            original,
+            preview,
+            tempo,
+            prepared: true,
+            accepted_origin: 64,
+            retimed: true,
+        };
+        let placement = AudioViewProjection::new(&projection.preview, &projection.tempo).unwrap();
+        assert!(placement.occurrence_count() >= 4);
+        for index in [0, 1, 3, placement.occurrence_count() - 1] {
+            let at = placement.occurrence(index).unwrap().destination_start + 8;
+            assert_eq!(
+                projection.peaks(&waveform, at..at + 1).unwrap()[0],
+                CachedPeak {
+                    min: 0.75,
+                    max: 0.75
+                },
+                "cycle {index}"
+            );
+        }
+        let end = projection.preview.start() + projection.preview.duration();
+        assert_eq!(
+            projection
+                .peaks(&waveform, projection.preview.start()..end)
+                .unwrap()[0],
+            CachedPeak {
+                min: 0.75,
+                max: 0.75
+            },
+            "dense columns summarize the selected cycle, not the hidden root tail"
+        );
     }
 }
