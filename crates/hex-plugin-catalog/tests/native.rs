@@ -78,7 +78,28 @@ fn selected_packaged_thin_and_universal_scan_persist_actual_uids_and_restart_wit
             module(name),
             cancellation.token(),
         );
-        assert!(update.status.contains("discovered"), "{}", update.status);
+        assert!(
+            update.status.contains("discovered"),
+            "{}; {:?}",
+            update.status,
+            update.diagnostics
+        );
+        let observed = update
+            .diagnostics
+            .as_ref()
+            .expect("actual scan observations");
+        assert_eq!(observed.module, module(name));
+        assert!(observed.scanner_started);
+        assert!(observed.scanner_exit.is_some_and(|s| s.success()));
+        assert!(
+            observed
+                .native_cleanup
+                .as_ref()
+                .is_some_and(|c| c.may_publish())
+        );
+        let report: hex_plugin_scan::macos::report::Report =
+            serde_json::from_slice(&observed.report).unwrap();
+        assert!(report.discovery.is_some());
         assert!(update.catalog.is_some());
     }
     let restored = Catalog::load(&fixture.catalog()).unwrap();
@@ -126,6 +147,25 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
         let owner = Cancellation::default();
         let failed = worker::scan(&fixture.catalog(), &app(), selected.clone(), owner.token());
         assert!(failed.status.contains("failed"), "{}", failed.status);
+        let observed = failed
+            .diagnostics
+            .as_ref()
+            .expect("failed scan observations");
+        assert_eq!(observed.module, selected);
+        assert!(observed.scanner_started, "{observed:?}");
+        assert!(observed.scanner_exit.is_some(), "{observed:?}");
+        let report: hex_plugin_scan::macos::report::Report =
+            serde_json::from_slice(&observed.report).expect("actual refused native report");
+        assert_eq!(report.bundle.canonical_path, selected);
+        assert!(report.cleanup.direct_reaped, "{observed:?}");
+        assert!(
+            !report.cleanup.pending && !report.cleanup.custody_lost,
+            "{observed:?}"
+        );
+        assert!(
+            report.error.is_some() || report.interruption.is_some(),
+            "{observed:?}"
+        );
         let saved = Catalog::load(&fixture.catalog()).unwrap();
         assert_eq!(
             saved.entries[0].last_good.as_ref().unwrap().executable,
@@ -165,6 +205,15 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
         }
     };
     thread.join().unwrap();
+    assert!(
+        cancelled
+            .diagnostics
+            .as_ref()
+            .is_some_and(|d| d.scanner_started && d.scanner_exit.is_some()),
+        "{}; {:?}",
+        cancelled.status,
+        cancelled.diagnostics
+    );
     assert!(
         cancelled.status.contains("cancelled"),
         "{}",

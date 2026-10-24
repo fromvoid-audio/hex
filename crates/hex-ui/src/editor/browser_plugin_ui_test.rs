@@ -162,17 +162,34 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
     wait(&mut visual, &editor);
     editor.read_with(&visual, |view, cx| {
         let rows = view.browser_visible_plugins(cx);
-        assert_eq!(rows.len(), 1, "{}", view.browser.plugins.status);
-        assert_eq!(rows[0].name, "hex original factory processor");
-        assert_eq!(rows[0].module, module);
-        assert_eq!(rows[0].status, "vst3 instrument · hosting unavailable");
-        assert_eq!(rows[0].vendor, "original extended vendor");
+        let evidence = || format!("{:?}", view.browser.plugins.scan_evidence());
+        assert_eq!(rows.len(), 1, "{}", evidence());
+        assert_eq!(
+            rows[0].name,
+            "hex original factory processor",
+            "{}",
+            evidence()
+        );
+        assert_eq!(rows[0].module, module, "{}", evidence());
+        assert_eq!(
+            rows[0].status,
+            "vst3 instrument · hosting unavailable",
+            "{}",
+            evidence()
+        );
+        assert_eq!(rows[0].vendor, "original extended vendor", "{}", evidence());
         assert!(
             rows[0]
                 .cid
-                .is_some_and(|id| id[..4] == *b"HEXF" && id[15] == 1)
+                .is_some_and(|id| id[..4] == *b"HEXF" && id[15] == 1),
+            "{}",
+            evidence()
         );
-        assert!(view.browser.plugins.status.contains("discovered"));
+        assert!(
+            view.browser.plugins.status.contains("discovered"),
+            "{}",
+            evidence()
+        );
     });
     assert!(visual.debug_bounds("browser-vst3-row-0").is_some());
     editor.update(&mut visual, |view, cx| {
