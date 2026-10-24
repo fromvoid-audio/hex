@@ -269,10 +269,7 @@ impl Render for RectangleDemo {
             }
             let handle = self.edges().handle_width(((end - start) * width).max(3.0));
             for part in [RectanglePart::Leading, RectanglePart::Trailing] {
-                rect = rect.child(
-                    rectangle_edge(part, handle, -1.0)
-                        .debug_selector(move || format!("rectangle-edge-{index}-{part:?}")),
-                );
+                rect = rect.child(rectangle_edge(part, handle, -1.0));
             }
             area = area.child(rect);
         }
@@ -288,7 +285,12 @@ impl Render for RectangleDemo {
             gpui::canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
-                    entity.update(cx, |view, _| view.bounds = Some(bounds));
+                    entity.update(cx, |view, cx| {
+                        if view.bounds != Some(bounds) {
+                            view.bounds = Some(bounds);
+                            cx.notify();
+                        }
+                    });
                     let down = entity.clone();
                     window.on_mouse_event(
                         move |event: &gpui::MouseDownEvent, phase, window, cx| {
@@ -395,6 +397,7 @@ mod tests {
                 cx.add_window(|_, cx| RectangleDemo::new(section, "rectangle-fixture".into(), cx));
             let view = handle.root(cx).unwrap();
             let mut visual = VisualTestContext::from_window(*handle, cx);
+            visual.update(|window, _| window.activate_window());
             visual.run_until_parked();
             let bounds = visual
                 .debug_bounds("rectangle-fixture-rectangle-0")
@@ -509,6 +512,7 @@ mod tests {
                     .add_window(|_, cx| RectangleDemo::new(section, "rectangle-narrow".into(), cx));
                 let view = handle.root(cx).unwrap();
                 let mut visual = VisualTestContext::from_window(*handle, cx);
+                visual.update(|window, _| window.activate_window());
                 visual.simulate_resize(gpui::size(px(240.0), px(240.0)));
                 visual.run_until_parked();
                 let a = visual.debug_bounds("rectangle-narrow-rectangle-0").unwrap();
@@ -557,14 +561,18 @@ mod tests {
                     view.read_with(cx, |view, _| {
                         assert_eq!(view.capture.unwrap().part, RectanglePart::Body)
                     });
-                    let _other = visual.update(|window, cx| {
-                        let other = cx.focus_handle();
-                        other.focus(window);
-                        other
-                    });
+                    visual.run_until_parked();
+                    assert!(
+                        visual.update(|window, cx| view.read(cx).focus.is_focused(window)),
+                        "capture focus before blur light={light}"
+                    );
+                    visual.update(|window, _| window.blur());
                     visual.run_until_parked();
                     view.read_with(cx, |view, _| {
-                        assert!(view.capture.is_none(), "blur retires held input")
+                        assert!(
+                            view.capture.is_none(),
+                            "blur retires held input light={light}"
+                        )
                     });
                 }
                 view.update(cx, |view, cx| view.set_enabled(false, cx));
