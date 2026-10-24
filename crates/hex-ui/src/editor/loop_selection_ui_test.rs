@@ -130,6 +130,109 @@ pub(super) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool
     visual.run_until_parked();
 }
 #[gpui::test]
+fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &mut TestAppContext) {
+    for key in ["l", "w", "cmd-l"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, audio, _, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let region = |visual: &VisualTestContext| {
+            editor.read_with(visual, |v, _| {
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .loop_region()
+                    .map(|r| (r.start(), r.end(), r.enabled()))
+            })
+        };
+        let initial = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), None, "no range to invent: {key}");
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().revision, initial)
+        });
+
+        click(&mut visual, audio, false);
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, true)), "{key}");
+        let enabled =
+            editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        visual.simulate_keystrokes(key);
+        // The canonical ACK has not been installed: another key cannot queue
+        // a duplicate action or resolve against the old enabled state.
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.worker_requests_pending, 1, "{key}");
+            assert!(v.pending_requests.is_empty());
+        });
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, false)), "{key}");
+        let disabled =
+            editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+        let mut expected = enabled.clone();
+        expected.loop_region = disabled.loop_region;
+        assert_eq!(disabled, expected, "toggle preserves music: {key}");
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), enabled)
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), disabled)
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, true)), "{key}");
+
+        // A different selection kind with equal canonical bounds still toggles.
+        editor.update(&mut visual, |v, _| {
+            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            v.time_selection = Some(TimeSelection {
+                anchor_track: track,
+                end_track: track,
+                anchor_frame: 0,
+                end_frame: 48_000,
+            });
+            v.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track,
+                frame: 0,
+                generation: v.project_generation,
+                pulse_color: 0,
+                pulse_started: Instant::now(),
+            });
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((0, 48_000, false)), "{key}");
+        // One frame of difference enables a new range, even with a remembered
+        // disabled loop and visually indistinguishable rounded positions.
+        editor.update(&mut visual, |v, _| {
+            v.time_selection.as_mut().unwrap().anchor_frame = 1;
+            v.edit_cursor.as_mut().unwrap().frame = 1;
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        assert_eq!(region(&visual), Some((1, 48_000, true)), "{key}");
+        editor.update(&mut visual, |v, _| {
+            v.time_selection = None;
+            v.edit_cursor = None;
+            v.selected_clip = None;
+            v.clip_selection = Default::default();
+        });
+        for enabled in [false, true] {
+            visual.simulate_keystrokes(key);
+            pump(&editor, &mut visual);
+            assert_eq!(region(&visual), Some((1, 48_000, enabled)), "{key}");
+        }
+    }
+}
+
+#[gpui::test]
 fn loop_selection_keys_set_audio_midi_and_multi_clip_bounds_preserving_contents_selection_and_history(
     cx: &mut TestAppContext,
 ) {
@@ -174,18 +277,8 @@ fn loop_selection_keys_set_audio_midi_and_multi_clip_bounds_preserving_contents_
             );
             snapshot
         });
-        visual.simulate_keystrokes("l");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
-            assert_eq!(
-                v.state.as_ref().unwrap().project.snapshot(),
-                after,
-                "reassert, never toggle"
-            )
-        });
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
-        // A redundant canonical edit is a no-op in history.
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
@@ -259,7 +352,7 @@ fn w_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    // No selection must not create a loop or toggle an existing one.
+    // No selection and no remembered range must not invent a loop.
     visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
@@ -364,8 +457,14 @@ fn w_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.state.as_ref().unwrap().revision, revision)
+        assert_eq!(v.state.as_ref().unwrap().revision, revision + 1);
+        let region = v.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!(
+            (region.start(), region.end(), region.enabled()),
+            (0, 48_000, false)
+        );
     });
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     editor.update(&mut visual, |v, _| {
         let mut history =
             hex_project::Editor::new(v.state.as_ref().unwrap().project.as_ref().clone(), 4)
@@ -391,7 +490,7 @@ fn w_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
-            !v.state
+            v.state
                 .as_ref()
                 .unwrap()
                 .project
@@ -486,15 +585,13 @@ fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
             assert_eq!(v.selected_clip_ids(), selection);
             p.snapshot()
         });
-        visual.simulate_keystrokes("cmd-l");
-        pump(&editor, &mut visual);
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
                 before,
-                "reasserted Command-L adds no Undo"
+                "Command-L selection is one history edit"
             )
         });
         visual.simulate_keystrokes("cmd-shift-z");
@@ -552,7 +649,10 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
-            assert_eq!((r.start(), r.end(), r.enabled()), (12_000, 36_000, true));
+            assert_eq!(
+                (r.start(), r.end(), r.enabled()),
+                (12_000, 36_000, !project_scope)
+            );
             assert_eq!(v.time_selection.unwrap().anchor_frame, 36_000);
             assert_eq!(v.time_selection_project_scope, project_scope);
         });
@@ -604,10 +704,13 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
-            revision,
-            "empty selection no-op"
-        )
+            revision + 1,
+            "empty selection toggles the remembered loop"
+        );
+        let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!((r.start(), r.end(), r.enabled()), (12_000, 36_000, true));
     });
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     click(&mut visual, audio, false);
     editor.update(&mut visual, |v, _| {
         v.worker_requests_pending = 1;
