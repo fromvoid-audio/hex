@@ -193,7 +193,7 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
     let files = sampler_export::tests::Files::new(false);
     let (mut session, private) = sampler_export::tests::direct_sampler(&files);
     drop(private);
-    let sink = OfflineSink {
+    let mut sink = OfflineSink {
         observed: Arc::new(Observed::default()),
         pending: None,
     };
@@ -202,11 +202,15 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
         .unwrap()
         .prepare(
             session.project(),
-            &sink,
+            &mut sink,
             &session.media_bank(),
             session.sine_table(),
             &session.audio_transforms,
             &session.audio_clip_waveforms,
+            hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 0,
+            },
         )
         .unwrap();
     assert!(snapshot.prepared.requires_device_resources());
@@ -235,11 +239,15 @@ fn ordinary_export_scope_budget_and_failed_dispatch_refuse_without_publishing() 
         .unwrap()
         .prepare(
             session.project(),
-            &sink,
+            &mut sink,
             &session.media_bank(),
             session.sine_table(),
             &session.audio_transforms,
             &session.audio_clip_waveforms,
+            hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 0,
+            },
         )
         .unwrap();
     let mut wrong = sampler_export::tests::job(&source, files.output().to_owned());

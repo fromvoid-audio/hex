@@ -708,6 +708,15 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .tempo_map()
             .beat_to_frame(BeatTime::from_quarters(2).unwrap())
             .unwrap();
+        let expected_from_start = |start: u64| -> [hex_engine::Frame; 64] {
+            std::array::from_fn(|i| source_period[((start + i as u64) % loop_frames % 64) as usize])
+        };
+        let expected_at = |end: u64| {
+            let start = (end + loop_frames - 64) % loop_frames;
+            std::array::from_fn::<_, 64, _>(|index| {
+                source_period[((start + index as u64) % loop_frames % 64) as usize]
+            })
+        };
         let mut intent = h.seek_intent(2, event.state.revision, None, None);
         intent.destination_frame = 0;
         intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
@@ -729,6 +738,12 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .instrument()
             .unwrap();
         let before_comparison = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let comparison_clock = (
+            status.position.load(Acquire),
+            status.performance_frame.load(Acquire),
+        );
+        assert_eq!(before_comparison, expected_at(comparison_clock.0));
         event = h.run(Request::CompareDevice {
             owner: hex_session::service::preset::Owner {
                 project_generation: 0,
@@ -750,7 +765,17 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 .load(Acquire),
             applied
         );
-        assert_eq!(h.render(), before_comparison);
+        let compared = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(
+            status.performance_frame.load(Acquire),
+            comparison_clock.1 + 64
+        );
+        assert_eq!(
+            status.position.load(Acquire),
+            (comparison_clock.0 + 64) % loop_frames
+        );
+        assert_eq!(compared, expected_at(status.position.load(Acquire)));
         let before_noop = event.state.project.snapshot();
         let noop = run_callback(
             &mut h,
@@ -836,6 +861,15 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 .position
                 .load(Acquire);
             let before_pcm = h.render();
+            let before_status = h.audio.as_ref().unwrap().status().unwrap();
+            let before_clock = (
+                before_status.position.load(Acquire),
+                before_status.performance_frame.load(Acquire),
+            );
+            if unchanged_prefix {
+                assert_eq!(before_pcm, expected_from_start(before_frame));
+                assert_eq!(before_pcm, expected_at(before_clock.0));
+            }
             let request = if matches!(&command, Command::RenameTrack { .. }) {
                 Request::Edit(command)
             } else {
@@ -864,20 +898,21 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             let heard = h.render();
             assert!(heard.iter().flatten().any(|s| *s != 0.0));
             if unchanged_prefix {
-                let expected = |start: u64| -> [hex_engine::Frame; 64] {
-                    std::array::from_fn(|i| {
-                        source_period[((start + i as u64) % loop_frames % 64) as usize]
-                    })
-                };
+                assert_eq!(heard, expected_from_start(heard_frame));
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                let after_clock = (
+                    status.position.load(Acquire),
+                    status.performance_frame.load(Acquire),
+                );
+                assert!(after_clock.1 >= before_clock.1 + 64);
                 assert_eq!(
-                    before_pcm,
-                    expected(before_frame),
-                    "original PCM oracle at the actual content position"
+                    after_clock.0,
+                    (before_clock.0 + after_clock.1 - before_clock.1) % loop_frames
                 );
                 assert_eq!(
                     heard,
-                    expected(heard_frame),
-                    "metadata or duplicating later music must retain held-note phase and amplitude at content frame {heard_frame}"
+                    expected_at(after_clock.0),
+                    "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
                 );
             }
             event = run_callback(&mut h, Request::Undo);

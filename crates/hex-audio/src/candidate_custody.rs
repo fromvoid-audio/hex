@@ -707,6 +707,12 @@ impl CandidateRoot {
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)
     }
+    pub(crate) fn domain_endpoint_installed(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.endpoint_installed(token)
+    }
+    pub(crate) fn domain_has_no_graph_users(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.domain_has_no_graph_users(token)
+    }
     pub(crate) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
         self.0.eligible.domain_is_sealed(token)
     }
@@ -797,7 +803,8 @@ impl CandidateRoot {
                         return false;
                     }
                 }
-                crate::prepared::ReturnedPublication::Legacy(value) => {
+                crate::prepared::ReturnedPublication::Legacy(mut value) => {
+                    value.release_streams_on_control(self);
                     returns.pending = true;
                     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
                         returns.first_panic = Some(payload);
@@ -1204,6 +1211,41 @@ pub struct AudioCandidateCustodyReport {
     pub metadata_bytes: Option<usize>,
     pub runtime_and_shared_overhead_unknown: bool,
 }
+
+impl CandidateRoot {
+    pub(crate) fn configure_ordinary_streams(
+        &self,
+        reservation: AudioCandidateDomainReservation,
+        extents: usize,
+        metadata_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let ordinary = eligible::OrdinaryReservation {
+            extents,
+            metadata_bytes,
+        }
+        .validate_requested()?;
+        self.configure_domains(reservation)?;
+        self.0.eligible.configure_ordinary_streams(ordinary)
+    }
+    pub(crate) fn ordinary_streams_configured(&self) -> bool {
+        self.0.eligible.ordinary_streams_configured()
+    }
+    pub(crate) fn prepare_ordinary_streams(
+        &self,
+        playback: &hex_engine::playback::Playback,
+        revision: u64,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<Box<OrdinaryStreams>, &'static str> {
+        self.0
+            .eligible
+            .prepare_ordinary_streams(playback, revision, context)
+    }
+    pub(crate) fn release_ordinary_streams(&self, streams: Box<OrdinaryStreams>) {
+        self.0.eligible.release_ordinary_streams(streams);
+    }
+}
+
+pub(crate) use eligible::{ActiveView as StreamActiveView, OrdinaryStreams};
 
 #[cfg(test)]
 mod tests {

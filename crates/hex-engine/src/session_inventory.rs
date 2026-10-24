@@ -437,9 +437,9 @@ impl PreparedSessionInventory {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_with_sampler_sources(
-        project: &Project,
-        media: &BTreeMap<AssetId, Audio>,
+    pub(crate) fn prepare_with_source_bank<'a>(
+        project: &'a Project,
+        sources: crate::compile::SourceBank<'a>,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
@@ -452,7 +452,7 @@ impl PreparedSessionInventory {
             previous,
             instruments,
             Some(shared_contexts),
-            |asset, rate| resolve_resident(asset, rate, media),
+            |asset, rate| sources.resolve(asset, rate),
             samplers,
         )
     }

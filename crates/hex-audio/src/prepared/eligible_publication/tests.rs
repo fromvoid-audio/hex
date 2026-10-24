@@ -634,3 +634,5 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
 }
 
 mod foreign_source;
+#[cfg(feature = "allocation-probe")]
+mod ordinary;

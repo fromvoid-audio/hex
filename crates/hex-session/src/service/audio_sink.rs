@@ -2,7 +2,12 @@
 //! Session owns no device or page endpoints and never interprets their tokens.
 use super::*;
 use std::time::Duration;
+mod file_sources;
 pub(super) mod native_sampler;
+pub use file_sources::{
+    ResidentFileInput, ResidentFileMetadata, ResidentFilePublication, ResidentFileSeekPreparer,
+    ResidentFileSeekRequest, ResidentFileSet,
+};
 pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
 };
@@ -113,12 +118,49 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Ordinary source-planning defaults, independent of the document mode.
+    /// A host opts in only with bounded file preparation/publication consumers.
+    fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
+        None
+    }
+    /// Supply compiler facts for this captured precommit source set. This may
+    /// reserve a catalog generation but grants no source/page custody. Actual
+    /// catalog verification and endpoint delivery precede final publication.
+    fn prepare_resident_file_metadata(
+        &mut self,
+        input: ResidentFileInput<'_>,
+    ) -> Result<Option<ResidentFileMetadata>, String> {
+        if input.files.is_empty() {
+            Ok(None)
+        } else {
+            Err("ordinary file-backed playback is unavailable for this output".into())
+        }
+    }
     /// Optional stateless offline renderer. Query only on the Session worker;
     /// the returned function runs on the existing export worker with an exact
     /// canonical snapshot. It must use independent bounded pages/verification,
-    /// never borrow native output/catalog/readiness or private source custody.
+    /// never borrow native output/catalog/readiness. Optional ordinary compiler
+    /// resources remain borrowed from the admitted job; private constructor
+    /// source custody is not composed with page rendering.
     fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
         None
+    }
+
+    /// Prepare ordinary file-backed history on the existing seek worker, using
+    /// independent bounded offline pages and the exact captured compiler scope.
+    /// This stateless function grants no native submission/readiness authority.
+    fn resident_file_seek_preparer(&self) -> Option<ResidentFileSeekPreparer> {
+        None
+    }
+    /// Conservative listed peak for the independent offline page owner, quoted
+    /// before starting a worker/pool. Opaque allocator/thread/OS costs remain
+    /// separate bounded obligations, not a process-memory receipt.
+    fn resident_file_seek_storage_bytes(
+        &self,
+        _prepared: &PreparedRevision,
+        _sources: &ResidentFileSet,
+    ) -> Result<usize, String> {
+        Err("file-backed seek preparation is unavailable".into())
     }
 
     /// Output ownership policy, independent of device presence or availability. A native consumer
@@ -165,6 +207,39 @@ pub trait WorkerAudioSink: Send {
             playback,
             error: "ordinary worker publication is unavailable".into(),
         })
+    }
+    /// Same ordinary resource publisher with captured file facts and borrowed
+    /// cancellation. Hosts without file consumers keep the resident-only path;
+    /// metadata alone cannot authorize a streamed graph or offline recovery.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+    fn publish_resident_with_files(
+        &mut self,
+        playback: Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        metadata_limit: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+        _files: Option<ResidentFilePublication<'_>>,
+    ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        if playback.contains_streamed_sources() {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "ordinary file-backed publication is unavailable for this output".into(),
+            });
+        }
+        self.publish_resident(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            metadata_limit,
+            admit,
+        )
     }
     /// Retry an already admitted offline candidate only while the canonical worker lends the
     /// current source/export/control union. Pending custody is not released by cancellation/ACK.
@@ -257,6 +332,12 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.ordinary_source_reservation())
+    }
+
     pub(super) fn new(
         sender: SyncSender<Event>,
         shutdown: Arc<AtomicBool>,

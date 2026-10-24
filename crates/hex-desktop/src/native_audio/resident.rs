@@ -15,6 +15,7 @@ use hex_session::service::{
 
 pub(super) struct Pending {
     playback: Playback,
+    file_sources: Option<hex_session::service::ResidentFileSet>,
     resources: Option<PreparedDeviceResources>,
     observation: Arc<hex_engine::PreparedPlaybackObservation>,
     metadata: ResidentPublicationMetadata,
@@ -230,6 +231,7 @@ impl NativeAudioSink {
         policy: ResidentPublicationPolicy,
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+        file_sources: Option<&hex_session::service::ResidentFileSet>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.remember_applied_loop();
         self.poll_section_edit();
@@ -494,6 +496,7 @@ impl NativeAudioSink {
         self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
         self.resident.pending = Some(Pending {
             playback,
+            file_sources: file_sources.cloned(),
             resources: captured,
             observation,
             metadata,
@@ -515,8 +518,27 @@ impl NativeAudioSink {
         let Some(pending) = self.resident.pending.take() else {
             return;
         };
+        if let Some(files) = pending.file_sources.as_ref() {
+            match self.poll_resident_files(files) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.resident.pending = Some(pending);
+                    return;
+                }
+                Err(error) => {
+                    self.observe(
+                        pending.metadata.context,
+                        "resident-source-refused",
+                        EditorPublicationState::Refused(error),
+                    );
+                    self.resident.pending = Some(pending);
+                    return;
+                }
+            }
+        }
         let Pending {
             playback,
+            file_sources,
             resources,
             observation,
             metadata,
@@ -541,9 +563,11 @@ impl NativeAudioSink {
             policy,
             0,
             &mut with_capture,
+            file_sources.as_ref(),
         ) {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,
+                file_sources,
                 resources,
                 observation,
                 metadata,

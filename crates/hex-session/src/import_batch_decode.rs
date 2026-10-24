@@ -212,6 +212,7 @@ pub struct AudioBatchImport {
     resident_frames: u64,
     resident_assets: usize,
     max_resident_frames: u64,
+    pcm_frame_allowance: u64,
     source_epoch: u64,
     control: Arc<AudioBatchControl>,
 }
@@ -304,9 +305,61 @@ impl AudioBatchImport {
             resident_frames: session.resident_frames(),
             resident_assets: session.media.len(),
             max_resident_frames: session.max_resident_frames(),
+            pcm_frame_allowance: session
+                .max_resident_frames()
+                .min(RETAINED_FRAMES)
+                .saturating_sub(session.resident_frames()),
             source_epoch: session.semantic_source_epoch,
         })
     }
+    /// Restrict decoding to the actual working allowance captured by the host.
+    /// Final publication still performs its original resource admission.
+    pub(crate) fn with_pcm_frame_allowance(mut self, allowance: u64) -> Self {
+        self.pcm_frame_allowance = self.pcm_frame_allowance.min(allowance);
+        self
+    }
+
+    fn requires_file_backing(
+        &self,
+        session: &Session,
+        current: &mut impl FnMut() -> AudioBatchContext,
+    ) -> Result<bool, AudioBatchError> {
+        let Some(reservation) = session.source_plan_reservation() else {
+            return Ok(false);
+        };
+        let mut required = 0u64;
+        for path in &self.paths {
+            self.check(current)?;
+            // Preserve the resident decoder's broader encoding support when a
+            // fixed-frame header cannot describe a source that may still fit.
+            let Ok(reader) = hex_media::WavFrameReader::open(path, reservation.reader.reader)
+            else {
+                continue;
+            };
+            let output = hex_project::converted_frame_count(
+                reader.source_frames(),
+                reader.sample_rate(),
+                session.project().sample_rate(),
+            )
+            .map_err(SessionError::from)?;
+            let frames = if reader.sample_rate() == session.project().sample_rate() {
+                reader.source_frames()
+            } else {
+                reader
+                    .source_frames()
+                    .checked_add(output)
+                    .ok_or(SessionError::Invalid("import pcm frame count overflow"))?
+            };
+            required = required
+                .checked_add(frames)
+                .ok_or(SessionError::Invalid("import pcm frame count overflow"))?;
+            if required > self.pcm_frame_allowance {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn control(&self) -> Arc<AudioBatchControl> {
         Arc::clone(&self.control)
     }
@@ -392,20 +445,19 @@ impl AudioBatchImport {
         {
             return Err(AudioBatchError::ContextChanged);
         }
-        if session.audio_mode() == crate::DocumentAudioMode::VerifiedStreaming {
+        if session.audio_mode() == crate::DocumentAudioMode::VerifiedStreaming
+            || self.requires_file_backing(session, current)?
+        {
             if self.options.warp != hex_project::AudioImportWarp::Off {
                 return Err(SessionError::Invalid(
                     "auto-warp import is unavailable for this audio backend",
                 )
                 .into());
             }
-            return self.run_verified(session, previous, current);
+            storage(session, &[])?;
+            return self.run_verified(session, previous, current, prepare);
         }
-        let mut remaining = self
-            .max_resident_frames
-            .min(RETAINED_FRAMES)
-            .checked_sub(self.resident_frames)
-            .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+        let mut remaining = self.pcm_frame_allowance;
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(self.paths.len())
@@ -505,6 +557,10 @@ impl AudioBatchImport {
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         current: &mut impl FnMut() -> AudioBatchContext,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
         let mut sources = Vec::new();
         sources
@@ -545,6 +601,7 @@ impl AudioBatchImport {
             self.destination,
             &self.project,
             previous,
+            self.options.overwrite,
             || {
                 if let Err(error) = self.check(current) {
                     admission_error = Some(error);
@@ -556,6 +613,7 @@ impl AudioBatchImport {
                 }
                 Ok(())
             },
+            prepare,
         );
         match result {
             Ok(value) => Ok(value),
