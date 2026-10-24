@@ -64,6 +64,12 @@ impl WorkerAudioSink for Sink {
         let output_identity = control.output_identity().unwrap();
         let policy = match policy {
             ResidentPublicationPolicy::InheritRuntime => PublicationPolicy::InheritRuntime,
+            ResidentPublicationPolicy::InheritRuntimeAt(_) => {
+                return Err(ResidentPublicationRefusal {
+                    playback,
+                    error: "fixture does not capture resident loop witnesses".into(),
+                });
+            }
             ResidentPublicationPolicy::InstallFreshRuntime => {
                 PublicationPolicy::InstallFreshRuntime
             }
