@@ -103,6 +103,11 @@ impl Item {
             Demo::Workspace(WorkspaceKind::LevelMeter) => {
                 ("level meter", "workspace", "level_meter")
             }
+            Demo::Workspace(WorkspaceKind::TimeMarkers) => (
+                "time selection markers",
+                "workspace",
+                "time_position_marker",
+            ),
             Demo::Workspace(WorkspaceKind::ScrollingList) => (
                 "scrolling list composition",
                 "compositions",
@@ -367,6 +372,7 @@ pub(super) fn inventory() -> Vec<Item> {
         ),
         ("popup menu · icon grid", WorkspaceKind::Menu(true)),
         ("level meter", WorkspaceKind::LevelMeter),
+        ("time selection markers", WorkspaceKind::TimeMarkers),
         (
             "meter indicator · mono",
             WorkspaceKind::MeterIndicator(MeterChannels::Mono),
