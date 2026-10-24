@@ -418,3 +418,36 @@ fn finite_audio_placement_renders_repeat_phase_partial_cycle_and_once_silence() 
         assert!(editor.project().clip(clip).is_some());
     }
 }
+
+#[test]
+fn accepted_preview_root_keeps_hidden_pcm_and_exhausted_once_source_under_the_transform_owner() {
+    for (mode, phase) in [(AudioViewMode::Repeat, 500), (AudioViewMode::Once, 2500)] {
+        let (editor, clip, media) = placed(mode, phase);
+        let source = &media[&editor.project().clip(clip).unwrap().asset()];
+        let transforms = AudioTransformPreparation::default();
+        let first = transforms
+            .preview_root(editor.project(), clip, source)
+            .unwrap()
+            .unwrap();
+        let again = transforms
+            .preview_root(editor.project(), clip, source)
+            .unwrap()
+            .unwrap();
+        assert!(
+            first.audio.shares_pcm_with(&again.audio),
+            "root query uses the existing cache"
+        );
+        assert_eq!(first.audio.frames().len(), 8000);
+        assert_eq!(
+            first.audio.frames(),
+            source.frames(),
+            "root keeps samples outside the visible cycle and Once cursor"
+        );
+        let wrong = Audio::new(44100, vec![[0.0; 2]; 8000]).unwrap();
+        assert!(
+            transforms
+                .preview_root(editor.project(), clip, &wrong)
+                .is_err()
+        );
+    }
+}

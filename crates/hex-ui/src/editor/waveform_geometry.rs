@@ -52,6 +52,7 @@ struct WaveformGeometryKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
+    Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
         timeline_origin: u64,
         root_offset: u64,
@@ -249,6 +250,7 @@ impl WaveformGeometryCache {
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
+    Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
         timeline_origin: u64,
         root_offset: u64,
@@ -352,6 +354,7 @@ fn waveform_geometry_key(
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
         WaveformMapping::Stretch(projection) => WaveformMappingKey::Stretch(Arc::clone(projection)),
+        WaveformMapping::Loop(projection) => WaveformMappingKey::Loop(Arc::clone(projection)),
         WaveformMapping::Prepared {
             timeline_origin,
             root_offset,
@@ -445,6 +448,7 @@ pub(super) fn prepare_waveform_geometry(
     let columns = last.saturating_sub(first);
     let gain = match mapping {
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
+        WaveformMapping::Loop(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
         WaveformMapping::GainedSource { gain, .. } | WaveformMapping::Prepared { gain, .. } => {
             gain.linear()
@@ -461,6 +465,7 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::Loop(projection) => projection.peaks(waveform, start..end),
             WaveformMapping::Stretch(projection) => {
                 let ranges = projection.ranges(start..end, waveform.source_frames);
                 aggregate_ranges(waveform, ranges.as_slice())

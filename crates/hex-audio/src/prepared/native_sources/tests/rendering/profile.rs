@@ -63,7 +63,7 @@ fn actual_native_queued_graph_callback_profile() {
             // reply. Waiting longer would mask real pipeline deadline faults.
             let dispatched = Instant::now();
             let reply = loop {
-                if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() >= block as u64 + 1 {
+                if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() > block as u64 {
                     break Some(dispatched.elapsed().as_nanos());
                 }
                 if Instant::now() >= next_target {

@@ -20,8 +20,8 @@ impl SessionPlayback {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
-        let region = self.loop_region();
-        let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+        let region = self.active_loop_region();
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let beat = timing
             .frame_to_beat(performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
