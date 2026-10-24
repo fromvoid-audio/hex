@@ -273,7 +273,8 @@ fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_l
         revision: added.state.revision,
         track,
         empty_sampler: None,
-        path: periodic_source(&files, 48_000),
+        // Keep natural source exhaustion beyond the held-note/release checks.
+        path: periodic_source(&files, 192_000),
         cancel: Arc::new(AtomicBool::new(false)),
     });
     (applied, _) = h.applied(applied);
