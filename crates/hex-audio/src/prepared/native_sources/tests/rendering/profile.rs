@@ -54,123 +54,125 @@ fn actual_native_queued_graph_callback_profile() {
             scope.spawn(|| {
                 qos_threads::set_current_thread(qos_threads::Qos::High).unwrap();
                 let mut target = Instant::now();
-        for block in 0..WARMUP + MEASURED {
-            if let Some(remaining) = target.checked_duration_since(Instant::now()) {
-                std::thread::sleep(remaining);
-            }
-            let published = crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap();
-            let mut pending = None;
-            data.owner_mut().unwrap().run(|callback, _| {
-                pending = callback.native_sources.test_pending_requests(binding);
-            });
-            let pending = pending.unwrap();
-            // CPU-clock calls are outside the measured callback/allocation
-            // scope. Wall time alone cannot distinguish callback work from a
-            // descheduled headless test thread or an OS wait/page fault.
-            let cpu_start = thread_cpu_time();
-            let start = Instant::now();
-            let gap =
-                previous_start.map_or(Duration::ZERO, |previous| start.duration_since(previous));
-            previous_start = Some(start);
-            let lateness = start.saturating_duration_since(target);
-            let next_target = target + period;
-            let mut delivered = false;
-            let mut phases = [0; 3];
-            allocation_free(|| {
-                data.owner_mut().unwrap().run(|callback, _| {
-                    callback.begin_block();
-                    callback.begin_native_effect_callback(QUANTUM).unwrap();
-                    let prepared = Instant::now();
-                    let rendered = callback.render(&mut output);
-                    let rendered_at = Instant::now();
-                    let fault = callback.native_sources.test_transport_fault(binding);
-                    delivered = crate::device::finish_host_chunk(
-                        callback,
-                        &mut host,
-                        &mut output,
-                        2,
-                        &rendered,
-                        (block * QUANTUM) as u64,
-                        Instant::now(),
-                    );
-                    if !delivered {
-                        failure = Some((
-                            block,
-                            fault,
-                            published,
-                            pending,
-                            gap.as_nanos(),
-                            lateness.as_nanos(),
-                        ));
+                for block in 0..WARMUP + MEASURED {
+                    if let Some(remaining) = target.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(remaining);
                     }
-                    let finished = Instant::now();
-                    phases = [
-                        prepared.duration_since(start).as_nanos(),
-                        rendered_at.duration_since(prepared).as_nanos(),
-                        finished.duration_since(rendered_at).as_nanos(),
-                    ];
-                })
-            });
-            let elapsed = start.elapsed();
-            let cpu_elapsed = thread_cpu_time().checked_sub(cpu_start).unwrap();
-            // Stop observing at the next scheduled callback even without a
-            // reply. Waiting longer would mask real pipeline deadline faults.
-            let dispatched = Instant::now();
-            let reply = if delivered {
-                loop {
-                    if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() > block as u64 {
-                    break Some(dispatched.elapsed().as_nanos());
-                }
-                    if Instant::now() >= next_target {
-                        break None;
-                    }
-                    std::thread::yield_now();
-                }
-            } else {
-                None
-            };
-            if delivered {
-                delivered_blocks += 1;
-            } else {
-                assert_eq!(
-                    host,
-                    [0.0; QUANTUM * 2],
-                    "failed callback must expose whole-host silence"
-                );
-            }
-            for (index, actual) in output.iter().enumerate() {
-                if !delivered {
-                    break;
-                }
-                let at = block * QUANTUM + index;
-                let expected = at
-                    .checked_sub(2 * QUANTUM)
-                    .and_then(|i| samples.get(i))
-                    .map_or([0.0; 2], |sample| {
-                        let gain = if location == 1 { 1.5 } else { 0.5 };
-                        [sample[0] * gain, sample[1] * gain]
+                    let published = crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap();
+                    let mut pending = None;
+                    data.owner_mut().unwrap().run(|callback, _| {
+                        pending = callback.native_sources.test_pending_requests(binding);
                     });
-                assert_eq!(
-                    *actual, expected,
-                    "profile PCM owner {location}, frame {at}"
-                );
-            }
-            if block >= WARMUP {
-                callback_ns.push(elapsed.as_nanos());
-                callback_cpu_ns.push(cpu_elapsed.as_nanos());
-                callback_phase_ns.push(phases);
-                reply_ns.push(reply);
-                lateness_ns.push(lateness.as_nanos());
-                gap_ns.push(gap.as_nanos());
-                published_before.push(published);
-                pending_before.push(pending);
-            }
-            if failure.is_some() {
-                break;
-            }
-            target = next_target;
-        }
-            }).join().unwrap();
+                    let pending = pending.unwrap();
+                    // CPU-clock calls are outside the measured callback/allocation
+                    // scope. Wall time alone cannot distinguish callback work from a
+                    // descheduled headless test thread or an OS wait/page fault.
+                    let cpu_start = thread_cpu_time();
+                    let start = Instant::now();
+                    let gap =
+                        previous_start.map_or(Duration::ZERO, |previous| start.duration_since(previous));
+                    previous_start = Some(start);
+                    let lateness = start.saturating_duration_since(target);
+                    let next_target = target + period;
+                    let mut delivered = false;
+                    let mut phases = [0; 3];
+                    allocation_free(|| {
+                        data.owner_mut().unwrap().run(|callback, _| {
+                            callback.begin_block();
+                            callback.begin_native_effect_callback(QUANTUM).unwrap();
+                            let prepared = Instant::now();
+                            let rendered = callback.render(&mut output);
+                            let rendered_at = Instant::now();
+                            let fault = callback.native_sources.test_transport_fault(binding);
+                            delivered = crate::device::finish_host_chunk(
+                                callback,
+                                &mut host,
+                                &mut output,
+                                2,
+                                &rendered,
+                                (block * QUANTUM) as u64,
+                                Instant::now(),
+                            );
+                            if !delivered {
+                                failure = Some((
+                                    block,
+                                    fault,
+                                    published,
+                                    pending,
+                                    gap.as_nanos(),
+                                    lateness.as_nanos(),
+                                ));
+                            }
+                            let finished = Instant::now();
+                            phases = [
+                                prepared.duration_since(start).as_nanos(),
+                                rendered_at.duration_since(prepared).as_nanos(),
+                                finished.duration_since(rendered_at).as_nanos(),
+                            ];
+                        })
+                    });
+                    let elapsed = start.elapsed();
+                    let cpu_elapsed = thread_cpu_time().checked_sub(cpu_start).unwrap();
+                    // Stop observing at the next scheduled callback even without a
+                    // reply. Waiting longer would mask real pipeline deadline faults.
+                    let dispatched = Instant::now();
+                    let reply = if delivered {
+                        loop {
+                            if crate::candidate_custody::native_source_test_fixture::original_worker_published_blocks(&root, binding).unwrap() > block as u64 {
+                            break Some(dispatched.elapsed().as_nanos());
+                        }
+                            if Instant::now() >= next_target {
+                                break None;
+                            }
+                            std::thread::yield_now();
+                        }
+                    } else {
+                        None
+                    };
+                    if delivered {
+                        delivered_blocks += 1;
+                    } else {
+                        assert_eq!(
+                            host,
+                            [0.0; QUANTUM * 2],
+                            "failed callback must expose whole-host silence"
+                        );
+                    }
+                    for (index, actual) in output.iter().enumerate() {
+                        if !delivered {
+                            break;
+                        }
+                        let at = block * QUANTUM + index;
+                        let expected = at
+                            .checked_sub(2 * QUANTUM)
+                            .and_then(|i| samples.get(i))
+                            .map_or([0.0; 2], |sample| {
+                                let gain = if location == 1 { 1.5 } else { 0.5 };
+                                [sample[0] * gain, sample[1] * gain]
+                            });
+                        assert_eq!(
+                            *actual, expected,
+                            "profile PCM owner {location}, frame {at}"
+                        );
+                    }
+                    if block >= WARMUP {
+                        callback_ns.push(elapsed.as_nanos());
+                        callback_cpu_ns.push(cpu_elapsed.as_nanos());
+                        callback_phase_ns.push(phases);
+                        reply_ns.push(reply);
+                        lateness_ns.push(lateness.as_nanos());
+                        gap_ns.push(gap.as_nanos());
+                        published_before.push(published);
+                        pending_before.push(pending);
+                    }
+                    if failure.is_some() {
+                        break;
+                    }
+                    target = next_target;
+                }
+            })
+            .join()
+            .unwrap();
         });
         // The paced stream ended. Observe its final actual completion on
         // control before requesting retirement, outside the measurement.
