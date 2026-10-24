@@ -284,8 +284,8 @@ console. click an empty place to add a point, drag a point to change its source
 beat and gain, or press **backspace** to remove the selected point. the graph uses
 linear gain: **0** is silence, **1** is unity and **4** is the maximum. straight
 lines interpolate between points. the grid button controls snapping; hold
-**command** to invert snapping or **shift** for a fine drag. **escape** or leaving
-the window cancels a held edit. releasing commits one undo step, with the final
+**command** to invert snapping or **shift** for a fine drag. **escape** or losing
+window focus cancels a held edit. releasing commits one undo step, with the final
 preview retained while the edit finishes. the reset control restores unity.
 choose **notes** to return to note editing. these points belong to the clip and
 are retained by save, reopen, undo and redo.

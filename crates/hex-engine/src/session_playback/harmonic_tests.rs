@@ -669,3 +669,69 @@ fn first_harmonic_edit_preserves_live_clip_volume_ramp_in_arrangement_and_consol
         }
     }
 }
+
+#[test]
+fn arrangement_clip_gain_uses_content_clock_after_looped_tempo_handoff() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let run = |volume: bool| {
+        let source = edit(
+            &fixture(1, 1 << 22),
+            &[
+                (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+                (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+            ],
+        );
+        let clip = source.tracks()[0].midi_clips()[0].id();
+        let mut snapshot = source.snapshot();
+        snapshot.loop_region = Some(LoopRegion::new(0, 24_000, true).unwrap());
+        let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+        if volume {
+            let length = editor.project().midi_source(clip).unwrap().source_length();
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            MidiClipGain::new(0.25).unwrap(),
+                        )],
+                        length,
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        let mut old = start(editor.project(), false);
+        old.render(&mut vec![[0.0; 2]; 60_000]).unwrap();
+        assert_eq!(old.arrangement_frame(), 12_000);
+        assert!(
+            old.mutable_instruments[0]
+                .as_ref()
+                .unwrap()
+                .committed_is_quiescent()
+        );
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tempo_points = vec![TempoPoint::new(
+            BeatTime::ZERO,
+            Tempo::new(90_000_000).unwrap(),
+        )];
+        let changed = Project::from_snapshot(snapshot).unwrap();
+        let mut next =
+            SessionPlayback::new(prepared(&changed, Some(old.revision.session()))).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert!(next.clock_anchor().is_some());
+        let mut output = vec![[0.0; 2]; 24_000];
+        for block in output.chunks_mut(17) {
+            next.render(block).unwrap();
+        }
+        output
+    };
+    let baseline = run(false);
+    let actual = run(true);
+    assert!(baseline.iter().flatten().any(|v| v.abs() > 1e-3));
+    for (a, b) in actual.iter().zip(baseline) {
+        for c in 0..2 {
+            assert!((a[c] - b[c] * 0.25).abs() < 2e-7);
+        }
+    }
+}

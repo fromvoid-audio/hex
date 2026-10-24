@@ -2152,7 +2152,9 @@ fn render_mutable_instrument_chunk<T: crate::prepared_tempo::MidiTempoBreaks + ?
                         if at >= endpoint.frame {
                             return Ok(None);
                         }
-                        row.segment_or_hold(timing, at, frames)
+                        // Arrangement coordinates are content frames. The Console
+                        // clock may have an absolute rebase floor after a wrap.
+                        row.segment_or_hold(revision.session().timing(), at, frames)
                             .map(|ramp| {
                                 Some(VolumeSlice {
                                     at,
