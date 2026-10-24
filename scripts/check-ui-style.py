@@ -180,7 +180,13 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/arrangement_audio_panel.rs'
             and suffix.startswith(('controls::number(', 'controls::toggle('))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component:
+        # Console column boundaries return typed, text-free drop surfaces.
+        console_column_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
+            and suffix.startswith(('self.console_column_edge(',
+                                   'self.console_column_surface(', 'tail)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
