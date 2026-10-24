@@ -204,7 +204,14 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let binding = match MidiTakeBinding::capture(&state.project, track, clip) {
+        let grid = match self.resolve_input_grid() {
+            Ok(grid) => grid,
+            Err(reason) => {
+                self.error = Some(reason.into());
+                return;
+            }
+        };
+        let binding = match MidiTakeBinding::capture_with_grid(&state.project, track, clip, grid) {
             Ok(binding) => Arc::new(binding),
             Err(reason) => {
                 self.error = Some(reason.into());

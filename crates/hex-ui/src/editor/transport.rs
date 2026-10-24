@@ -88,6 +88,7 @@ impl EditorView {
                 }))),
             )
             .children([self.launch_quantization_control(cx)])
+            .children([self.input_quantization_control(cx)])
             .child(
                 self.control_icon_description(
                     "⌨",

@@ -467,3 +467,53 @@ fn interrupted_or_noncontiguous_delivery_cannot_become_a_complete_take() {
     );
     assert!(!take.complete());
 }
+
+#[test]
+fn frozen_input_quantization_preserves_lengths_edge_notes_and_one_persisted_edit() {
+    let (project, track, clip) = fixture();
+    let grid = hex_project::ResolvedInputGrid::fixed(
+        project.meter_map(),
+        hex_project::InputQuantization::Eighth.fixed_step().unwrap(),
+    )
+    .unwrap();
+    let binding = MidiTakeBinding::capture_with_grid(&project, track, clip, grid).unwrap();
+    let captured = [
+        note(8_900, 9_300, 60),
+        note(11_100, 11_700, 64),
+        note(15_999, 16_000, 67),
+    ];
+    let command = finish_take(&project, &binding, &captured, 16_000)
+        .unwrap()
+        .unwrap();
+    let Command::AddMidiNotes { notes, .. } = &command else {
+        panic!("midi take command")
+    };
+    assert_eq!(notes[0].start, beat(1));
+    assert_eq!(notes[1].start, beat(2));
+    for (quantized, original) in notes[..2].iter().zip(&captured[..2]) {
+        let tempo = project.tempo_map();
+        assert_eq!(
+            quantized.duration.raw(),
+            tempo.frame_to_beat(original.end_frame).unwrap().raw()
+                - tempo.frame_to_beat(original.start_frame).unwrap().raw()
+        );
+        assert_eq!((quantized.channel, quantized.velocity), (3, 93));
+    }
+    assert!(notes[2].duration.raw() > 0);
+    let edge_start = BeatTime::from_raw(notes[2].start.raw() - beat(1).raw() + beat(2).raw());
+    assert!(project.tempo_map().beat_to_frame(edge_start).unwrap() < 16_000);
+    let mut editor = Editor::new(project, 8).unwrap();
+    editor.execute(command).unwrap();
+    let after = editor.project().snapshot();
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+            .unwrap()
+            .snapshot(),
+        after
+    );
+    assert!(editor.undo());
+    assert!(!editor.can_undo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+    assert_eq!(captured[0], note(8_900, 9_300, 60));
+}

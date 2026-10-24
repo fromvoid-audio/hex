@@ -39,6 +39,10 @@ pub(super) enum EditorContextAction {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
     },
+    InputQuantization {
+        generation: u64,
+        policy: hex_project::InputQuantization,
+    },
     LaunchQuantization {
         generation: u64,
         quantization: hex_engine::LaunchQuantization,
@@ -437,6 +441,12 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::InputQuantization { generation, policy } => {
+                if generation == self.project_generation {
+                    self.set_input_quantization(policy);
+                    cx.notify();
+                }
+            }
             EditorContextAction::LaunchQuantization {
                 generation,
                 quantization,

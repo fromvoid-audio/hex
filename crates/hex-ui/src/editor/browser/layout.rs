@@ -308,17 +308,18 @@ impl EditorView {
             .child(
                 self.browser_icon(
                     "⌗",
-                    "quantized sample input · nearest arrangement grid line · enter",
+                    "toggle input quantization · shared with midi recording · enter inserts on selected grid",
                     |view, _, cx| {
-                        view.browser.insert_quantized = !view.browser.insert_quantized;
+                        view.toggle_input_quantization();
                         cx.notify();
                     },
                     cx,
                 )
                 .debug_selector(|| "browser-insert-grid".to_owned())
-                .when(self.browser.insert_quantized, |button| {
-                    button.text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                }),
+                .when(
+                    self.input_quantization != hex_project::InputQuantization::Off,
+                    |button| button.text_color(rgb(theme::color(theme::PaletteRole::Primary))),
+                ),
             )
             .child(self.browser_icon(
                 "≡",
