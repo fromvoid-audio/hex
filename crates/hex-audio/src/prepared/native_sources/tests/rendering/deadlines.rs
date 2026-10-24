@@ -6,6 +6,26 @@ use hex_plugin_host::transport::Fault;
 #[test]
 #[ignore = "explicit source-bound native instance and original held SDK fixture required"]
 fn actual_native_held_worker_misses_pipeline_without_partial_audio_or_replay() {
+    // Isolate the existing original fixture's supported fault control from
+    // every other Rust test and source constructor. No process-global env edit
+    // or extra helper-bundle member is needed.
+    if std::env::var_os("HEX_AUDIO_HELD_WORKER_DRIVER").is_none() {
+        let test = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--ignored", "--nocapture"])
+            .env("HEX_AUDIO_HELD_WORKER_DRIVER", "1")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "28")
+            .env_remove("HEX_ORIGINAL_INSTANCE_RELEASE")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
     let _serial = serial();
     for location in 0..3 {
         let PreparedFixture {
@@ -16,7 +36,7 @@ fn actual_native_held_worker_misses_pipeline_without_partial_audio_or_replay() {
             binding,
             owner,
             ..
-        } = prepared_fixture_with_profile(location, false, "held", 8, false);
+        } = prepared_fixture_with_profile(location, false, "processing", 8, false);
         let root = control.native_candidate_root();
         let ticket = control
             .stage_eligible_audio_candidate(owner, vec![], PublicationPolicy::InheritRuntime, 41)
