@@ -15,6 +15,12 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    CommitArrangementBounce {
+        target: crate::BounceTarget,
+        in_place: bool,
+        files: Vec<crate::BounceFile>,
+    },
     /// Set one authored clip's activation across Arrangement or Session.
     SetClipActive {
         clip: ClipId,
@@ -1571,6 +1577,11 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::CommitArrangementBounce {
+                target,
+                in_place,
+                files,
+            } => crate::bounce::commit(self, target, in_place, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }

@@ -563,6 +563,7 @@ impl Command {
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
             | Self::ImportAudioTrack { .. }
+            | Self::CommitArrangementBounce { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }
             | Self::ImportPreparedAudioClip { .. }

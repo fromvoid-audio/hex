@@ -7,7 +7,7 @@ use hex_session::service::{Event, Request};
 
 pub(super) struct Pending {
     pub(super) owner: (ClipId, u64),
-    operation: AudioEventEdit,
+    pub(super) operation: AudioEventEdit,
     pub(super) preview: AudioEvents,
     receipt: Receipt,
     intent: Option<u64>,
