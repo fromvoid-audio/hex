@@ -179,9 +179,10 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let main_lane = visual.debug_bounds("main-track-lane").expect("main lane");
+    // Main's title rail owns section cursor placement; the lower body selects time.
     let click = point(
         main_lane.origin.x + main_lane.size.width * 0.1,
-        main_lane.origin.y + main_lane.size.height * 0.7,
+        main_lane.origin.y + px(5.0),
     );
     let unsnapped = Modifiers {
         platform: true,
