@@ -141,8 +141,14 @@ impl RuntimeRef<'_> {
             Self::Eligible(p) => p.midi_capture_render(take_id),
         }
     }
-    pub(super) fn midi_capture_finish_fault(&self, take_id: u64) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
-        match self { Self::Legacy(p) => p.midi_capture_finish_fault(take_id), Self::Eligible(p) => p.midi_capture_finish_fault(take_id) }
+    pub(super) fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_finish_fault(take_id),
+            Self::Eligible(p) => p.midi_capture_finish_fault(take_id),
+        }
     }
     pub(super) fn midi_capture_fault(
         &self,
