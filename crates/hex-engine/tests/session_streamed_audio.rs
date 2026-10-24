@@ -980,8 +980,21 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
     let planned = candidate
         .preview_stream_handoff(&mut session, 2, None, &mut |_| Ok(()))
         .unwrap();
-    assert_eq!(planned, window);
+    assert_eq!(
+        (
+            planned.performance_frame,
+            planned.arrangement_frame,
+            planned.frames
+        ),
+        (
+            window.performance_frame,
+            window.arrangement_frame,
+            window.frames
+        )
+    );
+    assert_eq!(session.route_state_generation(), window.route_generation);
     candidate.try_inherit_state_from(&mut session).unwrap();
+    assert_eq!(candidate.route_state_generation(), planned.route_generation);
     let mut output = [[0.0; 2]; 2];
     candidate
         .render_with_pages(&mut output, &mut pages)
