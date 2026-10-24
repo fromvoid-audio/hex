@@ -2486,6 +2486,8 @@ impl EditorView {
             self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
+            self.reconcile_arrangement_focus();
+            self.arrangement_focus.reveal_created_track(track);
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state
