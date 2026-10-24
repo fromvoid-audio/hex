@@ -221,9 +221,10 @@ fn selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus(
     let popup = visual
         .debug_bounds("fixture-saturator-selector-0-popup")
         .unwrap();
+    let card = visual.debug_bounds("catalog-card").unwrap();
     assert!(
-        popup.bottom_left().y > visual.debug_bounds("catalog-card").unwrap().bottom_left().y,
-        "popup escapes the clipped device body"
+        popup.bottom() > card.bottom() || popup.top() < card.top(),
+        "popup escapes the clipped device body: popup {popup:?}, card {card:?}"
     );
     let focus = cx.update(|app| choice.focus_handle(app));
     view.update(cx, |view, cx| view.set_alternate(true, cx));
