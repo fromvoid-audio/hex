@@ -8,6 +8,11 @@ pub(super) struct TrackSelection {
 }
 
 impl TrackSelection {
+    /// Replace with the authoritative ordered births from a committed snapshot.
+    pub(super) fn replace(&mut self, ids: &[TrackId]) {
+        self.ids = ids.iter().copied().collect();
+        self.anchor = ids.first().copied();
+    }
     pub(super) fn contains(&self, track: TrackId) -> bool {
         self.ids.contains(&track)
     }
@@ -110,6 +115,19 @@ impl super::EditorView {
             .track_selection
             .select(&state.project, track, modifiers.shift, modifiers.platform)
         {
+            if modifiers.shift
+                && self.mode == super::EditorMode::Arrangement
+                && self.arrangement_focus.enabled
+            {
+                let ids = self
+                    .track_selection
+                    .ids
+                    .iter()
+                    .copied()
+                    .filter(|id| self.arrangement_track_visible(*id))
+                    .collect();
+                self.track_selection.ids = ids;
+            }
             self.focus_selected_track(track, window);
         }
     }

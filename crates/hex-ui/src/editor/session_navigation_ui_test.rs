@@ -541,18 +541,19 @@ fn computer_keyboard_dispatch_reserves_notes_and_toggle_without_edit_shortcuts(
     visual.run_until_parked();
     visual.simulate_keystrokes("m");
     editor.read_with(&visual, |view, _| assert!(view.computer_keyboard.enabled));
-    for key in ["s", "l"] {
+    for key in ["s", "l", "w"] {
         visual.simulate_event(gpui::KeyDownEvent {
             keystroke: gpui::Keystroke::parse(key).unwrap(),
             is_held: false,
         });
     }
     editor.read_with(&visual, |view, _| {
+        assert_eq!(view.computer_keyboard.held()[1].unwrap().pitch, 61);
         assert_eq!(view.computer_keyboard.held()[2].unwrap().pitch, 62);
         assert_eq!(view.computer_keyboard.held()[14].unwrap().pitch, 74);
         assert!(
             view.last_enqueued_edit.is_none(),
-            "s and l must not solo or change the loop"
+            "s, l and w must remain notes without solo or loop edits"
         );
     });
     visual.simulate_event(gpui::KeyDownEvent {

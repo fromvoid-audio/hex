@@ -9,6 +9,7 @@ mod resident_preview;
 mod resident_routes;
 mod resident_sections;
 mod sampler;
+mod track_clipboard;
 mod track_reorder;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;

@@ -306,7 +306,7 @@ fn selected_block_uses_canonical_member_order_and_preserves_complete_state_and_h
         editor
             .execute_prepared(
                 Command::MoveTracksBefore {
-                    tracks: hex_project::TrackReorderSelection::new(&members).unwrap(),
+                    tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
                     before,
                 },
                 |candidate| {
@@ -351,7 +351,7 @@ fn selected_targets_contiguous_boundaries_and_refused_preparation_preserve_redo(
     ] {
         editor
             .execute(Command::MoveTracksBefore {
-                tracks: hex_project::TrackReorderSelection::new(&members).unwrap(),
+                tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
                 before,
             })
             .unwrap();
@@ -363,7 +363,7 @@ fn selected_targets_contiguous_boundaries_and_refused_preparation_preserve_redo(
     let error = editor
         .execute_prepared(
             Command::MoveTracksBefore {
-                tracks: hex_project::TrackReorderSelection::new(&[c, a]).unwrap(),
+                tracks: hex_project::TrackSelectionIds::new(&[c, a]).unwrap(),
                 before: Some(b),
             },
             |candidate| {
@@ -394,7 +394,7 @@ fn selected_targets_contiguous_boundaries_and_refused_preparation_preserve_redo(
             editor
                 .execute_prepared(
                     Command::MoveTracksBefore {
-                        tracks: hex_project::TrackReorderSelection::new(&members).unwrap(),
+                        tracks: hex_project::TrackSelectionIds::new(&members).unwrap(),
                         before,
                     },
                     |_| {
@@ -427,9 +427,9 @@ fn captured_track_membership_is_nonempty_unique_and_bounded_before_queueing() {
         ids.push(id);
         editor.execute(Command::RemoveTrack(id)).unwrap();
     }
-    assert!(hex_project::TrackReorderSelection::new(&[]).is_err());
-    assert!(hex_project::TrackReorderSelection::new(&[ids[0], ids[0]]).is_err());
-    let maximum = hex_project::TrackReorderSelection::new(&ids[..hex_project::MAX_TRACKS]).unwrap();
+    assert!(hex_project::TrackSelectionIds::new(&[]).is_err());
+    assert!(hex_project::TrackSelectionIds::new(&[ids[0], ids[0]]).is_err());
+    let maximum = hex_project::TrackSelectionIds::new(&ids[..hex_project::MAX_TRACKS]).unwrap();
     assert_eq!(maximum.ids(), &ids[..hex_project::MAX_TRACKS]);
-    assert!(hex_project::TrackReorderSelection::new(&ids).is_err());
+    assert!(hex_project::TrackSelectionIds::new(&ids).is_err());
 }

@@ -728,6 +728,16 @@ impl EditorView {
     }
 
     pub(super) fn copy_time_selection(&mut self, cut: bool, window: &Window) {
+        if self.track_clipboard_shortcut(
+            window,
+            if cut {
+                super::track_clipboard::Shortcut::Cut
+            } else {
+                super::track_clipboard::Shortcut::Copy
+            },
+        ) {
+            return;
+        }
         if self.mode != EditorMode::Arrangement
             || self.midi_focus.is_focused(window)
             || !self.focus.is_focused(window)
@@ -751,6 +761,9 @@ impl EditorView {
     }
 
     pub(super) fn paste_time_selection(&mut self, window: &Window) {
+        if self.track_clipboard_shortcut(window, super::track_clipboard::Shortcut::Paste) {
+            return;
+        }
         self.paste_or_insert_time_selection(false, window);
     }
 
@@ -1001,7 +1014,8 @@ impl EditorView {
             .drag_lanes
             .iter()
             .filter(|(track, _)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.arrangement_track_visible(**track)
+                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
             })
             .find(|(_, lane)| lane_contains(x, y, **lane))?;
         state.project.track(*track)?;
@@ -1076,12 +1090,18 @@ impl EditorView {
             .iter()
             .rev()
             .find_map(|clip| {
+                if !self.arrangement_clip_visible(clip.id()) {
+                    return None;
+                }
                 let preview = state.midi_preview.get(clip.id())?;
                 handle_hit(preview.frame_start, preview.frame_end, 4.0)
                     .map(|ordinary| (ordinary, false))
             })
             .or_else(|| {
                 track.clips().iter().rev().find_map(|clip| {
+                    if !self.arrangement_clip_visible(clip.id()) {
+                        return None;
+                    }
                     let end = clip.start().checked_add(clip.duration())?;
                     handle_hit(clip.start(), end, 3.0).map(|ordinary| {
                         (

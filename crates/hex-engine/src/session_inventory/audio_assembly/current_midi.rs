@@ -1,4 +1,9 @@
 //! Local Console MIDI templates born in the same sealed CURRENT constructor.
+//!
+//! Each clip and its validation sidecar retain a canonical source identity. Charge
+//! its actual note capacity conservatively per owning token in preflight, installed
+//! or restored capacity, and the named control-metadata ledger allowance. These
+//! tokens were not born here: no shared declaration or lifetime authority is minted.
 use super::*;
 use crate::midi_template::CurrentSamplerEventCustody;
 use crate::native_device_resources::current_sampler::CurrentSamplerMetadata;
@@ -21,8 +26,31 @@ pub(super) struct MidiTarget {
     events: CurrentSamplerEventCustody,
     handles: [u64; 2],
 }
+fn identity_metadata_bytes(identity: &MidiSourceIdentity) -> Result<usize, AudioStorageError> {
+    identity
+        .retained_control_metadata_bytes()
+        .ok_or(AudioStorageError::Overflow)
+}
+/// Both the prepared clip and its continuity sidecar retain the canonical source.
+/// Used by the caller reservation as well as the constructor's pre-birth quote.
+pub(crate) fn canonical_source_metadata_bytes(
+    project: &Project,
+) -> Result<usize, AudioStorageError> {
+    project
+        .session_cells()
+        .iter()
+        .try_fold(0usize, |total, cell| {
+            let SessionCellContent::Midi(clip) = cell.content() else {
+                return Ok(total);
+            };
+            identity_metadata_bytes(&clip.source_identity())?
+                .checked_mul(2)
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or(AudioStorageError::Overflow)
+        })
+}
 pub(crate) fn compiler_quote(project: &Project) -> Result<(usize, usize), AudioStorageError> {
-    let mut retained = 0usize;
+    let mut retained = canonical_source_metadata_bytes(project)?;
     let mut scratch = 0usize;
     for cell in project.session_cells() {
         let SessionCellContent::Midi(clip) = cell.content() else {
@@ -324,7 +352,9 @@ impl SessionAssembly {
                     .ok_or(AudioStorageError::Overflow)?;
             }
             total = total
-                .checked_add(clip.name.capacity())
+                .checked_add(identity_metadata_bytes(&clip.source_identity)?)
+                .and_then(|n| n.checked_add(identity_metadata_bytes(&row.source_identity).ok()?))
+                .and_then(|n| n.checked_add(clip.name.capacity()))
                 .and_then(|n| n.checked_add(clip.source.current_sampler_bytes().ok()?))
                 .and_then(|n| {
                     n.checked_add(clip.instrument.current_sampler_bytes(&row.events).ok()?)
@@ -343,6 +373,18 @@ impl SessionAssembly {
         ledger.vec(&self.sampler_midi)?;
         for (clip, row) in values.iter().zip(&self.sampler_midi) {
             ledger.string(&clip.name)?;
+            // Borrow the token field as the allowance owner, not the canonical
+            // Arc allocation: two retained handles are intentionally charged twice.
+            for identity in [&clip.source_identity, &row.source_identity] {
+                ledger.bytes(
+                    Owner::exclusive(identity),
+                    crate::audio_storage::Location(
+                        "current-midi-source-control-metadata-allowance",
+                        0,
+                    ),
+                    identity_metadata_bytes(identity)?,
+                )?;
+            }
             ledger.shared(
                 &clip.source,
                 row.source_declaration.parts(&clip.source),

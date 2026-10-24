@@ -25,6 +25,11 @@ pub(super) struct UtilityModeAction {
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
     Section(super::arrangement_sections::MenuAction),
+    TrackClipboard {
+        generation: u64,
+        revision: u64,
+        action: hex_session::service::TrackClipboardAction,
+    },
     LoadFirstSampler(super::sampler_load::Target),
     CancelSamplerLoad {
         request_id: u64,
@@ -159,6 +164,66 @@ impl EditorView {
                 },
             ],
         });
+        let revision = state.revision;
+        let generation = self.project_generation;
+        let paste_before = if after_track.is_some_and(|id| self.track_selection.contains(id)) {
+            self.track_paste_anchor()
+        } else {
+            before_track
+        };
+        if let Some(tracks) = after_track.and_then(|id| self.track_membership(Some(id))) {
+            use hex_session::service::TrackClipboardAction as Action;
+            let choices = [
+                ("cut tracks · cmd+x", Action::Cut(tracks.clone())),
+                ("copy tracks · cmd+c", Action::Copy(tracks.clone())),
+                (
+                    "duplicate tracks · cmd+d",
+                    Action::Duplicate {
+                        tracks: tracks.clone(),
+                        without_clips: false,
+                    },
+                ),
+                (
+                    "duplicate tracks without clips",
+                    Action::Duplicate {
+                        tracks,
+                        without_clips: true,
+                    },
+                ),
+                (
+                    "paste tracks · cmd+v",
+                    Action::Paste {
+                        before: paste_before,
+                    },
+                ),
+            ];
+            if let Some(menu) = &mut self.context_menu {
+                menu.items
+                    .extend(choices.into_iter().map(|(label, action)| MenuItem {
+                        label,
+                        swatch: None,
+                        checked: false,
+                        action: EditorContextAction::TrackClipboard {
+                            generation,
+                            revision,
+                            action,
+                        },
+                    }));
+            }
+        } else if let Some(menu) = &mut self.context_menu {
+            menu.items.push(MenuItem {
+                label: "paste tracks · cmd+v",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::TrackClipboard {
+                    generation,
+                    revision,
+                    action: hex_session::service::TrackClipboardAction::Paste {
+                        before: before_track,
+                    },
+                },
+            });
+        }
         self.append_adaptive_grid_choices();
         cx.notify();
     }
@@ -388,6 +453,11 @@ impl EditorView {
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
+            EditorContextAction::TrackClipboard {
+                generation,
+                revision,
+                action,
+            } => self.start_track_clipboard(generation, revision, action),
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -546,6 +616,14 @@ impl EditorView {
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
+                }
+                EditorContextAction::TrackClipboard {
+                    generation,
+                    revision,
+                    ..
+                } => {
+                    *generation != self.project_generation
+                        || self.state.as_ref().is_none_or(|s| s.revision != *revision)
                 }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::InsertReturn { generation } => {
@@ -817,7 +895,7 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 15);
+            assert_eq!(menu.items.len(), 20);
             assert_eq!(
                 menu.items
                     .iter()

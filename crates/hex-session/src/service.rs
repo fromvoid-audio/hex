@@ -349,12 +349,31 @@ impl GainLaneEdit {
         }
     }
 }
+/// Context-specific, bounded whole-track clipboard operation. Metadata stays on
+/// control; the service owns clipboard lifetime and existing audio admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackClipboardAction {
+    Copy(hex_project::TrackSelectionIds),
+    Cut(hex_project::TrackSelectionIds),
+    Duplicate {
+        tracks: hex_project::TrackSelectionIds,
+        without_clips: bool,
+    },
+    Paste {
+        before: Option<hex_project::TrackId>,
+    },
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
-// The approved fixed snapshot remains inline: 800 bytes per request, 32 slots
-// (25,600 payload bytes). Boxing would hide storage and add control allocations.
+// Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    TrackClipboard {
+        project_generation: u64,
+        revision: u64,
+        action: TrackClipboardAction,
+    },
     /// Captured ordinary-track block move. Immutable membership contains at most
     /// MAX_TRACKS IDs (2048 ID bytes); clones share that allocation. With the
     /// 32-slot FIFO, queued reorders retain at most 65536 ID bytes; the active
@@ -363,7 +382,7 @@ pub enum Request {
     ReorderTracks {
         project_generation: u64,
         revision: u64,
-        tracks: hex_project::TrackReorderSelection,
+        tracks: hex_project::TrackSelectionIds,
         before: Option<hex_project::TrackId>,
     },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
@@ -1601,6 +1620,8 @@ fn run_worker(
         Clips(Arc<hex_project::ClipClipboard>),
     }
     let mut range_clipboard: Option<ArrangementClipboard> = None;
+    // Typed clipboard contexts are independent; both expire with the document.
+    let mut track_clipboard: Option<Arc<hex_project::TrackClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -1941,7 +1962,73 @@ fn run_worker(
         // and requests during a live draft cannot commit unrelated gesture history.
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
+        let mut cut_clipboard = None;
         let resolved_edit = match &request {
+            Request::TrackClipboard {
+                project_generation: generation,
+                revision: source_revision,
+                action,
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(Err("track clipboard canceled · project changed".into()))
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some(Err(
+                        "finish or cancel the active gesture before copying tracks".into(),
+                    ))
+                } else {
+                    match action {
+                        TrackClipboardAction::Copy(_) => None,
+                        TrackClipboardAction::Cut(tracks) => Some(
+                            session
+                                .project()
+                                .capture_tracks(tracks, false)
+                                .map(|captured| {
+                                    cut_clipboard = Some(Arc::new(captured));
+                                    Command::RemoveTracks(tracks.ids().to_vec())
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                        TrackClipboardAction::Paste { before } => Some(
+                            track_clipboard
+                                .as_ref()
+                                .map(|clipboard| Command::PasteTracks {
+                                    clipboard: Arc::clone(clipboard),
+                                    before: *before,
+                                })
+                                .ok_or_else(|| {
+                                    "track clipboard is empty · copy tracks first".into()
+                                }),
+                        ),
+                        TrackClipboardAction::Duplicate {
+                            tracks,
+                            without_clips,
+                        } => Some(
+                            session
+                                .project()
+                                .capture_tracks(tracks, *without_clips)
+                                .map(|clipboard| {
+                                    let after = session
+                                        .project()
+                                        .tracks()
+                                        .iter()
+                                        .rposition(|t| tracks.ids().contains(&t.id()));
+                                    let before = after
+                                        .and_then(|i| session.project().tracks().get(i + 1))
+                                        .map(|t| t.id());
+                                    Command::PasteTracks {
+                                        clipboard: Arc::new(clipboard),
+                                        before,
+                                    }
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                    }
+                }
+            }
+
             Request::ReorderTracks {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -2339,6 +2426,12 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
+                    | Request::TrackClipboard {
+                        action: TrackClipboardAction::Cut(_)
+                            | TrackClipboardAction::Duplicate { .. }
+                            | TrackClipboardAction::Paste { .. },
+                        ..
+                    }
                     | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
@@ -2356,6 +2449,7 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
+                    | Request::TrackClipboard { .. }
                     | Request::ReorderTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
@@ -3785,6 +3879,19 @@ fn run_worker(
                         }
                         Err(reason) => error = Some(reason),
                     }
+                }
+                Request::TrackClipboard {
+                    action: TrackClipboardAction::Copy(tracks),
+                    ..
+                } => match session.project().capture_tracks(&tracks, false) {
+                    Ok(captured) => {
+                        track_clipboard = Some(Arc::new(captured));
+                        status = Some("tracks copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::TrackClipboard { .. } => {
+                    error = Some("track clipboard request was not resolved".into())
                 }
                 Request::CopyClips(ids) => match session.project().capture_clips(&ids) {
                     Ok(captured) => {
@@ -5407,7 +5514,15 @@ fn run_worker(
             }
         }
 
+        // Only successful canonical removal installs a cut. Failed preparation,
+        // queue/publication admission or stale input retains the previous copy.
+        if created.is_some()
+            && let Some(captured) = cut_clipboard
+        {
+            track_clipboard = Some(captured);
+        }
         if project_replaced {
+            track_clipboard = None;
             if let Some(input) = audition_activation.take() {
                 input.cancel();
             }
@@ -6370,6 +6485,10 @@ mod clip_move_tests;
 #[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
+
+#[cfg(test)]
+#[path = "service/track_clipboard_tests.rs"]
+mod track_clipboard_tests;
 
 #[cfg(test)]
 mod service_tests {

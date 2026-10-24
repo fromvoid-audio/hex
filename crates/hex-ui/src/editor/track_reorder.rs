@@ -13,7 +13,7 @@ use gpui::{
     Context, Div, MouseButton, MouseMoveEvent, MouseUpEvent, Window, canvas, div, prelude::*, px,
     rgb,
 };
-use hex_project::{TrackId, TrackReorderSelection};
+use hex_project::{TrackId, TrackSelectionIds};
 use hex_session::service::{Event, Request};
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,7 @@ struct Gesture {
     generation: u64,
     revision: u64,
     track: TrackId,
-    tracks: TrackReorderSelection,
+    tracks: TrackSelectionIds,
     origin: (f32, f32),
     pointer: (f32, f32),
     moved: bool,
@@ -49,7 +49,7 @@ struct PaintedGap {
 struct Pending {
     generation: u64,
     revision: u64,
-    tracks: TrackReorderSelection,
+    tracks: TrackSelectionIds,
     destination: Destination,
     receipt: Receipt,
 }
@@ -105,7 +105,7 @@ impl EditorView {
         } else {
             vec![track]
         };
-        let tracks = match TrackReorderSelection::new(&members) {
+        let tracks = match TrackSelectionIds::new(&members) {
             Ok(tracks) => tracks,
             Err(error) => {
                 self.error = Some(error.0.into());
@@ -158,7 +158,7 @@ impl EditorView {
     fn track_reorder_destination(
         &self,
         pointer: (f32, f32),
-        source: &TrackReorderSelection,
+        source: &TrackSelectionIds,
     ) -> Option<Destination> {
         let bounds = self.arrangement_bounds?;
         let (x, y) = pointer;
@@ -175,7 +175,10 @@ impl EditorView {
         let top = self.track_scroll.list.logical_scroll_top();
         let mut row_y = bounds.top - f32::from(top.offset_in_item);
         let mut index = top.item_ix;
-        for track in tracks.iter().skip(index) {
+        for (_, track) in self
+            .arrangement_tracks(&self.state.as_ref()?.project)
+            .skip(index)
+        {
             let height = self.track_height(track.id());
             if y < row_y + height / 2.0 {
                 break;
@@ -183,6 +186,7 @@ impl EditorView {
             row_y += height;
             index += 1;
         }
+        let index = self.arrangement_track_index(index).unwrap_or(tracks.len());
         let members = source.ids();
         if tracks
             .get(index)
@@ -330,20 +334,23 @@ impl EditorView {
             .map(|p| p.destination)
             .or_else(|| self.track_reorder.gesture.as_ref()?.destination)?;
         let bounds = self.arrangement_bounds?;
-        let tracks = self.state.as_ref()?.project.tracks();
+        let state = self.state.as_ref()?;
+        let tracks = self.arrangement_track_indices();
         let index = match destination.before {
-            Some(id) => tracks.iter().position(|t| t.id() == id)?,
+            Some(id) => tracks
+                .iter()
+                .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?,
             None => tracks.len(),
         };
         let top = self.track_scroll.list.logical_scroll_top();
         let mut y = -f32::from(top.offset_in_item);
         if index >= top.item_ix {
             for track in tracks.iter().skip(top.item_ix).take(index - top.item_ix) {
-                y += self.track_height(track.id());
+                y += self.track_height(state.project.tracks().get(*track)?.id());
             }
         } else {
             for track in tracks.iter().skip(index).take(top.item_ix - index) {
-                y -= self.track_height(track.id());
+                y -= self.track_height(state.project.tracks().get(*track)?.id());
             }
         }
         if y < 0.0 || y > bounds.height {

@@ -4,7 +4,7 @@
 //! the same level_meter gauge. TextInput covers query and source-value policies.
 //! Musical editors and their project-bound hit regions remain with the app;
 //! this catalog mounts their shared controls rather than a competing DAW model.
-use super::workspace::Kind as WorkspaceKind;
+use super::workspace::{Kind as WorkspaceKind, MeterChannels, RoundActionKind};
 use hex_widgets::{
     DeviceLayout, DeviceSectionSurface, DialLayout, DiscreteControlAppearance as Discrete,
     NumericControlAppearance as Appearance, NumericControlKind as Kind, NumericScale as Scale,
@@ -31,6 +31,115 @@ pub(super) struct Item {
     pub name: &'static str,
     pub category: &'static str,
     pub demo: Demo,
+}
+/// Catalog identity follows the owning control, not its appearance or musical role.
+/// Stateless wrappers share a page when they delegate to the same primitive.
+/// Multi-control fixtures remain explicitly identified as compositions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Page {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub owner: &'static str,
+}
+impl Item {
+    pub fn page(self) -> Page {
+        let (name, category, owner) = match self.demo {
+            Demo::Numeric(..) => ("numeric control", "numeric", "numericcontrol"),
+            Demo::Toggle(_) => ("toggle", "discrete", "toggle"),
+            Demo::Selector(_) => ("selector", "discrete", "selector"),
+            Demo::Bars => ("bar editor", "graphics", "bareditor"),
+            Demo::Graph => ("response graph", "graphics", "responsegraph"),
+            Demo::Color => ("color picker", "graphics", "colorpicker"),
+            Demo::Curve => ("curve plot", "graphics", "curve_plot"),
+            Demo::Spectrum => ("spectrum plot", "graphics", "layered_spectrum_plot"),
+            Demo::Chrome("action" | "device action" | "device segment")
+            | Demo::Workspace(WorkspaceKind::Button(_) | WorkspaceKind::RoundAction(_)) => {
+                ("action surface", "chrome", "action_surface")
+            }
+            Demo::Chrome("device caption" | "device inline caption") => {
+                ("device caption", "chrome", "device_caption")
+            }
+            Demo::Chrome(name) => (name, "chrome", name),
+            Demo::Layout(_) => ("device layout", "layout", "device_layout"),
+            Demo::Section(..) => ("device section", "layout", "section"),
+            Demo::Frame(_) => (
+                "structural compositions",
+                "compositions",
+                "composed layout and chrome",
+            ),
+            Demo::Compositions => ("device compositions", "compositions", "device_composition"),
+            Demo::Workspace(WorkspaceKind::Text(_)) => ("text input", "workspace", "textinput"),
+            Demo::Workspace(WorkspaceKind::Menu(_)) => (
+                "popup menu composition",
+                "compositions",
+                "context_menu::popup",
+            ),
+            Demo::Workspace(WorkspaceKind::OutputMeter) => (
+                "output status composition",
+                "compositions",
+                "output_meter::render",
+            ),
+            Demo::Workspace(WorkspaceKind::MeterIndicator(_)) => {
+                ("meter indicator", "workspace", "meter_indicator")
+            }
+            Demo::Workspace(WorkspaceKind::LevelMeter) => {
+                ("level meter", "workspace", "level_meter")
+            }
+            Demo::Workspace(WorkspaceKind::ScrollingList) => (
+                "scrolling list composition",
+                "compositions",
+                "scroll container and action rows",
+            ),
+        };
+        Page {
+            name,
+            category,
+            owner,
+        }
+    }
+    pub fn subgroup(self) -> &'static str {
+        match self.demo {
+            Demo::Numeric(Kind::Knob, ..) => "knob configurations",
+            Demo::Numeric(Kind::HorizontalSlider, ..) => "horizontal slider configurations",
+            Demo::Numeric(Kind::VerticalSlider, ..) => "vertical slider configurations",
+            Demo::Workspace(WorkspaceKind::Button(_)) => "glyph and state configurations",
+            Demo::Workspace(WorkspaceKind::RoundAction(_)) => "round momentary configurations",
+            Demo::Frame(_) => "composed layout fixtures",
+            Demo::Compositions => "device fixtures",
+            _ => "configurations",
+        }
+    }
+    pub fn configuration(self) -> String {
+        match self.demo {
+            Demo::Numeric(kind, appearance, layout, scale) => format!(
+                "kind: {kind:?} · appearance: {appearance:?} · layout: {layout:?} · scale: {scale:?}"
+            ),
+            Demo::Toggle(appearance) | Demo::Selector(appearance) => {
+                format!("appearance: {appearance:?}")
+            }
+            Demo::Layout(layout) => format!("layout: {layout:?}"),
+            Demo::Section(density, surface) => format!(
+                "density: {} · surface: {surface:?}",
+                match density {
+                    0 => "standard",
+                    1 => "compact",
+                    _ => "dense",
+                }
+            ),
+            _ => format!("configuration: {}", self.name),
+        }
+    }
+}
+pub(super) fn pages(items: &[Item]) -> Vec<Page> {
+    let mut pages = Vec::new();
+    for item in items {
+        debug_assert!(CATEGORIES.contains(&item.category));
+        let page = item.page();
+        if !pages.contains(&page) {
+            pages.push(page);
+        }
+    }
+    pages
 }
 pub(super) fn inventory() -> Vec<Item> {
     let mut items = Vec::new();
@@ -84,6 +193,13 @@ pub(super) fn inventory() -> Vec<Item> {
             "compact slider",
             Kind::HorizontalSlider,
             Appearance::CompactSlider,
+            DialLayout::ReadoutGap,
+            Scale::Linear,
+        ),
+        (
+            "labeled slider",
+            Kind::HorizontalSlider,
+            Appearance::LabeledSlider,
             DialLayout::ReadoutGap,
             Scale::Linear,
         ),
@@ -239,6 +355,22 @@ pub(super) fn inventory() -> Vec<Item> {
         ),
         ("popup menu · icon grid", WorkspaceKind::Menu(true)),
         ("level meter", WorkspaceKind::LevelMeter),
+        (
+            "meter indicator · mono",
+            WorkspaceKind::MeterIndicator(MeterChannels::Mono),
+        ),
+        (
+            "meter indicator · stereo",
+            WorkspaceKind::MeterIndicator(MeterChannels::Stereo),
+        ),
+        (
+            "round labeled action",
+            WorkspaceKind::RoundAction(RoundActionKind::Label),
+        ),
+        (
+            "round icon action",
+            WorkspaceKind::RoundAction(RoundActionKind::Icon),
+        ),
         ("output sample-peak status", WorkspaceKind::OutputMeter),
         ("scrolling list", WorkspaceKind::ScrollingList),
     ] {
@@ -276,3 +408,79 @@ pub(super) const CATEGORIES: [&str; 7] = [
     "workspace",
     "compositions",
 ];
+
+#[cfg(test)]
+mod grouping_tests {
+    use super::*;
+    #[test]
+    fn every_configuration_has_one_named_page_and_unique_identity() {
+        let items = inventory();
+        let pages = pages(&items);
+        let names: std::collections::HashSet<_> = items.iter().map(|item| item.name).collect();
+        assert_eq!(names.len(), items.len());
+        let page_names: std::collections::HashSet<_> = pages.iter().map(|page| page.name).collect();
+        assert_eq!(page_names.len(), pages.len());
+        assert!(pages.len() < items.len());
+        for item in &items {
+            assert_eq!(
+                pages.iter().filter(|page| **page == item.page()).count(),
+                1,
+                "{}",
+                item.name
+            );
+            assert!(!item.configuration().is_empty());
+            assert!(CATEGORIES.contains(&item.page().category));
+        }
+        for category in CATEGORIES {
+            assert!(
+                pages.iter().any(|page| page.category == category),
+                "{category}"
+            );
+        }
+    }
+    #[test]
+    fn appearance_wrappers_share_their_actual_base_and_compositions_stay_explicit() {
+        let items = inventory();
+        let page = |name| items.iter().find(|item| item.name == name).unwrap().page();
+        for name in [
+            "inline value",
+            "horizontal slider",
+            "vertical slider",
+            "compact slider",
+            "filled slider",
+            "labeled slider",
+            "device meters",
+            "bottom gap dial",
+            "pan dial · bipolar",
+            "frequency dial · logarithmic",
+        ] {
+            assert_eq!(page(name), page("standard knob"), "{name}");
+        }
+        for name in [
+            "device action",
+            "device segment",
+            "play button",
+            "fold disclosure",
+            "round labeled action",
+            "round icon action",
+        ] {
+            assert_eq!(page(name), page("action"), "{name}");
+        }
+        assert_eq!(page("device caption"), page("device inline caption"));
+        assert_eq!(page("standard toggle"), page("compact button"));
+        assert_ne!(page("standard toggle"), page("standard selector"));
+        assert_eq!(page("text input · value"), page("text input · search"));
+        assert_eq!(page("row"), page("grid · three columns"));
+        assert_eq!(page("section · surround"), page("dense section · display"));
+        assert_eq!(page("device body").category, "compositions");
+        assert_eq!(page("popup menu · icon grid").category, "compositions");
+        assert_eq!(page("output sample-peak status").category, "compositions");
+        assert_ne!(page("output sample-peak status"), page("level meter"));
+        assert_eq!(
+            page("meter indicator · mono"),
+            page("meter indicator · stereo")
+        );
+        assert_ne!(page("meter indicator · mono"), page("level meter"));
+        assert_ne!(page("meter indicator · mono"), page("device meters"));
+    }
+}

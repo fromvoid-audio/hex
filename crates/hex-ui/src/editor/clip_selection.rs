@@ -196,6 +196,19 @@ impl EditorView {
         let mut next_focus = None;
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
+            if modifiers.shift
+                && self.arrangement_focus.enabled
+                && self.mode == super::EditorMode::Arrangement
+            {
+                selection.apply_members(
+                    selection
+                        .members
+                        .iter()
+                        .copied()
+                        .filter(|id| self.arrangement_clip_visible(*id))
+                        .collect(),
+                );
+            }
             if !selection.members.contains(&clip) {
                 self.selected_clip = None;
                 if let Some(primary) = selection.members.iter().next_back().copied() {
