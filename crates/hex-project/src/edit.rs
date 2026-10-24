@@ -38,11 +38,18 @@ pub enum Command {
         start: crate::BeatTime,
         end: crate::BeatTime,
     },
-    /// Marker-only placement/resize; music is never stretched or moved.
+    /// Isolated marker range edit; overlaps are refused and music stays fixed.
     SetArrangementSectionRange {
         section: crate::SectionId,
         start: crate::BeatTime,
         end: crate::BeatTime,
+    },
+    /// Move one marker without changing its length or any musical content.
+    /// Destination overlap trims/removes other markers; an interior cut retains
+    /// their left identity and allocates a fresh right identity/name/color copy.
+    MoveArrangementSectionMarker {
+        section: crate::SectionId,
+        start: crate::BeatTime,
     },
     RenameArrangementSection {
         section: crate::SectionId,
@@ -1566,6 +1573,7 @@ impl Project {
         match command {
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
+            | Command::MoveArrangementSectionMarker { .. }
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)

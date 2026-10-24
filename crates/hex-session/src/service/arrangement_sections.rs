@@ -9,6 +9,7 @@ pub(super) fn is_command(command: &Command) -> bool {
         command,
         Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
+            | Command::MoveArrangementSectionMarker { .. }
             | Command::RenameArrangementSection { .. }
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)

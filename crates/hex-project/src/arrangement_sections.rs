@@ -5,6 +5,10 @@
 //! use the sibling splice planner. Inner edges keep other markers fixed; shared
 //! edges keep the pair's outer span fixed. Crossed time becomes empty. Marker
 //! merging preserves the earliest identity/name/color and all musical material.
+//! Marker moves retain their identity/length and carve destination overlap from
+//! other markers. A lone surviving fragment retains its identity; on an interior
+//! cut the left retains it and the right receives a fresh identity/name/color copy.
+//! Isolated range/edge resizing still refuses overlap instead of carving neighbors.
 //! Marker splitting retains the left identity and gives the adjoining right
 //! marker a fresh ID with matching name/color, without editing any musical data.
 //! Reordering cuts `[start,end)` and inserts it before/after the target's original
@@ -281,6 +285,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             Ok(Created::ArrangementSection(id))
         }
         Command::ReorderSectionBefore { section, before } => reorder(project, section, before),
+        Command::MoveArrangementSectionMarker { section, start } => {
+            marker_move::apply(project, section, start)
+        }
         Command::ReorderSectionAfter { section, after } => reorder_after(project, section, after),
         Command::ResizeArrangementSection {
             section,
@@ -354,6 +361,7 @@ mod meter;
 mod reorder;
 use reorder::{reorder, reorder_after};
 
+mod marker_move;
 mod shared_boundary;
 mod splice;
 pub use splice::SectionSplicePreview;
@@ -365,6 +373,9 @@ impl Project {
         command: &Command,
     ) -> Result<SectionSplicePreview, Invalid> {
         match command {
+            Command::MoveArrangementSectionMarker { section, start } => {
+                marker_move::preview(self, *section, *start)
+            }
             Command::ResizeArrangementSection {
                 section,
                 edge,
