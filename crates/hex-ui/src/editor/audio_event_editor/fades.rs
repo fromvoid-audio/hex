@@ -400,33 +400,35 @@ impl EditorView {
         } else {
             projected.map_or((original, source_start), |f| (f.shape(), f.source_start()))
         };
-        let project = state.project.clone();
-        let curve_root = root.clone();
+        // Capture only a bounded curve for paint, never a project clone per event.
+        let count = (width.ceil() as usize).clamp(2, 96);
+        let mut gains = [1.0; 96];
+        for (index, gain) in gains.iter_mut().take(count).enumerate() {
+            let frame = visible_start
+                + ((visible_end - visible_start - 1) as u128 * index as u128 / (count - 1) as u128)
+                    as u64;
+            *gain = root
+                .root_position_at(frame, state.project.tempo_map())
+                .ok()
+                .and_then(|at| {
+                    event
+                        .source_start
+                        .checked_add(at.saturating_sub(event.start))
+                })
+                .and_then(|at| root.root_frame_at(at, state.project.tempo_map()).ok())
+                .map_or(1.0, |at| {
+                    projected.map_or(1.0, |f| {
+                        at.checked_sub(f.source_start())
+                            .map_or(0.0, |p| f.shape().gain_at(p))
+                    })
+                });
+        }
         let mut elements = vec![
             canvas(
                 |_, _, _| (),
                 move |b, _, window, _| {
-                    let count = (f32::from(b.size.width).ceil() as usize).clamp(2, 96);
                     let mut path = PathBuilder::stroke(px(1.0));
-                    for index in 0..count {
-                        let frame = visible_start
-                            + ((visible_end - visible_start - 1) as u128 * index as u128
-                                / (count - 1) as u128) as u64;
-                        let gain = curve_root
-                            .root_position_at(frame, project.tempo_map())
-                            .ok()
-                            .and_then(|at| {
-                                event
-                                    .source_start
-                                    .checked_add(at.saturating_sub(event.start))
-                            })
-                            .and_then(|at| curve_root.root_frame_at(at, project.tempo_map()).ok())
-                            .map_or(1.0, |at| {
-                                projected.map_or(1.0, |f| {
-                                    at.checked_sub(f.source_start())
-                                        .map_or(0.0, |p| f.shape().gain_at(p))
-                                })
-                            });
+                    for (index, gain) in gains.into_iter().take(count).enumerate() {
                         let p = point(
                             b.left() + b.size.width * (index as f32 / (count - 1) as f32),
                             b.top() + b.size.height * (1.0 - gain),
