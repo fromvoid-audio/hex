@@ -304,12 +304,9 @@ mod tests {
         );
         assert_eq!(
             reconcile(editor.project(), Some(source), None),
-            (None, None)
-        );
-        assert_eq!(
-            reconcile(editor.project(), None, None),
             (Some(source), None)
         );
+        assert_eq!(reconcile(editor.project(), None, None), (None, None));
         editor
             .execute(Command::MoveClip {
                 clip,
