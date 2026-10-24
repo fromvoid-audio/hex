@@ -68,7 +68,7 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().project, before)
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &before)
     });
 }
 
