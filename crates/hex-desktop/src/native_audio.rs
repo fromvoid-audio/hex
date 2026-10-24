@@ -148,6 +148,8 @@ impl NativeAudioSink {
         drop(self.output.take());
         self.section_edit = None;
         self.resident.current_submission = None;
+        self.resident.submitted_loop = None;
+        self.resident.applied_loop = None;
         self.opening = None;
         self.open_pending = false;
         self.pending_open_event = None; // Client close only: endpoint Drop is terminal-owned
@@ -783,6 +785,12 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn resident_runtime_loop(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<hex_session::service::ResidentRuntimeLoop>, String> {
+        self.current_runtime_loop(context)
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
     }
