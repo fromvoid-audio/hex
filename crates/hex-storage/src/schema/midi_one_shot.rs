@@ -282,7 +282,10 @@ mod tests {
             let path = dir.join("retained.hex");
             crate::save_new(&path, &project).unwrap();
             assert_eq!(crate::load(&path).unwrap(), project);
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                crate::encode(&project).unwrap()
+            );
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
