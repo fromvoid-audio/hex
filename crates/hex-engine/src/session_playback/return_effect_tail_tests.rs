@@ -392,6 +392,53 @@ fn warm(playback: &mut SessionPlayback) {
 }
 
 #[test]
+fn unchanged_main_configuration_with_incompatible_history_refuses_without_losing_old_audio() {
+    let project = super::tests::project(1.0, 0, 8 << 32);
+    let state = Arc::new(NativeDeviceState::new(HOLD_TYPE, 1, vec![0]).unwrap());
+    let chain = |definition: Arc<dyn PreparedNativeProcessor>| {
+        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Main,
+            device_id: 17,
+            device_type: HOLD_TYPE,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48_000,
+            configuration: Some(Arc::clone(&state)),
+            definition: Some(definition),
+        }])
+        .unwrap()
+    };
+    let mut previous = playback(&project);
+    let mut oracle = playback(&project);
+    previous.main_chain = chain(Arc::new(HoldDefinition));
+    oracle.main_chain = chain(Arc::new(HoldDefinition));
+    warm(&mut previous);
+    warm(&mut oracle);
+    let mut candidate = playback(&project);
+    // Model an incompatible provider behind unchanged immutable metadata.
+    // No changed suffix was selected, so no history exclusion is justified.
+    candidate.main_chain = chain(Arc::new(ScaleDefinition(0.5)));
+    assert_eq!(
+        candidate.try_inherit_state_from(&mut previous),
+        Err(SessionPlaybackError::DeviceRuntime)
+    );
+    assert!(
+        candidate
+            .return_effect_tails
+            .slots()
+            .iter()
+            .all(Option::is_none)
+    );
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    previous.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(previous.performance_frame, oracle.performance_frame);
+}
+
+#[test]
 fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing() {
     for (replacement, partitions, carry) in [
         (false, &[8][..], false),

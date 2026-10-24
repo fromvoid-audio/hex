@@ -37,9 +37,22 @@ fn setup_for_identity_with_fixture(
     NativeRetirement,
     Binding,
 ) {
+    setup_for_identity_with_profile(source_identity, fixture, 8)
+}
+fn setup_for_identity_with_profile(
+    source_identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+    quantum: u16,
+) -> (
+    Control,
+    Guard<NativeCallbackOwner>,
+    Guard<ErrorCallbackOwner>,
+    NativeRetirement,
+    Binding,
+) {
     let (mut control, mut callback) = channel(48_000).unwrap();
     control
-        .configure_physical_callback_request(&mut callback, 8)
+        .configure_physical_callback_request(&mut callback, quantum)
         .unwrap();
     let (data, errors, terminals) =
         crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
@@ -85,7 +98,7 @@ fn setup_for_identity_with_fixture(
     control
         .configure_native_source_preparation(2, source_reservation())
         .unwrap();
-    let binding = source_for_fixture(&mut control, source_identity, fixture);
+    let binding = source_for_profile(&mut control, source_identity, fixture, quantum, None);
     (control, data, errors, retirement, binding)
 }
 fn source(control: &mut Control, identity: hex_lattice::ProcessorInstanceIdentity) -> Binding {
@@ -96,13 +109,23 @@ fn source_for_fixture(
     identity: hex_lattice::ProcessorInstanceIdentity,
     fixture: &str,
 ) -> Binding {
-    let (build, source, preparation) =
+    source_for_profile(control, identity, fixture, 8, None)
+}
+fn source_for_profile(
+    control: &mut Control,
+    identity: hex_lattice::ProcessorInstanceIdentity,
+    fixture: &str,
+    quantum: u16,
+    restore: Option<hex_lattice_contract::NativeDeviceState>,
+) -> Binding {
+    let (build, source, mut preparation) =
         crate::candidate_custody::native_source_test_fixture::input_for(
             fixture,
             [
                 0x48, 0x45, 0x58, 0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
             ],
         );
+    preparation.quantum = quantum;
     let binding = control
         .begin_native_source_preparation(
             identity,
@@ -110,7 +133,7 @@ fn source_for_fixture(
             &build,
             source,
             preparation,
-            None,
+            restore,
             native::TrustUserCode::Acknowledged,
         )
         .unwrap();

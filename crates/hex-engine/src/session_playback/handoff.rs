@@ -206,9 +206,6 @@ impl SessionPlayback {
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if !self.main_chain.can_inherit_from(&previous.main_chain) {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -303,6 +300,9 @@ impl SessionPlayback {
             && previous.performance_frame == 0
             && previous.arrangement_frame == 0
         {
+            if !self.main_chain.can_inherit_from(&previous.main_chain) {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
             // Stop/explicit reset removed every in-flight sample. Adopt fresh
             // processor/delay owners instead of copying incompatible histories.
             let recipient_epoch = self
@@ -2255,6 +2255,9 @@ impl SessionPlayback {
             // not keep that constructor (and its native sources) alive forever.
             clock_transfer = 0;
         }
+        // Live replacement can leave the incompatible original suffix with a
+        // preflighted tail owner. Validate only the histories actually carried
+        // into the candidate; an unchanged incompatible prefix still refuses.
         if !self.main_chain.can_inherit_from_excluding_old_range(
             &previous.main_chain,
             return_tail_plan.main_excluded(previous.main_chain.len()),

@@ -297,6 +297,12 @@ impl Callback {
     pub fn committed_position_for_test(&self) -> u64 {
         self.state.position
     }
+    /// Snapshot the original producer's pending requests. This is diagnostic
+    /// progress only, not processing completion or native/publication custody.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_requests_for_test(&self) -> usize {
+        QUEUE_CAPACITY - self.requests.slots()
+    }
     pub fn quantum_frames(&self) -> usize {
         usize::from(self.quantum)
     }

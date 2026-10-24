@@ -7,6 +7,38 @@ use hex_lattice::{
 };
 use hex_project::{Command, Created, Editor, Project};
 
+mod deadlines;
+#[cfg(not(debug_assertions))]
+mod profile;
+mod replacement;
+
+fn close_backend(
+    data: Guard<NativeCallbackOwner>,
+    errors: Guard<ErrorCallbackOwner>,
+    mut retirement: NativeRetirement,
+) -> NativeRetirement {
+    drop(data);
+    drop(errors);
+    assert!(!retirement.advance().unwrap());
+    std::thread::spawn(move || {
+        let mut backend = Some(());
+        let mut pending = false;
+        let mut disposed = false;
+        crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(disposed && backend.is_none());
+        retirement
+    })
+    .join()
+    .unwrap()
+}
+
 struct Fixture {
     control: Control,
     data: Guard<NativeCallbackOwner>,
@@ -51,6 +83,15 @@ fn prepared_fixture(location: usize, bypassed: bool) -> PreparedFixture {
     prepared_fixture_with_source(location, bypassed, "processing")
 }
 fn prepared_fixture_with_source(location: usize, bypassed: bool, fixture: &str) -> PreparedFixture {
+    prepared_fixture_with_profile(location, bypassed, fixture, 8, true)
+}
+fn prepared_fixture_with_profile(
+    location: usize,
+    bypassed: bool,
+    fixture: &str,
+    quantum: u16,
+    retain_unvisited: bool,
+) -> PreparedFixture {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddTrack {
@@ -87,7 +128,7 @@ fn prepared_fixture_with_source(location: usize, bypassed: bool, fixture: &str) 
     };
     let identity = ProcessorInstanceIdentity::new(owner, editor.project().next_identity()).unwrap();
     let (mut control, mut data, errors, retirement, binding) =
-        setup_for_identity_with_fixture(identity, fixture);
+        setup_for_identity_with_profile(identity, fixture, quantum);
     let state = control.native_source_prepared_state(binding).unwrap();
     let command = match location {
         0 => Command::InsertDevice {
@@ -194,10 +235,13 @@ fn prepared_fixture_with_source(location: usize, bypassed: bool, fixture: &str) 
     let owner = refused.owner;
     // Install the greater binding first, then insert the real graph's source
     // before it. The retained source must stay unvisited and return with0 DSP.
-    let unused = (location == 2 && !bypassed).then(|| {
-        let unused = source(
+    let unused = (retain_unvisited && location == 2 && !bypassed).then(|| {
+        let unused = source_for_profile(
             &mut control,
             ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 500).unwrap(),
+            "processing",
+            quantum,
+            None,
         );
         control.publish_native_source_endpoint(unused).unwrap();
         allocation_free(|| {

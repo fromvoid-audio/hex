@@ -6,6 +6,32 @@ use hex_lattice_contract::DeviceContractError;
 use hex_plugin_host::transport::Fault;
 impl NativeEndpointBank {
     #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_transport_fault(&self, binding: Binding) -> Option<Fault> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.0.binding == binding)?
+            .0
+            .callback
+            .as_ref()?
+            .callback()
+            .transport_fault_for_test()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_pending_requests(&self, binding: Binding) -> Option<usize> {
+        Some(
+            self.entries
+                .iter()
+                .flatten()
+                .find(|entry| entry.0.binding == binding)?
+                .0
+                .callback
+                .as_ref()?
+                .callback()
+                .pending_requests_for_test(),
+        )
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_committed_frames(&self, binding: Binding) -> Option<u64> {
         self.entries
             .iter()

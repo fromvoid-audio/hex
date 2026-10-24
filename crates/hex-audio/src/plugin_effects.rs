@@ -306,6 +306,14 @@ impl NativeEffectCallback {
     pub fn reported_tail_is_drained(&self) -> bool {
         !self.transport.is_revoked() && self.tail.drained()
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn transport_fault_for_test(&self) -> Option<Fault> {
+        self.transport.fault()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn pending_requests_for_test(&self) -> usize {
+        self.transport.pending_requests_for_test()
+    }
     fn matches(&self, node: ForeignProcessorNode<'_>) -> bool {
         let config = &self.configuration;
         node.owner == config.identity.owner()
