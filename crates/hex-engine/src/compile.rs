@@ -338,7 +338,6 @@ fn compile_project_inner<'a>(
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
-    crate::midi_compile::require_supported_clip_volume(snapshot)?;
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
@@ -551,7 +550,7 @@ fn compile_project_inner<'a>(
         };
         if let Some(instrument) = &instrument {
             midi_bank_bytes = midi_bank_bytes
-                .checked_add(instrument.bank.storage_bytes()?)
+                .checked_add(instrument.prepared_storage_bytes()?)
                 .ok_or(Invalid("midi note bank byte count overflow"))?;
             midi_bank_references = midi_bank_references
                 .checked_add(instrument.spans.len())
@@ -726,6 +725,9 @@ fn compile_project_inner<'a>(
         })
         .collect::<Result<Vec<_>, Invalid>>()?;
     project.tempo_map = Some(snapshot.tempo_map().clone());
+    project.tempo_max_micro_bpm =
+        crate::PreparedTempoMap::validate_canonical(snapshot.tempo_map(), snapshot.sample_rate())
+            .map_err(|_| Invalid("invalid midi volume project timing"))?;
     project.midi_routing = snapshot
         .midi_routes()
         .iter()

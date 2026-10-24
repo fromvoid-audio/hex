@@ -67,6 +67,7 @@ mod tests {
         order: u64,
         mix: crate::PreparedTrackMix,
         continuation: Option<SessionContinuation>,
+        clip_gain: f64,
         voice: crate::midi_template::MidiReleaseVoice,
     }
 
