@@ -1,0 +1,74 @@
+//! Exact canonical export input; no stream/cache/native resource ownership.
+use super::*;
+
+/// Stateless host capability, invoked only on the existing offline export worker.
+/// It owns independent verification/page preparation through ordinary export and
+/// must drop/join every resource before returning. This grants no native admission.
+pub type StreamedExporter = fn(&StreamedExportRequest<'_>) -> Result<ExportReport, String>;
+
+pub(super) struct StreamedExportJob {
+    pub(super) source: Arc<CanonicalAudioSourceSnapshot>,
+    pub(super) render: StreamedExporter,
+}
+impl StreamedExportJob {
+    pub(super) fn capture(
+        session: &Session,
+        project: &Arc<Project>,
+        generation: u64,
+        revision: u64,
+        renderer: Option<StreamedExporter>,
+    ) -> Result<Self, String> {
+        let render = renderer.ok_or("offline export is unavailable for verified streaming")?;
+        if session.audio_mode() != DocumentAudioMode::VerifiedStreaming {
+            return Err("verified export document mode changed".into());
+        }
+        Ok(Self {
+            // Current canonical worker state, never an audition/preview event.
+            source: Arc::new(CanonicalAudioSourceSnapshot::capture(
+                project, generation, revision, session,
+            )),
+            render,
+        })
+    }
+}
+
+/// Borrowed complete input from one admitted canonical worker job. Only Session
+/// constructs it; source context and project/file facts are captured together.
+/// A compiled authoring alias may retain older media keys: use its actual source
+/// metadata rather than relabeling it with document/editor counters.
+pub struct StreamedExportRequest<'a> {
+    pub(super) source: &'a CanonicalAudioSourceSnapshot,
+    pub(super) prepared: &'a Arc<PreparedRevision>,
+    pub(super) path: &'a Path,
+    pub(super) start: u64,
+    pub(super) frames: u64,
+    pub(super) signal: &'a hex_export::ExportSignal,
+    pub(super) control: &'a hex_export::ExportControl,
+    pub(super) publication: &'a hex_export::Publication,
+}
+impl StreamedExportRequest<'_> {
+    pub fn source(&self) -> &CanonicalAudioSourceSnapshot {
+        self.source
+    }
+    pub fn prepared(&self) -> &Arc<PreparedRevision> {
+        self.prepared
+    }
+    pub fn path(&self) -> &Path {
+        self.path
+    }
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+    pub fn signal(&self) -> &hex_export::ExportSignal {
+        self.signal
+    }
+    pub fn control(&self) -> &hex_export::ExportControl {
+        self.control
+    }
+    pub fn publication(&self) -> &hex_export::Publication {
+        self.publication
+    }
+}
