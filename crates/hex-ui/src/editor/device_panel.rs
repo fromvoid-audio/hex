@@ -1066,6 +1066,7 @@ fn render_track(
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: "add native device".into(),
             })
             .into()
@@ -1442,6 +1443,7 @@ fn device_drag_title(
         .cursor(gpui::CursorStyle::OpenHand)
         .tooltip(|_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Help,
                 description: "drag to reorder device".into(),
             })
             .into()
@@ -2396,6 +2398,7 @@ fn bypass_action(
     )
     .tooltip(move |_, cx| {
         cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
             description: tooltip.into(),
         })
         .into()
@@ -2497,6 +2500,7 @@ fn button_details(surface: Div, id: String, tooltip: &'static str) -> Stateful<D
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: tooltip.into(),
             })
             .into()

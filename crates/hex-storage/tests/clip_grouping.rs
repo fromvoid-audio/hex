@@ -69,7 +69,7 @@ fn grouped_sources_roundtrip_complete_original_state_and_missing_media_paths() {
     };
     let encoded = encode(e.project()).unwrap();
     let json: Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(json["version"], 41);
+    assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     let reopened = decode(&encoded).unwrap();
     assert_eq!(reopened, *e.project());
     let roots = reopened.clip(group).unwrap().audio_events().sources;
@@ -100,6 +100,7 @@ fn schema40_migrates_in_memory_with_single_root_defaults() {
     let mut value: Value = serde_json::from_slice(&encode(e.project()).unwrap()).unwrap();
     value["version"] = 40.into();
     value.as_object_mut().unwrap().remove("grouped_audio");
+    value.as_object_mut().unwrap().remove("content_views");
     let original = bytes(&value);
     let loaded = decode(&original).unwrap();
     assert_eq!(loaded, *e.project());
@@ -125,7 +126,7 @@ fn malformed_group_sources_refuse_missing_foreign_or_unrelated_state() {
             2 => state["sources"][1]["id"] = state["sources"][0]["id"].clone(),
             3 => state["sources"][0]["document"]["assets"][0]["path"] = json!("other.wav"),
             4 => state["sources"][0]["document"]["master_gain"] = json!(0.5),
-            5 => state["sources"][0]["document"]["version"] = 41.into(),
+            5 => state["sources"][0]["document"]["version"] = 42.into(),
             6 => state["events"][0]["source"] = 0.into(),
             _ => state["extra"] = true.into(),
         }
@@ -133,5 +134,64 @@ fn malformed_group_sources_refuse_missing_foreign_or_unrelated_state() {
             decode(&bytes(&bad)).is_err(),
             "accepted malformed inventory {kind}"
         );
+    }
+}
+
+#[test]
+fn grouping_preserves_directed_child_and_container_views_through_current_codec() {
+    let (mut e, ids) = fixture();
+    e.execute(Command::ReverseClips(ids.clone())).unwrap();
+    let original = e.project().snapshot();
+    let Created::Clip(group) = e.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    e.execute(Command::ReverseClips(vec![group])).unwrap();
+    let data = encode(e.project()).unwrap();
+    assert_eq!(decode(&data).unwrap().snapshot(), e.project().snapshot());
+    assert!(e.undo());
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = original.next_id; // IDs remain monotonic across Undo.
+    assert_eq!(restored, original);
+}
+
+#[test]
+fn both_evidenced_schema41_producers_migrate_without_losing_inventory() {
+    for data in [
+        include_bytes!("fixtures/grouped-audio/schema41-group-04d5ee56.json").as_slice(),
+        include_bytes!("fixtures/grouped-audio/schema41-content-08dfb3a0.json").as_slice(),
+    ] {
+        let original = data.to_vec();
+        let old: Value = serde_json::from_slice(data).unwrap();
+        let project = decode(data).unwrap();
+        let current = encode(&project).unwrap();
+        assert_eq!(decode(&current).unwrap(), project);
+        let mut upgraded: Value = serde_json::from_slice(&current).unwrap();
+        upgraded["version"] = 41.into();
+        if old.get("grouped_audio").is_some() {
+            upgraded.as_object_mut().unwrap().remove("content_views");
+            // Current retained roots use strict41; the historical writer used
+            // strict40. The actual original fixtures validate both envelopes.
+            for row in upgraded["grouped_audio"].as_array_mut().unwrap() {
+                for root in row["sources"].as_array_mut().unwrap() {
+                    root["document"]["version"] = 40.into();
+                    root["document"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("content_views");
+                }
+            }
+        } else {
+            upgraded.as_object_mut().unwrap().remove("grouped_audio");
+        }
+        assert_eq!(upgraded, old, "migration changed existing saved state");
+        assert_eq!(data, original);
+        let mut ambiguous = old.clone();
+        if ambiguous.get("grouped_audio").is_some() {
+            ambiguous["content_views"] = json!([]);
+        } else {
+            ambiguous["grouped_audio"] = json!([]);
+        }
+        assert!(decode(&bytes(&ambiguous)).is_err());
     }
 }

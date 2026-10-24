@@ -119,6 +119,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
     super::grouped_audio::require_legacy_compatible(project)?;
+    super::content_views::require_legacy_compatible(project)?;
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();
     visit(&mut snapshot, |clip, active, offset| {

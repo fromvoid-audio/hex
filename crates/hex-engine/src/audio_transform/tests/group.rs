@@ -586,3 +586,70 @@ fn grouped_finite_preview_keeps_complete_composite_root_and_separate_placement_c
         &expected[11_000..15_000]
     );
 }
+
+#[test]
+fn grouping_directed_children_retains_their_captured_processing_clock() {
+    let (mut editor, ids, media) = group_fixture();
+    let first = ids[0];
+    let settings = default_audio_warp(
+        editor.project().clip(first).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip: first,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor.execute(Command::ReverseClips(ids.clone())).unwrap();
+    let context = AudioTransformPreparation::default();
+    let expected = render(&prepare(&editor, &media, &context), 0, 16000, 127);
+    editor.execute(Command::GroupClips(ids)).unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16000, 257),
+        expected
+    );
+}
+#[test]
+fn reversing_a_group_reflects_composite_pcm_but_keeps_destination_fades_forward() {
+    let (mut editor, ids, media) = group_fixture();
+    let context = AudioTransformPreparation::default();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let duration = editor.project().clip(group).unwrap().duration() as usize;
+    let forward = render(&prepare(&editor, &media, &context), 0, duration, 127);
+    editor
+        .execute(Command::SetClipFades {
+            clip: group,
+            fade_in: 101,
+            fade_out: 179,
+        })
+        .unwrap();
+    editor.execute(Command::ReverseClips(vec![group])).unwrap();
+    let expected: Vec<_> = forward
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, frame)| {
+            let gain =
+                ((i as f64 / 100.0).min(1.0) * ((duration - 1 - i) as f64 / 178.0).min(1.0)) as f32;
+            [frame[0] * gain, frame[1] * gain]
+        })
+        .collect();
+    let actual = render(&prepare(&editor, &media, &context), 0, duration, 257);
+    let mismatch = actual.iter().zip(&expected).position(|(a, b)| a != b);
+    assert!(
+        mismatch.is_none(),
+        "composite reflection/fade differs at {mismatch:?}"
+    );
+}

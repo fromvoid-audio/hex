@@ -81,7 +81,7 @@ impl AudioTransformPreparation {
             let root = &source.root.clip;
             let root_work = if let Some(inner) = root.audio_edit() {
                 inner.validate(root, &source.root.tempo, source.asset.playback_frames())?;
-                if inner.placement.is_some() {
+                if inner.placement.is_some() || inner.content_view.is_some() {
                     let view = AudioViewProjection::new(root, &source.root.tempo)?;
                     if view.occurrence_count() > 8_192 {
                         return Err(Invalid("grouped source exceeds bounded placement work"));
@@ -192,26 +192,33 @@ impl AudioTransformPreparation {
                 }
             }
         }
-        mapping::apply_fade(&mut root_pcm, edit, tempo, &self.shutdown)?;
+        if root_only || edit.content_view.is_none() {
+            mapping::apply_fade(&mut root_pcm, edit, tempo, &self.shutdown)?;
+        }
         let audio = if let Some(reservation) = output_reservation {
             let mut output = Vec::new();
             output
                 .try_reserve_exact(clip.duration() as usize)
                 .map_err(|_| Invalid("grouped audio placement allocation failed"))?;
             output.resize(clip.duration() as usize, [0.0; 2]);
-            for index in 0..projection.occurrence_count() {
-                if self.cancelled() {
-                    return Err(Invalid("audio preparation cancelled"));
+            if edit.content_view.is_some() {
+                self.copy_frame_content(clip, &projection, &root_pcm, &mut output)?;
+                self.apply_content_fade(tempo, clip, edit, &projection, &mut output)?;
+            } else {
+                for index in 0..projection.occurrence_count() {
+                    if self.cancelled() {
+                        return Err(Invalid("audio preparation cancelled"));
+                    }
+                    let occurrence = projection.occurrence(index)?;
+                    let from = root_pcm
+                        .get(occurrence.root_start as usize..occurrence.root_end as usize)
+                        .ok_or(Invalid("grouped audio crop exceeds root"))?;
+                    let start = (occurrence.destination_start - clip.start()) as usize;
+                    let to = output
+                        .get_mut(start..start + from.len())
+                        .ok_or(Invalid("grouped audio placement exceeds output"))?;
+                    to.copy_from_slice(from);
                 }
-                let occurrence = projection.occurrence(index)?;
-                let from = root_pcm
-                    .get(occurrence.root_start as usize..occurrence.root_end as usize)
-                    .ok_or(Invalid("grouped audio crop exceeds root"))?;
-                let start = (occurrence.destination_start - clip.start()) as usize;
-                let to = output
-                    .get_mut(start..start + from.len())
-                    .ok_or(Invalid("grouped audio placement exceeds output"))?;
-                to.copy_from_slice(from);
             }
             drop(root_pcm);
             drop(root_charge);

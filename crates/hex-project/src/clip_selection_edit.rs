@@ -507,7 +507,8 @@ impl Command {
             | Self::MoveClipsWithOverwrite { .. }
             | Self::GroupAudioEventRange { .. }
             | Self::GroupClips(_)
-            | Self::DuplicateClips(_) => ClipCommandScope::Explicit,
+            | Self::DuplicateClips(_)
+            | Self::ReverseClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::RenameArrangementSection { .. }

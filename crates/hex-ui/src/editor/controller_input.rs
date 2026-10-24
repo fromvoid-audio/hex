@@ -857,6 +857,7 @@ impl EditorView {
             .child(theme::text("midi"))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     description: description.clone(),
                 })
                 .into()

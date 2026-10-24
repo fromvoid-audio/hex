@@ -177,6 +177,7 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    pub content_view: Option<crate::ContentWindow>,
     pub active: bool,
     pub playback_offset_raw: u64,
     /// Selected nonrepeating audible end; notes beyond it remain authored metadata.
@@ -336,6 +337,7 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                content_view: clip.content_view,
                                 active: clip.active,
                                 playback_offset_raw: clip.playback_offset.raw(),
                                 one_shot_boundary: clip.source.one_shot_boundary,
@@ -768,7 +770,13 @@ impl Project {
                 clip.playback_offset_raw
                     .checked_add(length.raw())
                     .ok_or(Invalid("midi playback window end overflow"))?;
+                if let Some(view) = clip.content_view {
+                    if view.length()? != length.raw() {
+                        return Err(Invalid("midi content window differs from placement"));
+                    }
+                }
                 compiled_midi.push(MidiClip {
+                    content_view: clip.content_view,
                     active: clip.active,
                     playback_offset: crate::BeatTime::from_raw(clip.playback_offset_raw),
                     volume: clip.volume.clone(),

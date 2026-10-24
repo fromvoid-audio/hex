@@ -22,8 +22,9 @@ pub struct AudioPreviewRoot {
 }
 
 impl AudioTransformPreparation {
-    /// Resolve the retained first processing root for an accepted finite
-    /// placement. Use inside the caller's existing preparation transaction;
+    /// Resolve the retained first forward processing root for an accepted finite
+    /// placement or directed content view. Use inside the caller's existing
+    /// preparation transaction;
     /// failure must refuse that candidate alongside its playback preparation.
     /// Original assets must have already passed the resident source boundary.
     pub fn preview_root(
@@ -35,7 +36,10 @@ impl AudioTransformPreparation {
         let clip = project
             .clip(clip)
             .ok_or(Invalid("audio preview clip is missing"))?;
-        let Some(edit) = clip.audio_edit().filter(|edit| edit.placement.is_some()) else {
+        let Some(edit) = clip
+            .audio_edit()
+            .filter(|edit| edit.placement.is_some() || edit.content_view.is_some())
+        else {
             return Ok(None);
         };
         if clip.has_retained_audio_roots() {
@@ -79,7 +83,7 @@ impl AudioTransformPreparation {
             .ok_or(Invalid("audio preview clip is missing"))?;
         let Some(edit) = canonical
             .audio_edit()
-            .filter(|edit| edit.placement.is_some())
+            .filter(|edit| edit.placement.is_some() || edit.content_view.is_some())
         else {
             return Ok(None);
         };
@@ -281,13 +285,14 @@ pub(super) fn validate_copy(
     Ok(())
 }
 
-fn occurrence_edit(
+pub(super) fn occurrence_edit(
     edit: &AudioClipEdit,
     origin: i128,
     preparation: &AudioTransformPreparation,
     current_tempo: &hex_project::TempoMap,
 ) -> Result<AudioClipEdit, Invalid> {
     let mut root = edit.clone();
+    root.content_view = None;
     root.view_start = 0;
     root.view_end = root.domain.clock.length();
     root.placement = None;
@@ -321,4 +326,74 @@ pub(super) fn placed_clip(audio: Audio, clip: &hex_project::Clip) -> Result<Clip
         false,
     )
     .map(|compiled| compiled.with_gain(clip.gain()))
+}
+
+#[cfg(test)]
+mod directed_preview_root_tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project, TrimEdge};
+    #[test]
+    fn directed_ordinary_clip_prepares_forward_root_before_first_repeat() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 1 })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 0 })
+            .unwrap();
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 2,
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        assert!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .placement
+                .is_none()
+        );
+        let before = editor.project().snapshot();
+        let source = Audio::new(48_000, (0..8).map(|i| [i as f32 / 10.0; 2]).collect()).unwrap();
+        let transforms = AudioTransformPreparation::default();
+        let first = transforms
+            .preview_root(editor.project(), clip, &source)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first.audio.frames(),
+            source.frames(),
+            "full forward root retains hidden prefix and original order"
+        );
+        let again = transforms
+            .preview_root(editor.project(), clip, &source)
+            .unwrap()
+            .unwrap();
+        assert!(first.audio.shares_pcm_with(&again.audio));
+        assert_eq!(editor.project().snapshot(), before);
+    }
 }

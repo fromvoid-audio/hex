@@ -726,6 +726,7 @@ impl EditorView {
                     })
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::waveform::ClipTooltip {
+                            kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
                             name: if reanchors {
                                 format!(
                                     "{} · editing fits fades to this clip",

@@ -15,6 +15,7 @@
 //! child PCM/conversion identities participate in the group cache key. Streamed
 //! roots and outer pitch/warp/source processing refuse before history commit.
 mod budget;
+mod content;
 mod events;
 mod group;
 pub(crate) use group::GroupSource;
@@ -659,6 +660,11 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, tempo_map, asset.playback_frames())?;
+        if edit.content_view.is_some() {
+            return self
+                .compile_content(tempo_map, clip, edit, asset, source)
+                .map(Some);
+        }
         if edit.placement.is_some() {
             return self
                 .compile_view(tempo_map, clip, edit, asset, source)

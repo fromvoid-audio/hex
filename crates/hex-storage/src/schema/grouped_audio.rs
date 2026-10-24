@@ -1,9 +1,9 @@
-//! Schema41 adds explicit retained audio roots and per-event source identities.
-//! Schema40 and all earlier supported readers migrate in memory to empty root
-//! tables/source zero. Original files are never rewritten on load. Each retained
-//! root uses the frozen complete schema40 codec in a canonical one-clip envelope,
-//! reusing its fade/event/warp/placement contracts without a second lossy codec.
-//! Bounds apply to inventories and encoded document bytes, including envelopes.
+//! Schema42 adds retained audio roots over schema41 directed content views.
+//! Main41 and the evidenced draft grouped41 lineage use disjoint complete
+//! inventories; mixed layouts refuse. Draft grouped41 came from04d5ee56 and
+//! embeds strict40 roots. Current42 embeds strict41 content roots, preserving
+//! directed reads without recursively accepting grouped documents. Earlier
+//! formats migrate in memory; no original bytes/media are rewritten.
 use crate::{Project, StorageError};
 use hex_project::{AudioEvent, AudioEvents, ClipSnapshot, Command, Editor, TrackContentSnapshot};
 use serde::{Deserialize, Serialize};
@@ -170,7 +170,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
                 let isolated = isolated_root(project, root.clip.retained_snapshot(), &root.tempo)?;
                 roots.push(Root {
                     id: root.id,
-                    document: super::clip_activation::encode(&isolated)?,
+                    document: super::content_views::encode(&isolated)?,
                 });
             }
             inventory.push(State {
@@ -183,21 +183,40 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         }
     }
     let legacy = Project::from_snapshot(snapshot).map_err(invalid)?;
-    let mut value = super::clip_activation::encode(&legacy)?;
+    let mut value = super::content_views::encode(&legacy)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid grouped audio envelope"))?;
-    object.insert("version".into(), 41.into());
+    object.insert("version".into(), 42.into());
     object.insert("grouped_audio".into(), serde_json::to_value(inventory)?);
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 42)
+}
+/// Actual41 producers are selected by their distinct mandatory inventory.
+/// The underlying frozen reader still validates every field and rejects extras.
+pub(crate) fn decode41(bytes: &[u8]) -> Result<Project, StorageError> {
+    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if value.get("grouped_audio").is_some() {
+        if value.get("content_views").is_some() {
+            return Err(StorageError::Invalid(
+                "ambiguous schema41 branch inventories; original unchanged",
+            ));
+        }
+        decode_version(bytes, 41)
+    } else {
+        super::content_views::decode(bytes)
+    }
+}
+fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid grouped audio envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(41) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
         return Err(StorageError::Invalid("invalid grouped audio version"));
     }
     let Inventory(states) = serde_json::from_value(
@@ -205,8 +224,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .remove("grouped_audio")
             .ok_or(StorageError::Invalid("grouped audio inventory missing"))?,
     )?;
-    object.insert("version".into(), 40.into());
-    let project = super::clip_activation::decode(&serde_json::to_vec(&value)?)?;
+    object.insert(
+        "version".into(),
+        if version == 42 { 41.into() } else { 40.into() },
+    );
+    let base = serde_json::to_vec(&value)?;
+    let project = if version == 42 {
+        super::content_views::decode(&base)?
+    } else {
+        super::clip_activation::decode(&base)?
+    };
     let mut inventory = BTreeMap::new();
     let mut count = 0usize;
     for state in states {
@@ -238,8 +265,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             }
             let mut sources = Vec::new();
             for root in state.sources {
-                let root_project =
-                    super::clip_activation::decode(&serde_json::to_vec(&root.document)?)?;
+                let encoded = serde_json::to_vec(&root.document)?;
+                let root_project = match root.document.get("version").and_then(|v| v.as_u64()) {
+                    Some(40) => super::clip_activation::decode(&encoded)?,
+                    Some(41) => super::content_views::decode(&encoded)?,
+                    _ => {
+                        return Err(StorageError::Invalid(
+                            "retained root requires a non-grouped schema40 or content41 envelope",
+                        ));
+                    }
+                };
                 let source = root_project
                     .tracks()
                     .first()

@@ -1173,6 +1173,7 @@ impl EditorView {
             ))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
+                    kind: crate::tooltips::Kind::Identification,
                     name: track_name.clone(),
                 })
                 .into()
@@ -1284,6 +1285,7 @@ impl EditorView {
                 .opacity(0.45)
                 .tooltip(|_, cx| {
                     cx.new(|_| ClipTooltip {
+                        kind: crate::tooltips::Kind::Identification,
                         name: "recording unavailable · planned for hex 0.2".into(),
                     })
                     .into()

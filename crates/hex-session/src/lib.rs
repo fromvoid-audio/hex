@@ -1885,7 +1885,7 @@ fn prepare_with_waveforms_using(
             .filter(|view| {
                 project.clip(view.clip).is_some_and(|clip| {
                     clip.audio_edit()
-                        .is_some_and(|edit| edit.placement.is_some())
+                        .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
                 })
             })
             .count();
@@ -1928,7 +1928,7 @@ fn prepare_with_waveforms_using(
             let preview_root = if let Some(clip) = project.clip(view.clip)
                 && clip
                     .audio_edit()
-                    .is_some_and(|edit| edit.placement.is_some())
+                    .is_some_and(|edit| edit.placement.is_some() || edit.content_view.is_some())
             {
                 transforms
                     .preview_root_with_sources(project, clip.id(), |asset| {

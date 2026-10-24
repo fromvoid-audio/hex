@@ -469,6 +469,7 @@ fn paste_rows_with_source(
             notes,
         };
         let clip = MidiClip {
+            content_view: None,
             active: fragment.active,
             playback_offset: crate::BeatTime::ZERO,
             volume: fragment

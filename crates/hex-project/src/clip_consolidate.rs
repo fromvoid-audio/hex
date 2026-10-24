@@ -156,6 +156,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
     // retrigger. They are clipped by the playback owner before concatenation.
     notes.sort_by_key(|n| (n.start(), n.pitch(), n.channel()));
     let mut merged = MidiClip {
+        content_view: None,
         active,
         playback_offset: BeatTime::ZERO,
         name: first.name().into(),
@@ -226,7 +227,8 @@ fn audio(
             let edit = clip
                 .audio_edit()
                 .ok_or(Invalid("grouped audio root missing"))?;
-            if edit.placement.is_some()
+            if edit.content_view.is_some()
+                || edit.placement.is_some()
                 || clip.gain() != ClipGain::UNITY
                 || !edit.domain.fade.is_neutral()
             {
