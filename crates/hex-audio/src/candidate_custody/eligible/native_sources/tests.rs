@@ -763,7 +763,19 @@ fn root_cancellation_descriptor_does_not_outlive_exact_disposal() {
         .as_ref()
         .unwrap()
         .descriptor_lifetime_probe_on_control();
-    assert!(root.retire_native_source(binding));
+    // Hold the actual first request while other close/retire paths run. A
+    // second request may not manufacture another pair of descriptor handles.
+    let first = lock(&root.bank).sources.slots[0]
+        .request_cancellation()
+        .unwrap();
+    for _ in 0..4 {
+        assert!(root.retire_native_source(binding));
+        let mut requests = empty_cancellations();
+        lock(&root.bank).sources.close(&mut requests);
+        assert!(requests.into_iter().all(|request| request.is_none()));
+    }
+    first.cancel_on_control();
+    drop(first);
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
@@ -875,4 +887,76 @@ fn native_source_controls_refuse_the_retiring_original_root() {
             .with_native_effect_definition::<()>(&[], |_| panic!("retiring Root must not compile"))
             .is_err()
     );
+}
+
+#[test]
+fn native_pool_reserves_handles_before_allocating_and_keeps_them_while_vacant() {
+    let per_source = resources::PoolResources::new(1).unwrap();
+    assert_eq!(per_source.per_source.shared_groups, 10);
+    assert_eq!(per_source.per_source.shared_handle_bound, 27);
+    assert_eq!(
+        per_source.per_source.source.inventory_node_lifetime_bound,
+        4
+    );
+    assert_eq!(per_source.per_source.source.ipc_handle_bound, 4);
+    assert_eq!(per_source.per_source.source.native_child_lifetime_bound, 1);
+    assert_eq!(per_source.per_source.joining_thread_lifetime_bound, 1);
+    for fits in [false, true] {
+        let outer = CandidateRoot::new(2).unwrap();
+        let root = &outer.0.eligible;
+        // Same closed publication bank, but no native output carriers: this
+        // fixture tests capacity admission, never native publication authority.
+        root.configure_publications(
+            outer.root_id(),
+            AudioCandidatePublicationReservation {
+                runtime_slots: 2,
+                archive_slots: 2,
+                member_rows: 64,
+                transfer_rows: 64,
+                receipt_rows: 2,
+                data_rows: 4096,
+                handle_rows: 2 * 5 + 28 + 2 * per_source.shared_handles - usize::from(!fits),
+                max_retained_data_bytes: 64 * 1024 * 1024,
+                max_construction_peak_data_bytes: 64 * 1024 * 1024,
+            },
+            std::mem::size_of::<Inner>(),
+        )
+        .unwrap();
+        let mut result = None;
+        let configure = || {
+            result = Some(root.configure_native_sources(2, source_reservation()));
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(configure);
+            if !fits {
+                assert_eq!((measured.count_total, measured.count_current), (0, 0));
+                assert_eq!((measured.bytes_total, measured.bytes_current), (0, 0));
+            }
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut configure = configure;
+            configure();
+        }
+        let result = result.unwrap();
+        if fits {
+            result.unwrap();
+            let bank = lock(&root.bank);
+            assert_eq!(
+                bank.sources.reserved_shared_handles(),
+                2 * per_source.shared_handles
+            );
+            assert_eq!(publication::remaining_handle_reservation(&bank), Some(0));
+            assert!(!bank.sources.occupied());
+        } else {
+            assert_eq!(
+                result,
+                Err("native preparation resource reservation exceeded")
+            );
+            assert!(lock(&root.bank).sources.slots.is_empty());
+            assert!(root.work.try_lock().unwrap().sources.cells.is_empty());
+        }
+        assert!(root.complete());
+    }
 }

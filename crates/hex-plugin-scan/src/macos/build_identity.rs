@@ -20,7 +20,7 @@ const INSTANCE_HELPER: &str = "hex-vst3-instance.app/Contents/MacOS/hex-vst3-ins
 mod inventory;
 use inventory::{MAX_MEMBERS, inventory};
 mod instance_inventory;
-pub use instance_inventory::RevalidationStorageBound;
+pub use instance_inventory::{INSTANCE_INVENTORY_NODE_BOUND, RevalidationStorageBound};
 mod storage;
 pub use storage::BuildStorage;
 

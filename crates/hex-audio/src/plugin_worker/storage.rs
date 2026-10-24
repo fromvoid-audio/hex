@@ -95,3 +95,38 @@ impl NativeWorker {
         })
     }
 }
+
+/// Finite native constructor resources. Copies are informational; only the
+/// private factory and its enclosing original Root/source cells retain owners.
+/// Source resources, original copied channel, guard/terminal and completion
+/// counter are counted separately from the opaque std joining context.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Clone, Copy, Debug)]
+pub struct NativeWorkerResourceBound {
+    pub source: hex_plugin_host::native::PreparationResourceBound,
+    pub shared_groups: usize,
+    pub shared_handle_bound: usize,
+    pub joining_thread_lifetime_bound: usize,
+}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl NativeWorker {
+    pub(crate) fn resource_bound_on_control() -> Option<NativeWorkerResourceBound> {
+        let source = hex_plugin_host::native::PreparationResourceBound::ordinary_instance();
+        let channel = channel_storage_bound()?;
+        let terminal = ChannelStorage::owner_reservation::<State>()?;
+        Some(NativeWorkerResourceBound {
+            source,
+            shared_groups: source
+                .shared_groups
+                .checked_add(channel.shared_groups)?
+                .checked_add(terminal.shared_groups)?
+                .checked_add(1)?, // Original completion counter.
+            shared_handle_bound: source
+                .shared_handle_bound
+                .checked_add(channel.shared_handle_bound)?
+                .checked_add(terminal.shared_handles)?
+                .checked_add(2)?,
+            joining_thread_lifetime_bound: 1,
+        })
+    }
+}

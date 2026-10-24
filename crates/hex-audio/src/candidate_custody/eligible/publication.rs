@@ -397,7 +397,18 @@ impl super::Custody {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if bank.sources.occupied() {
-            return None;
+            // Preserve the ordinary metadata query without a Work dependency
+            // while native cells are vacant. Occupied cells need their actual
+            // owners; acquire Work before reacquiring the ordinary barrier.
+            drop(bank);
+            let work = self.work.try_lock().ok()?;
+            let bank = lock(&self.bank);
+            if bank.closing {
+                return None;
+            }
+            return bank
+                .metadata_bytes
+                .checked_add(bank.sources.actual_data_bytes(&work.sources)?);
         }
         Some(bank.metadata_bytes)
     }

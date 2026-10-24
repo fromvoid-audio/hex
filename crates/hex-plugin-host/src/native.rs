@@ -5,7 +5,9 @@ pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
 mod storage;
-pub use storage::{PendingStorage, PreparationStorageBound, PreparedStorage};
+pub use storage::{
+    PendingStorage, PreparationResourceBound, PreparationStorageBound, PreparedStorage,
+};
 
 use crate::transport::Block;
 use crate::{

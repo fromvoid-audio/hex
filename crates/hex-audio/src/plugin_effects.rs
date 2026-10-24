@@ -76,8 +76,9 @@ impl NativeEffect {
         Self::prepare_retained_with_data_limit_on_control(identity, instance, usize::MAX)
     }
     /// Root's known steady DATA check, before dry storage, queues, owner Boxes
-    /// or the joining thread are constructed. This subset does not cover error,
-    /// preparation/exchange peak or opaque resource reservations and cannot seal
+    /// or the joining thread are constructed. Includes the native constructor's
+    /// original diagnostic allowance; preparation/exchange peaks and opaque
+    /// resource reservations remain separate and cannot alone seal
     /// a native publication. Refusal retains the original instance for disposal.
     #[allow(clippy::result_large_err)]
     pub(crate) fn prepare_retained_with_data_limit_on_control(

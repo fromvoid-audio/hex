@@ -47,6 +47,11 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
 }
 fn occupied_handles(bank: &NativeBank, excluded_preparation: Option<usize>) -> Option<usize> {
     let mut handles = root_handle_bound(bank)?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        handles = handles.checked_add(bank.sources.reserved_shared_handles())?;
+    }
+
     for domain in &bank.domains {
         if let Some(resources) = domain.resources {
             handles = handles.checked_add(resources.shared_handle_bound)?;

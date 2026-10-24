@@ -2,6 +2,51 @@
 use super::*;
 use hex_lattice_contract::DeviceAssetReference;
 
+/// Constructor lifetime bounds for one ordinary-instance preparation and its
+/// retained source. Cancellation/captured/restored state contribute at most
+/// four groups; sticky lost custody adds one original I/O group. Handles cover
+/// this owner's private operation token and three lost-error aliases. Caller
+/// token/state aliases, copied PCM queues and joining threads are separate.
+/// One reader/iterator/entry/canonicalization context is live per serialized
+/// revalidation. The preflight probe is reaped before instance startup, so
+/// only one directly owned child/command context can be live. Four application
+/// IPC endpoints may coexist before spawn; two remain in the Prepared owner.
+/// std I/O error internals (at most original + cleanup), map nodes, process,
+/// thread and allocator/Arc implementation costs are opaque, never DATA bytes.
+/// These finite bounds follow the existing constructors, not a public permit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparationResourceBound {
+    pub shared_groups: usize,
+    pub shared_handle_bound: usize,
+    pub ipc_handle_bound: usize,
+    pub native_child_lifetime_bound: usize,
+    pub command_context_lifetime_bound: usize,
+    pub inventory_node_lifetime_bound: usize,
+    pub file_reader_lifetime_bound: usize,
+    pub directory_iterator_lifetime_bound: usize,
+    pub directory_entry_lifetime_bound: usize,
+    pub canonicalization_lifetime_bound: usize,
+    pub io_error_lifetime_bound: usize,
+}
+impl PreparationResourceBound {
+    pub const fn ordinary_instance() -> Self {
+        Self {
+            shared_groups: 5,
+            shared_handle_bound: 9,
+            ipc_handle_bound: 4,
+            native_child_lifetime_bound: 1,
+            command_context_lifetime_bound: 1,
+            inventory_node_lifetime_bound:
+                hex_plugin_scan::macos::build_identity::INSTANCE_INVENTORY_NODE_BOUND,
+            file_reader_lifetime_bound: 1,
+            directory_iterator_lifetime_bound: 1,
+            directory_entry_lifetime_bound: 1,
+            canonicalization_lifetime_bound: 1,
+            io_error_lifetime_bound: 2,
+        }
+    }
+}
+
 /// Listed immutable heap payloads and this owner's resource obligations.
 /// `Prepared` itself (including its packet/channel/child values) belongs to its
 /// enclosing cell or Box and is excluded. Arc headers, allocator/OS overhead,

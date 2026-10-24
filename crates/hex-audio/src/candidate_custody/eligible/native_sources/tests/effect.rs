@@ -78,6 +78,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
         let root = root();
         root.configure_native_sources(1, source_reservation())
             .unwrap();
+        let metadata = root.actual_control_backing_bytes().unwrap();
         let binding = start(&root);
         assert!(
             root.start_native_effect(binding).is_err(),
@@ -111,7 +112,7 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
             assert_eq!(prepared.quantum_frames(), 8);
             assert_eq!(prepared.total_latency_frames(), 16);
             assert_eq!(root.native_source_prepared_state(binding), Some(state));
-            {
+            let data = {
                 let work = root.work.try_lock().unwrap();
                 let Some(Owner::Effect(effect)) = work.sources.cells[0].owner.as_ref() else {
                     panic!("actual Root-owned effect");
@@ -146,9 +147,21 @@ fn actual_root_constructs_and_retires_the_original_unsplit_native_effect() {
                     std::slice::from_ref(effect),
                 )
                 .unwrap();
-            }
+                constructor.data_bytes().unwrap()
+            };
             assert!(root.start_native_effect(binding).is_err());
-            assert_eq!(root.actual_control_backing_bytes(), None);
+            assert_eq!(root.actual_control_backing_bytes(), Some(metadata + data));
+            {
+                let mut bank = lock(&root.bank);
+                bank.sources.slots[0].binding.as_mut().unwrap().epoch += 1;
+            }
+            assert_eq!(
+                root.actual_control_backing_bytes(),
+                None,
+                "copied/stale facts cannot replace the original owner"
+            );
+            lock(&root.bank).sources.slots[0].binding = Some(binding);
+            assert_eq!(root.actual_control_backing_bytes(), Some(metadata + data));
             assert!(root.retire_native_source(binding));
         } else {
             assert_eq!(

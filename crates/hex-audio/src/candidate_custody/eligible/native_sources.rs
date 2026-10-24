@@ -15,13 +15,15 @@ use hex_plugin_scan::macos::build_identity::InstanceBuild;
 mod completion;
 mod definition;
 mod effect;
+mod resources;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
 /// Per-cell allowances charged for the whole configured pool before any child
 /// or cancellation pair starts. These are reserved capacity, not allocated bytes
-/// or a producer/resource witness. Complete peak/diagnostic enforcement and
-/// actual endpoint sealing remain necessary before native publication.
+/// or a producer/resource witness. The same fixed pool also reserves its
+/// constructor-derived shared-handle bound. Actual endpoint/resource sealing
+/// remains necessary before native publication.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeSourceDataReservation {
     pub max_retained_data_bytes: usize,
@@ -85,6 +87,7 @@ struct Slot {
     presentation: Option<hex_plugin_host::protocol::Presentation>,
     processor: Option<hex_lattice::PreparedForeignProcessor>,
     cancellation: Option<Cancellation>,
+    cancellation_requested: bool,
 }
 impl Slot {
     fn vacant() -> Self {
@@ -98,7 +101,18 @@ impl Slot {
             presentation: None,
             processor: None,
             cancellation: None,
+            cancellation_requested: false,
         }
+    }
+    // One Root-owned in-flight request per source. Mark only after the actual
+    // token exists; a close before token construction is serviced on install.
+    fn request_cancellation(&mut self) -> Option<Cancellation> {
+        if self.cancellation_requested {
+            return None;
+        }
+        let cancellation = self.cancellation.as_ref()?.clone();
+        self.cancellation_requested = true;
+        Some(cancellation)
     }
 }
 #[derive(Default)]
@@ -108,6 +122,7 @@ pub(super) struct Bank {
     limits: Option<NativeSourceDataReservation>,
     pub(super) retained_reserved: usize,
     pub(super) peak_reserved: usize,
+    resources: Option<resources::PoolResources>,
 }
 impl Bank {
     pub(super) fn occupied(&self) -> bool {
@@ -128,7 +143,7 @@ impl Bank {
                 // A fully constructed effect retires through its existing
                 // joining worker/SDK stop. In-flight preparation cancels now.
                 if slot.processor.is_none() {
-                    *target = slot.cancellation.clone();
+                    *target = slot.request_cancellation();
                 }
             }
         }
@@ -202,6 +217,8 @@ impl Custody {
         if capacity == 0 || capacity > MAX_SOURCES {
             return Err("native preparation capacity is invalid");
         }
+        let resources = resources::PoolResources::new(capacity)
+            .ok_or("native source resource reservation overflow")?;
         let Ok(mut work) = self.work.try_lock() else {
             return Err("native preparation is busy");
         };
@@ -222,7 +239,7 @@ impl Custody {
             .ok_or("native source reservation overflow")?;
         {
             let bank = lock(&self.bank);
-            native_pool_preflight(&bank, retained_quote, peak_quote)?;
+            native_pool_preflight(&bank, retained_quote, peak_quote, resources.shared_handles)?;
         }
         let mut slots = Vec::new();
         let mut cells = Vec::new();
@@ -238,7 +255,9 @@ impl Custody {
         slots.resize_with(capacity, Slot::vacant);
         cells.resize_with(capacity, Execution::default);
         let mut bank = lock(&self.bank);
-        if let Err(error) = native_pool_preflight(&bank, retained_quote, peak_quote) {
+        if let Err(error) =
+            native_pool_preflight(&bank, retained_quote, peak_quote, resources.shared_handles)
+        {
             drop(bank); // Refused temporary allocation drops outside the ordinary lock.
             return Err(error);
         }
@@ -248,6 +267,7 @@ impl Custody {
             limits: Some(limits),
             retained_reserved: retained,
             peak_reserved: peak,
+            resources: Some(resources),
         };
         bank.metadata_bytes += quote;
         work.sources = Work { cells };
@@ -385,10 +405,14 @@ impl Custody {
             let closing = bank.closing;
             let slot = &mut bank.sources.slots[index];
             slot.cancellation = Some(cancellation.token_on_control());
-            closing || slot.retiring
+            if closing || slot.retiring {
+                slot.request_cancellation()
+            } else {
+                None
+            }
         };
-        if cancel {
-            cancellation.token_on_control().cancel_on_control();
+        if let Some(cancel) = cancel {
+            cancel.cancel_on_control();
         }
         after_reservation();
         // Dedicated existing execution custody spans bounded control I/O. No
@@ -477,7 +501,7 @@ impl Custody {
             }
             slot.retiring = true;
             if slot.processor.is_none() {
-                slot.cancellation.clone()
+                slot.request_cancellation()
             } else {
                 None
             }
@@ -648,9 +672,16 @@ fn native_pool_preflight(
     bank: &NativeBank,
     retained_quote: usize,
     peak_quote: usize,
+    shared_handles: usize,
 ) -> Result<(), &'static str> {
     if bank.root == 0 || bank.closing || !bank.sources.slots.is_empty() {
         return Err("native preparation reservation is unavailable");
+    }
+    if shared_handles
+        > publication::remaining_handle_reservation(bank)
+            .ok_or("native source handle reservation overflow")?
+    {
+        return Err("native preparation resource reservation exceeded");
     }
     let data = bank
         .domains

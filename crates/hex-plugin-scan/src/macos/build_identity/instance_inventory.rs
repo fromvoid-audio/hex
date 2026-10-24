@@ -11,6 +11,10 @@ const FILES: [&str; 4] = [
     "hex-vst3-instance.app/Contents/Resources/sdk-notices.json",
     "hex-vst3-instance.app/Contents/_CodeSignature/CodeResources",
 ];
+/// The exact ordinary-instance role admits four map members. At most one
+/// nonempty opaque BTreeMap node per admitted entry is needed by its retained
+/// provenance copy; factory discovery uses its separate, larger policy.
+pub const INSTANCE_INVENTORY_NODE_BOUND: usize = FILES.len();
 const DIRECTORIES: [(&str, &[&str]); 5] = [
     (INSTANCE_APP, &["Contents"]),
     (

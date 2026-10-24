@@ -11,7 +11,7 @@ use std::{
 };
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub use storage::NativeWorkerStorage;
+pub use storage::{NativeWorkerResourceBound, NativeWorkerStorage};
 
 struct Completion {
     fault: Option<Fault>,
