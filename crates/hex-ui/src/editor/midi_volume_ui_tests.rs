@@ -207,3 +207,50 @@ fn envelope_escape_blur_lost_pointer_and_stale_source_cancel_without_history(
         assert!(visual.debug_bounds("midi-volume-point-values").is_none());
     }
 }
+
+#[gpui::test]
+fn envelope_shows_interior_source_beat_guides(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = fixture(cx);
+    let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    editor.update(&mut visual, |v, cx| {
+        v.midi_volume.enabled = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // Axis labels use plot bounds measured during the first paint. Complete
+    // that notified repaint explicitly; parking worker tasks does not advance
+    // the headless window's frame clock.
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    let plot = visual.debug_bounds("midi-volume-plot").unwrap();
+    let beat = visual
+        .debug_bounds("midi-volume-axis-x-4")
+        .expect("one-beat grid guide must be rendered inside the four-beat viewport");
+    assert!(
+        (f32::from(beat.center().x - plot.left()) / f32::from(plot.size.width) - 0.25).abs() < 0.01,
+        "beat label {beat:?}; plot {plot:?}; graph {:?}",
+        editor.read_with(&visual, |v, cx| v
+            .midi_volume
+            .graph
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .plot_bounds())
+    );
+    editor.update(&mut visual, |v, cx| {
+        v.pan_piano(true);
+        v.zoom_piano(true);
+        v.cycle_midi_grid();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let plot = visual.debug_bounds("midi-volume-plot").unwrap();
+    let first = visual.debug_bounds("midi-volume-axis-x-1").unwrap();
+    assert!(first.left() >= plot.left() && first.right() <= plot.right());
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.edit_pending());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original);
+        assert_eq!(v.piano_beat_start, BeatTime::from_quarters(2).unwrap());
+        assert_eq!(v.piano_beat_span, BeatTime::from_quarters(2).unwrap());
+    });
+}
