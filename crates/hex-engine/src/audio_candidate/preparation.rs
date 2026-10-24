@@ -204,7 +204,7 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
-        self.prepare_with_sampler(project, source_generation, context, None)
+        self.prepare_with_sampler(project, source_generation, context, None, None)
     }
     /// Explicit closed native CURRENT construction from already copied original
     /// PCM. Generic audio-only preparation still refuses resourceful graphs.
@@ -221,7 +221,21 @@ impl AudioCandidatePreparation {
             source_generation,
             context,
             Some((hash_frames, cancel)),
+            None,
         )
+    }
+    /// Closed effect metadata preparation. Definitions are borrowed only for
+    /// scalar foreign facts; source/worker/endpoint custody remains with audio.
+    /// The optional original sampler work uses the same current source bank.
+    pub fn prepare_with_effect_registry_on_control(
+        &mut self,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+    ) -> Result<(), AudioStorageError> {
+        self.prepare_with_sampler(project, source_generation, context, sampler, Some(effects))
     }
     fn prepare_with_sampler(
         &mut self,
@@ -229,6 +243,7 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
         sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         if self.failed
             || self.cleaning
@@ -253,21 +268,32 @@ impl AudioCandidatePreparation {
             .ok_or(AudioStorageError::SourceMismatch)?;
         if self.token.is_none() {
             self.token = Some(
-                match sampler {
-                    Some((work, cancel)) => custody.begin_current_sampler_in_place_on_control(
+                if let Some(effects) = effects {
+                    custody.begin_effect_revision_in_place_on_control(
                         project,
                         source_generation,
                         context,
                         &mut self.bank,
-                        work,
-                        cancel,
-                    ),
-                    None => custody.begin_prepared_revision_in_place_on_control(
-                        project,
-                        source_generation,
-                        context,
-                        &mut self.bank,
-                    ),
+                        sampler,
+                        effects,
+                    )
+                } else {
+                    match sampler {
+                        Some((work, cancel)) => custody.begin_current_sampler_in_place_on_control(
+                            project,
+                            source_generation,
+                            context,
+                            &mut self.bank,
+                            work,
+                            cancel,
+                        ),
+                        None => custody.begin_prepared_revision_in_place_on_control(
+                            project,
+                            source_generation,
+                            context,
+                            &mut self.bank,
+                        ),
+                    }
                 }
                 .map_err(|refused| refused.reason)?,
             );

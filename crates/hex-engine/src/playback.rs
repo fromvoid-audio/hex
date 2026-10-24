@@ -649,6 +649,26 @@ impl Playback {
         self.mix_tuning_audition(output);
         Ok(())
     }
+    pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("current sampler runtime missing"))?
+            .render_current_sampler_with_foreign(output, pages, observer, project, sources, foreign)
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
+    }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
         metadata: usize,

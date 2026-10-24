@@ -61,9 +61,27 @@ impl SessionPlayback {
         project: Option<&mut ProjectOutputTap<'_, '_>>,
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
     ) -> Result<(), SessionPlaybackError> {
+        self.render_current_sampler_with_foreign(
+            output,
+            pages,
+            observer,
+            project,
+            sources,
+            &mut hex_lattice::RefuseForeign,
+        )
+    }
+    pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let capture = project.map(|p| p as &mut dyn CaptureSink);
-        self.render_internal(
+        self.render_internal_with_foreign(
             output,
             pages,
             observer,
@@ -71,6 +89,7 @@ impl SessionPlayback {
             Some(crate::native_device_resources::SamplerSourcesRef::Current(
                 sources,
             )),
+            foreign,
         )
     }
 
