@@ -78,7 +78,28 @@ fn selected_packaged_thin_and_universal_scan_persist_actual_uids_and_restart_wit
             module(name),
             cancellation.token(),
         );
-        assert!(update.status.contains("discovered"), "{}", update.status);
+        assert!(
+            update.status.contains("discovered"),
+            "{}; {:?}",
+            update.status,
+            update.diagnostics
+        );
+        let observed = update
+            .diagnostics
+            .as_ref()
+            .expect("actual scan observations");
+        assert_eq!(observed.module, module(name));
+        assert!(observed.scanner_started);
+        assert!(observed.scanner_exit.is_some_and(|s| s.success()));
+        assert!(
+            observed
+                .native_cleanup
+                .as_ref()
+                .is_some_and(|c| c.may_publish())
+        );
+        let report: hex_plugin_scan::macos::report::Report =
+            serde_json::from_slice(&observed.report).unwrap();
+        assert!(report.discovery.is_some());
         assert!(update.catalog.is_some());
     }
     let restored = Catalog::load(&fixture.catalog()).unwrap();
@@ -126,6 +147,25 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
         let owner = Cancellation::default();
         let failed = worker::scan(&fixture.catalog(), &app(), selected.clone(), owner.token());
         assert!(failed.status.contains("failed"), "{}", failed.status);
+        let observed = failed
+            .diagnostics
+            .as_ref()
+            .expect("failed scan observations");
+        assert_eq!(observed.module, selected);
+        assert!(observed.scanner_started, "{observed:?}");
+        assert!(observed.scanner_exit.is_some(), "{observed:?}");
+        let report: hex_plugin_scan::macos::report::Report =
+            serde_json::from_slice(&observed.report).expect("actual refused native report");
+        assert_eq!(report.bundle.canonical_path, selected);
+        assert!(report.cleanup.direct_reaped, "{observed:?}");
+        assert!(
+            !report.cleanup.pending && !report.cleanup.custody_lost,
+            "{observed:?}"
+        );
+        assert!(
+            report.error.is_some() || report.interruption.is_some(),
+            "{observed:?}"
+        );
         let saved = Catalog::load(&fixture.catalog()).unwrap();
         assert_eq!(
             saved.entries[0].last_good.as_ref().unwrap().executable,
@@ -143,7 +183,25 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
         let result = worker::scan(&catalog, &package, selected, token);
         let _ = sender.send(result);
     });
-    std::thread::sleep(Duration::from_millis(200));
+    let started_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !owner.has_started_scanner() {
+        if let Ok(early) = receiver.try_recv() {
+            thread.join().unwrap();
+            panic!(
+                "scan ended before actual scanner spawn: {}; {:?}",
+                early.status, early.diagnostics
+            );
+        }
+        if std::time::Instant::now() >= started_deadline {
+            fixture.1.store(true, Ordering::Release);
+            let _ = owner.cancel();
+            panic!(
+                "scanner spawn not observed; cancellation requested; fixture retained at {:?}",
+                fixture.0
+            );
+        }
+        std::thread::yield_now();
+    }
     if !owner.cancel() {
         let early = receiver
             .recv_timeout(Duration::from_secs(1))
@@ -166,6 +224,15 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
     };
     thread.join().unwrap();
     assert!(
+        cancelled
+            .diagnostics
+            .as_ref()
+            .is_some_and(|d| d.scanner_started && d.scanner_exit.is_some()),
+        "{}; {:?}",
+        cancelled.status,
+        cancelled.diagnostics
+    );
+    assert!(
         cancelled.status.contains("cancelled"),
         "{}",
         cancelled.status
@@ -182,6 +249,45 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
             .unwrap()
             .contains("cancelled")
     );
+}
+
+#[test]
+#[ignore = "explicit original signed package and native fixtures required"]
+fn native_deadline_report_is_retained_without_promoting_metadata() {
+    let fixture = Fixture::new();
+    let owner = Cancellation::default();
+    let update = worker::scan(
+        &fixture.catalog(),
+        &app(),
+        module("entry-hang"),
+        owner.token(),
+    );
+    let observed = update
+        .diagnostics
+        .as_ref()
+        .expect("actual deadline observations");
+    let report: hex_plugin_scan::macos::report::Report = serde_json::from_slice(&observed.report)
+        .unwrap_or_else(|e| panic!("{e}; {} ; {observed:?}", update.status));
+    assert!(
+        observed.scanner_started && observed.scanner_exit.is_some(),
+        "{observed:?}"
+    );
+    assert_eq!(
+        report.interruption.as_deref(),
+        Some("deadline exceeded"),
+        "{observed:?}"
+    );
+    assert!(
+        report.cleanup.direct_reaped && !report.cleanup.pending && !report.cleanup.custody_lost,
+        "{observed:?}"
+    );
+    assert!(
+        report.discovery.is_none(),
+        "deadline never grants accepted discovery"
+    );
+    let catalog = Catalog::load(&fixture.catalog()).unwrap();
+    assert!(catalog.entries[0].last_good.is_none());
+    assert!(catalog.entries[0].failure.is_some());
 }
 
 #[test]
