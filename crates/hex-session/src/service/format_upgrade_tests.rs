@@ -65,6 +65,11 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         old.as_object_mut().unwrap().remove("audio_event_fades"),
         Some(serde_json::json!([]))
     );
+    // Schema44 adds required hierarchy rows; this fixture has no tracks.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("track_hierarchy"),
+        Some(serde_json::json!([]))
+    );
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();

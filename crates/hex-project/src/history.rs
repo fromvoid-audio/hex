@@ -154,6 +154,7 @@ impl Editor {
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
@@ -264,6 +265,7 @@ impl Editor {
                 results.push(candidate.apply(command)?);
             }
         }
+        candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;

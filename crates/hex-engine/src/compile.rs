@@ -336,6 +336,9 @@ fn compile_project_inner<'a>(
     transforms: &crate::audio_transform::AudioTransformPreparation,
     samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    if snapshot.has_group_tracks() {
+        return Err(Invalid("group track playback is not prepared"));
+    }
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
     crate::gain_envelope::validate_project(snapshot)?;

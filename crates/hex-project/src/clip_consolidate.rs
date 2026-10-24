@@ -433,3 +433,74 @@ pub(crate) fn event_range(
     Project::from_snapshot(project.snapshot())?;
     Ok(Created::Clip(result))
 }
+
+/// Use the ordinary split owners so retained source windows, processing and MIDI
+/// gates follow the same law as explicit cuts. Publish only after every row groups.
+pub(crate) fn time_range(
+    project: &mut Project,
+    range: &crate::TimeRange,
+) -> Result<Created, Invalid> {
+    range.validate(project)?;
+    let left = project.tempo_map().frame_to_beat(range.start())?;
+    let right = project.tempo_map().frame_to_beat(range.end())?;
+    let mut candidate = project.clone();
+    let mut result = None;
+    for track in range.tracks() {
+        for (frame, beat) in [(range.start(), left), (range.end(), right)] {
+            let row = candidate
+                .track(*track)
+                .ok_or(Invalid("selected track no longer exists"))?;
+            let mut cuts = Vec::new();
+            for clip in row.clips() {
+                let end = clip
+                    .start()
+                    .checked_add(clip.duration())
+                    .ok_or(Invalid("clip end overflow"))?;
+                if clip.start() < frame && frame < end {
+                    cuts.push(crate::Command::SplitClip {
+                        clip: clip.id(),
+                        frame,
+                    });
+                }
+            }
+            for clip in row.midi_clips() {
+                let end = clip
+                    .start()
+                    .raw()
+                    .checked_add(clip.length().raw())
+                    .ok_or(Invalid("midi clip end overflow"))?;
+                if clip.start() < beat && beat.raw() < end {
+                    cuts.push(crate::Command::SplitMidiClip {
+                        clip: clip.id(),
+                        beat,
+                    });
+                }
+            }
+            for cut in cuts {
+                candidate.apply(cut)?;
+            }
+        }
+        let row = candidate
+            .track(*track)
+            .ok_or(Invalid("selected track no longer exists"))?;
+        let mut ids = Vec::new();
+        for clip in row.clips() {
+            if clip.start() >= range.start() && clip.start() < range.end() {
+                ids.push(clip.id());
+            }
+        }
+        for clip in row.midi_clips() {
+            if clip.start() >= left && clip.start() < right {
+                ids.push(clip.id());
+            }
+        }
+        match ids.as_slice() {
+            [] => (),
+            [id] => result = Some(Created::Clip(*id)),
+            _ => result = Some(apply(&mut candidate, ids)?),
+        }
+    }
+    let result = result.ok_or(Invalid("selected time range contains no clips"))?;
+    *project = candidate;
+    Ok(result)
+}

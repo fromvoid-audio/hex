@@ -205,7 +205,10 @@ fn full_tracks_remap_complete_state_routes_session_and_history_in_canonical_orde
     let Created::Tracks { first, last } = e
         .execute(Command::PasteTracks {
             clipboard,
-            before: Some(c),
+            destination: crate::TrackDestination {
+                parent_group: None,
+                before: Some(c),
+            },
         })
         .unwrap()
     else {
@@ -299,7 +302,10 @@ fn setup_only_copy_preserves_chain_mix_and_automation_without_any_clip_cells() {
     let mut e = Editor::new(p.clone(), 8).unwrap();
     e.execute(Command::PasteTracks {
         clipboard,
-        before: None,
+        destination: crate::TrackDestination {
+            parent_group: None,
+            before: None,
+        },
     })
     .unwrap();
     for (t, old) in e.project().tracks()[3..].iter().zip(p.tracks()) {
@@ -336,7 +342,10 @@ fn changed_tempo_reuses_onset_crop_law_and_failed_preparation_preserves_redo() {
     .unwrap();
     let command = Command::PasteTracks {
         clipboard,
-        before: None,
+        destination: crate::TrackDestination {
+            parent_group: None,
+            before: None,
+        },
     };
     e.execute(command.clone()).unwrap();
     let clips = e.project().tracks().last().unwrap().clips();
@@ -362,7 +371,10 @@ fn cut_restores_only_orphan_external_midi_and_stale_dependencies_refuse_atomical
         .unwrap();
     e.execute(Command::PasteTracks {
         clipboard: Arc::clone(&clipboard),
-        before: None,
+        destination: crate::TrackDestination {
+            parent_group: None,
+            before: None,
+        },
     })
     .unwrap();
     assert_eq!(
@@ -371,7 +383,10 @@ fn cut_restores_only_orphan_external_midi_and_stale_dependencies_refuse_atomical
     );
     e.execute(Command::PasteTracks {
         clipboard,
-        before: None,
+        destination: crate::TrackDestination {
+            parent_group: None,
+            before: None,
+        },
     })
     .unwrap();
     assert_eq!(
@@ -389,7 +404,10 @@ fn cut_restores_only_orphan_external_midi_and_stale_dependencies_refuse_atomical
     assert!(
         e.execute(Command::PasteTracks {
             clipboard,
-            before: None
+            destination: crate::TrackDestination {
+                parent_group: None,
+                before: None
+            },
         })
         .is_err()
     );
@@ -411,7 +429,10 @@ fn cut_restores_only_orphan_external_midi_and_stale_dependencies_refuse_atomical
     assert!(
         e.execute(Command::PasteTracks {
             clipboard,
-            before: None
+            destination: crate::TrackDestination {
+                parent_group: None,
+                before: None
+            },
         })
         .is_err()
     );
@@ -431,9 +452,89 @@ fn setup_only_clipboard_checks_media_referenced_only_by_inactive_device_state() 
     assert!(
         e.execute(Command::PasteTracks {
             clipboard,
-            before: None
+            destination: crate::TrackDestination {
+                parent_group: None,
+                before: None
+            },
         })
         .is_err()
     );
     assert_eq!(e.project().snapshot(), before);
+}
+
+#[test]
+fn grouped_track_clipboard_keeps_complete_children_and_setup_only_clears_content() {
+    let (p, [a, b, c]) = fixture();
+    for without_clips in [false, true] {
+        let mut e = Editor::new(p.clone(), 16).unwrap();
+        let Created::Track(group) = e
+            .execute(Command::GroupTracks {
+                tracks: TrackSelectionIds::new(&[a, b]).unwrap(),
+                name: "submix".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let before = e.project().clone();
+        let selection = TrackSelectionIds::new(&[group, a]).unwrap();
+        let clipboard = Arc::new(
+            e.project()
+                .capture_tracks(&selection, without_clips)
+                .unwrap(),
+        );
+        assert_eq!(clipboard.tracks.len(), 3);
+        e.execute(Command::RemoveTracks(selection.ids().to_vec()))
+            .unwrap();
+        assert_eq!(
+            e.project()
+                .tracks()
+                .iter()
+                .map(Track::id)
+                .collect::<Vec<_>>(),
+            [c]
+        );
+        e.execute(Command::PasteTracks {
+            clipboard,
+            destination: crate::TrackDestination {
+                parent_group: None,
+                before: Some(c),
+            },
+        })
+        .unwrap();
+        let copied = &e.project().tracks()[..3];
+        assert!(copied[0].is_group());
+        for (copy, original) in copied.iter().zip(&before.tracks()[..3]) {
+            assert_ne!(copy.id(), original.id());
+            let mut normalized = normalize_copy(copy, original);
+            normalized.parent_group = original.parent_group;
+            let mut expected = original.clone();
+            if without_clips {
+                expected.content.audio_clips.clear();
+                expected.content.midi_clips.clear();
+            }
+            assert_eq!(normalized, expected);
+            if !copy.is_group() {
+                assert_eq!(copy.parent_group(), Some(copied[0].id()));
+            }
+        }
+        let copied_ids = [copied[1].id(), copied[2].id()];
+        assert!(
+            e.project()
+                .audio_feeds()
+                .iter()
+                .any(|r| r.source() == RoutingOwner::Track(copied_ids[0])
+                    && r.destination() == copied_ids[1])
+        );
+        assert_eq!(e.project().midi_source_track(copied_ids[1]), copied_ids[0]);
+        assert_eq!(
+            e.project()
+                .session_cells()
+                .iter()
+                .filter(|cell| copied_ids.contains(&cell.track()))
+                .count(),
+            if without_clips { 0 } else { 2 }
+        );
+        assert_eq!(e.project().assets().count(), before.assets().count());
+    }
 }
