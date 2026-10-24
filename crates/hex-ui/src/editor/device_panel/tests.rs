@@ -5464,3 +5464,32 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
 }
 
 mod main_chain_ui_tests;
+
+#[gpui::test]
+fn shared_housing_placeholders_open_in_editor_without_device_commands(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let revision = state.revision;
+    let original = state.project.device(effect).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (toggle, panel) in [
+        ("device-macro-toggle", "device-macro-panel"),
+        ("device-modulator-toggle", "device-modulator-panel"),
+    ] {
+        assert!(visual.debug_bounds(panel).is_none());
+        let button = visual.debug_bounds(toggle).expect("shared housing control");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        let panel = visual
+            .debug_bounds(panel)
+            .expect("shared placeholder panel");
+        assert!(panel.size.height > px(0.0));
+    }
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.project.device(effect).unwrap().state(), &original);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+}

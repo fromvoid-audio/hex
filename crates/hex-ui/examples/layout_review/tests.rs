@@ -56,6 +56,23 @@ fn catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_view
             );
             assert_eq!(body.size.height, px(device_composition::BODY_HEIGHT));
             assert_eq!(body.origin.y, header.bottom_left().y);
+            for (toggle, panel) in [
+                ("device-macro-toggle", "device-macro-panel"),
+                ("device-modulator-toggle", "device-modulator-panel"),
+            ] {
+                let button = visual.debug_bounds(toggle).expect("shared housing toggle");
+                assert!(header.contains(&button.center()));
+                visual.simulate_click(button.center(), Modifiers::default());
+                visual.run_until_parked();
+                let bounds = visual
+                    .debug_bounds(panel)
+                    .expect("shared placeholder panel");
+                assert!(card.contains(&bounds.center()));
+                visual.simulate_click(button.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds(panel).is_none());
+            }
+
             assert_eq!(
                 visual.rendered_background("device-frame-header"),
                 Some(gpui::Background::from(rgb(theme::device_style(
