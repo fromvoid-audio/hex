@@ -757,3 +757,9 @@ fn current_sampler_console_held_note_crosses_quantized_cut_with_literal_release_
     }
     assert!(results.windows(2).all(|r| r[0] == r[1]));
 }
+
+#[path = "console_tests/cue.rs"]
+mod cue;
+
+#[path = "console_tests/source_metadata.rs"]
+mod source_metadata;

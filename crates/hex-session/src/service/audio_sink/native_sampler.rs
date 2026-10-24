@@ -38,17 +38,20 @@ impl NativeSamplerSources<'_> {
     }
     pub(in crate::service) fn inspect(
         self,
-        phase: &hex_engine::native_device_resources::ControlSamplerPhase<'_>,
+        phase: &hex_engine::native_device_resources::DeviceResourcePhase<'_>,
         limits: hex_engine::AudioStorageLedgerReservation,
     ) -> Result<
-        hex_engine::native_device_resources::ControlSamplerInventory,
+        hex_engine::native_device_resources::DeviceResourceInventory,
         hex_engine::native_device_resources::ResourcePreparationError,
     > {
-        use hex_engine::native_device_resources::{self as resources, ControlSamplerPhase};
+        use hex_engine::native_device_resources::{self as resources, DeviceResourcePhase};
         match self {
             Self::Committed(store) => {
-                let stores = [store];
-                let actual = ControlSamplerPhase {
+                let stores = std::iter::once(store)
+                    .chain(phase.stores.iter().copied())
+                    .collect::<Vec<_>>();
+                let actual = DeviceResourcePhase {
+                    registered: phase.registered,
                     stores: &stores,
                     selections: phase.selections,
                     outbound: phase.outbound,
@@ -56,7 +59,7 @@ impl NativeSamplerSources<'_> {
                     checked_runtime_bytes: phase.checked_runtime_bytes,
                     construction_bytes: phase.construction_bytes,
                 };
-                resources::inspect_control_sampler_union(&actual, &actual, limits)
+                resources::inspect_device_resource_union(&actual, &actual, limits)
             }
             Self::Staged(stage) => stage.inspect(phase, phase, limits),
         }
@@ -124,6 +127,34 @@ impl NativeSamplerInput<'_> {
         ),
         String,
     > {
+        self.quote_inner(None)
+    }
+    pub fn quote_with_effects(
+        &self,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<
+        (
+            AudioCandidateReservationQuote,
+            AudioStorageReservation,
+            usize,
+            u64,
+        ),
+        String,
+    > {
+        self.quote_inner(Some(effects))
+    }
+    fn quote_inner(
+        &self,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
+    ) -> Result<
+        (
+            AudioCandidateReservationQuote,
+            AudioStorageReservation,
+            usize,
+            u64,
+        ),
+        String,
+    > {
         if !self.requires_sampler()
             || self.audio_mode != crate::DocumentAudioMode::Resident
             || self.reservation.is_none()
@@ -155,7 +186,11 @@ impl NativeSamplerInput<'_> {
                 .ok_or("source frame count overflow")?;
             count = count.checked_add(1).ok_or("source count overflow")?;
         }
-        let quote = AudioCandidateReservationQuote::for_project(self.project, count)
+        let quote = effects
+            .map_or_else(
+                || AudioCandidateReservationQuote::for_project(self.project, count),
+                |effects| effects.quote(self.project, count),
+            )
             .map_err(|e| format!("sampler constructor quote refused: {e:?}").to_lowercase())?;
         let pcm = usize::try_from(frames)
             .ok()
@@ -216,6 +251,40 @@ impl NativeSamplerInput<'_> {
         catalog: u64,
         cell: &mut AudioCandidatePreparation,
     ) -> Result<(), hex_engine::AudioStorageError> {
+        self.copy_sources(cell)?;
+        let limits = self
+            .reservation
+            .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
+        cell.prepare_current_sampler_on_control(
+            self.project,
+            catalog,
+            self.context,
+            limits.max_scan_frames,
+            self.shutdown,
+        )
+    }
+    pub fn prepare_with_effects(
+        &self,
+        catalog: u64,
+        cell: &mut AudioCandidatePreparation,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.copy_sources(cell)?;
+        let limits = self
+            .reservation
+            .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
+        effects.prepare(
+            cell,
+            self.project,
+            catalog,
+            self.context,
+            Some((limits.max_scan_frames, self.shutdown)),
+        )
+    }
+    fn copy_sources(
+        &self,
+        cell: &mut AudioCandidatePreparation,
+    ) -> Result<(), hex_engine::AudioStorageError> {
         for asset in self.project.assets().filter(|a| self.needed(a.id())) {
             if self.sampler_asset(asset.id()) {
                 cell.copy_original_source_on_control(
@@ -235,16 +304,7 @@ impl NativeSamplerInput<'_> {
                 )?;
             }
         }
-        let limits = self
-            .reservation
-            .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
-        cell.prepare_current_sampler_on_control(
-            self.project,
-            catalog,
-            self.context,
-            limits.max_scan_frames,
-            self.shutdown,
-        )
+        Ok(())
     }
 }
 pub(in crate::service) fn drive(
@@ -257,6 +317,9 @@ pub(in crate::service) fn drive(
     lane.poll();
     if let Some(audio) = audio {
         lane.native_hold = audio.native_sampler_hold();
+        if audio.resident_publication_enabled() {
+            return;
+        }
         audio.native_sampler_input(NativeSamplerInput {
             project: session.project(),
             media: &session.media,

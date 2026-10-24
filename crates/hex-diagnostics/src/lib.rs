@@ -1,4 +1,12 @@
-//! Bounded, asynchronous per-session diagnostic logging.
+//! # Purpose
+//! Own bounded asynchronous per-session diagnostic logging and retention.
+//!
+//! # Dependencies
+//! Uses only the standard library; desktop owns the worker lifecycle.
+//!
+//! # Does not own
+//! Does not run logging, file I/O or formatting in the audio callback. Producers report bounded
+//! control-side messages; audio exposes fixed fault snapshots instead.
 
 use std::{
     env,

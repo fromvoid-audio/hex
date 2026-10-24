@@ -1,4 +1,22 @@
-//! Controlled discovery records only; no plugin loading or audio-host API.
+//! # Purpose
+//! Own controlled native plugin-discovery records, protocols and helper supervision.
+//! Original macOS helper fixtures also exercise a native-only persistent component/controller
+//! lifecycle and bounded host message/controller-metadata transactions. No foreign interface
+//! pointer enters this Rust API; controller metadata is not canonical/audio application.
+//! The original copied-stream fixture retains one SDK instance across bounded PCM packets;
+//! MIDI bytes there are transport metadata, not SDK event translation. The realtime endpoint
+//! and joining transport worker belong to hex-audio.
+//! A distinct minimal ordinary-instance executable selects an exact bundle/class/hash,
+//! captures bounded stopped state and processes copied Float32 main-bus packets. Its
+//! artifact/package role is verified here; graph admission and supervision remain consumers.
+//!
+//! # Dependencies
+//! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported
+//! helper process.
+//!
+//! # Does not own
+//! Does not expose an app-side plugin loader, product instance admission or realtime audio bridge. Exact
+//! helper/artifact identity and bounded protocol validation remain required.
 pub mod macos;
 pub mod offline_protocol;
 use serde::{Deserialize, Serialize};
@@ -257,6 +275,8 @@ pub struct Class {
     pub category: String,
     pub name: String,
     pub class_flags: Option<u32>,
+    pub subcategories: Option<String>,
+    pub class_vendor: Option<String>,
     pub class_version: Option<String>,
     pub class_sdk_version: Option<String>,
 }
@@ -299,7 +319,12 @@ impl<'a> Decoder<'a> {
         if n > limit {
             return Err("metadata string bound".into());
         }
-        String::from_utf8(self.take(n)?.to_vec()).map_err(|_| "invalid metadata encoding".into())
+        let value =
+            String::from_utf8(self.take(n)?.to_vec()).map_err(|_| "invalid metadata encoding")?;
+        if value.contains('\0') {
+            return Err("embedded metadata null".into());
+        }
+        Ok(value)
     }
 }
 pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
@@ -318,8 +343,9 @@ fn decode_packet_for_platform(
     if n != bytes.len() - 12 {
         return Err("packet length mismatch".into());
     }
-    if d.take(2)? != [1, 0] {
-        return Err("unknown protocol version".into());
+    let extended = expected_platform == "darwin-arm64";
+    if d.take(2)? != [if extended { 2 } else { 1 }, 0] {
+        return Err("unknown protocol version for platform".into());
     }
     let id = u64::from_le_bytes(d.take(8)?.try_into().map_err(|_| "request width")?);
     if id != request || id == 0 {
@@ -350,14 +376,39 @@ fn decode_packet_for_platform(
         if cardinality < 0 {
             return Err("invalid cardinality".into());
         }
+        let category = d.text(32)?;
+        let name = d.text(64)?;
+        let has_extension = if extended {
+            match d.take(1)? {
+                [0] => false,
+                [1] => true,
+                _ => return Err("invalid optional factory marker".into()),
+            }
+        } else {
+            false
+        };
+        let (class_flags, subcategories, class_vendor, class_version, class_sdk_version) =
+            if has_extension {
+                (
+                    Some(d.u32()?),
+                    Some(d.text(128)?),
+                    Some(d.text(64)?),
+                    Some(d.text(64)?),
+                    Some(d.text(64)?),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
         classes.push(Class {
             cid,
             cardinality,
-            category: d.text(32)?,
-            name: d.text(64)?,
-            class_flags: None,
-            class_version: None,
-            class_sdk_version: None,
+            category,
+            name,
+            class_flags,
+            subcategories,
+            class_vendor,
+            class_version,
+            class_sdk_version,
         });
     }
     if d.offset != bytes.len() {
@@ -402,3 +453,7 @@ impl Catalog {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "macos/metadata_tests.rs"]
+mod metadata_tests;

@@ -1,6 +1,9 @@
 //! Explicit recovery and media relinking, prepared before canonical adoption.
 use super::*;
 use std::mem;
+mod checkpoint;
+pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
+pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
 /// Explicit source selection. Recovery never adopts an overwrite association.
 #[derive(Clone, Debug)]
@@ -18,7 +21,7 @@ pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
 }
 
-type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
+pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
 
 fn read_source(
     source: &ProjectSource,
@@ -402,10 +405,7 @@ pub(super) fn checkpoint_project(
     untitled_path: &Path,
     journal: &mut Option<hex_storage::Journal>,
 ) -> Result<(), String> {
-    let path = match document {
-        Some(handle) => hex_storage::journal_path(&handle.path).map_err(|e| e.to_string())?,
-        None => untitled_path.to_path_buf(),
-    };
+    let path = checkpoint_path(document, untitled_path)?;
     if journal
         .as_ref()
         .is_none_or(|current| current.path() != path)
@@ -505,4 +505,11 @@ pub(super) fn project_for_save(
         }
     }
     hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
+}
+
+fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result<PathBuf, String> {
+    match document {
+        Some(handle) => hex_storage::journal_path(&handle.path).map_err(|e| e.to_string()),
+        None => Ok(untitled.to_path_buf()),
+    }
 }

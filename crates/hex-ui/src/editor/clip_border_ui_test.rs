@@ -502,3 +502,93 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
         assert!(v.last_enqueued_edit.is_none());
     });
 }
+
+#[gpui::test]
+fn selected_track_header_outline_is_complete_and_color_strip_stays_distinct(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor) = super::clip_drag_ui_test::upper_rail_owned_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let tracks = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(|t| (t.id(), t.color()))
+            .collect::<Vec<_>>()
+    });
+    let before = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    for (id, color) in tracks.clone() {
+        let header = Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
+        let name = Box::leak(format!("track-name-{}", id.value()).into_boxed_str());
+        let bounds = visual.debug_bounds(header).unwrap();
+        let target = visual.debug_bounds(name).unwrap().center();
+        visual.simulate_click(target, Modifiers::default());
+        visual.run_until_parked();
+        let outline = Box::leak(format!("track-selection-outline-{}", id.value()).into_boxed_str());
+        let outline_bounds = visual
+            .debug_bounds(outline)
+            .expect("selected header outline");
+        assert_eq!(
+            outline_bounds.origin,
+            bounds.origin + gpui::point(gpui::px(1.), gpui::px(1.))
+        );
+        assert_eq!(
+            outline_bounds.size,
+            bounds.size - gpui::size(gpui::px(2.), gpui::px(2.))
+        );
+        let (stroke, widths, _) = visual.rendered_border(outline).unwrap();
+        let zero = gpui::ScaledPixels::default();
+        assert!(
+            widths.top > zero && widths.bottom > zero && widths.left > zero && widths.right > zero,
+            "selected header needs all four painted edges: {widths:?}"
+        );
+        assert_eq!(
+            stroke,
+            gpui::rgb(theme::color(theme::PaletteRole::Primary)).into()
+        );
+        assert_eq!(
+            visual.debug_bounds(header).unwrap(),
+            bounds,
+            "selection must not shift controls"
+        );
+        let strip = Box::leak(format!("track-color-strip-{}", id.value()).into_boxed_str());
+        assert_eq!(visual.debug_bounds(strip).unwrap().size.width, gpui::px(4.));
+        assert_eq!(
+            visual.rendered_background(strip).unwrap(),
+            gpui::rgb(theme::element_colors(color).accent).into()
+        );
+        let outline_layers = visual.rendered_quad_paint_layers(outline, true);
+        let strip_layers = visual.rendered_quad_paint_layers(strip, false);
+        assert!(
+            outline_layers.iter().map(|(order, _)| order).max()
+                > strip_layers.iter().map(|(order, _)| order).max(),
+            "selection is painted above assigned color, not behind it"
+        );
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track, Some(id));
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for (id, color) in tracks {
+        let strip = Box::leak(format!("session-track-color-strip-{}", id.value()).into_boxed_str());
+        assert_eq!(
+            visual.debug_bounds(strip).unwrap().size.height,
+            gpui::px(4.)
+        );
+        assert_eq!(
+            visual.rendered_background(strip).unwrap(),
+            gpui::rgb(theme::element_colors(color).accent).into()
+        );
+    }
+}

@@ -179,6 +179,9 @@ impl PublicationControl {
             .reserve_runtime_preparation(reservation, domains)
     }
     /// Actual configured Root/control backing, independent of its DATA ceiling.
+    /// Native sources require the exact accepted unsplit owner inventory; busy,
+    /// pending or retiring source inspection returns None. This grants no
+    /// callback, native-output or graph publication authority.
     pub fn audio_candidate_control_backing_bytes(&self) -> Option<usize> {
         self.candidate_root.actual_control_backing_bytes()
     }
@@ -320,8 +323,8 @@ impl PublicationControl {
             Some("candidate constructor rate or phase differs")
         } else if policy != PublicationPolicy::InheritRuntime {
             Some("constructor fresh-runtime policy is not supported")
-        } else if self.status.publication_pending.gain_active() {
-            Some("finish gain recording before replacing playback")
+        } else if self.status.publication_pending.recording_active() {
+            Some("finish recording before replacing playback")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
         } else {

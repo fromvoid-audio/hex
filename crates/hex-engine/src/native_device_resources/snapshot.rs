@@ -95,7 +95,7 @@ impl ControlSamplerSources {
             .iter()
             .filter(|t| {
                 t.instrument()
-                    .is_some_and(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+                    .is_some_and(|d| hex_devices::sampler::state::requires_source(d.state()))
             })
             .count();
         if count == 0 {
@@ -109,7 +109,7 @@ impl ControlSamplerSources {
             .tracks()
             .iter()
             .filter_map(|t| t.instrument())
-            .filter(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+            .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
         {
             let state = device.state();
             minimum = minimum
@@ -150,7 +150,7 @@ impl ControlSamplerSources {
         for track in project.tracks() {
             let Some(device) = track
                 .instrument()
-                .filter(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+                .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
             else {
                 continue;
             };
@@ -235,7 +235,7 @@ impl ControlSamplerSources {
         for track in project.tracks() {
             let Some(device) = track
                 .instrument()
-                .filter(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+                .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
             else {
                 continue;
             };
@@ -283,7 +283,11 @@ impl ControlSamplerSources {
                 "sampler configuration differs from its exact source scope",
             ));
         }
-        Ok(Box::new(PreparedControlSampler(c.prepared.clone())))
+        Ok(Box::new(
+            hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
+                c.prepared.clone(),
+            ),
+        ))
     }
     pub(crate) fn has_track(&self, track: TrackId) -> bool {
         self.data.configurations.iter().any(|c| c.track == track)
@@ -351,45 +355,64 @@ impl ControlSamplerSources {
         })
     }
 }
-pub(crate) struct PreparedControlSampler(pub(crate) hex_devices::sampler::PreparedSamplerRuntime);
-impl hex_lattice::PreparedNativeInstrument for PreparedControlSampler {
-    fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
+/// Private compiler adapter shared by the sealed legacy sidecar and ordinary resource sets.
+/// The ordinary implementation always resolves the definition through its registry.
+pub(crate) trait InstrumentResourcePreparation {
+    fn private_scope(&self) -> Option<u64> {
+        None
     }
-    fn prepare_note(
-        &self,
-        _: u8,
-        _: u8,
-    ) -> Result<hex_lattice::PreparedAnalyticNote, hex_lattice_contract::DeviceContractError> {
-        Err(hex_lattice_contract::DeviceContractError::AssetResourcesUnavailable)
+    fn device_scope(&self) -> Option<u64> {
+        None
     }
-    fn prepare_mutable_runtime(
+    fn prepare(
         &self,
-    ) -> Result<
-        Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>,
-        hex_lattice_contract::DeviceContractError,
-    > {
-        Ok(Some(Box::new(self.0.clone())))
+        registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+        device: DeviceId,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, crate::Invalid>;
+}
+impl InstrumentResourcePreparation for ControlSamplerSources {
+    fn private_scope(&self) -> Option<u64> {
+        Some(self.id())
+    }
+    fn prepare(
+        &self,
+        registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+        device: DeviceId,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, crate::Invalid> {
+        // This obsolete private constructor retains its closed sampler class.
+        if hex_devices::sampler::state::requires_source(state) {
+            self.prepare_instrument(device, state, context)
+        } else {
+            registry
+                .prepare_instrument_with_runtime_limits(
+                    state,
+                    context,
+                    crate::mutable_instrument::runtime_limits(context.sample_rate)?,
+                )
+                .map_err(|_| crate::Invalid("track instrument state is unsupported"))
+        }
     }
 }
-/// All non-sampler calls retain the original asset-free registry boundary.
 pub(crate) fn prepare_instrument(
     registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     device: DeviceId,
     state: &NativeDeviceState,
     context: &hex_lattice::DevicePreparationContext<'_>,
-    sources: Option<&ControlSamplerSources>,
+    resources: Option<&dyn InstrumentResourcePreparation>,
 ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, crate::Invalid> {
-    if state.type_id() == hex_devices::sampler::state::TYPE_ID {
-        sources
-            .ok_or(crate::Invalid(
-                "sampler requires a private control source scope",
-            ))?
-            .prepare_instrument(device, state, context)
-    } else {
-        registry
-            .prepare_instrument(state, context)
-            .map_err(|_| crate::Invalid("track instrument state is unsupported"))
+    match resources {
+        Some(resources) => resources.prepare(registry, device, state, context),
+        None => registry
+            .prepare_instrument_with_runtime_limits(
+                state,
+                context,
+                crate::mutable_instrument::runtime_limits(context.sample_rate)?,
+            )
+            .map_err(|_| crate::Invalid("track instrument state is unsupported")),
     }
 }
 

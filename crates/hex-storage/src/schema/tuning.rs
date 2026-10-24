@@ -1,21 +1,23 @@
-//! One current schema34 requires project tuning and the complete device manifest.
+//! Current schema37 requires tuning, original/device assets and every MIDI clip-volume row.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV34<'a> {
+pub(crate) struct DocumentV37<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
+    midi_clip_volumes: super::midi_clip_volume::Manifest,
     asset_sources: super::original_sources::Manifest,
     device_assets: super::device_assets::Manifest,
     main_devices: Vec<super::DeviceDtoV14>,
+    arrangement_sections: super::arrangement_sections::Manifest,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Tuning {
+pub(super) struct Tuning {
     enabled: bool,
     scale: ScaleDto,
     audition: AuditionDto,
@@ -130,12 +132,14 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV34<'a> {
+impl<'a> DocumentV37<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
         let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
             base,
+            arrangement_sections: super::arrangement_sections::Manifest::from_project(project),
             tuning: project.tuning().into(),
+            midi_clip_volumes: super::midi_clip_volume::Manifest::from_project(project)?,
             asset_sources: super::original_sources::Manifest::from_project(project),
             device_assets: super::device_assets::Manifest::from_project(project)?,
             main_devices: project
@@ -149,15 +153,53 @@ impl<'a> DocumentV34<'a> {
     }
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 37)
+}
+
+/// Frozen upgrades backed by original schema34–36 encoder fixtures.
+/// Fields absent by design default only for the precise historical version;
+/// present inventories always pass their original strict parser.
+pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     // Preserve duplicate-field refusal before adapting the older strict envelope.
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if (34..=36).contains(&version) {
+        super::migrations::upgrade_nested(&mut value, version)?;
+    }
+    require_device_host_gains(&value)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(34) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(u64::from(version))
+        || !(34..=37).contains(&version)
+    {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
+    // Two historical branches reused36. A wholly absent inventory selects the
+    // valid tempo branch; deletion of that whole field is indistinguishable.
+    // Present null/partial inventories never select a fallback.
+    let sections = if version <= 35
+        || (version == 36 && !object.contains_key("arrangement_sections"))
+    {
+        None
+    } else {
+        Some(serde_json::from_value::<
+            super::arrangement_sections::Manifest,
+        >(object.remove("arrangement_sections").ok_or(
+            StorageError::Invalid("arrangement section inventory is missing"),
+        )?)?)
+    };
+    let volumes = if version == 34 {
+        None
+    } else {
+        Some(serde_json::from_value::<super::midi_clip_volume::Manifest>(
+            object
+                .remove("midi_clip_volumes")
+                .ok_or(StorageError::Invalid(
+                    "midi clip volume inventory is missing",
+                ))?,
+        )?)
+    };
     let tuning: Tuning = serde_json::from_value(
         object
             .remove("tuning")
@@ -181,6 +223,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
     snapshot.tuning = tuning;
+    if let Some(sections) = sections {
+        snapshot.arrangement_sections = sections.into_sections()?;
+    }
     snapshot.main_devices = main
         .devices
         .into_iter()
@@ -188,7 +233,55 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         .collect::<Result<_, _>>()?;
     manifest.apply(&mut snapshot)?;
     original_sources.apply(&mut snapshot)?;
+    if let Some(volumes) = volumes {
+        volumes.apply(&mut snapshot)?;
+    }
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+}
+
+/// The private staging DTOs also serve old-shaped internal envelopes and default
+/// absent host trims to unity. Current files must carry both saved values rather
+/// than silently losing a trim. Inspect only actual device owners; asset and
+/// comparison rows have different contracts and never carry these fields.
+fn require_device_host_gains(value: &serde_json::Value) -> Result<(), StorageError> {
+    fn require(device: &serde_json::Value) -> Result<(), StorageError> {
+        if device.get("input_gain_millidb").is_none() || device.get("output_gain_millidb").is_none()
+        {
+            return Err(StorageError::Invalid("device host gain fields are missing"));
+        }
+        Ok(())
+    }
+    for owner in ["tracks", "return_tracks"] {
+        for track in value
+            .get(owner)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for device in track
+                .get("devices")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                require(device)?;
+            }
+            if owner == "tracks"
+                && let Some(instrument) = track.get("instrument").filter(|value| !value.is_null())
+            {
+                require(instrument)?;
+            }
+        }
+    }
+    for device in value
+        .get("main_devices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        require(device)?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

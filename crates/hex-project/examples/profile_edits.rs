@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut clips = Vec::new();
         for clip in 0..100 {
             clips.push(ClipSnapshot {
+                active: true,
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 edit: None,
@@ -47,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),

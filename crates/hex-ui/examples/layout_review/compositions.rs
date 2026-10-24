@@ -13,20 +13,13 @@ impl Gallery {
             ))
         };
         let body = body.debug_selector(|| "fixture-body".into());
-        let actions = hex_widgets::device_action(
-            theme::text(if self.bypassed { "⊘" } else { "●" }),
-            theme::device_header_action_style(
-                self.selected,
-                if self.bypassed {
-                    theme::DeviceActionRole::Muted
-                } else {
-                    theme::DeviceActionRole::Normal
-                },
-            ),
+        let (on_color, off_color) = theme::device_enable_colors();
+        let actions = hex_widgets::device_state_indicator(
+            "fixture-header-bypass".into(),
+            !self.bypassed,
+            on_color,
+            off_color,
         )
-        .id("fixture-header-bypass")
-        .debug_selector(|| "fixture-header-bypass".into())
-        .cursor_pointer()
         .on_click(cx.listener(|view, _, _, cx| {
             if !view.disabled {
                 view.bypassed = !view.bypassed;
@@ -40,7 +33,9 @@ impl Gallery {
             div(),
             body,
         )
-        .id("catalog-card")
+        .id(gpui::ElementId::Name(
+            format!("catalog-card-{}", self.entry.key()).into(),
+        ))
         .debug_selector(|| "catalog-card".into())
         .track_focus(&self.header_focus)
         .w(px(self.entry.width()))

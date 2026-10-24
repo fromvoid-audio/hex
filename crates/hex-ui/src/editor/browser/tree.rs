@@ -546,6 +546,9 @@ impl EditorView {
                 .iter()
                 .position(|(candidate, entry)| *candidate == class && entry.type_id == id)
                 .map(|index| entries.len() + index),
+            BrowserItemKey::Plugin(path, id) => {
+                self.browser_history_index(&BrowserItemKey::Plugin(path, id), cx)
+            }
         };
         if let Some(index) = index {
             self.browser.selected_index = index;

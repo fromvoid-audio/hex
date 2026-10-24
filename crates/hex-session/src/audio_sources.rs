@@ -1,5 +1,13 @@
-//! Control-side immutable source facts. These do not grant native ownership,
-//! catalog leases or page readiness, and never retain a verified file descriptor.
+//! Immutable control-side source bindings, independent of native source custody.
+//!
+//! DocumentAudioMode is chosen before New/Open preparation. Verified mode captures resolved
+//! original paths, fingerprints, rates/extents and reader bounds without retaining readers or
+//! decoding full resident PCM. History retains binding metadata and consumes its
+//! source/path/manifest reservations even when clips disappear. Save As changes the document
+//! handle, not the captured source binding; reopen or relink verifies a fresh binding instead of
+//! silently refreshing changed bytes. Document generation, semantic source epoch and native
+//! catalog generation are distinct. These facts cannot grant a catalog lease, constructor owner or
+//! page readiness, and unavailable waveform data must not become fabricated peaks.
 use crate::{AssetId, Audio, SessionError};
 use hex_engine::{PreparedRevision, PreparedSessionInventory, compile::PreparedAudioSource};
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits};

@@ -20,7 +20,7 @@ pub(super) fn exercise(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source()
+        .rendered_current(h)
         .unwrap();
     let selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let point = visual.debug_bounds(selector).unwrap().center();
@@ -48,11 +48,12 @@ pub(super) fn exercise(
             .unwrap()
             .as_ref()
             .and_then(|b| b.status())
-            .and_then(|s| s.applied_audio_source());
+            .and_then(|s| s.rendered_current(h));
         if applied.is_some_and(|a| {
             a.context.project_generation == old.context.project_generation
                 && a.context.editor_revision == old.context.editor_revision + 1
-                && a.output_identity != old.output_identity
+                && a.output_identity == old.output_identity
+                && a.audio_revision > old.audio_revision
         }) && ready(cx, window)
         {
             break;
@@ -189,7 +190,7 @@ fn transact(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source()
+        .rendered_current(h)
         .unwrap();
     action(visual);
     let end = Instant::now() + Duration::from_secs(5);
@@ -213,11 +214,12 @@ fn transact(
             .unwrap()
             .as_ref()
             .and_then(|b| b.status())
-            .and_then(|s| s.applied_audio_source());
+            .and_then(|s| s.rendered_current(h));
         if applied.is_some_and(|a| {
             a.context.project_generation == old.context.project_generation
                 && a.context.editor_revision == old.context.editor_revision + 1
-                && a.output_identity != old.output_identity
+                && a.output_identity == old.output_identity
+                && a.audio_revision > old.audio_revision
         }) && ready(cx, window)
         {
             break;

@@ -49,12 +49,14 @@ fn at_capacity(covered: usize) -> (Editor, TrackId, ClipId, Vec<ClipId>) {
         })
         .unwrap();
     let mut victims = Vec::new();
-    for _ in 0..covered {
+    for index in 0..covered {
         let Created::Clip(clip) = editor
             .execute(Command::PlaceMidiClip {
                 track,
-                start: beat(4),
-                length: beat(1),
+                start: BeatTime::from_raw(
+                    beat(4).raw() + (index as u64 * beat(1).raw() / covered as u64),
+                ),
+                length: BeatTime::from_raw(beat(1).raw() / covered as u64),
             })
             .unwrap()
         else {
@@ -82,6 +84,7 @@ fn at_capacity(covered: usize) -> (Editor, TrackId, ClipId, Vec<ClipId>) {
     while audio_clips.len() + midi_clips.len() < MAX_CLIPS {
         let mut c = filler.clone();
         c.id = next;
+        c.start_raw = beat(20 + midi_clips.len() as u64).raw();
         next += 1;
         midi_clips.push(c);
     }
@@ -107,18 +110,18 @@ fn paint(track: TrackId) -> Command {
     }
 }
 #[test]
-fn clip_paint_capacity_admits_audio_split_plus_two_midi_replacements_at_limit() {
-    let (mut editor, track, audio, victims) = at_capacity(2);
+fn clip_paint_capacity_admits_two_midi_replacements_between_retained_audio_fragments() {
+    let (mut editor, track, _audio, victims) = at_capacity(2);
     let before = editor.project().clone();
     assert_eq!(count(&before), MAX_CLIPS);
     let Created::Clip(new) = editor
         .execute(paint(track))
-        .expect("valid final count: +1audio -2midi +1paint = original limit")
+        .expect("valid final count: -2 midi +1 paint")
     else {
         panic!("new clip")
     };
     let after = editor.project().snapshot();
-    assert_eq!(count(editor.project()), MAX_CLIPS);
+    assert_eq!(count(editor.project()), MAX_CLIPS - 1);
     assert!(
         victims
             .iter()
@@ -127,16 +130,15 @@ fn clip_paint_capacity_admits_audio_split_plus_two_midi_replacements_at_limit() 
     assert!(before.midi_clip(new).is_none());
     let row = editor.project().track(track).unwrap();
     assert_eq!(row.clips().len(), 2);
-    let old = before.clip(audio).unwrap();
     for c in row.clips() {
+        let old = before.clip(c.id()).unwrap();
         assert_eq!(c.asset(), old.asset());
         assert_eq!(c.source_offset(), 12_000);
         assert_eq!(c.source_length(), 96_000);
-        assert_eq!(c.source_phase(), (c.start() - old.start()) % 96_000);
+        assert_eq!(c.source_phase(), old.source_phase());
         assert_eq!(
             c.fade().gain_at(c.duration() - 1),
-            old.fade()
-                .gain_at(c.start() - old.start() + c.duration() - 1)
+            old.fade().gain_at(c.duration() - 1)
         );
     }
     assert_eq!(
@@ -151,7 +153,7 @@ fn clip_paint_capacity_admits_audio_split_plus_two_midi_replacements_at_limit() 
 }
 #[test]
 fn clip_paint_capacity_refuses_invalid_final_and_prepare_failure_atomically() {
-    for covered in [1, 2] {
+    for covered in [0, 2] {
         let (mut editor, track, audio, _) = at_capacity(covered);
         editor
             .execute(Command::RenameClip {
@@ -164,7 +166,7 @@ fn clip_paint_capacity_refuses_invalid_final_and_prepare_failure_atomically() {
         let calls = Cell::new(0);
         let result: Result<_, Invalid> = editor.execute_validated(paint(track), |candidate| {
             calls.set(calls.get() + 1);
-            assert_eq!(count(candidate), MAX_CLIPS);
+            assert_eq!(count(candidate), MAX_CLIPS - 1);
             assert_eq!(candidate.track(track).unwrap().clips().len(), 2);
             Err(Invalid("injected preparation refusal"))
         });

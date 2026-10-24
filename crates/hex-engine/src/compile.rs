@@ -238,7 +238,7 @@ fn compile_with_midi_preview_scoped<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
-    samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+    samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -305,7 +305,7 @@ fn compile_project_scoped<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
-    samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+    samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     let fallback = crate::audio_transform::AudioTransformPreparation::default();
     let transforms = transforms.unwrap_or(&fallback);
@@ -334,10 +334,11 @@ fn compile_project_inner<'a>(
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: &crate::audio_transform::AudioTransformPreparation,
-    samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+    samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
+    crate::midi_compile::require_supported_clip_volume(snapshot)?;
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
@@ -348,7 +349,7 @@ fn compile_project_inner<'a>(
         let source = snapshot
             .track(root)
             .ok_or(Invalid("midi source root is missing"))?;
-        for clip in source.midi_clips() {
+        for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
             for note in clip.notes() {
                 let n = clip
                     .source_playback()
@@ -444,7 +445,7 @@ fn compile_project_inner<'a>(
         if mutable_limits.is_some()
             && let Some(instrument) = instrument_config.as_deref()
         {
-            for clip in midi_source.midi_clips() {
+            for clip in midi_source.midi_clips().iter().filter(|clip| clip.active()) {
                 for note in clip.source().notes() {
                     instrument
                         .validate_event_note(note.pitch(), note.velocity())
@@ -455,7 +456,7 @@ fn compile_project_inner<'a>(
         let mutable_looping_source = midi_source
             .midi_clips()
             .iter()
-            .any(|clip| clip.source().looping());
+            .any(|clip| clip.active() && clip.source().looping());
         let mutable_instrument = mutable_limits.is_some();
         let clips = track
             .clips()
@@ -465,7 +466,10 @@ fn compile_project_inner<'a>(
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
                 let source = resolve_source(asset, snapshot.sample_rate())?;
-                let compiled = transforms.compile_clip(snapshot, clip, asset, source)?;
+                let mut compiled = transforms.compile_clip(snapshot, clip, asset, source)?;
+                if let Some(compiled) = compiled.as_mut() {
+                    compiled.active = clip.active();
+                }
                 if let Some(compiled) = &compiled
                     && let Some(audio) = &compiled.audio
                     && audio.frames._derived.is_some()
@@ -766,11 +770,13 @@ fn compile_effect_devices(
 
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
     for device in source_devices {
+        let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
+            .map_err(|_| Invalid("invalid prepared device identity"))?;
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
         let prepared_device = registry
-            .prepare_runtime_device(&migrated, context)
+            .prepare_runtime_instance(identity, &migrated, context)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
         let processor = prepared_device.processor;
 
@@ -876,7 +882,7 @@ pub(crate) fn project_with_sampler_sources(
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
-    samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+    samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview_scoped(
         snapshot,

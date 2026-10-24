@@ -18,10 +18,12 @@ impl Command {
                 | Self::AddMidiNote { .. }
                 | Self::AddMidiNotes { .. }
                 | Self::EditMidiNotes { .. }
+                | Self::DuplicateMidiSourceRange { .. }
                 | Self::UpdateMidiNote { .. }
                 | Self::UpdateMidiNotes { .. }
                 | Self::RemoveMidiNote(_)
                 | Self::RemoveMidiNotes { .. }
+                | Self::ReplaceMidiClipVolume { .. }
                 | Self::SetMidiClipSource { .. }
                 | Self::SetSessionMidiClipSource { .. }
         )
@@ -31,6 +33,11 @@ impl Command {
     pub fn prepare_sampler_midi_edit(&mut self, project: &Project) -> Result<bool, Invalid> {
         const MISSING: Invalid = Invalid("midi edit target is unavailable");
         match self {
+            Self::ReplaceMidiClipVolume { clip, volume } => {
+                let source = project.midi_source(*clip).ok_or(MISSING)?;
+                volume.validate_source_length(source.source_length())?;
+                return Ok(project.midi_clip_volume(*clip).ok_or(MISSING)? != volume);
+            }
             Self::ClearSessionCell { track, scene }
                 if project.session_cell(*track, *scene).is_none() =>
             {
@@ -40,6 +47,15 @@ impl Command {
                     return Err(MISSING);
                 }
                 return Ok(false);
+            }
+            Self::DuplicateMidiSourceRange { clip, start, end } => {
+                let source = project.midi_source(*clip).ok_or(MISSING)?;
+                let range = crate::midi_source_range::Range::capture(source, *start, *end)?;
+                let volume = project.midi_clip_volume(*clip).ok_or(MISSING)?;
+                let copied = volume.duplicated_range(*start, *end, range.source_length)?;
+                return Ok(range.count > 0
+                    || range.source_length != source.source_length()
+                    || &copied != volume);
             }
             Self::UpdateMidiNote {
                 note,
@@ -181,7 +197,14 @@ fn validate_source_edit(
     loop_end: BeatTime,
     looping: bool,
 ) -> Result<(), Invalid> {
-    crate::midi::validate_source(length, start, loop_start, loop_end, looping)?;
+    crate::midi::validate_source_boundary(
+        length,
+        start,
+        loop_start,
+        loop_end,
+        looping,
+        s.one_shot_boundary(),
+    )?;
     for n in &s.notes {
         crate::midi::validate_note(n.start, n.duration, length, n.pitch, n.channel, n.velocity)?;
     }

@@ -34,6 +34,7 @@ struct Row {
     bus: Option<ReturnBus>,
     root_index: Option<usize>,
     disposal: Disposal,
+    effects: super::chains::ChainCustody,
 }
 #[derive(Default)]
 pub(super) struct ReturnAssembly {
@@ -163,6 +164,27 @@ impl ReturnAssembly {
             ..Default::default()
         };
         for r in &self.rows {
+            let nested = if let Some(bus) = r.actual(root)? {
+                r.effects.bytes(&bus.device_chain)?
+            } else if let Some(chain) = &r.chain {
+                r.effects.bytes(chain)?
+            } else if let Some(chain) = &r.bare {
+                r.effects.bytes(chain)?
+            } else {
+                r.effects.metadata_bytes()?
+            };
+            c.chain_payload_bytes = c
+                .chain_payload_bytes
+                .checked_add(nested)
+                .ok_or(AudioStorageError::Overflow)?;
+            c.independent_handle_obligations = c
+                .independent_handle_obligations
+                .checked_add(r.effects.handles())
+                .ok_or(AudioStorageError::Overflow)?;
+            c.reserved_handle_destinations = c
+                .reserved_handle_destinations
+                .checked_add(r.effects.handles())
+                .ok_or(AudioStorageError::Overflow)?;
             let parts = if let Some(bus) = r.actual(root)? {
                 if r.bare.is_some() || r.chain.is_some() {
                     return Err(AudioStorageError::UnknownStorage);
@@ -196,9 +218,10 @@ impl ReturnAssembly {
         c.bytes()?;
         Ok(c)
     }
-    pub(super) fn reserve(
+    pub(super) fn reserve_with_effects(
         &mut self,
         project: &hex_project::Project,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -216,7 +239,7 @@ impl ReturnAssembly {
             || project
                 .return_tracks()
                 .iter()
-                .any(|b| !b.devices().is_empty())
+                .any(|b| effects.is_none() && !b.devices().is_empty())
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
@@ -261,8 +284,20 @@ impl ReturnAssembly {
         for r in &mut self.rows[..self.active] {
             r.handle = handle()?;
         }
-        for r in &mut self.rows[..self.active] {
-            r.chain = Some(OwnedShared::new_owned_empty_slice());
+        for (r, b) in self.rows[..self.active]
+            .iter_mut()
+            .zip(project.return_tracks())
+        {
+            r.chain = Some(r.effects.prepare_with_effects(
+                b.devices(),
+                hex_lattice::ProcessorChainOwner::Return(b.id().value()),
+                project.sample_rate(),
+                effects,
+            )?);
+            self.growth = self
+                .growth
+                .checked_add(r.effects.construction_overlap())
+                .ok_or(AudioStorageError::Overflow)?;
             r.chain
                 .as_ref()
                 .and_then(OwnedShared::parts)
@@ -284,7 +319,6 @@ impl ReturnAssembly {
                 || r.declaration.is_some()
                 || r.bus.is_some()
                 || r.disposal != Disposal::Unstarted
-                || r.chain.as_ref().is_some_and(|c| !c.is_empty())
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
@@ -349,7 +383,6 @@ impl ReturnAssembly {
                 || b.gain != r.gain
                 || b.muted != r.muted
                 || b.matrix.is_some()
-                || !b.device_chain.is_empty()
                 || r.declaration.is_none()
                 || r.disposal != Disposal::Unstarted
             {
@@ -375,6 +408,7 @@ impl ReturnAssembly {
         #[cfg(test)]
         drop(self.probe.take());
         r.disposal = Disposal::Complete;
+        r.effects.clear();
         r.handle = 0;
         r.id = None;
         r.declaration = None;
@@ -492,7 +526,9 @@ impl ReturnAssembly {
                 bus: _,
                 root_index: _,
                 disposal: _,
+                effects,
             } = r;
+            effects.visit_metadata(l)?;
             if let Some(bus) = r.actual(root)? {
                 let ReturnBus {
                     id: _,
@@ -501,9 +537,7 @@ impl ReturnAssembly {
                     matrix: _,
                     device_chain,
                 } = bus;
-                if !device_chain.is_empty() {
-                    return Err(AudioStorageError::UnknownStorage);
-                }
+                effects.visit(device_chain, l)?;
                 l.shared(
                     device_chain,
                     declaration.as_ref().and_then(|d| d.parts(device_chain)),
@@ -513,9 +547,7 @@ impl ReturnAssembly {
                 )?;
             } else {
                 if let Some(owner) = chain {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    effects.visit(owner.arc(), l)?;
                     l.shared(
                         owner.arc(),
                         owner.parts(),
@@ -525,9 +557,7 @@ impl ReturnAssembly {
                     )?;
                 }
                 if let Some(owner) = bare {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    effects.visit(owner, l)?;
                     l.shared(
                         owner,
                         declaration.as_ref().and_then(|d| d.parts(owner)),

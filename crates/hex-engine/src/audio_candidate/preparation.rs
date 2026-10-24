@@ -4,6 +4,46 @@
 use super::*;
 use hex_project::{AssetId, Project};
 
+/// Control-only borrowed compiler context. The host retains the actual source
+/// owners behind these definitions; this view grants no native admission and
+/// never escapes into the prepared graph. Session consumers use the Engine
+/// contract without acquiring a device registry or native lifecycle of their own.
+pub struct AudioCandidateEffects<'a, 'definitions> {
+    registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>,
+}
+impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
+    pub fn new(registry: &'a hex_lattice::NativeDeviceRegistry<'definitions>) -> Self {
+        Self { registry }
+    }
+    pub fn quote(
+        &self,
+        project: &Project,
+        sources: usize,
+    ) -> Result<super::AudioCandidateReservationQuote, AudioStorageError> {
+        super::AudioCandidateReservationQuote::for_project_with_effect_registry(
+            project,
+            sources,
+            self.registry,
+        )
+    }
+    pub fn prepare(
+        &self,
+        destination: &mut AudioCandidatePreparation,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+    ) -> Result<(), AudioStorageError> {
+        destination.prepare_with_effect_registry_on_control(
+            project,
+            source_generation,
+            context,
+            self.registry,
+            sampler,
+        )
+    }
+}
+
 pub struct AudioCandidatePreparation {
     sources: Vec<(AssetId, crate::OwnedAudioSource)>,
     resident_draft: Vec<crate::Frame>,
@@ -204,7 +244,7 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
-        self.prepare_with_sampler(project, source_generation, context, None)
+        self.prepare_with_sampler(project, source_generation, context, None, None)
     }
     /// Explicit closed native CURRENT construction from already copied original
     /// PCM. Generic audio-only preparation still refuses resourceful graphs.
@@ -221,7 +261,21 @@ impl AudioCandidatePreparation {
             source_generation,
             context,
             Some((hash_frames, cancel)),
+            None,
         )
+    }
+    /// Closed effect metadata preparation. Definitions are borrowed only for
+    /// scalar foreign facts; source/worker/endpoint custody remains with audio.
+    /// The optional original sampler work uses the same current source bank.
+    pub fn prepare_with_effect_registry_on_control(
+        &mut self,
+        project: &Project,
+        source_generation: u64,
+        context: crate::AudioSourceContext,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+    ) -> Result<(), AudioStorageError> {
+        self.prepare_with_sampler(project, source_generation, context, sampler, Some(effects))
     }
     fn prepare_with_sampler(
         &mut self,
@@ -229,6 +283,7 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
         sampler: Option<(u64, &std::sync::atomic::AtomicBool)>,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         if self.failed
             || self.cleaning
@@ -238,6 +293,8 @@ impl AudioCandidatePreparation {
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        crate::midi_compile::require_supported_clip_volume(project)
+            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         if self.bank.is_none() && self.token.is_none() {
             OwnedAudioInputs::try_new_in_place(
                 &mut self.sources,
@@ -251,21 +308,32 @@ impl AudioCandidatePreparation {
             .ok_or(AudioStorageError::SourceMismatch)?;
         if self.token.is_none() {
             self.token = Some(
-                match sampler {
-                    Some((work, cancel)) => custody.begin_current_sampler_in_place_on_control(
+                if let Some(effects) = effects {
+                    custody.begin_effect_revision_in_place_on_control(
                         project,
                         source_generation,
                         context,
                         &mut self.bank,
-                        work,
-                        cancel,
-                    ),
-                    None => custody.begin_prepared_revision_in_place_on_control(
-                        project,
-                        source_generation,
-                        context,
-                        &mut self.bank,
-                    ),
+                        sampler,
+                        effects,
+                    )
+                } else {
+                    match sampler {
+                        Some((work, cancel)) => custody.begin_current_sampler_in_place_on_control(
+                            project,
+                            source_generation,
+                            context,
+                            &mut self.bank,
+                            work,
+                            cancel,
+                        ),
+                        None => custody.begin_prepared_revision_in_place_on_control(
+                            project,
+                            source_generation,
+                            context,
+                            &mut self.bank,
+                        ),
+                    }
                 }
                 .map_err(|refused| refused.reason)?,
             );

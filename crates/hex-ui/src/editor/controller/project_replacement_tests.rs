@@ -32,15 +32,19 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         playback: Some(Playback::try_from_prepared_with_session(prepared).expect("playback")),
         status: None,
         error: None,
+        recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,
         sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        midi_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
+        bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        document_format_upgrade_required: false,
         open_complete: replaced,
         project_replaced: replaced,
         stopped_playback_restore_complete: false,
@@ -219,8 +223,9 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
 
-            view.device_panel.spectrum_result =
-                Some(hex_audio::spectrum_worker::PublishedSpectra {
+            view.device_panel.spectrum_results.insert(
+                target.token,
+                hex_audio::spectrum_worker::PublishedSpectra {
                     input: None,
                     output: hex_audio::spectrum_worker::PublishedSpectrum {
                         stamp: hex_audio::spectrum_worker::SpectrumStamp {
@@ -236,11 +241,12 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                         captured_at: std::time::Instant::now(),
                         processed_at: std::time::Instant::now(),
                     },
-                });
+                },
+            );
             // A backend replacement starts without a selected target. Tick's
             // retirement path clears cached data even before a new frame arrives.
             assert!(view.retire_stale_spectrum_target());
-            assert!(view.device_panel.spectrum_result.is_none());
+            assert!(view.device_panel.spectrum_results.is_empty());
             cx.notify();
         })
         .expect("spectrum target context");

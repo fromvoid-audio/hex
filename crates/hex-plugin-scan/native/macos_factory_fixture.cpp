@@ -19,7 +19,7 @@ __attribute__((constructor)) static void load() {
     if(HEX_FACTORY_MODE==15) crash();
 }
 
-class Factory final : public IPluginFactory {
+class Factory final : public IPluginFactory2 {
     std::atomic<uint32> refs{0};
 public:
     uint32 PLUGIN_API addRef() override { return ++refs; }
@@ -28,8 +28,12 @@ public:
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if(!out) return kInvalidArgument;
         *out=nullptr;
-        if(!FUnknownPrivate::iidEqual(iid,INLINE_UID_OF(FUnknown)) &&
-           !FUnknownPrivate::iidEqual(iid,INLINE_UID_OF(IPluginFactory))) return kNoInterface;
+        if(FUnknownPrivate::iidEqual(iid,INLINE_UID_OF(IPluginFactory2))) {
+            if(HEX_FACTORY_MODE==22) return kResultFalse;
+            if(HEX_FACTORY_MODE==25) return kResultOk;
+            if(HEX_FACTORY_MODE<16) return kNoInterface;
+        } else if(!FUnknownPrivate::iidEqual(iid,INLINE_UID_OF(FUnknown)) &&
+                  !FUnknownPrivate::iidEqual(iid,INLINE_UID_OF(IPluginFactory))) return kNoInterface;
         *out=this; addRef(); return kResultOk;
     }
     tresult PLUGIN_API getFactoryInfo(PFactoryInfo* out) override {
@@ -50,6 +54,19 @@ public:
         *out=PClassInfo(cid,PClassInfo::kManyInstances,index?"Component Controller Class":"Audio Module Class",
                        index?"hex original factory controller":"hex original factory processor");
         if(HEX_FACTORY_MODE==5) std::memset(out->name,'x',sizeof out->name);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getClassInfo2(int32 index,PClassInfo2* out) override {
+        if(HEX_FACTORY_MODE==24) return kResultFalse;
+        PClassInfo basic{};
+        if(!out || getClassInfo(index,&basic)!=kResultOk) return kInvalidArgument;
+        const char* kind=index?"":HEX_FACTORY_MODE==16?"Instrument|Synth":
+            HEX_FACTORY_MODE==17?"Fx|Delay":HEX_FACTORY_MODE==18?"Fx|Instrument":"MyInstrument|CustomFx";
+        *out=PClassInfo2(basic.cid,basic.cardinality,basic.category,basic.name,0x80000000u,
+                        kind,"original extended vendor","1.2.3","VST 3.8");
+        if(HEX_FACTORY_MODE==20) out->cid[0]=0;
+        if(HEX_FACTORY_MODE==21) std::memset(out->subCategories,'x',sizeof out->subCategories);
+        if(HEX_FACTORY_MODE==23) { out->subCategories[0]=static_cast<char>(0xff); out->subCategories[1]=0; }
         return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString,FIDString,void** out) override {

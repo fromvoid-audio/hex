@@ -1,5 +1,7 @@
-//! Borrow the real closed Service selections for two finite admission phases.
-//! This is not a global allocator, native publication or a retirement receipt.
+//! Borrow actual Session stores, registered resource sets/publication obligations and explicit
+//! private offline selections for two finite admission phases. Original banks share one ledger
+//! so a current source is not charged again merely because an output also retains it. This is
+//! neither a global allocator, whole-graph provenance nor a retirement receipt.
 use super::*;
 use crate::audio_storage::{Location, Owner};
 use crate::{
@@ -18,8 +20,10 @@ pub struct ControlSamplerOutbound<'a> {
     pub obligation: &'a super::DispatchedSourceObligation,
     pub job: u64,
 }
-pub struct ControlSamplerPhase<'a> {
+pub struct DeviceResourcePhase<'a> {
     pub stores: &'a [&'a ResidentDeviceAssets],
+    /// Actual ordinary resource sets, active/retired books and prospective publication anchors.
+    pub registered: &'a [super::DeviceResourceAdmission<'a>],
     pub selections: &'a [ControlSamplerSelection<'a>],
     pub outbound: &'a [ControlSamplerOutbound<'a>],
     /// Actual current/loaded original and derivative owners, not path/size quotes.
@@ -28,13 +32,13 @@ pub struct ControlSamplerPhase<'a> {
     /// Checked constructor/preparation allowance, never an unlimited fallback.
     pub construction_bytes: usize,
 }
-pub struct ControlSamplerInventory {
+pub struct DeviceResourceInventory {
     pub retained: AudioRootStorageSummary,
     pub construction: AudioRootStorageSummary,
     pub retained_frames: u64,
     pub construction_frames: u64,
 }
-fn legacy<'a>(phase: &'a ControlSamplerPhase<'a>) -> impl Iterator<Item = &'a Audio> + Clone {
+fn legacy<'a>(phase: &'a DeviceResourcePhase<'a>) -> impl Iterator<Item = &'a Audio> + Clone {
     phase
         .legacy
         .iter()
@@ -58,9 +62,15 @@ fn legacy<'a>(phase: &'a ControlSamplerPhase<'a>) -> impl Iterator<Item = &'a Au
                         )
                 }),
         )
+        .chain(
+            phase
+                .registered
+                .iter()
+                .flat_map(super::DeviceResourceAdmission::legacy_sources),
+        )
 }
 fn inspect(
-    phase: &ControlSamplerPhase<'_>,
+    phase: &DeviceResourcePhase<'_>,
     reservation: AudioStorageLedgerReservation,
     staged: Option<&super::resident::StagedNativeAssetView<'_>>,
     construction: bool,
@@ -68,15 +78,12 @@ fn inspect(
     // This local scalar identifies explicit allowances, never PCM provenance.
     let allowance_anchor = 0usize;
     let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
-    let mut frames = 0_u64;
     ledger.mutate(|ledger| {
         for store in phase.stores {
             ledger.root(*store, crate::AudioStorageRole::Current)?;
             if let Some(stage) = staged.filter(|s| std::ptr::eq(*store, s.store)) {
                 ledger.vec(&stage.staged.destination)?;
-                frames = frames
-                    .checked_add(stage.staged.asset.1.visit(ledger)?)
-                    .ok_or(AudioStorageError::Overflow)?;
+                stage.staged.asset.1.visit(ledger)?;
                 if construction {
                     ledger.growth(
                         store
@@ -96,16 +103,15 @@ fn inspect(
                 ledger.vec(&store.assets)?;
             }
             for (_, source) in &store.assets {
-                frames = frames
-                    .checked_add(source.visit(ledger)?)
-                    .ok_or(AudioStorageError::Overflow)?;
+                source.visit(ledger)?;
             }
+        }
+        for registered in phase.registered {
+            registered.visit(ledger)?;
         }
         for selection in phase.selections {
             if let Some(sources) = selection.sources {
-                frames = frames
-                    .checked_add(sources.visit(ledger)?)
-                    .ok_or(AudioStorageError::Overflow)?;
+                sources.visit(ledger)?;
                 if let Some(prepared) = selection.prepared {
                     if prepared.resource_scope != Some(sources.id()) {
                         return Err(AudioStorageError::SourceMismatch);
@@ -132,40 +138,13 @@ fn inspect(
             }
         }
         for outbound in phase.outbound {
-            frames = frames
-                .checked_add(outbound.anchor.visit_dispatched(
-                    ledger,
-                    outbound.obligation,
-                    outbound.job,
-                )?)
-                .ok_or(AudioStorageError::Overflow)?;
+            outbound
+                .anchor
+                .visit_dispatched(ledger, outbound.obligation, outbound.job)?;
         }
-        let mut legacy_bytes = 0usize;
-        for (index, audio) in legacy(phase).enumerate() {
-            if legacy(phase)
-                .take(index)
-                .any(|prior| audio.shares_pcm_with(prior))
-            {
-                continue;
-            }
-            let capacity = audio.pcm_capacity_frames();
-            legacy_bytes = legacy_bytes
-                .checked_add(
-                    capacity
-                        .checked_mul(std::mem::size_of::<crate::Frame>())
-                        .ok_or(AudioStorageError::Overflow)?,
-                )
-                .ok_or(AudioStorageError::Overflow)?;
-            frames = frames
-                .checked_add(u64::try_from(capacity).map_err(|_| AudioStorageError::Overflow)?)
-                .ok_or(AudioStorageError::Overflow)?;
+        for audio in legacy(phase) {
+            ledger.resident_capacity(audio)?;
         }
-        // Legacy DATA allowance remains separate from native constructor proof.
-        ledger.bytes(
-            Owner::exclusive(&allowance_anchor),
-            Location("selected-legacy-pcm", 0),
-            legacy_bytes,
-        )?;
         ledger.bytes(
             Owner::exclusive(&allowance_anchor),
             Location("checked-control-runtime", 0),
@@ -174,13 +153,13 @@ fn inspect(
         ledger.growth(phase.construction_bytes)?;
         Ok(())
     })?;
-    Ok((ledger.summary()?, frames))
+    Ok((ledger.summary()?, ledger.resident_capacity_frames()?))
 }
-pub fn inspect_control_sampler_union(
-    retained: &ControlSamplerPhase<'_>,
-    construction: &ControlSamplerPhase<'_>,
+pub fn inspect_device_resource_union(
+    retained: &DeviceResourcePhase<'_>,
+    construction: &DeviceResourcePhase<'_>,
     reservation: AudioStorageLedgerReservation,
-) -> Result<ControlSamplerInventory, ResourcePreparationError> {
+) -> Result<DeviceResourceInventory, ResourcePreparationError> {
     let (kept, retained_frames) = inspect(retained, reservation, None, false)?;
     // Construction selection is a separate borrow after the retained ledger
     // has dropped. Its complete live union is checked against the caller peak.
@@ -189,7 +168,7 @@ pub fn inspect_control_sampler_union(
         ..reservation
     };
     let (peak, construction_frames) = inspect(construction, peak_reservation, None, true)?;
-    Ok(ControlSamplerInventory {
+    Ok(DeviceResourceInventory {
         retained: kept,
         construction: peak,
         retained_frames,
@@ -198,11 +177,11 @@ pub fn inspect_control_sampler_union(
 }
 
 pub(super) fn inspect_staged_union(
-    retained: &ControlSamplerPhase<'_>,
-    construction: &ControlSamplerPhase<'_>,
+    retained: &DeviceResourcePhase<'_>,
+    construction: &DeviceResourcePhase<'_>,
     reservation: AudioStorageLedgerReservation,
     staged: &super::resident::StagedNativeAssetView<'_>,
-) -> Result<ControlSamplerInventory, ResourcePreparationError> {
+) -> Result<DeviceResourceInventory, ResourcePreparationError> {
     let mut retained_stores = retained.stores.to_vec();
     if !retained_stores
         .iter()
@@ -217,16 +196,18 @@ pub(super) fn inspect_staged_union(
     {
         construction_stores.push(staged.store);
     }
-    let retained = ControlSamplerPhase {
+    let retained = DeviceResourcePhase {
         stores: &retained_stores,
+        registered: retained.registered,
         selections: retained.selections,
         outbound: retained.outbound,
         legacy: retained.legacy,
         checked_runtime_bytes: retained.checked_runtime_bytes,
         construction_bytes: retained.construction_bytes,
     };
-    let construction = ControlSamplerPhase {
+    let construction = DeviceResourcePhase {
         stores: &construction_stores,
+        registered: construction.registered,
         selections: construction.selections,
         outbound: construction.outbound,
         legacy: construction.legacy,
@@ -239,7 +220,7 @@ pub(super) fn inspect_staged_union(
         ..reservation
     };
     let (peak, construction_frames) = inspect(&construction, peak_reservation, Some(staged), true)?;
-    Ok(ControlSamplerInventory {
+    Ok(DeviceResourceInventory {
         retained: kept,
         construction: peak,
         retained_frames,

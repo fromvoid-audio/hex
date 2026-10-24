@@ -547,3 +547,60 @@ fn ordinary_termination_signals_cancel_owned_hangs_without_killing_unrelated_pro
     sentinel.0.kill().expect("owned sentinel stop");
     sentinel.0.wait().expect("owned sentinel reap");
 }
+
+#[test]
+#[ignore = "explicit original Mac helper/fixture build required"]
+fn optional_factory_metadata_has_owned_release_and_strict_class_identity() {
+    let receipt = receipt();
+    for (name, expected) in [
+        ("normal", None),
+        ("factory2-instrument", Some("Instrument|Synth")),
+        ("factory2-effect", Some("Fx|Delay")),
+        ("factory2-dual", Some("Fx|Instrument")),
+        ("factory2-unknown", Some("MyInstrument|CustomFx")),
+    ] {
+        let output = command(&receipt, &fixture(&receipt, name), 10000)
+            .output()
+            .unwrap();
+        let value = report(&output);
+        assert!(output.status.success(), "{name}: {value}");
+        assert_eq!(
+            value["discovery"]["classes"][0]["subcategories"].as_str(),
+            expected
+        );
+        assert_eq!(
+            value["cleanup"]["direct_exit_code"], 0,
+            "fixture exit checks every factory reference released"
+        );
+        if expected.is_some() {
+            assert_eq!(
+                value["discovery"]["classes"][0]["class_vendor"],
+                "original extended vendor"
+            );
+            assert_eq!(
+                value["discovery"]["classes"][0]["class_flags"],
+                0x8000_0000_u32
+            );
+        }
+        assert!(
+            !value["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("forbidden ordinary")
+        );
+    }
+    for name in [
+        "factory2-mismatch",
+        "factory2-malformed",
+        "factory2-query-fail",
+        "factory2-invalid-utf8",
+        "factory2-class-query-fail",
+        "factory2-null-interface",
+    ] {
+        refused(
+            &command(&receipt, &fixture(&receipt, name), 10000)
+                .output()
+                .unwrap(),
+        );
+    }
+}

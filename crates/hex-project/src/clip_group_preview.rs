@@ -85,7 +85,7 @@ impl ClipGroupMovePreview {
                 if let Some(edit) = preview
                     .edit
                     .as_mut()
-                    .filter(|edit| edit.musical_start.is_some())
+                    .filter(|edit| edit.live_musical_start().is_some())
                 {
                     // Detach only the placement shell ONCE. The retained domain
                     // (processing recipe, events, fades) remains shared.
@@ -226,7 +226,7 @@ impl ClipGroupMovePreview {
                     if let Some(edit) = clip
                         .edit
                         .as_mut()
-                        .filter(|edit| edit.musical_start.is_some())
+                        .filter(|edit| edit.live_musical_start().is_some())
                     {
                         // A borrowed preview may be cloned by a caller. Never
                         // silently allocate another shell on the pointer path.

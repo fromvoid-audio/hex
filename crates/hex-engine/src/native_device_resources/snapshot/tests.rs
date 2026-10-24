@@ -215,7 +215,8 @@ fn dispatched_owner_accounting(
     let inspect = |actual_job, tokens: &[ControlSamplerOutbound<'_>], limits| {
         let selected = selections(actual_job);
         let stores = [store];
-        let phase = ControlSamplerPhase {
+        let phase = DeviceResourcePhase {
+            registered: &[],
             stores: &stores,
             selections: &selected,
             outbound: tokens,
@@ -223,7 +224,7 @@ fn dispatched_owner_accounting(
             checked_runtime_bytes: std::mem::size_of::<DispatchedSourceObligation>(),
             construction_bytes: 0,
         };
-        inspect_control_sampler_union(&phase, &phase, limits)
+        inspect_device_resource_union(&phase, &phase, limits)
     };
     let outbound = ControlSamplerOutbound {
         anchor: &anchor,
@@ -315,7 +316,8 @@ fn dispatched_owner_accounting(
         },
     ];
     let outbound = [outbound];
-    let phase = ControlSamplerPhase {
+    let phase = DeviceResourcePhase {
+        registered: &[],
         stores: &[store],
         selections: &selected,
         outbound: &outbound,
@@ -323,7 +325,7 @@ fn dispatched_owner_accounting(
         checked_runtime_bytes: std::mem::size_of::<DispatchedSourceObligation>(),
         construction_bytes: 0,
     };
-    let delayed = inspect_control_sampler_union(&phase, &phase, limits).unwrap();
+    let delayed = inspect_device_resource_union(&phase, &phase, limits).unwrap();
     assert_eq!(
         delayed.retained.retained_bytes, after.retained.retained_bytes,
         "a dropped job stays conservatively charged until its terminal is observed"

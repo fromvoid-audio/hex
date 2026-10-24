@@ -2,6 +2,8 @@
 //!
 //! Inputs are the last reported independent channel values. This component has
 //! no timestamp, coherent-pair guarantee, peak hold, decay or clipping detector.
+//! Shared meter widgets retain only click-clear acknowledgement of observed
+//! above-unity readouts; they cannot recover clipping between UI observations.
 use crate::theme;
 use gpui::{Div, Stateful, div, prelude::*, px, rgb};
 
@@ -133,38 +135,25 @@ fn field(input: MeterInput) -> Div {
 
 fn control(channel: &'static str, value: Peak) -> Div {
     let background = theme::color(theme::PaletteRole::Raised);
-    let fill = theme::readable_text(background, theme::color(theme::PaletteRole::Primary));
-    // Invalid/unavailable values are empty neutral gauges, never a numeric zero.
-    let height = BAR_HEIGHT * value.fraction();
-    let mut bar = div()
-        .debug_selector(move || format!("output-meter-{channel}"))
-        .relative()
-        .w(px(6.0))
-        .h(px(BAR_HEIGHT))
-        .flex_shrink_0()
-        .flex()
-        .items_end()
-        .bg(rgb(background))
-        .child(
-            div()
-                .debug_selector(move || format!("output-meter-{channel}-fill"))
-                .w_full()
-                .h(px(height))
-                .bg(rgb(fill)),
-        );
-    if value.above() {
-        bar = bar.child(
-            div()
-                .debug_selector(move || format!("output-meter-{channel}-above"))
-                .absolute()
-                .top_0()
-                .left_0()
-                .w_full()
-                .h(px(2.0))
-                .bg(rgb(background)),
-        );
-    }
-    bar
+    let colors = theme::meter_colors();
+    let level = match value {
+        Peak::Level { db, above, .. } => hex_widgets::MeterLevel::from_dbfs(db as f32, above),
+        _ => hex_widgets::MeterLevel::Normal,
+    };
+    // Canonical availability/peak interpretation stays here; the shared gauge
+    // only receives bounded display geometry and caller-resolved colors.
+    hex_widgets::level_meter(
+        format!("output-meter-{channel}").into(),
+        value.fraction(),
+        value.above(),
+        hex_widgets::LevelMeterStyle {
+            background,
+            fill: colors.color(level),
+            above: colors.clipping,
+        },
+    )
+    .w(px(6.0))
+    .h(px(BAR_HEIGHT))
 }
 
 /// Fixed status-slot component; no timestamp, decay or native AX contract.
@@ -189,4 +178,5 @@ pub fn render(input: MeterInput) -> Stateful<Div> {
 }
 
 #[cfg(test)]
+#[path = "output_meter/tests.rs"]
 mod tests;

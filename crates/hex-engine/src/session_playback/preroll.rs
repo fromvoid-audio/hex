@@ -15,7 +15,15 @@ pub(super) const PREROLL_SCRATCH_BYTES: usize =
 enum PrerollRuntimePolicy {
     LinearExport,
     Interactive,
+    SectionLoop(hex_project::LoopRegion),
 }
+
+type PrerollConstructor = fn(
+    Arc<PreparedRevision>,
+    bool,
+    Option<&crate::native_device_resources::PreparedDeviceResources>,
+    Option<hex_project::LoopRegion>,
+) -> Result<SessionPlayback, SessionPlaybackError>;
 
 /// Why an Arrangement playback candidate could not be prepared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +44,48 @@ impl From<SessionPlaybackError> for ArrangementPrerollError {
 }
 
 impl SessionPlayback {
+    /// Requested runtime plus peak scheduling-metadata scratch before section
+    /// preparation starts. Shared note banks/factories stay in the revision.
+    pub fn section_runtime_allowance(
+        revision: &PreparedRevision,
+        region: hex_project::LoopRegion,
+    ) -> Result<usize, SessionPlaybackError> {
+        let periodic = PreparedPeriodicSessionTempo::prepare(revision.session().timing(), region)
+            .map_err(SessionPlaybackError::SessionTempoUnavailable)?;
+        let rate = crate::MidiTiming::max_micro_bpm(&periodic.view(revision.session().timing()));
+        let (retained, scratch) = revision
+            .session()
+            .section_admission_quote(rate)
+            .map_err(|error| SessionPlaybackError::MutableInstrumentDiagnostic(error.0))?;
+        let bytes = arrangement_runtime_storage_preflight_bytes(revision)
+            .and_then(|base| base.checked_add(retained)?.checked_add(scratch))
+            .filter(|bytes| *bytes <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .ok_or(SessionPlaybackError::Allocation)?;
+        Ok(bytes)
+    }
+    /// Prepare a graph-local section audition using the same bounded preroll
+    /// and exact device-resource scope as an ordinary interactive seek. Install
+    /// the loop before construction/replay so admission, gate clipping, DSP
+    /// history and periodic timing all use the same law. Saved state is untouched.
+    pub fn prepare_section_arrangement_preroll(
+        revision: Arc<PreparedRevision>,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
+        region: hex_project::LoopRegion,
+        work_budget_frames: u64,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            region.start(),
+            work_budget_frames,
+            true,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::SectionLoop(region),
+            resources,
+            || cancelled.load(Ordering::Acquire),
+        )
+    }
+
     /// Build a fresh Arrangement-owned renderer and advance it from frame zero
     /// to `destination_frame` on the control side. This does not inspect or
     /// restore another playback owner's routes; callers integrating a live
@@ -89,11 +139,11 @@ impl SessionPlayback {
     /// remain routed to Arrangement, then reconstruct Arrangement history to
     /// `destination_frame`. Unlike the linear export candidate, this runtime
     /// accepts subsequent Session commands and state inheritance. Enabled
-    /// transport loops normalize destinations at or beyond their end into the
-    /// loop, matching playing seek content coordinates. Both candidate clocks
-    /// start at that normalized destination with a fresh loop pass; history is
-    /// reconstructed from zero through the first pass, preserving gate clipping.
-    /// The work budget is checked against the original requested destination.
+    /// transport loops retain the absolute destination. A destination before
+    /// the loop end reconstructs its first pass with ordinary gate clipping;
+    /// a destination at/after the end reconstructs linear history and continues
+    /// beyond the loop. Both clocks retain the requested frame, with no invented
+    /// loop history. The saved loop and original work/storage budgets are unchanged.
     /// Run preparation on an adequately sized
     /// control thread; the production seek worker reserves an explicit 8 MiB
     /// stack because stateful multi-chain construction can exceed the Rust
@@ -112,6 +162,7 @@ impl SessionPlayback {
             start_playing,
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
             PrerollRuntimePolicy::Interactive,
+            None,
             || cancelled.load(Ordering::Acquire),
         )
     }
@@ -150,10 +201,38 @@ impl SessionPlayback {
             start_playing,
             storage_budget_bytes,
             PrerollRuntimePolicy::LinearExport,
+            None,
             is_cancelled,
         )
     }
 
+    /// Reconstruct ordinary source-bearing Arrangement history with its exact compiler resource
+    /// set. Existing replay, source-loop, storage and cancellation limits apply unchanged. This
+    /// returns an interactive candidate for the ordinary fresh-runtime publication policy; a
+    /// missing/foreign set refuses instead of substituting the private play-from-zero path.
+    /// Invoke on the existing control seek worker's explicit 8 MiB stack; stateful construction
+    /// and debug-build temporaries may exceed a platform-default test/control thread stack.
+    pub fn prepare_interactive_arrangement_preroll_with_device_resources(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::Interactive,
+            Some(resources),
+            || cancelled.load(Ordering::Acquire),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn prepare_arrangement_preroll_from_revision_with_policy(
         revision: Arc<PreparedRevision>,
         destination_frame: u64,
@@ -161,6 +240,7 @@ impl SessionPlayback {
         start_playing: bool,
         storage_budget_bytes: usize,
         policy: PrerollRuntimePolicy,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<Self, ArrangementPrerollError> {
         if is_cancelled() {
@@ -186,19 +266,11 @@ impl SessionPlayback {
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
-        // A fresh seek reconstructs the first pass to the same content cursor
-        // as ordinary playing Seek, rather than inventing elapsed loop history.
-        // Request budgets above remain based on the caller's absolute target.
-        let destination_frame = match policy {
-            PrerollRuntimePolicy::Interactive => revision
+        let linear_cursor_history = matches!(policy, PrerollRuntimePolicy::Interactive)
+            && revision
                 .arrangement()
                 .loop_region()
-                .filter(|region| region.enabled())
-                .map(|region| render::normalize_loop_cursor(destination_frame, region, 0))
-                .transpose()?
-                .map_or(destination_frame, |(frame, _)| frame),
-            PrerollRuntimePolicy::LinearExport => destination_frame,
-        };
+                .is_some_and(|region| region.enabled() && destination_frame >= region.end());
         let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
@@ -208,12 +280,18 @@ impl SessionPlayback {
             return Err(ArrangementPrerollError::Cancelled);
         }
 
-        let constructor: fn(Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> =
+        // One constructor dispatch keeps only one large inline runtime result
+        // live in this frame, including in unoptimized control/test builds.
+        let constructor: PrerollConstructor = Self::new_with_policy_and_loop;
+        let mut candidate = constructor(
+            Arc::clone(&revision),
+            matches!(policy, PrerollRuntimePolicy::LinearExport),
+            resources,
             match policy {
-                PrerollRuntimePolicy::LinearExport => Self::new_linear_arrangement_export,
-                PrerollRuntimePolicy::Interactive => Self::new,
-            };
-        let mut candidate = constructor(Arc::clone(&revision))?;
+                PrerollRuntimePolicy::SectionLoop(region) => Some(region),
+                _ => None,
+            },
+        )?;
         let actual_storage = candidate
             .accounted_runtime_storage_bytes()
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
@@ -223,13 +301,24 @@ impl SessionPlayback {
         if actual_preparation_storage > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
+        // A control-only override prevents replay from wrapping before it can
+        // reach an absolute post-loop cursor. Restore it before publication;
+        // the final cursor itself determines whether the saved loop participates.
+        let transient_loop = candidate.transient_loop;
+        if linear_cursor_history {
+            candidate.transient_loop = revision
+                .arrangement()
+                .loop_region()
+                .map(|region| hex_project::LoopRegion::new(region.start(), region.end(), false))
+                .transpose()
+                .map_err(|_| ArrangementPrerollError::ArithmeticOverflow)?;
+        }
         if start_playing || destination_frame != 0 {
             candidate.apply(SessionPlaybackCommand::Play)?;
         }
 
-        // An enabled interactive loop was normalized above, so reconstruction
-        // ends strictly before its end. Ordinary rendering retains loop gate
-        // clipping and the first-pass tempo without ever wrapping this replay.
+        // Pre-loop/interior destinations retain normal first-pass gate clipping;
+        // post-loop destinations replay the canonical linear tempo and source law.
         let mut remaining = destination_frame;
         let mut block = [[0.0; 2]; PREROLL_BLOCK_FRAMES];
         while remaining > 0 {
@@ -251,6 +340,7 @@ impl SessionPlayback {
         {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);
         }
+        candidate.transient_loop = transient_loop;
         if !start_playing {
             candidate.apply(SessionPlaybackCommand::Pause)?;
         }
@@ -260,15 +350,92 @@ impl SessionPlayback {
         Ok(candidate)
     }
 
-    pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
-        let mut total = std::mem::size_of::<Self>();
+    pub(crate) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
+        RuntimeStorage {
+            live_expression: self.live_expression.is_some(),
+            computer_keyboard: self.computer_keyboard.as_deref(),
+            compensation: self.compensation.as_ref(),
+            main_chain: &self.main_chain,
+            current_sampler_keyboards: &self.current_sampler_keyboards,
+            revision: &self.revision,
+            midi_admission: self.midi_admission.as_ref(),
+            analytic_import: &self.analytic_import,
+            device_chains: &self.device_chains,
+            return_chains: &self.return_chains,
+            return_effect_tails: &self.return_effect_tails,
+            mutable_instruments: &self.mutable_instruments,
+            tail_groups: &self.tail_groups,
+            tail_mutable_instruments: &self.tail_mutable_instruments,
+            routes: self.routes.capacity(),
+            route_scratch: self.route_scratch.capacity(),
+            current_route_cut_scratch: self.current_route_cut_scratch.capacity(),
+            return_scratch: self.return_scratch.capacity(),
+            mutable_events: self.mutable_events.capacity(),
+            tail_mixes: self.tail_mixes.capacity(),
+            tail_suffix_starts: self.tail_suffix_starts.capacity(),
+            tail_suffix_matrices: self.tail_suffix_matrices.capacity(),
+            releases: self.releases.capacity(),
+            release_scratch: self.release_scratch.capacity(),
+            retained_contexts: self.retained_contexts.capacity(),
+            context_lease_plan: self.context_lease_plan.capacity(),
+            analytic_continuations: self.analytic_continuations.capacity(),
+            analytic_continuation_scratch: self.analytic_continuation_scratch.capacity(),
+            suppressions: self.suppressions.capacity(),
+            suppression_scratch: self.suppression_scratch.capacity(),
+        }
+        .bytes()
+    }
+}
+
+/// One borrowed formula for the assembled runtime and its preassembly locals. Capacities and
+/// child backings are identical in both uses; no second owning runtime or closure return slot.
+/// The existing conservative chain-header double charge and inline Main subtraction remain.
+pub(super) struct RuntimeStorage<'a> {
+    pub(super) live_expression: bool,
+    pub(super) computer_keyboard: Option<&'a crate::computer_keyboard::ComputerKeyboardRuntime>,
+    pub(super) compensation: Option<&'a crate::signal_graph::SignalRuntime>,
+    pub(super) main_chain: &'a hex_lattice::NativeRuntimeChain,
+    pub(super) current_sampler_keyboards:
+        &'a Vec<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
+    pub(super) revision: &'a PreparedRevision,
+    pub(super) midi_admission: Option<&'a crate::session_inventory::PreparedSessionMidiAdmission>,
+    pub(super) analytic_import: &'a analytic_import::ImportPlan,
+    pub(super) device_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
+    pub(super) return_chains: &'a Vec<hex_lattice::NativeRuntimeChain>,
+    pub(super) return_effect_tails: &'a ReturnEffectTailBank,
+    pub(super) mutable_instruments: &'a Vec<Option<MutableInstrumentTrackRuntime>>,
+    pub(super) tail_groups: &'a Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    pub(super) tail_mutable_instruments: &'a Vec<Option<MutableInstrumentTail>>,
+    pub(super) routes: usize,
+    pub(super) route_scratch: usize,
+    pub(super) current_route_cut_scratch: usize,
+    pub(super) return_scratch: usize,
+    pub(super) mutable_events: usize,
+    pub(super) tail_mixes: usize,
+    pub(super) tail_suffix_starts: usize,
+    pub(super) tail_suffix_matrices: usize,
+    pub(super) releases: usize,
+    pub(super) release_scratch: usize,
+    pub(super) retained_contexts: usize,
+    pub(super) context_lease_plan: usize,
+    pub(super) analytic_continuations: usize,
+    pub(super) analytic_continuation_scratch: usize,
+    pub(super) suppressions: usize,
+    pub(super) suppression_scratch: usize,
+}
+impl RuntimeStorage<'_> {
+    pub(super) fn bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<SessionPlayback>();
+        if let Some(admission) = self.midi_admission {
+            checked_add(&mut total, admission.retained_bytes()?)?;
+        }
         checked_add(
             &mut total,
             self.main_chain
                 .accounted_storage_bytes()?
                 .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?,
         )?;
-        if self.live_expression.is_some() {
+        if self.live_expression {
             checked_add(
                 &mut total,
                 std::mem::size_of::<crate::live_expression::LiveExpressionInput>()
@@ -282,7 +449,7 @@ impl SessionPlayback {
             &mut total,
             self.current_sampler_keyboards.capacity(),
         )?;
-        for keyboard in &self.current_sampler_keyboards {
+        for keyboard in self.current_sampler_keyboards {
             checked_add(&mut total, keyboard.storage_bytes()?)?;
         }
         if let Some(compensation) = &self.compensation {
@@ -291,25 +458,22 @@ impl SessionPlayback {
             checked_add(&mut total, graph.table_bytes()?)?;
         }
         checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
-        add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
-        add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
-        add_capacity::<Option<CurrentPendingCut>>(
-            &mut total,
-            self.current_route_cut_scratch.capacity(),
-        )?;
+        add_capacity::<TrackRoute>(&mut total, self.routes)?;
+        add_capacity::<TrackRoute>(&mut total, self.route_scratch)?;
+        add_capacity::<Option<CurrentPendingCut>>(&mut total, self.current_route_cut_scratch)?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
-        for chain in &self.device_chains {
+        for chain in self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
         }
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.return_chains.capacity())?;
-        for chain in &self.return_chains {
+        for chain in self.return_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
         }
         checked_add(
             &mut total,
             self.return_effect_tails.accounted_storage_bytes()?,
         )?;
-        add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch.capacity())?;
+        add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch)?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
             &mut total,
             self.mutable_instruments.capacity(),
@@ -317,10 +481,7 @@ impl SessionPlayback {
         for runtime in self.mutable_instruments.iter().flatten() {
             checked_add(&mut total, runtime.accounted_storage_bytes()?)?;
         }
-        add_capacity::<hex_lattice::NativeInstrumentEvent>(
-            &mut total,
-            self.mutable_events.capacity(),
-        )?;
+        add_capacity::<hex_lattice::NativeInstrumentEvent>(&mut total, self.mutable_events)?;
         add_capacity::<Option<hex_lattice::NativeRuntimeChain>>(
             &mut total,
             self.tail_groups.capacity(),
@@ -335,32 +496,29 @@ impl SessionPlayback {
         for tail in self.tail_mutable_instruments.iter().flatten() {
             checked_add(&mut total, tail.runtime.accounted_storage_bytes()?)?;
         }
-        add_capacity::<crate::PreparedTrackMix>(&mut total, self.tail_mixes.capacity())?;
-        add_capacity::<usize>(&mut total, self.tail_suffix_starts.capacity())?;
-        add_capacity::<Option<hex_lattice::StereoMatrix>>(
-            &mut total,
-            self.tail_suffix_matrices.capacity(),
-        )?;
-        add_capacity::<ReleaseEntry>(&mut total, self.releases.capacity())?;
-        add_capacity::<ReleaseEntry>(&mut total, self.release_scratch.capacity())?;
+        add_capacity::<crate::PreparedTrackMix>(&mut total, self.tail_mixes)?;
+        add_capacity::<usize>(&mut total, self.tail_suffix_starts)?;
+        add_capacity::<Option<hex_lattice::StereoMatrix>>(&mut total, self.tail_suffix_matrices)?;
+        add_capacity::<ReleaseEntry>(&mut total, self.releases)?;
+        add_capacity::<ReleaseEntry>(&mut total, self.release_scratch)?;
         add_capacity::<Option<Arc<crate::shared_analytic::SharedContextOwner>>>(
             &mut total,
-            self.retained_contexts.capacity(),
+            self.retained_contexts,
         )?;
         add_capacity::<crate::shared_analytic::ContextLeasePlan>(
             &mut total,
-            self.context_lease_plan.capacity(),
+            self.context_lease_plan,
         )?;
         add_capacity::<Option<hex_lattice::AnalyticContinuation>>(
             &mut total,
-            self.analytic_continuations.capacity(),
+            self.analytic_continuations,
         )?;
         add_capacity::<Option<hex_lattice::AnalyticContinuation>>(
             &mut total,
-            self.analytic_continuation_scratch.capacity(),
+            self.analytic_continuation_scratch,
         )?;
-        add_capacity::<MidiOccurrenceSuppression>(&mut total, self.suppressions.capacity())?;
-        add_capacity::<MidiOccurrenceSuppression>(&mut total, self.suppression_scratch.capacity())?;
+        add_capacity::<MidiOccurrenceSuppression>(&mut total, self.suppressions)?;
+        add_capacity::<MidiOccurrenceSuppression>(&mut total, self.suppression_scratch)?;
         Some(total)
     }
 }

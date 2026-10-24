@@ -29,6 +29,7 @@ struct PreparedTrackInstrumentConfig {
     bypassed: bool,
     note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
     mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
+    resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
 }
@@ -36,6 +37,7 @@ struct PreparedTrackInstrumentConfig {
 struct PreparedMutableTrackInstrument {
     track: TrackId,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
+    resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
 }
@@ -127,6 +129,8 @@ pub struct PreparedSessionTrack {
 
 /// Prepared source and instrument templates for one Session MIDI clip.
 pub struct PreparedSessionMidiClip {
+    pub active: bool,
+    playback_offset: hex_project::BeatTime,
     pub id: ClipId,
     pub track: TrackId,
     pub scene: SceneId,
@@ -149,6 +153,9 @@ pub struct PreparedSessionMidiClip {
 /// generation-validated streamed source binding.
 #[derive(Clone)]
 pub struct PreparedSessionAudioClip {
+    /// Authored silence retains existing control-side media custody. Rendering
+    /// and page demand test this flag before accessing the source.
+    pub active: bool,
     pub id: ClipId,
     pub track: TrackId,
     pub scene: SceneId,
@@ -184,6 +191,7 @@ impl PreparedSessionAudioClip {
     }
     pub(crate) fn source_matches(&self, other: &Self) -> bool {
         self.source_matches_facts(
+            other.active,
             other.track,
             other.asset,
             other.source_start,
@@ -194,13 +202,15 @@ impl PreparedSessionAudioClip {
 
     fn source_matches_facts(
         &self,
+        active: bool,
         track: TrackId,
         asset: AssetId,
         source_start: u64,
         source_end: u64,
         source: &PreparedAudioSource,
     ) -> bool {
-        self.track == track
+        self.active == active
+            && self.track == track
             && self.asset == asset
             && self.source_start == source_start
             && self.source_end == source_end
@@ -242,7 +252,10 @@ impl PreparedSessionMidiClip {
     }
 
     pub(crate) fn source_content_matches(&self, other: &Self) -> bool {
-        self.track == other.track && self.source_identity == other.source_identity
+        self.track == other.track
+            && self.active == other.active
+            && self.playback_offset == other.playback_offset
+            && self.source_identity == other.source_identity
     }
 
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
@@ -265,13 +278,13 @@ impl PreparedSessionMidiClip {
         self.instrument_id == other.instrument_id
     }
 
-    pub(crate) fn occurrence(
+    pub(crate) fn occurrence_with_origin(
         &self,
         note: hex_project::NoteId,
         iteration: u64,
-        launch: hex_project::BeatTime,
+        origin: crate::SessionMidiOrigin,
     ) -> Option<super::midi_template::SourceOccurrence> {
-        self.source.occurrence(note, iteration, launch)
+        self.source.occurrence_with_origin(note, iteration, origin)
     }
 }
 
@@ -302,6 +315,8 @@ pub struct PreparedSessionInventory {
     shared_contexts:
         crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
 }
+mod readmission;
+pub(crate) use readmission::{EffectiveSessionMidi, PreparedSessionMidiAdmission};
 
 impl std::fmt::Debug for PreparedSessionInventory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -420,7 +435,7 @@ impl PreparedSessionInventory {
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver_scoped(
             project,
@@ -466,8 +481,9 @@ impl PreparedSessionInventory {
             &'a hex_project::Asset,
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, crate::Invalid> {
+        crate::midi_compile::require_supported_clip_volume(project)?;
         crate::gain_envelope::validate_project(project)?;
         let routed_plan = RoutedMidiPlan::prepare(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
@@ -534,6 +550,31 @@ impl PreparedSessionInventory {
             } else {
                 None
             };
+            let resource_factory_inline_bound = if samplers
+                .is_some_and(|sources| sources.device_scope().is_some())
+                && slot.is_some_and(|device| !device.state().asset_references().is_empty())
+            {
+                mutable_runtime
+                    .as_deref()
+                    .map(|factory| {
+                        let bound = slot
+                            .and_then(|device| {
+                                instrument_registry.definition(device.state().type_id())
+                            })
+                            .and_then(|definition| definition.resource_factory_inline_bound())
+                            .ok_or(crate::Invalid("resource factory storage is unknown"))?;
+                        crate::native_device_resources::inline_resource_factory_bytes(
+                            factory, bound,
+                        )
+                        .map_err(|_| {
+                            crate::Invalid("resource factory storage declaration differs")
+                        })?;
+                        Ok::<_, crate::Invalid>(bound)
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             let retarget_preparation = match mutable_runtime.as_deref() {
                 Some(candidate) => candidate
                     .prepare_history_retarget_target()
@@ -555,6 +596,7 @@ impl PreparedSessionInventory {
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
                 note_bank: None,
                 mutable_runtime,
+                resource_factory_inline_bound,
                 history_retarget_target,
                 history_retarget_requires_quiescence,
             });
@@ -596,7 +638,7 @@ impl PreparedSessionInventory {
             let config = instrument_configs
                 .get(track_index)
                 .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled = clip.active() && config.config.is_some() && !config.bypassed;
             let shared_context = config.device_id.and_then(|device| {
                 shared_contexts
                     .index_for_device(device)
@@ -607,6 +649,8 @@ impl PreparedSessionInventory {
                 .is_some_and(|old| {
                     old.track == cell.track()
                         && old.source_identity == clip.source_identity()
+                        && old.active == clip.active()
+                        && old.playback_offset == clip.playback_offset()
                         && old.instrument_id == config.device_id
                         && old.instrument_state == config.state
                         && old.tuning_identity == config.tuning_identity
@@ -675,6 +719,9 @@ impl PreparedSessionInventory {
             let SessionCellContent::Midi(clip) = cell.content() else {
                 continue;
             };
+            if !clip.active() {
+                continue;
+            }
             let track_index = instrument_track_indices
                 .get(&cell.track())
                 .copied()
@@ -696,7 +743,11 @@ impl PreparedSessionInventory {
                 .get_mut(track_index)
                 .ok_or(crate::Invalid("Session MIDI track index is invalid"))?;
             for note in clip.source().notes() {
-                if !super::midi_template::session_source_note_has_occurrence(clip.source(), note) {
+                if !super::midi_template::session_source_note_has_occurrence(
+                    clip.source(),
+                    clip.playback_offset(),
+                    note,
+                ) {
                     continue;
                 }
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
@@ -707,6 +758,9 @@ impl PreparedSessionInventory {
             }
         }
         for (destination, _, clip) in routed_plan.sources(project) {
+            if !clip.active() {
+                continue;
+            }
             let index = instrument_track_indices
                 .get(&destination)
                 .copied()
@@ -723,7 +777,11 @@ impl PreparedSessionInventory {
                 .get_mut(index)
                 .ok_or(crate::Invalid("routed Session MIDI track index is invalid"))?;
             for note in clip.source().notes() {
-                if super::midi_template::session_source_note_has_occurrence(clip.source(), note) {
+                if super::midi_template::session_source_note_has_occurrence(
+                    clip.source(),
+                    clip.playback_offset(),
+                    note,
+                ) {
                     crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                         keys,
                         note.pitch(),
@@ -940,6 +998,7 @@ impl PreparedSessionInventory {
                         .flatten()
                         .filter(|old| {
                             old.source_matches_facts(
+                                clip.active(),
                                 cell.track(),
                                 clip.asset(),
                                 clip.source_start(),
@@ -950,6 +1009,7 @@ impl PreparedSessionInventory {
                     let retained_source =
                         cached.map_or_else(|| source.clone(), |old| old.source.clone());
                     let prepared = PreparedSessionAudioClip {
+                        active: clip.active(),
                         id: clip.id(),
                         track: cell.track(),
                         scene: cell.scene(),
@@ -1081,6 +1141,7 @@ impl PreparedSessionInventory {
                 mutable_instruments.push(PreparedMutableTrackInstrument {
                     track: config.track,
                     factory,
+                    resource_factory_inline_bound: config.resource_factory_inline_bound,
                     history_retarget_target: proof,
                     history_retarget_requires_quiescence: config
                         .history_retarget_requires_quiescence,
@@ -1141,6 +1202,58 @@ impl PreparedSessionInventory {
 
     pub fn scenes(&self) -> &[PreparedSessionScene] {
         &self.scenes
+    }
+
+    pub(crate) fn resource_factory_inline_bytes(&self) -> Result<usize, crate::AudioStorageError> {
+        self.mutable_instruments
+            .iter()
+            .try_fold(0usize, |bytes, entry| {
+                let Some(bound) = entry.resource_factory_inline_bound else {
+                    return Ok(bytes);
+                };
+                let actual = crate::native_device_resources::inline_resource_factory_bytes(
+                    entry.factory.as_ref(),
+                    bound,
+                )?;
+                if entry.history_retarget_target.is_some() {
+                    return Err(crate::AudioStorageError::UnknownStorage);
+                }
+                bytes
+                    .checked_add(actual)
+                    .ok_or(crate::AudioStorageError::Overflow)
+            })
+    }
+
+    /// Actual inline-only resource factory backing. The module declares heap absence and the
+    /// host validates the dynamic payload size against its pre-allocation definition bound.
+    /// Resource factory heap/proof owners remain unsupported without an actual ownership visitor.
+    pub(crate) fn visit_device_resource_factories<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+    ) -> Result<(), crate::AudioStorageError> {
+        if !ledger.native_payload_once(self)? {
+            return Ok(());
+        }
+        ledger.vec(&self.mutable_instruments)?;
+        for factory in &self.mutable_instruments {
+            let Some(bound) = resources.factory_inline_bound(factory.track) else {
+                continue;
+            };
+            let bytes = crate::native_device_resources::inline_resource_factory_bytes(
+                factory.factory.as_ref(),
+                bound,
+            )?;
+            if factory.history_retarget_target.is_some() {
+                return Err(crate::AudioStorageError::UnknownStorage);
+            }
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(&factory.factory),
+                crate::audio_storage::Location("registered-resource-factory-inline", 0),
+                bytes,
+            )?;
+        }
+        Ok(())
     }
 
     /// Actual private offline sampler factory backing, without source owners.
@@ -1218,6 +1331,17 @@ impl PreparedSessionInventory {
     }
     pub fn midi_clips(&self) -> &[PreparedSessionMidiClip] {
         &self.midi_clips
+    }
+    pub(crate) fn activity_midi_clips(
+        &self,
+    ) -> impl Iterator<Item = &PreparedSessionMidiClip> + Clone {
+        self.midi_clips
+            .iter()
+            .chain(&self.routed_midi_clips)
+            .filter(move |clip| {
+                self.midi_clip_for_track(clip.id, clip.track)
+                    .is_some_and(|selected| std::ptr::eq(*clip, selected))
+            })
     }
 
     pub fn midi_clip(&self, id: ClipId) -> Option<&PreparedSessionMidiClip> {

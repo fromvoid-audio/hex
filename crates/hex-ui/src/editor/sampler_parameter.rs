@@ -1,11 +1,11 @@
 //! Captured final sampler controls. Widgets own local previews; Session owns
-//! authored state and the existing native stopped-edit transaction owns audio.
+//! authored state and the ordinary prepared-device transaction owns audio.
 use super::*;
 use gpui::{Entity, Focusable, div, prelude::*};
 use hex_engine::SamplerParameter;
 use hex_widgets::{
-    NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
+    NumericControlPresentation, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{
     collections::BTreeMap,
@@ -13,7 +13,7 @@ use std::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Target {
+pub(super) struct Target {
     generation: u64,
     revision: u64,
     track: TrackId,
@@ -32,17 +32,10 @@ struct Pending {
     target: PendingTarget,
     id: u64,
     cancel: Arc<AtomicBool>,
+    value: Option<f64>,
 }
 enum PendingTarget {
     Parameter(Target),
-    Midi {
-        generation: u64,
-        revision: u64,
-    },
-    History {
-        generation: u64,
-        revision: u64,
-    },
     Replacement {
         generation: u64,
         revision: u64,
@@ -67,22 +60,8 @@ impl PendingTarget {
                                 .project
                                 .track(*track)
                                 .and_then(|track| track.instrument())
-                                .is_some_and(|entry| entry.id() == *device && !entry.bypassed())
+                                .is_some_and(|entry| entry.id() == *device)
                     })
-            }
-            Self::Midi {
-                generation,
-                revision,
-            }
-            | Self::History {
-                generation,
-                revision,
-            } => {
-                view.project_generation == *generation
-                    && view
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == *revision)
             }
         }
     }
@@ -104,7 +83,7 @@ impl Drop for State {
     }
 }
 impl Target {
-    fn current(self, view: &EditorView) -> bool {
+    pub(super) fn current(self, view: &EditorView) -> bool {
         view.project_generation == self.generation
             && view.selected_track == Some(self.track)
             && view.device_panel.owner == Some(device_panel::DevicePanelOwner::Track(self.track))
@@ -115,7 +94,6 @@ impl Target {
                         .and_then(|t| t.instrument())
                         .is_some_and(|d| {
                             d.id() == self.device
-                                && !d.bypassed()
                                 && (!self.parameter.is_source_frame()
                                     || view.sampler_source_target_current(d))
                         })
@@ -123,6 +101,134 @@ impl Target {
     }
 }
 impl EditorView {
+    /// Geometry owners capture this existing adapter's revision-bound target;
+    /// they never publish an independent sampler edit or receipt.
+    pub(super) fn sampler_boundary_target(
+        &mut self,
+        track: TrackId,
+        device: hex_project::DeviceId,
+        parameter: SamplerParameter,
+    ) -> Option<Target> {
+        if !matches!(
+            parameter,
+            SamplerParameter::StartFrame | SamplerParameter::EndFrame
+        ) || self.edit_pending()
+        {
+            self.error =
+                Some("sampler boundary is unavailable while another edit is pending".into());
+            return None;
+        }
+        let target = Target {
+            generation: self.project_generation,
+            revision: self.state.as_ref()?.revision,
+            track,
+            device,
+            parameter,
+        };
+        target.current(self).then_some(target)
+    }
+
+    pub(super) fn validate_sampler_boundary(
+        &self,
+        target: Target,
+        frame: u64,
+    ) -> Result<(), hex_engine::Invalid> {
+        if !target.current(self) || frame > target.parameter.bounds().1 as u64 {
+            return Err(hex_engine::Invalid(
+                "sampler boundary target changed or frame exceeds supported limits",
+            ));
+        }
+        let device = self
+            .state
+            .as_ref()
+            .and_then(|s| s.project.track(target.track))
+            .and_then(|t| t.instrument())
+            .filter(|d| d.id() == target.device)
+            .ok_or(hex_engine::Invalid(
+                "sampler boundary target is unavailable",
+            ))?;
+        let frames = device
+            .state()
+            .asset_references()
+            .first()
+            .and_then(|reference| {
+                self.state
+                    .as_ref()?
+                    .project
+                    .assets()
+                    .find(|a| a.id().value() == reference.asset.value())
+            })
+            .map(|asset| asset.source_frames())
+            .ok_or(hex_engine::Invalid(
+                "sampler original source extent is unavailable",
+            ))?;
+        if frame > frames {
+            return Err(hex_engine::Invalid(
+                "sampler boundary exceeds original source",
+            ));
+        }
+        hex_engine::patch_sampler_parameter_on_control(
+            target.parameter,
+            device.state(),
+            frame as f64,
+        )
+        .map(|_| ())
+    }
+
+    pub(super) fn submit_sampler_boundary(&mut self, target: Target, frame: u64) {
+        if let Err(error) = self.validate_sampler_boundary(target, frame) {
+            self.error = Some(error.to_string().into());
+            return;
+        }
+        let current = self
+            .state
+            .as_ref()
+            .and_then(|s| s.project.track(target.track))
+            .and_then(|t| t.instrument())
+            .and_then(|d| {
+                hex_engine::sampler_parameter_value_on_control(target.parameter, d.state()).ok()
+            });
+        if current != Some(frame as f64) {
+            self.submit_sampler_parameter(target, frame as f64);
+        }
+    }
+
+    /// A source boundary draft and its accepted keyed request share one display
+    /// value with numeric controls. Only the exact terminal retires the latter.
+    pub(super) fn sampler_display_value(
+        &self,
+        track: TrackId,
+        device: &hex_project::Device,
+        parameter: SamplerParameter,
+        cx: &gpui::App,
+    ) -> Result<f64, hex_engine::Invalid> {
+        if parameter.is_source_frame() {
+            if let Some(value) =
+                super::device_panel::sampler_boundary_preview(self, track, device.id(), parameter)
+            {
+                return Ok(value as f64);
+            }
+            if let Some(pending) = self.sampler_parameter.pending.as_ref()
+                && let PendingTarget::Parameter(target) = pending.target
+                && target.track == track
+                && target.device == device.id()
+                && target.parameter == parameter
+                && target.current(self)
+                && let Some(value) = pending.value
+            {
+                return Ok(value);
+            }
+            if let Some(control) = self.sampler_parameter.controls.get(&parameter)
+                && control.target.track == track
+                && control.target.device == device.id()
+                && control.target.current(self)
+                && control.entity.read(cx).is_interacting()
+            {
+                return Ok(control.entity.read(cx).value());
+            }
+        }
+        hex_engine::sampler_parameter_value_on_control(parameter, device.state())
+    }
     fn sampler_source_target_current(&self, device: &hex_project::Device) -> bool {
         let Some(state) = self.state.as_ref() else {
             return false;
@@ -209,8 +315,8 @@ impl EditorView {
         }
     }
     fn submit_sampler_parameter(&mut self, target: Target, value: f64) {
-        if !target.current(self) || self.edit_pending() || !self.first_sampler_current() {
-            self.error = Some("sampler edit target changed or audio is not ready".into());
+        if !target.current(self) || self.edit_pending() {
+            self.error = Some("sampler edit target changed or another edit is pending".into());
             return;
         }
         let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
@@ -236,12 +342,14 @@ impl EditorView {
                 target: PendingTarget::Parameter(target),
                 id,
                 cancel,
+                value: Some(value),
             });
         }
     }
     /// A local numeric draft is not canonical history. Cancel it and consume the
     /// shortcut; a subsequent press may move the global history edge.
     pub(super) fn cancel_sampler_drafts(&mut self, cx: &mut Context<Self>) -> bool {
+        let boundary_cancelled = super::device_panel::cancel_sampler_boundary(self);
         let controls = self
             .sampler_parameter
             .controls
@@ -255,93 +363,11 @@ impl EditorView {
                 }
             })
             .collect::<Vec<_>>();
-        let cancelled = !controls.is_empty();
+        let cancelled = boundary_cancelled || !controls.is_empty();
         for entity in controls {
             entity.update(cx, |widget, cx| widget.cancel(cx));
         }
         cancelled
-    }
-    /// Called after the ordinary gesture barrier, before queuing global history.
-    /// Capture only project context: selecting another device cannot retarget it.
-    pub(super) fn submit_sampler_history(&mut self, redo: bool) -> bool {
-        if self.edit_pending() {
-            self.error = Some("sampler history refused · another edit is applying".into());
-            return false;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
-            self.error = Some("sampler edit request identity exhausted".into());
-            return false;
-        };
-        let generation = self.project_generation;
-        let revision = state.revision;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let request = hex_session::service::SamplerHistoryEdit {
-            request_id: id,
-            project_generation: generation,
-            revision,
-            redo,
-            cancel: Arc::clone(&cancel),
-        };
-        self.sampler_parameter.serial = id;
-        if self.enqueue(Request::SamplerEdit(
-            hex_session::service::SamplerEdit::History(request),
-        )) {
-            self.sampler_parameter.pending = Some(Pending {
-                target: PendingTarget::History {
-                    generation,
-                    revision,
-                },
-                id,
-                cancel,
-            });
-            true
-        } else {
-            false
-        }
-    }
-    pub(super) fn submit_sampler_midi(&mut self, command: hex_project::Command) -> bool {
-        if self.edit_pending() || !self.first_sampler_current() {
-            self.error = Some(
-                "sampler midi edit refused · wait for current audio and the pending edit".into(),
-            );
-            return false;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
-            self.error = Some("sampler edit request identity exhausted".into());
-            return false;
-        };
-        let generation = self.project_generation;
-        let revision = state.revision;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let request = hex_session::service::SamplerMidiEdit {
-            request_id: id,
-            project_generation: generation,
-            revision,
-            command: Box::new(command),
-            cancel: Arc::clone(&cancel),
-        };
-        self.sampler_parameter.serial = id;
-        if self.enqueue(Request::SamplerEdit(
-            hex_session::service::SamplerEdit::Midi(request),
-        )) {
-            self.sampler_parameter.pending = Some(Pending {
-                target: PendingTarget::Midi {
-                    generation,
-                    revision,
-                },
-                id,
-                cancel,
-            });
-            true
-        } else {
-            false
-        }
     }
     pub(super) fn sampler_replacement_pending_id(&self) -> Option<u64> {
         self.sampler_parameter
@@ -370,10 +396,8 @@ impl EditorView {
             self.error = Some("sampler replacement target is unavailable".into());
             return;
         };
-        if self.edit_pending() || !self.first_sampler_current() {
-            self.error = Some(
-                "wait for the pending edit and sampler audio before replacing its sample".into(),
-            );
+        if self.edit_pending() {
+            self.error = Some("wait for the pending edit before replacing its sample".into());
             return;
         }
         let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
@@ -404,6 +428,7 @@ impl EditorView {
                 },
                 id,
                 cancel,
+                value: None,
             });
         }
     }
@@ -414,8 +439,7 @@ impl EditorView {
         parameter: SamplerParameter,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let value = match hex_engine::sampler_parameter_value_on_control(parameter, device.state())
-        {
+        let value = match self.sampler_display_value(track, device, parameter, cx) {
             Ok(value) => value,
             Err(error) => {
                 return div()
@@ -550,10 +574,10 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    device_panel::control_style(),
+                    crate::theme::control_style(),
                 )
                 .and_then(|config| {
-                    let config = config.with_appearance(NumericControlAppearance::InlineValue);
+                    let config = config.with_presentation(NumericControlPresentation::InlineValue);
                     if parameter.is_envelope() {
                         config.with_value_drag_steps(1.0, 0.1)
                     } else {
@@ -619,20 +643,14 @@ impl EditorView {
         }
         let active = hex_engine::sampler_parameter_active_on_control(parameter, device.state())
             .unwrap_or(false);
-        let enabled = active
-            && !self.edit_pending()
-            && self.first_sampler_current()
-            && self
-                .audio
-                .as_ref()
-                .and_then(|a| a.control.status())
-                .is_some_and(|s| !s.playing.load(Ordering::Acquire));
+        let enabled = active && !self.edit_pending();
         let Some(control) = self.sampler_parameter.controls.get(&parameter) else {
             return div().into_any_element();
         };
         let entity = control.entity.clone();
         entity.update(cx, |widget, cx| {
             let _ = widget.set_external_value(value, cx);
+            let _ = widget.set_inline_value_width(88.0, cx);
             widget.set_enabled(enabled, cx);
         });
         div()
@@ -655,25 +673,26 @@ impl EditorView {
             .debug_selector(move || format!("sampler-{}-control", parameter.key()))
             .w_full()
             .min_w_0()
-            .h(gpui::px(26.0))
+            .h(gpui::px(28.0))
             .flex_shrink_0()
             .flex()
-            .items_center()
-            .gap(gpui::px(4.0))
-            .child(theme::text(if active {
-                parameter.label()
-            } else {
-                "release*"
-            }))
+            .flex_col()
+            .items_start()
             .child(
                 div()
-                    .w(gpui::px(92.0))
-                    .h(gpui::px(18.0))
-                    .child(entity.clone()),
+                    .h(gpui::px(12.0))
+                    .text_size(gpui::px(10.0))
+                    .line_height(gpui::px(12.0))
+                    .child(theme::text(if active {
+                        parameter.label()
+                    } else {
+                        "release*"
+                    })),
             )
+            .child(div().w_full().h(gpui::px(16.0)).child(entity.clone()))
             .into_any_element()
     }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests;
+pub(super) mod tests;

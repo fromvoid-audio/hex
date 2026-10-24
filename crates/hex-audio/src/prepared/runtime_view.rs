@@ -117,6 +117,12 @@ impl RuntimeRef<'_> {
     pub(super) fn session_route_count(&self) -> usize {
         self.status().map_or(0, |s| s.route_count)
     }
+    pub(super) fn session_clock_anchor(&self) -> Option<hex_engine::SessionClockAnchor> {
+        match self {
+            Self::Legacy(p) => p.session_clock_anchor(),
+            Self::Eligible(p) => p.session_clock_anchor(),
+        }
+    }
     pub(super) fn session_route_status(
         &self,
         index: usize,
@@ -124,6 +130,33 @@ impl RuntimeRef<'_> {
         match self {
             Self::Legacy(p) => p.session_route_status(index),
             Self::Eligible(p) => p.session_route_status(index),
+        }
+    }
+    pub(super) fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<hex_engine::midi_capture::MidiCaptureRender<'_>>, Invalid> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_render(take_id),
+            Self::Eligible(p) => p.midi_capture_render(take_id),
+        }
+    }
+    pub(super) fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_finish_fault(take_id),
+            Self::Eligible(p) => p.midi_capture_finish_fault(take_id),
+        }
+    }
+    pub(super) fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<hex_engine::midi_capture::MidiCaptureFault> {
+        match self {
+            Self::Legacy(p) => p.midi_capture_fault(take_id),
+            Self::Eligible(p) => p.midi_capture_fault(take_id),
         }
     }
     pub(super) fn gain_recording_ready(&self, track: u64) -> bool {
@@ -155,6 +188,29 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => RuntimeRef::Eligible(p),
         }
     }
+    pub(super) fn position(&self) -> u64 {
+        self.read().position()
+    }
+    pub(super) fn arm_midi_capture(
+        &mut self,
+        binding: hex_engine::midi_capture::MidiCaptureBinding,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<hex_engine::midi_capture::MidiCaptureClock, Invalid> {
+        match self {
+            Self::Legacy(p) => p.arm_midi_capture(binding, clock),
+            Self::Eligible(p) => p.arm_midi_capture(binding, clock),
+        }
+    }
+    pub(super) fn finish_midi_capture(&mut self, take_id: u64) {
+        match self {
+            Self::Legacy(p) => {
+                let _ = p.finish_midi_capture(take_id);
+            }
+            Self::Eligible(p) => {
+                let _ = p.finish_midi_capture(take_id);
+            }
+        }
+    }
     pub(super) fn sample_rate(&self) -> u32 {
         self.read().sample_rate()
     }
@@ -179,6 +235,17 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.apply_action(action),
         }
     }
+    pub(super) fn apply_priority_stop(
+        &mut self,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) {
+        match self {
+            Self::Legacy(p) => p.apply_priority_stop(clock),
+            Self::Eligible(p) => {
+                let _ = p.apply_priority_stop(clock);
+            }
+        }
+    }
     pub(super) fn apply(&mut self, command: PlaybackCommand) {
         match self {
             Self::Legacy(p) => p.apply(command),
@@ -187,21 +254,22 @@ impl RuntimeMut<'_> {
             }
         }
     }
-    pub(super) fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        match self {
-            Self::Legacy(p) => p.render(output),
-            Self::Eligible(p) => p.render(output),
-        }
-    }
     pub(super) fn render_with_signal_observers(
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> Result<(), Invalid> {
-        match self {
-            Self::Legacy(p) => p.render_with_signal_observers(output, observer, project),
-            Self::Eligible(p) => p.render_with_signal_observers(output, observer, project),
+        match (self, foreign) {
+            (Self::Legacy(p), Some(foreign)) => {
+                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            }
+            (Self::Eligible(p), Some(foreign)) => {
+                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            }
+            (Self::Legacy(p), None) => p.render_with_signal_observers(output, observer, project),
+            (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {

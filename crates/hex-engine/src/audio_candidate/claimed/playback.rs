@@ -48,6 +48,10 @@ impl ClaimedAudioCandidateRuntime {
             route_count: playback.session_route_count(),
         })
     }
+    /// Scalar effective clock metadata from the current admitted runtime only.
+    pub fn session_clock_anchor(&self) -> Option<crate::SessionClockAnchor> {
+        self.current_playback()?.session_clock_anchor()
+    }
     pub fn session_route_status(&self, index: usize) -> Option<crate::SessionRouteStatus> {
         self.current_playback()?.session_route_status(index)
     }
@@ -85,6 +89,24 @@ impl ClaimedAudioCandidateRuntime {
         self.current_runtime_mut()
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_signal_observers(output, observer, project)
+    }
+    /// Stage native effects through the original closed runtime and sampler
+    /// sources. Success is not output acceptance; the audio owner alone accepts
+    /// the complete converted physical callback. No finite renderer fallback.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), crate::Invalid> {
+        let Some(runtime) = self.current_runtime_mut() else {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(crate::Invalid("candidate runtime is not current"));
+        };
+        runtime.render_with_foreign_processors(output, pages, observer, project, foreign)
     }
     pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
         self.current_playback()
@@ -213,6 +235,43 @@ impl ClaimedAudioCandidateRuntime {
         };
         playback.set_device_metering(enabled);
         true
+    }
+    pub fn arm_midi_capture(
+        &mut self,
+        binding: crate::midi_capture::MidiCaptureBinding,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .arm_midi_capture(binding, clock)
+    }
+    pub fn midi_capture_finish_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.current_playback()?.midi_capture_finish_fault(take_id)
+    }
+    pub fn midi_capture_fault(
+        &self,
+        take_id: u64,
+    ) -> Option<crate::midi_capture::MidiCaptureFault> {
+        self.current_playback()?.midi_capture_fault(take_id)
+    }
+    pub fn finish_midi_capture(
+        &mut self,
+        take_id: u64,
+    ) -> Result<crate::midi_capture::MidiCaptureClock, crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .finish_midi_capture(take_id)
+    }
+    pub fn midi_capture_render(
+        &self,
+        take_id: u64,
+    ) -> Result<Option<crate::midi_capture::MidiCaptureRender<'_>>, crate::Invalid> {
+        self.current_playback()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .midi_capture_render(take_id)
     }
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.current_playback()

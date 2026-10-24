@@ -98,10 +98,10 @@ impl StagedNativeAssetView<'_> {
     }
     pub fn inspect(
         &self,
-        retained: &super::ControlSamplerPhase<'_>,
-        construction: &super::ControlSamplerPhase<'_>,
+        retained: &super::DeviceResourcePhase<'_>,
+        construction: &super::DeviceResourcePhase<'_>,
         reservation: AudioStorageLedgerReservation,
-    ) -> Result<super::ControlSamplerInventory, ResourcePreparationError> {
+    ) -> Result<super::DeviceResourceInventory, ResourcePreparationError> {
         super::admission::inspect_staged_union(retained, construction, reservation, self)
     }
 }

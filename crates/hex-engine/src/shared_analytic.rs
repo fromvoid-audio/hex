@@ -321,7 +321,7 @@ impl SharedAnalyticContextTable {
         project: &Project,
         registry: &NativeInstrumentRegistry<'_>,
         previous: Option<&Self>,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Arc<Self>, Invalid> {
         let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
         let tuning_identity = if tuning.is_neutral() {

@@ -9,12 +9,31 @@ pub(crate) fn process(
     clock: Option<&dyn NativeInstrumentClock>,
     observer: &mut Option<&mut NodeSignalObserver<'_>>,
 ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+    process_with_foreign(
+        chain,
+        frames,
+        offset,
+        clock,
+        &mut hex_lattice::RefuseForeign,
+        observer,
+    )
+}
+
+pub(crate) fn process_with_foreign(
+    chain: &mut NativeRuntimeChain,
+    frames: &mut [Frame],
+    offset: usize,
+    clock: Option<&dyn NativeInstrumentClock>,
+    foreign: &mut dyn hex_lattice::ForeignProcessors,
+    observer: &mut Option<&mut NodeSignalObserver<'_>>,
+) -> Result<(), hex_lattice_contract::DeviceContractError> {
     if let Some(observer) = observer.as_mut() {
-        chain.process_range_tapped_with_clock(
+        chain.process_range_tapped_with_foreign(
             0..chain.len(),
             frames,
             offset,
             clock,
+            foreign,
             &mut |owner, device, kind, phase, offset, frames| {
                 observer(
                     PostNodeIdentity::new(owner, device, kind),
@@ -25,7 +44,7 @@ pub(crate) fn process(
             },
         )
     } else {
-        chain.process_range_with_clock(0..chain.len(), frames, clock)
+        chain.process_range_with_foreign(0..chain.len(), frames, offset, clock, foreign)
     }
 }
 

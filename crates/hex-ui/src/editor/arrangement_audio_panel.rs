@@ -1,11 +1,12 @@
 //! Arrangement audio Clip View with canonical source and timeline controls.
 use super::EditorView;
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, relative, rgb};
+use gpui::{Context, Div, div, prelude::*, px, relative, rgb};
 use hex_project::{AssetId, AudioViewMode, ClipId, Command, TrackId};
 use std::path::Path;
+pub(crate) mod controls;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Field {
     Position,
     Length,
@@ -16,7 +17,7 @@ enum Field {
     Gain,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct ClipWindow {
     track: TrackId,
     clip: ClipId,
@@ -41,7 +42,6 @@ impl ClipWindow {
         self.placement_mode
             .map_or(self.source_looping, |mode| mode == AudioViewMode::Repeat)
     }
-
     fn loop_tooltip(self) -> &'static str {
         match (self.placement_mode, self.looping()) {
             (Some(_), true) => "disable clip repetition · retain source cycle and play start",
@@ -52,13 +52,17 @@ impl ClipWindow {
     }
 }
 
-pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Option<Div> {
+pub(super) fn view(
+    view: &mut EditorView,
+    render_window: &gpui::Window,
+    cx: &mut Context<EditorView>,
+) -> Option<Div> {
     if view.mode != super::EditorMode::Arrangement {
         return None;
     }
     let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
-        view.selected_clip_data()?;
+        view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
     let asset = state.project.asset(clip.asset())?;
     let source_end = source_start.checked_add(source_length)?;
@@ -83,11 +87,10 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         revision: state.revision,
         generation: view.project_generation,
     };
-    let pending = view.edit_pending();
     let waveform = state.waveforms.get(&window.asset).cloned();
     let title = lowercase_path_tail(asset.path());
     let mut details = div()
-        .h(px(super::clip_view::CLIP_DETAIL_BODY_HEIGHT))
+        .h(px(view.clip_detail_body_height))
         .w_full()
         .flex_shrink_0()
         .flex()
@@ -119,62 +122,21 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(title)),
     );
+    controls = controls.child(controls::toggle(view, window, true, cx));
     controls = controls.child(super::musical_audio_controls::warp_header(
         view, clip_id, cx,
     ));
-    controls = controls
-        .child(field_row(
-            cx,
-            window,
-            Field::Position,
-            "pos",
-            format_frame_time(position, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::Length,
-            "len",
-            format_frame_time(length, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::SourceStart,
-            "src in",
-            format_frame_time(source_start, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::PlayStart,
-            "play at",
-            format_frame_time(
-                source_start.saturating_add(window.source_phase),
-                window.sample_rate,
-            ),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::SourceEnd,
-            "src end",
-            format_frame_time(source_end, window.sample_rate),
-            pending,
-        ))
-        .child(field_row(
-            cx,
-            window,
-            Field::Gain,
-            "gain",
-            format!("{:+.1} db", f64::from(window.gain.millidb()) / 1_000.0),
-            pending,
-        ))
-        .child(loop_row(cx, window, pending));
+    for (field, label) in [
+        (Field::Position, "pos"),
+        (Field::Length, "len"),
+        (Field::SourceStart, "src in"),
+        (Field::PlayStart, "play at"),
+        (Field::SourceEnd, "src end"),
+        (Field::Gain, "gain"),
+    ] {
+        controls = controls.child(controls::number(view, window, field, label, cx));
+    }
+    controls = controls.child(controls::toggle(view, window, false, cx));
     controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
     details = details.child(controls);
 
@@ -222,7 +184,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             ),
     );
     if !source_view {
-        waveform_panel = waveform_panel.child(super::audio_event_editor::view(view, cx)?);
+        waveform_panel =
+            waveform_panel.child(super::audio_event_editor::view(view, render_window, cx)?);
         return Some(details.child(waveform_panel));
     }
     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
@@ -352,193 +315,32 @@ fn format_frame_time(frames: u64, sample_rate: u32) -> String {
     format!("{frames} · {}.{:03}s", millis / 1_000, millis % 1_000)
 }
 
-fn field_row(
-    cx: &mut Context<EditorView>,
-    window: ClipWindow,
-    field: Field,
-    label: &'static str,
-    value: String,
-    pending: bool,
-) -> Div {
-    let tooltip_minus = match field {
-        Field::Position => "move clip earlier · alt: one frame",
-        Field::Length => "shorten timeline length · alt: one frame",
-        Field::SourceStart => {
-            "move source interval start earlier · trim resets loop phase · alt: one frame"
-        }
-        Field::SourceEnd => {
-            "move source interval end earlier · trim resets loop phase · alt: one frame"
-        }
-        Field::PlayStart => "move play start earlier inside the source interval · alt: one frame",
-        Field::Looping => window.loop_tooltip(),
-        Field::Gain => "adjust clip gain by 1 db · alt: 0.1 db",
-    };
-    let tooltip_plus = match field {
-        Field::Position => "move clip later · alt: one frame",
-        Field::Length => "extend timeline length · alt: one frame",
-        Field::SourceStart => {
-            "move source interval start later · trim resets loop phase · alt: one frame"
-        }
-        Field::SourceEnd => {
-            "move source interval end later · trim resets loop phase · alt: one frame"
-        }
-        Field::PlayStart => "move play start later inside the source interval · alt: one frame",
-        Field::Looping => window.loop_tooltip(),
-        Field::Gain => "adjust clip gain by 1 db · alt: 0.1 db",
-    };
-    div()
-        .h(px(24.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(2.0))
-        .child(
-            div()
-                .w(px(54.0))
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(label)),
-        )
-        .child(step_button(
-            cx,
-            window,
-            field,
-            -1,
-            "−",
-            tooltip_minus,
-            pending,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .debug_selector(move || format!("audio-clip-{field:?}-value").to_lowercase())
-                .child(theme::text(value)),
-        )
-        .child(step_button(
-            cx,
-            window,
-            field,
-            1,
-            "+",
-            tooltip_plus,
-            pending,
-        ))
-}
-
-fn loop_row(cx: &mut Context<EditorView>, window: ClipWindow, pending: bool) -> Div {
-    let tooltip = window.loop_tooltip();
-    div()
-        .h(px(24.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(3.0))
-        .child(
-            div()
-                .w(px(54.0))
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text("loop")),
-        )
-        .child(control_button(
-            window,
-            Field::Looping,
-            1,
-            if window.looping() { "↻" } else { "○" },
-            tooltip,
-            pending,
-            cx,
-        ))
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(if window.looping() { "on" } else { "off" })),
-        )
-}
-
-fn step_button(
-    cx: &mut Context<EditorView>,
-    window: ClipWindow,
-    field: Field,
-    direction: i8,
-    glyph: &'static str,
-    tooltip: &'static str,
-    pending: bool,
-) -> Stateful<Div> {
-    control_button(window, field, direction, glyph, tooltip, pending, cx)
-}
-
-fn control_button(
-    window: ClipWindow,
-    field: Field,
-    direction: i8,
-    glyph: &'static str,
-    tooltip: &'static str,
-    pending: bool,
-    cx: &mut Context<EditorView>,
-) -> Stateful<Div> {
-    let id = ElementId::Name(
-        format!("audio-clip-{}-{field:?}-{direction}", window.clip.value())
-            .to_lowercase()
-            .into(),
-    );
-    div()
-        .id(id)
-        .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
-        .debug_selector(move || {
-            let field = match field {
-                Field::Position => "position",
-                Field::Length => "length",
-                Field::SourceStart => "source-start",
-                Field::SourceEnd => "source-end",
-                Field::PlayStart => "play-start",
-                Field::Looping => "looping",
-                Field::Gain => "gain",
-            };
-            format!("audio-clip-{field}-{direction}")
-        })
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::transport::MiniTooltip {
-                description: tooltip.into(),
-            })
-            .into()
-        })
-        .child(theme::text(glyph))
-        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
-            if pending || !clip_window_is_current(view, window) || view.edit_pending() {
-                return;
-            }
-            let fine = event.modifiers().alt;
-            let step = if field == Field::Gain {
-                if fine { 100 } else { 1_000 }
-            } else {
-                frame_step(window.sample_rate, fine)
-            };
-            if let Some(command) = command_for(window, field, direction, step) {
-                view.enqueue(hex_session::service::Request::Edit(command));
-            }
-            cx.notify();
-        }))
-}
-
 fn frame_step(sample_rate: u32, fine: bool) -> u64 {
     if fine {
         1
     } else {
         u64::from((sample_rate / 1_000).max(1))
+    }
+}
+
+#[cfg(test)]
+fn selection_command_for(
+    window: ClipWindow,
+    field: Field,
+    direction: i8,
+    step: u64,
+    multiple: bool,
+) -> Option<Command> {
+    if field == Field::Gain && multiple {
+        let millidb = i32::try_from(step)
+            .ok()?
+            .checked_mul(i32::from(direction))?;
+        Some(Command::EditClips {
+            clips: vec![window.clip],
+            edit: hex_project::ClipEdit::GainBy { millidb },
+        })
+    } else {
+        command_for(window, field, direction, step)
     }
 }
 
@@ -666,8 +468,9 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
 fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     if view.mode != super::EditorMode::Arrangement
         || view.project_generation != captured.generation
-        || view.selected_track != Some(captured.track)
-        || view.selected_clip != Some(captured.clip)
+        || view
+            .detail_audio_clip_data()
+            .is_none_or(|(track, clip, ..)| track != captured.track || clip != captured.clip)
     {
         return false;
     }
@@ -829,7 +632,7 @@ mod tests {
         });
         visual.run_until_parked();
         let button = visual
-            .debug_bounds("audio-clip-looping-1")
+            .debug_bounds("audio-clip-loop-toggle")
             .unwrap()
             .center();
         let controls = visual.debug_bounds("arrangement-audio-controls").unwrap();
@@ -939,7 +742,7 @@ mod tests {
             assert!(clip_window_is_current(view, captured));
             captured
         });
-        editor.update(&mut visual, |view, _| {
+        editor.update(&mut visual, |view, cx| {
             let old = view.state.as_ref().unwrap();
             let mut snapshot = old.project.snapshot();
             snapshot.tracks[0].audio_clips_mut().unwrap()[0]
@@ -971,6 +774,7 @@ mod tests {
             assert!(!clip_window_is_current(view, captured));
             assert!(view.last_enqueued_edit.is_none());
             assert_eq!(view.worker_requests_pending, 0);
+            cx.notify(); // Model mutation above stands in for a received state.
         });
         // A newly rendered control is valid and must use the new Once mode.
         visual.run_until_parked();
@@ -1040,13 +844,20 @@ mod tests {
             command_for(captured, Field::Gain, -1, 100),
             Some(Command::SetAudioClipGain { millidb: -100, .. })
         ));
+        for (direction, step, delta) in [(-1, 100, -100), (1, 1_000, 1_000)] {
+            assert!(
+                matches!(selection_command_for(captured, Field::Gain, direction, step, true),
+                Some(Command::EditClips { clips, edit: hex_project::ClipEdit::GainBy { millidb } })
+                if clips == vec![captured.clip] && millidb == delta)
+            );
+        }
         captured.gain = hex_project::ClipGain::new(24_000).unwrap();
         assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
         captured.gain = hex_project::ClipGain::new(-60_000).unwrap();
         assert!(command_for(captured, Field::Gain, -1, 100).is_none());
     }
 
-    fn window() -> ClipWindow {
+    pub(super) fn window() -> ClipWindow {
         use hex_project::{Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
         let Created::Track(track) = editor
@@ -1366,6 +1177,7 @@ mod tests {
         }
 
         fn length_steps(cx: &mut TestAppContext, mode: Option<AudioViewMode>, phase: u64) {
+            cx.update(super::super::super::bind_editor_keys);
             for direction in [-1, 1] {
                 let (handle, editor, clip, _files) = fixture(cx, mode, phase, 48_000);
                 let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1395,15 +1207,15 @@ mod tests {
                 };
                 let mut oracle = Editor::new((*before.project).clone(), 16).unwrap();
                 oracle.execute(expected).unwrap();
-                let button = visual
-                    .debug_bounds(Box::leak(
-                        format!("audio-clip-length-{direction}").into_boxed_str(),
-                    ))
-                    .unwrap()
-                    .center();
+                let button = visual.debug_bounds("audio-clip-length").unwrap().center();
                 let controls = visual.debug_bounds("arrangement-audio-controls").unwrap();
                 assert!(controls.contains(&button));
                 visual.simulate_click(button, Modifiers::default());
+                visual.simulate_keystrokes(if direction < 0 {
+                    "down enter"
+                } else {
+                    "up enter"
+                });
                 pump(&editor, &mut visual);
                 let after = editor.read_with(&visual, |v, _| {
                     assert!(v.error.is_none(), "{:?}", v.error);
@@ -1432,11 +1244,9 @@ mod tests {
                 let mut visual = VisualTestContext::from_window(handle, cx);
                 visual.run_until_parked();
                 let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
-                let minus = visual
-                    .debug_bounds("audio-clip-length--1")
-                    .unwrap()
-                    .center();
+                let minus = visual.debug_bounds("audio-clip-length").unwrap().center();
                 visual.simulate_click(minus, Modifiers::default());
+                visual.simulate_keystrokes("down");
                 editor.read_with(&visual, |v, _| {
                     assert_eq!(v.worker_requests_pending, 0);
                     assert!(v.pending_requests.is_empty());

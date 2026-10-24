@@ -206,6 +206,7 @@ impl From<SessionError> for AudioBatchError {
 pub struct AudioBatchImport {
     paths: Vec<PathBuf>,
     destination: AudioBatchDestination,
+    options: crate::import_batch::AudioImportOptions,
     context: AudioBatchContext,
     project: Project,
     resident_frames: u64,
@@ -223,7 +224,14 @@ impl AudioBatchImport {
         context: AudioBatchContext,
     ) -> Result<Self, AudioBatchError> {
         let control = Arc::new(AudioBatchControl::new(paths.len())?);
-        Self::capture_with_control(paths, destination, session, context, control)
+        Self::capture_with_control(
+            paths,
+            destination,
+            session,
+            context,
+            control,
+            Default::default(),
+        )
     }
 
     pub(crate) fn capture_with_control(
@@ -232,6 +240,7 @@ impl AudioBatchImport {
         session: &Session,
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
+        options: crate::import_batch::AudioImportOptions,
     ) -> Result<Self, AudioBatchError> {
         if context.active_gesture {
             return Err(AudioBatchError::ContextChanged);
@@ -289,6 +298,7 @@ impl AudioBatchImport {
             control,
             paths,
             destination,
+            options,
             context,
             project: session.project().clone(),
             resident_frames: session.resident_frames(),
@@ -315,13 +325,32 @@ impl AudioBatchImport {
         self.run_with_storage_admission(session, previous, current, |_, _| Ok(()))
     }
     pub(crate) fn run_with_storage_admission(
+        self,
+        session: &mut Session,
+        previous: Option<&hex_engine::PreparedRevision>,
+        current: impl FnMut() -> AudioBatchContext,
+        storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
+    ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
+        self.run_with_storage_admission_using(
+            session,
+            previous,
+            current,
+            storage,
+            crate::import_batch::prepare_asset_free,
+        )
+    }
+    pub(crate) fn run_with_storage_admission_using(
         mut self,
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         mut current: impl FnMut() -> AudioBatchContext,
         storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
-        let result = self.run_inner(session, previous, &mut current, storage);
+        let result = self.run_inner(session, previous, &mut current, storage, prepare);
         match &result {
             Ok(_) => {
                 self.control.publish(0, self.paths.len(), self.paths.len());
@@ -349,6 +378,10 @@ impl AudioBatchImport {
         previous: Option<&hex_engine::PreparedRevision>,
         current: &mut impl FnMut() -> AudioBatchContext,
         storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
         self.check(current)?;
         if session.project() != &self.project
@@ -360,6 +393,12 @@ impl AudioBatchImport {
             return Err(AudioBatchError::ContextChanged);
         }
         if session.audio_mode() == crate::DocumentAudioMode::VerifiedStreaming {
+            if self.options.warp != hex_project::AudioImportWarp::Off {
+                return Err(SessionError::Invalid(
+                    "auto-warp import is unavailable for this audio backend",
+                )
+                .into());
+            }
             return self.run_verified(session, previous, current);
         }
         let mut remaining = self
@@ -429,11 +468,12 @@ impl AudioBatchImport {
         // after its single compile, immediately before history/media commit.
         let mut admissions = 0;
         let mut admission_error = None;
-        let result = session.import_prepared_batch_revision(
+        let result = session.import_prepared_batch_revision_using(
             prepared,
             self.destination,
             &self.project,
             previous,
+            self.options,
             || {
                 if let Err(error) = self.check(current) {
                     admission_error = Some(error);
@@ -450,6 +490,7 @@ impl AudioBatchImport {
                 }
                 Ok(())
             },
+            prepare,
         );
         match result {
             Ok(value) => Ok(value),

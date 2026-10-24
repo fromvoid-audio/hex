@@ -1,6 +1,5 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
 mod sampler;
-mod utility;
 use super::*;
 use crate::{
     CompiledSend, PreparedTrackMix, Track,
@@ -76,7 +75,7 @@ struct Row {
     prepared_gain: Option<PreparedGainEnvelope>,
     meter: Option<OwnedShared<hex_lattice::DeviceMeter>>,
     chain: Option<OwnedShared<[hex_lattice::PreparedRuntimeInstance]>>,
-    utility: utility::UtilityCustody,
+    effects: super::chains::ChainCustody,
     sampler: sampler::SamplerTrackConstruction,
     bare_meter: Option<Arc<hex_lattice::DeviceMeter>>,
     bare_chain: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
@@ -221,13 +220,13 @@ impl TrackAssembly {
                     .and_then(|m| r.meter_declaration.as_ref().and_then(|d| d.parts(m)))
             };
             let nested = if let Some(t) = r.actual(root)? {
-                r.utility.bytes(&t.device_chain)?
+                r.effects.bytes(&t.device_chain)?
             } else if let Some(chain) = &r.chain {
-                r.utility.bytes(chain)?
+                r.effects.bytes(chain)?
             } else if let Some(chain) = &r.bare_chain {
-                r.utility.bytes(chain)?
+                r.effects.bytes(chain)?
             } else {
-                r.utility.metadata_bytes()?
+                r.effects.metadata_bytes()?
             };
             c.chain_payload_bytes = c
                 .chain_payload_bytes
@@ -289,7 +288,7 @@ impl TrackAssembly {
                         || r.bare_chain.is_some()
                         || r.root_index.is_some()
                         || r.track.is_some(),
-                ) + r.utility.handles()
+                ) + r.effects.handles()
                     + r.sampler.handles()
             })
             .sum();
@@ -330,14 +329,7 @@ impl TrackAssembly {
             })
             .sum()
     }
-    pub(super) fn reserve(
-        &mut self,
-        project: &hex_project::Project,
-        pairs: &[Pair],
-    ) -> Result<(), AudioStorageError> {
-        self.reserve_with_sampler(project, pairs, None)
-    }
-    pub(super) fn reserve_with_sampler(
+    pub(super) fn reserve_with_effects(
         &mut self,
         project: &hex_project::Project,
         pairs: &[Pair],
@@ -345,6 +337,7 @@ impl TrackAssembly {
             &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
             &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
         )>,
+        effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -369,9 +362,10 @@ impl TrackAssembly {
             && project.tracks().iter().any(|t| {
                 t.instrument().is_some()
                     || !t.midi_clips().is_empty()
-                    || t.devices()
-                        .iter()
-                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                    || t.devices().iter().any(|d| {
+                        effects.is_none()
+                            && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                    })
             })
         {
             return Err(AudioStorageError::UnsupportedGraph);
@@ -459,13 +453,15 @@ impl TrackAssembly {
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
-            r.chain = Some(
-                r.utility
-                    .prepare(t.devices(), t.id(), project.sample_rate())?,
-            );
+            r.chain = Some(r.effects.prepare_with_effects(
+                t.devices(),
+                hex_lattice::ProcessorChainOwner::Track(t.id().value()),
+                project.sample_rate(),
+                effects,
+            )?);
             self.growth = self
                 .growth
-                .checked_add(r.utility.construction_overlap())
+                .checked_add(r.effects.construction_overlap())
                 .ok_or(AudioStorageError::Overflow)?;
             let meter = r.meter.as_ref().ok_or(AudioStorageError::UnknownStorage)?;
             let (p, _) = meter
@@ -761,7 +757,7 @@ impl TrackAssembly {
             drop(r.bare_chain.take());
             #[cfg(test)]
             drop(self.chain_probe.take());
-            r.utility.clear();
+            r.effects.clear();
             r.chain_disposal = Disposal::Complete;
             return Ok(());
         }
@@ -996,7 +992,7 @@ impl TrackAssembly {
                 prepared_gain,
                 meter,
                 chain,
-                utility,
+                effects,
                 sampler,
                 bare_meter,
                 bare_chain,
@@ -1008,7 +1004,7 @@ impl TrackAssembly {
                 meter_disposal: _,
                 chain_disposal: _,
             } = r;
-            utility.visit_metadata(l)?;
+            effects.visit_metadata(l)?;
             l.vec(clips)?;
             l.vec(pairs)?;
             l.vec(sends)?;
@@ -1046,7 +1042,7 @@ impl TrackAssembly {
                 } = t;
                 if (!sampler.present() && (instrument.is_some() || *mutable_instrument))
                     || instrument_state.is_some()
-                    || *mutable_looping_source
+                    || (!sampler.present() && *mutable_looping_source)
                     || midi_source_index.is_some()
                 {
                     return Err(AudioStorageError::UnknownStorage);
@@ -1074,7 +1070,7 @@ impl TrackAssembly {
                     handles[1],
                     None,
                 )?;
-                utility.visit(device_chain, l)?;
+                effects.visit(device_chain, l)?;
                 clips
             } else {
                 if let Some(owner) = meter {
@@ -1087,7 +1083,7 @@ impl TrackAssembly {
                     )?;
                 }
                 if let Some(owner) = chain {
-                    utility.visit(owner.arc(), l)?;
+                    effects.visit(owner.arc(), l)?;
                     l.shared(
                         owner.arc(),
                         owner.parts(),
@@ -1106,7 +1102,7 @@ impl TrackAssembly {
                     )?;
                 }
                 if let Some(owner) = bare_chain {
-                    utility.visit(owner, l)?;
+                    effects.visit(owner, l)?;
                     l.shared(
                         owner,
                         chain_declaration.as_ref().and_then(|d| d.parts(owner)),

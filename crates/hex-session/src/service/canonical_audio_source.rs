@@ -1,5 +1,10 @@
-//! Immutable canonical Project/counter pairing owned by the existing worker.
-//! Correlation only: constructor custody and exact page protection remain separate.
+//! Immutable canonical Project/source/context pairing owned by the Session worker.
+//!
+//! The exact document generation/editor revision travels with captured source facts. This is
+//! correlation, not native admission: desktop workers independently retain and verify their actual
+//! source/domain owners. Verified-mode events do not offer a resident Playback fallback, including
+//! empty graphs; private loaded-sampler sources also stay in their worker-owned path rather than
+//! escaping through an Event owner.
 use super::*;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
@@ -97,6 +102,31 @@ impl CanonicalAudioSourceSnapshot {
         destination: &mut hex_engine::AudioCandidatePreparation,
     ) -> Result<(), hex_engine::AudioStorageError> {
         destination.prepare_on_control(&self.project, source_catalog_generation, self.context)
+    }
+    /// Use host-borrowed effect facts with this exact immutable Project/context.
+    /// Sources and native admission remain in their original host-owned cells.
+    pub fn prepare_candidate_with_effects_on_control(
+        &self,
+        source_catalog_generation: u64,
+        destination: &mut hex_engine::AudioCandidatePreparation,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        effects.prepare(
+            destination,
+            &self.project,
+            source_catalog_generation,
+            self.context,
+            None,
+        )
+    }
+    pub fn reservation_quote_with_effects(
+        &self,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
+        }
+        effects.quote(&self.project, self.required_sources().count())
     }
     /// Keep a host's already-rooted input bank in place during all fallible
     /// preparation. Native custody still comes only from the actual constructor.

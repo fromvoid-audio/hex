@@ -41,8 +41,11 @@ pub(super) fn exercise(
     {
         let mut slot = h.backend.lock().unwrap();
         let backend = slot.as_mut().unwrap();
-        identity = backend.status().unwrap().applied_audio_source();
-        assert!(backend.status().unwrap().sampler_console_available());
+        identity = backend.status().unwrap().rendered_current(h).unwrap();
+        assert_eq!(
+            backend.status().unwrap().session_capability(),
+            Some(hex_engine::SessionCapabilityStatus::Available)
+        );
         super::envelope::render(backend, &mut output);
         let mut routes = [hex_audio::prepared::SessionRouteEntry::default(); 4];
         let count = backend
@@ -80,7 +83,10 @@ pub(super) fn exercise(
         let mut slot = h.backend.lock().unwrap();
         let backend = slot.as_mut().unwrap();
         super::envelope::render(backend, &mut output);
-        assert_eq!(backend.status().unwrap().applied_audio_source(), identity);
+        assert_eq!(
+            backend.status().unwrap().rendered_current(h),
+            Some(identity)
+        );
     }
     assert_eq!(
         &output[..4],

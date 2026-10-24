@@ -389,3 +389,6 @@ fn main_removal_retains_old_tail_and_applies_future_source_mix_once() {
 
 #[path = "compensation_tests/monitor_clock.rs"]
 mod monitor_clock;
+
+#[path = "compensation_tests/cue.rs"]
+mod cue;

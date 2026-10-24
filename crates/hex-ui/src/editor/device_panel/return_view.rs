@@ -92,9 +92,10 @@ pub(super) fn render(
             .find(|device| device.id() == id)
             .map(|device| device.state().type_id())
     });
+    // The shared retirement helper owns both legacy and current EQ graphs.
     let alive_eq8: HashSet<_> = devices
         .iter()
-        .filter(|device| device.state().type_id().as_str() == Ok("hex.eq8"))
+        .filter(|device| matches!(device.state().type_id().as_str(), Ok("hex.eq8" | "hex.eq")))
         .map(hex_project::Device::id)
         .collect();
     retire_removed_eq8_graphs(view, cx, &alive_eq8);
@@ -110,21 +111,6 @@ pub(super) fn render(
     view.device_panel
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
-    if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.spectrum_desired()
-        && target.identity.owner == owner.processor()
-        && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
-                && matches!(
-                    target.identity.device_type.as_str(),
-                    Ok("hex.eq8" | "hex.eq")
-                )
-        })
-    {
-        let _ = audio.control.spectrum_clear();
-        view.device_panel.spectrum_result = None;
-    }
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.audition_desired()
         && target.identity.owner == owner.processor()
@@ -183,6 +169,7 @@ pub(super) fn render(
         .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
         .tooltip(|_, cx| {
             cx.new(|_| super::super::transport::MiniTooltip {
+                kind: crate::tooltips::Kind::Identification,
                 description: "add native effect".into(),
             })
             .into()
@@ -241,7 +228,7 @@ pub(super) fn render_return_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
+    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions
@@ -340,6 +327,7 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
         Err(error) => {
@@ -364,6 +352,7 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
     };

@@ -26,6 +26,54 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_full_checkpoint_delivery_requires_unchanged_original_report_and_log(self):
+        # Synthetic full-plan certificates exercise the consumer, not app CI.
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        folder = self.root / "artifacts/local-ci/original"
+        folder.mkdir(parents=True)
+        log = folder / "01-guard.log"
+        log.write_text("guard passed\n")
+        steps = delivery.ci.FULL_STEPS
+        passed = [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                   "exit_code": 0, "error": None, "test_results": {"python_executions": [1]}}
+                  for s in steps]
+        passed[0]["log"] = str(log.relative_to(self.root))
+        original = {"schema_version": 2, "mode": "full", "status": "failed", "stale": False,
+                    "minimum_free_bytes": 2 * 1024 ** 3,
+                    "exit_code": 2, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "disk_error": "capacity refusal",
+                    "disk_refusal": {"before_step": 1},
+                    "steps": [passed[0], *[{"step_id": s.step_id, "argv": list(s.argv),
+                              "status": "not_run", "log": None, "exit_code": None} for s in steps[1:]]]}
+        target = {"target_identity": {"device": 1, "inode": 2}, "dependency_inputs": {"fixture": True}}
+        checkpoint = delivery.ci.ci_checkpoint
+        original["checkpoint"] = checkpoint.seal(self.root, original, steps, {}, target)
+        source = folder / "summary.json"
+        source.write_text(json.dumps(original))
+        lineage = {"report": str(source), "sha256": checkpoint.file_digest(source),
+                   "passed_count": 1, "logs": original["checkpoint"]["logs"]}
+        complete = {**original, "status": "passed", "exit_code": 0, "resume": lineage,
+                    "target_cache": {"dependency_inputs": target["dependency_inputs"]},
+                    "steps": [*checkpoint.inherited_steps(original, lineage), *passed[1:]]}
+        complete.pop("checkpoint")
+        report = self.root / "completed.json"
+        report.write_text(json.dumps(complete))
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            delivery.validate_ci(report, runner, tree["commit"])
+            log.write_text("changed\n")
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            log.write_text("guard passed\n")
+            source.write_text(source.read_text() + "\n")
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            complete.pop("resume")
+            report.write_text(json.dumps(complete))
+            with self.assertRaisesRegex(delivery.DeliveryError, "lineage"):
+                delivery.validate_ci(report, runner, tree["commit"])
+
     def test_current_review_malformed_ci_report_is_explicit_refusal(self):
         runner = delivery.ci.LocalCiRunner(self.root)
         tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
@@ -453,6 +501,10 @@ class DeliveryTests(unittest.TestCase):
         runner.git_identity = {"workspace_root":str(source), "git_common_dir":str(source / ".git"), "commit":candidate}
         scope = [{"name":"hex-desktop", "version":"0.1.0", "spec":"hex-desktop@0.1.0"}]
         runner.cargo_identity["workspace_packages"] = scope
+        # The substituted metadata query must populate the same complete package
+        # view as production before name-scoped cleanup can be proven safe.
+        runner._release_metadata = {"workspace_members": [scope[0]["spec"]], "packages": [
+            {"id": scope[0]["spec"], "name": "hex-desktop", "source": None}]}
         _, dev_owner = delivery.ci.target_state_paths(target.parent.parent, runner.target_state_dir)
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
@@ -712,7 +764,8 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
             resolve.return_value = plan
-            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            next(s for s in evidence["steps"] if s["step_id"] == "runner-tests")["test_results"] = {
+                "python_executions": [2], "python_skipped": [2]}
             delivery.write_json(report, evidence)
             with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
@@ -731,7 +784,7 @@ class DeliveryTests(unittest.TestCase):
         impact = delivery.ci.ci_plan.python_tests
         selected = impact.select("merge", ["crates/hex-engine/src/lib.rs"],
             [{"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml"}],
-            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES))
+            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES), env={})
         plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
                 "source": tree["commit"], "base": "base", "python_tests": selected}
         dependencies = {"fixture": "same guarded inputs"}
@@ -909,6 +962,8 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                if ownership.get("cleanup_log"):
+                    self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")

@@ -512,6 +512,7 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
         let history = (s.can_undo(), s.can_redo());
         let (state, source_slot) =
             hex_engine::native_device_resources::sampler_import_template_on_control(4).unwrap();
+        let finalized = std::cell::Cell::new(false);
         let refused = s.import_device_asset_prepared(
             fixture.decoded(),
             &cancel,
@@ -530,8 +531,16 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
                     Err(SessionError::Invalid("injected staged preparation refusal"))
                 }
             },
+            |_, _, _| {
+                finalized.set(true);
+                Ok(())
+            },
         );
         assert!(refused.is_err());
+        assert!(
+            !finalized.get(),
+            "refusal/cancellation precedes final publication admission"
+        );
         assert_eq!(s.project(), &before);
         assert_eq!(s.native_storage_on_control().unwrap(), storage);
         assert_eq!((s.can_undo(), s.can_redo()), history);
@@ -547,6 +556,31 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
 }
 
 #[test]
+fn accepted_native_import_finalizer_has_no_later_cancellation_rollback() {
+    let fixture = Fixture::new();
+    let mut s = session();
+    let cancel = AtomicBool::new(false);
+    let (created, ()) = s
+        .import_device_asset_prepared(
+            fixture.decoded(),
+            &cancel,
+            NativeAssetDestination::Unassigned,
+            |_, _, _, _, _, _, _| Ok(()),
+            |_, _, _stage| {
+                // Model cancellation racing after successful queue acceptance. Once this final
+                // operation accepts, the prepared source/history transaction must commit.
+                cancel.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let created = asset(created);
+    assert!(s.project().asset(created).is_some());
+    assert!(s.native_source(created).is_some());
+    assert!(s.can_undo());
+}
+
+#[test]
 fn peak_budget_and_late_precommit_cancellation_preserve_source_editor_history_and_cache() {
     let fixture = Fixture::new();
     let cancel = AtomicBool::new(false);
@@ -554,12 +588,14 @@ fn peak_budget_and_late_precommit_cancellation_preserve_source_editor_history_an
         .unwrap()
         .usage();
     let mut s = session();
+    // This fixture has four original frames: four signed stereo peak leaves
+    // occupy 64 bytes. Short sources no longer reserve a full overview array.
     s.overview_budget =
-        crate::source_overview::OverviewBudget::with_limits(2047, standard.max_metadata_bytes)
+        crate::source_overview::OverviewBudget::with_limits(63, standard.max_metadata_bytes)
             .unwrap();
     assert_refused_unchanged(&mut s, &fixture, &cancel);
     s.overview_budget =
-        crate::source_overview::OverviewBudget::with_limits(4096, standard.max_metadata_bytes)
+        crate::source_overview::OverviewBudget::with_limits(128, standard.max_metadata_bytes)
             .unwrap();
     s.import_device_asset(fixture.decoded(), &cancel, None)
         .unwrap();
@@ -567,6 +603,7 @@ fn peak_budget_and_late_precommit_cancellation_preserve_source_editor_history_an
     let history = (s.can_undo(), s.can_redo());
     let cache = s.source_overviews();
     let usage = s.source_overview_usage();
+    assert_eq!(usage.bin_capacity_bytes, 64);
     assert!(
         s.import_device_asset_with_admission(fixture.decoded(), &cancel, None, || {
             cancel.store(true, Ordering::Release);

@@ -124,13 +124,11 @@ impl RevisionAssembly {
         Ok(owner.arc())
     }
 
-    pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
-        self.reserve_with_sampler(project, None)
-    }
-    pub(crate) fn reserve_with_sampler(
+    pub(crate) fn reserve_with_sampler_and_effects(
         &mut self,
         project: &hex_project::Project,
         scope: Option<u64>,
+        effects: bool,
     ) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
@@ -147,24 +145,25 @@ impl RevisionAssembly {
             return Err(Error::Capacity);
         }
         if scope.is_some() {
-            if !crate::native_device_resources::current_sampler::validate_project(project)? {
+            if !crate::native_device_resources::current_sampler::validate_project_with_effects(
+                project, effects,
+            )? {
                 return Err(Error::UnsupportedGraph);
             }
         } else {
             // Empty mutable descriptors are permitted only for this exhaustive class.
             for track in project.tracks() {
                 if track.instrument().is_some()
-                    || track
-                        .devices()
-                        .iter()
-                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                    || track.devices().iter().any(|d| {
+                        !effects && d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                    })
                     || !track.midi_clips().is_empty()
                 {
                     return Err(Error::UnsupportedGraph);
                 }
             }
             for bus in project.return_tracks() {
-                if !bus.devices().is_empty() {
+                if !effects && !bus.devices().is_empty() {
                     return Err(Error::UnsupportedGraph);
                 }
             }
@@ -212,15 +211,17 @@ impl RevisionAssembly {
             .or(self.revision_value.as_ref());
         if let Some(PreparedRevision {
             resource_scope,
+            device_resource_scope,
             tuning_family: _,
             arrangement,
             session,
             midi_preview,
             mutable_track_revisions,
+            authored_midi_sources,
             gain_recording_track,
         }) = revision
         {
-            if *resource_scope != self.current_sampler_scope {
+            if *resource_scope != self.current_sampler_scope || device_resource_scope.is_some() {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -231,6 +232,7 @@ impl RevisionAssembly {
                 || self.preview_value.is_some()
                 || gain_recording_track.is_some()
                 || mutable_track_revisions.capacity() != 0
+                || authored_midi_sources.capacity() != 0
                 || self.mutable_descriptors.capacity() != 0
             {
                 return Err(Error::UnknownStorage);
@@ -372,12 +374,14 @@ impl RevisionAssembly {
             (Some(arrangement), Some(session), Some(midi_preview)) => {
                 self.revision_value = Some(PreparedRevision {
                     resource_scope: self.current_sampler_scope,
+                    device_resource_scope: None,
                     tuning_family: TuningContinuationFamily::fresh()
                         .map_err(|_| Error::Overflow)?,
                     arrangement,
                     session,
                     midi_preview,
                     mutable_track_revisions: Vec::new(),
+                    authored_midi_sources: Vec::new(),
                     gain_recording_track: None,
                 });
             }
@@ -430,11 +434,13 @@ impl RevisionAssembly {
         }
         if let Some(PreparedRevision {
             resource_scope: _,
+            device_resource_scope: _,
             tuning_family: _,
             arrangement,
             session,
             midi_preview,
             mutable_track_revisions,
+            authored_midi_sources: _,
             gain_recording_track: _,
         }) = self.revision_value.take()
         {
@@ -549,14 +555,20 @@ impl RevisionAssembly {
         {
             let PreparedRevision {
                 resource_scope: _,
+                device_resource_scope: _,
                 tuning_family: _,
                 arrangement,
                 session,
                 midi_preview,
                 mutable_track_revisions,
+                authored_midi_sources,
                 gain_recording_track: _,
             } = revision;
             l.vec(mutable_track_revisions)?;
+            // This constructor class never admits ordinary authored-evidence children.
+            if authored_midi_sources.capacity() != 0 {
+                return Err(Error::UnknownStorage);
+            }
             l.shared(
                 arrangement.arc(),
                 arrangement.parts(),

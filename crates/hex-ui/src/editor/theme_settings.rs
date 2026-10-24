@@ -330,6 +330,10 @@ impl EditorView {
             self.theme_settings.focus.focus(window);
             return;
         }
+        if self.controller_input_is_open() {
+            self.close_controller_input_menu(window, cx);
+        }
+        self.prepare_controller_settings(cx);
         self.theme_settings.open = true;
         if self.theme_settings.loading {
             self.theme_settings.error = Some("loading theme settings…".into());
@@ -360,7 +364,7 @@ impl EditorView {
             self.sync_theme_controls(cx);
             return;
         }
-        let style = super::device_panel::control_style();
+        let style = crate::theme::control_style();
         for channel in ThemeChannel::ALL {
             let spec = match NumericSpec::new(
                 0.0,
@@ -510,7 +514,7 @@ impl EditorView {
 
     fn sync_theme_controls(&mut self, cx: &mut Context<Self>) {
         let colors = self.theme_settings.draft;
-        let style = super::device_panel::control_style();
+        let style = crate::theme::control_style();
         for (channel, control) in &self.theme_settings.controls {
             let value = f64::from(channel.get(colors));
             control.entity.update(cx, |control, cx| {
@@ -860,7 +864,7 @@ impl EditorView {
             return None;
         }
         let colors = self.theme_settings.draft;
-        let style = super::device_panel::control_style();
+        let style = crate::theme::control_style();
         let error = self.theme_settings.error.clone();
         let writable = self.theme_settings.writable;
         let saving = self.theme_settings.saving;
@@ -957,6 +961,7 @@ impl EditorView {
                     )
                     .child(controls),
             );
+        let settings = self.audio_import_settings_row(cx);
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
@@ -974,6 +979,8 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
+            .child(settings)
+            .child(self.controller_input_settings(cx))
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);
@@ -1022,6 +1029,7 @@ impl EditorView {
             div()
                 .id("theme settings backdrop")
                 .debug_selector(|| "theme settings backdrop".into())
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
@@ -1039,21 +1047,15 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<EditorView>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(id)
             .debug_selector(move || id.into())
             .h(px(22.0))
             .px(px(7.0))
-            .flex()
-            .items_center()
-            .cursor_pointer()
             .border_1()
             .border_color(rgb(theme::color(PaletteRole::Border)))
-            .bg(rgb(theme::color(PaletteRole::Raised)))
-            .hover(|style| style.bg(rgb(theme::color(PaletteRole::Hover))))
             .text_xs()
             .on_click(cx.listener(move |view, _, window, cx| handler(view, window, cx)))
-            .child(theme::text(label))
     }
 
     pub(super) fn on_theme_settings_escape_action(
@@ -1164,6 +1166,20 @@ mod tests {
                 editor
             })
             .expect("editor window");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if editor.read_with(cx, |view, _| {
+                !view.theme_settings.loading && !view.audio_import_settings.is_loading()
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "settings did not load"
+            );
+            std::thread::yield_now();
+        }
         (handle, editor)
     }
 
@@ -1196,7 +1212,7 @@ mod tests {
             slider.origin.x + slider.size.width / 2.0,
             slider.origin.y + slider.size.height / 2.0,
         );
-        let end = point(start.x - px(12.0), start.y);
+        let end = point(start.x, start.y + px(12.0));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -1308,7 +1324,33 @@ mod tests {
             );
         }
 
-        click_bounds(&mut visual, "theme-role-secondary");
+        let role = visual.debug_bounds("theme-role-secondary").unwrap();
+        let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+        let center = point(
+            role.origin.x + role.size.width / 2.0,
+            role.origin.y + role.size.height / 2.0,
+        );
+        // Exercise modal occlusion independently of which settings row happens
+        // to align with the underlying ruler as sections are added or resized.
+        let overlap = point(center.x, ruler.origin.y + ruler.size.height / 2.0);
+        assert!(ruler.contains(&overlap) && panel.contains(&overlap));
+        visual.simulate_mouse_down(overlap, MouseButton::Left, Modifiers::default());
+        assert!(
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "the modal surface blocks the underlying ruler"
+        );
+        visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        assert!(
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "modal clicks must not start an underlying seek"
+        );
+        assert!(
+            editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()),
+            "modal clicks must not capture the underlying loop rail"
+        );
+        visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             editor.read_with(cx, |view, _| view.theme_settings.selected_role),
@@ -1528,5 +1570,78 @@ mod tests {
             hex_preferences::load_theme_preferences(&path).expect("preserved raw palette"),
             invalid
         );
+    }
+
+    #[gpui::test]
+    fn auto_warp_setting_click_persists_reloads_and_save_refusal_keeps_active_policy(
+        cx: &mut TestAppContext,
+    ) {
+        fn policy(
+            editor: &gpui::Entity<EditorView>,
+            cx: &TestAppContext,
+        ) -> hex_project::AudioImportWarp {
+            editor.read_with(cx, |view, _| {
+                let request = view
+                    .capture_audio_import_policy(hex_session::service::Request::Import(
+                        PathBuf::from("/captured sample.wav"),
+                    ))
+                    .unwrap();
+                match request {
+                    hex_session::service::Request::Import(_) => hex_project::AudioImportWarp::Off,
+                    hex_session::service::Request::ImportAudioBatch { options, .. } => options.warp,
+                    _ => panic!("arrangement import did not retain its policy"),
+                }
+            })
+        }
+        let _restore = RestoreTheme(theme::preferences());
+        theme::apply_preferences(ThemePreferences::default());
+        let directory = TestDirectory::new();
+        let path = directory.0.join("audio-import.json");
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        assert_eq!(policy(&editor, cx), hex_project::AudioImportWarp::Off);
+        assert!(
+            !path.exists(),
+            "loading defaults must not publish a settings file"
+        );
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("theme settings panel").is_some());
+        click_bounds(&mut visual, "auto warp imports");
+        visual.run_until_parked();
+        assert!(
+            hex_preferences::load_audio_import_preferences(&path)
+                .unwrap()
+                .auto_warp_beats
+        );
+        assert_eq!(policy(&editor, cx), hex_project::AudioImportWarp::Beats);
+
+        let (reopened_handle, reopened_editor) = editor_fixture(cx, &directory);
+        let mut reopened = VisualTestContext::from_window(reopened_handle, cx);
+        reopened.run_until_parked();
+        assert_eq!(
+            policy(&reopened_editor, cx),
+            hex_project::AudioImportWarp::Beats
+        );
+        reopened.simulate_keystrokes("cmd-,");
+        reopened.run_until_parked();
+        // A directory at the independent preference-file path deterministically
+        // refuses publication without changing the active import policy.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        click_bounds(&mut reopened, "auto warp imports");
+        reopened.run_until_parked();
+        assert_eq!(
+            policy(&reopened_editor, cx),
+            hex_project::AudioImportWarp::Beats
+        );
+        assert!(path.is_dir());
+        assert!(
+            reopened
+                .debug_bounds("audio import settings status")
+                .is_some()
+        );
+        assert!(reopened.debug_bounds("theme settings panel").is_some());
     }
 }

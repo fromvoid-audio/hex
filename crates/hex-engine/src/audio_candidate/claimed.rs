@@ -330,6 +330,29 @@ impl ClaimedAudioCandidateRuntime {
         runtime.playback.apply_current_sampler_keyboard(frame)?;
         Ok(true)
     }
+    /// Priority output Stop with the host's exact scalar clock. Ordinary playback may retain
+    /// only its matching output-bound input; legacy native CURRENT keeps terminal Stop.
+    pub fn apply_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<(), crate::PlaybackActionError> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::PlaybackActionError::SessionNotPrepared);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?;
+        if runtime.sampler_sources.is_some() {
+            runtime.apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Stop,
+            ))
+        } else {
+            runtime.playback.apply_priority_stop(clock);
+            Ok(())
+        }
+    }
     pub fn apply_action(
         &mut self,
         action: crate::PlaybackAction,
@@ -482,6 +505,75 @@ impl ClaimedAudioCandidateRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn actual_compensation_swap_closes_displaced_and_adopted_original_origins() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        for incoming in [None, Some(0)] {
+            let (mut old, old_anchor) =
+                AudioCandidateOwner::test_compensation_origin_owner(Some(3))
+                    .split_constructor_on_control()
+                    .ok()
+                    .unwrap();
+            let (mut next, next_anchor) =
+                AudioCandidateOwner::test_compensation_origin_owner(incoming)
+                    .split_constructor_on_control()
+                    .ok()
+                    .unwrap();
+            let old_id = old.identity();
+            let new_id = next.identity();
+            let next_runtime = next.inner.runtime.as_mut().unwrap();
+            let old_runtime = old.inner.runtime.as_mut().unwrap();
+            let mut transfer = groups::Transfer::new(
+                &mut next.inner.groups,
+                &mut old.inner.groups,
+                &mut next.inner.journal,
+                next.inner.owned_runtime_bytes.as_mut().unwrap(),
+            );
+            let (original, displaced) = next_runtime
+                .playback
+                .test_swap_compensation_origins(&mut old_runtime.playback, &mut transfer)
+                .unwrap();
+            assert_eq!(displaced.is_some(), incoming.is_some());
+            if let Some(displaced) = displaced {
+                assert_ne!(original, displaced);
+            }
+            transfer.commit();
+            let manifest = AudioCandidateTransfer {
+                predecessor: old_id,
+                successor: new_id,
+                rows: std::mem::take(&mut next.inner.journal),
+            };
+            assert_eq!(manifest.moved_groups_from(old_id), 1);
+            assert_eq!(
+                manifest.moved_groups_from(new_id),
+                usize::from(incoming.is_some())
+            );
+            assert_eq!(manifest.moved_groups(), 1 + usize::from(incoming.is_some()));
+            let mut anchors = [Some(old_anchor), Some(next_anchor)];
+            old.dispose_on_control()
+                .unwrap()
+                .record_anchor_cells_on_control(&mut anchors)
+                .unwrap();
+            assert!(
+                anchors[0]
+                    .as_mut()
+                    .unwrap()
+                    .finish_disposal_on_control()
+                    .is_err(),
+                "adopted original storage still lives in the successor"
+            );
+            next.dispose_on_control()
+                .unwrap()
+                .record_anchor_cells_on_control(&mut anchors)
+                .unwrap();
+            for anchor in anchors.iter_mut().flatten() {
+                anchor.finish_disposal_on_control().unwrap();
+                assert!(anchor.recover_inputs_on_control().is_some());
+            }
+        }
+    }
     #[test]
     fn split_keeps_actual_runtime_box_and_original_custodian_until_normal_bound_disposal() {
         let Some((custody, token, pointer, capacity)) =

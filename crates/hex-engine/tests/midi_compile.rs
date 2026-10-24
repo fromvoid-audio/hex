@@ -1095,15 +1095,16 @@ fn render_chunks(
 }
 
 #[test]
-fn same_pitch_overlaps_remain_distinct_and_release_tails_count_toward_voice_cap() {
+fn adjacent_same_pitch_gates_keep_distinct_release_tails_and_count_toward_voice_cap() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
-    for _ in 0..64 {
+    let frame_beat = beat(1, 24_000).raw();
+    for index in 0..64 {
         editor
             .execute(Command::AddMidiNote {
                 clip,
-                start: BeatTime::ZERO,
-                duration: beat(1, 4),
+                start: BeatTime::from_raw(index * 32 * frame_beat),
+                duration: BeatTime::from_raw(32 * frame_beat),
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
@@ -1113,15 +1114,26 @@ fn same_pitch_overlaps_remain_distinct_and_release_tails_count_toward_voice_cap(
     let project = compile::project(editor.project(), &BTreeMap::new()).expect("64 voices accepted");
     let mut playback = Playback::new(project);
     playback.apply(PlaybackCommand::Play);
-    let mut output = [[0.0; 2]; 32];
+    let mut output = [[0.0; 2]; 4096];
     playback.render(&mut output).unwrap();
-    assert!(output[8..].iter().any(|frame| frame[0].abs() > 0.1));
+    assert!(output.iter().any(|frame| frame[0].abs() > 0.001));
+    // Authored gates touch but never overlap. Their 50 ms releases overlap as
+    // 64 independent occurrences; retriggering must not steal an older tail.
+    let table = SineTable::new();
+    let voice = table.prepare_voice(48_000, 60, 100).unwrap();
+    for (frame, actual) in output.iter().enumerate() {
+        let expected: f32 = (0..64)
+            .filter_map(|index| frame.checked_sub(index * 32))
+            .map(|age| table.sample(voice, age as u64, 32))
+            .sum();
+        assert!(actual.iter().all(|sample| (sample - expected).abs() < 1e-6));
+    }
 
     editor
         .execute(Command::AddMidiNote {
             clip,
-            start: BeatTime::ZERO,
-            duration: beat(1, 4),
+            start: BeatTime::from_raw(64 * 32 * frame_beat),
+            duration: BeatTime::from_raw(32 * frame_beat),
             pitch: 60,
             channel: 0,
             velocity: 100,
@@ -1307,11 +1319,12 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     else {
         panic!("instrument snapshot")
     };
+    let frame_beat = beat(1, 24_000).raw();
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
             id: 4 + index as u64,
-            start_raw: 0,
-            duration_raw: BeatTime::ONE.raw(),
+            start_raw: index as u64 * frame_beat,
+            duration_raw: frame_beat,
             pitch: 60,
             channel: 0,
             velocity: 100,
@@ -1321,15 +1334,13 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let project = Project::from_snapshot(snapshot).expect("maximum valid note count");
     let events = midi_events(&project).expect("exact maximum event count");
     assert_eq!(events.len(), MAX_MIDI_EVENT_EDGES);
-    assert_eq!(events[0].kind, MidiEventKind::NoteOn);
-    assert_eq!(events[0].frame, 0);
-    assert_eq!(events[hex_project::MAX_NOTES].kind, MidiEventKind::NoteOff);
-    assert_eq!(events[hex_project::MAX_NOTES].frame, 24_000);
-    assert!(
-        events
-            .windows(2)
-            .take(hex_project::MAX_NOTES - 1)
-            .all(|w| w[0].note.value() < w[1].note.value())
-    );
+    for (index, pair) in events.chunks_exact(2).enumerate() {
+        assert_eq!(pair[0].kind, MidiEventKind::NoteOn);
+        assert_eq!(pair[0].frame, index as u64);
+        assert_eq!(pair[1].kind, MidiEventKind::NoteOff);
+        assert_eq!(pair[1].frame, index as u64 + 1);
+        assert_eq!(pair[0].note.value(), 4 + index as u64);
+        assert_eq!(pair[1].note, pair[0].note);
+    }
     assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());
 }

@@ -1,5 +1,13 @@
-//! Bounded custody only. Queue acceptance, no-install closure and normal physical
-//! disposal are different facts. No state here grants render/admission authority.
+//! Bounded candidate custody with exact root/slot/incarnation/runtime identity.
+//!
+//! Reservation, queue acceptance, installation, source readiness, terminal return and normal
+//! physical disposal are separate transitions. Synchronous refusal preserves the original
+//! owner/container; accepted tickets and scalar acknowledgments grant no cleanup authority. Full
+//! return queues retain the actual owner in persistent held storage. Never-installed and
+//! final-active returns retain distinct physical paths. Control/lifecycle execution records
+//! Pending before destructive takes, retains the first failed payload and remaining owners, and
+//! never reuses occupancy after an incomplete destructor, worker join or page-pool conservation
+//! check.
 use crate::candidate_catalog::{CandidateDomain, CatalogCustody};
 use hex_engine::{
     AudioCandidateDisposed, AudioCandidateIdentity, AudioCandidateOwner, OwnedAudioInputs,
@@ -14,6 +22,8 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::DomainEnvelope;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::native_sources::tests as native_source_test_fixture;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
@@ -27,6 +37,12 @@ pub use eligible::{
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
+};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use eligible::{NativeEndpointBank, NativeEndpointEnvelope};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use eligible::{
+    NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
@@ -718,9 +734,11 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        drop(returns);
+        // Native source cancellation may perform control-side descriptor I/O;
+        // it must not run under the ordinary return/terminal lock.
         self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
-        drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
     }
     fn drain_abandoned_on_control(&self) -> bool {
@@ -739,6 +757,13 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                crate::prepared::ReturnedPublication::Native(endpoint) => {
+                    if let Err(endpoint) = self.ingest_native_endpoint(endpoint) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Native(endpoint));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Domain(pages) => {
                     if let Err(pages) = self.ingest_pages(pages) {
                         returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));
@@ -1169,6 +1194,40 @@ pub struct AudioCandidateCustodyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vacant_bank_with_contended_thread_observation_still_requires_a_witness() {
+        let root = CandidateRoot::new(1).unwrap();
+        let worker = root.clone();
+        let worker_thread = std::thread::spawn(move || {
+            worker.advance_on_control();
+            std::thread::current().id()
+        })
+        .join()
+        .unwrap();
+        let execution = lock(&root.0.execution);
+        assert_eq!(execution.last_thread, Some(worker_thread));
+        assert_eq!(root.report().occupied_slots, 0);
+        assert!(root.cleanup_thread().is_none()); // contention, not an absent worker
+        let expired = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now(),
+            )
+        }))
+        .expect_err("vacancy alone must not satisfy the thread witness");
+        assert_eq!(
+            expired.downcast_ref::<&str>().copied(),
+            Some("abandoned cleanup required UI polling")
+        );
+        drop(execution);
+        assert_eq!(
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+            ),
+            worker_thread
+        );
+    }
     #[test]
     fn actual_failed_metadata_disposal_closes_new_staging_and_preserves_refused_inputs() {
         let Some(owner) = crate::prepared::candidate_tests::candidate() else {
