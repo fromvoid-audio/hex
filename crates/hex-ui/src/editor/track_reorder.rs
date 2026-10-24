@@ -13,7 +13,7 @@ use gpui::{
     Context, Div, MouseButton, MouseMoveEvent, MouseUpEvent, Window, canvas, div, prelude::*, px,
     rgb,
 };
-use hex_project::{TrackId, TrackReorderSelection};
+use hex_project::{TrackId, TrackSelectionIds};
 use hex_session::service::{Event, Request};
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,7 @@ struct Gesture {
     generation: u64,
     revision: u64,
     track: TrackId,
-    tracks: TrackReorderSelection,
+    tracks: TrackSelectionIds,
     origin: (f32, f32),
     pointer: (f32, f32),
     moved: bool,
@@ -49,7 +49,7 @@ struct PaintedGap {
 struct Pending {
     generation: u64,
     revision: u64,
-    tracks: TrackReorderSelection,
+    tracks: TrackSelectionIds,
     destination: Destination,
     receipt: Receipt,
 }
@@ -105,7 +105,7 @@ impl EditorView {
         } else {
             vec![track]
         };
-        let tracks = match TrackReorderSelection::new(&members) {
+        let tracks = match TrackSelectionIds::new(&members) {
             Ok(tracks) => tracks,
             Err(error) => {
                 self.error = Some(error.0.into());
@@ -158,7 +158,7 @@ impl EditorView {
     fn track_reorder_destination(
         &self,
         pointer: (f32, f32),
-        source: &TrackReorderSelection,
+        source: &TrackSelectionIds,
     ) -> Option<Destination> {
         let bounds = self.arrangement_bounds?;
         let (x, y) = pointer;
