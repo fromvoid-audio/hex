@@ -46,52 +46,159 @@ impl ComputerKeyboardRuntime {
         if output.is_empty() {
             return Ok(());
         }
-        let cancelled = self
-            .input
-            .lease()
-            .and_then(|input| input.live_notes.as_ref())
-            .is_none_or(|live| {
+        let cancelled = self.input.lease().is_none_or(|input| {
+            input.live_notes.as_ref().is_none_or(|live| {
                 live.is_cancelled()
                     || self
                         .live_batch
                         .as_ref()
                         .is_none_or(|batch| !live.same_current_activation(batch.activation))
-            })
-            || self.input.lease().is_none_or(|input| {
-                Some(input.live_output_epoch.load(Acquire)) != self.activation_epoch
-            });
-        if cancelled || self.activation_epoch.is_none() || self.lease_detached || self.faulted {
-            return self.render_voice_span(
-                output,
-                clock,
-                resources,
-                Some(LiveNoteEvent::AllNotesOff),
-            );
-        }
+            }) || Some(input.live_output_epoch.load(Acquire)) != self.activation_epoch
+        }) || self.activation_epoch.is_none()
+            || self.lease_detached
+            || self.faulted;
         let mut offset = 0;
         while offset < output.len() {
-            let event = self
-                .live_batch
+            let live = (!cancelled)
+                .then(|| {
+                    self.live_batch
+                        .as_ref()
+                        .and_then(|batch| batch.events().get(self.live_consumed))
+                        .copied()
+                })
+                .flatten();
+            let key = self
+                .capture
                 .as_ref()
-                .and_then(|batch| batch.events().get(self.live_consumed))
-                .copied();
-            let end = if event.is_some() {
-                offset + 1
+                .and_then(|capture| {
+                    capture
+                        .key_batch
+                        .as_ref()
+                        .and_then(|batch| batch.events.get(capture.keys_consumed))
+                })
+                .copied()
+                .flatten();
+            let choose_key = key.is_some()
+                && (live.is_none()
+                    || self
+                        .capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.scratch_next_keys));
+            let (live_event, key_event) = if choose_key {
+                (None, key)
             } else {
-                output.len()
+                (live, None)
             };
+            let has_event = live_event.is_some() || key_event.is_some();
+            let end = if has_event { offset + 1 } else { output.len() };
             let shifted = clock.map(|clock| OffsetClock { clock, offset });
+            // A scoped hardware fault releases only hardware voices. Key overflow
+            // seals its own activation and cannot cancel the hardware root.
+            let live_event = if cancelled && offset == 0 {
+                Some(LiveNoteEvent::AllNotesOff)
+            } else {
+                live_event
+            };
             self.render_voice_span(
                 &mut output[offset..end],
                 shifted
                     .as_ref()
                     .map(|clock| clock as &dyn hex_lattice::NativeInstrumentClock),
                 resources,
-                event,
+                live_event,
+                key_event,
             )?;
-            self.live_consumed += usize::from(event.is_some());
+            if has_event {
+                self.live_consumed += usize::from(!choose_key);
+                if let Some(capture) = &mut self.capture {
+                    capture.keys_consumed += usize::from(choose_key);
+                    capture.scratch_next_keys = !choose_key;
+                }
+            }
             offset = end;
         }
+        Ok(())
+    }
+
+    pub(super) fn apply_key_event(
+        &mut self,
+        event: ordered_keys::KeyEvent,
+        events: &mut [NativeInstrumentEvent; 259],
+        len: &mut usize,
+    ) -> Result<(), Invalid> {
+        // Full-word identity owns a physical voice; an old Off cannot release
+        // a later press of the same key, even if both arrived in one quantum.
+        for voice in self.scratch.iter_mut().flatten() {
+            if voice.source == VoiceSource::Physical
+                && voice.key == event.key
+                && voice.gate.is_none()
+                && (event.on || voice.token >> 16 == event.word >> 16)
+            {
+                voice.gate = Some(voice.age);
+                events[*len] = NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: voice.id,
+                };
+                *len += 1;
+            }
+        }
+        if !event.on || self.scratch_rejected_desired[event.key] == event.word {
+            return Ok(());
+        }
+        let pitch = ((event.word & 255) - 1) as u8;
+        let velocity = ((event.word >> 8) & 255) as u8;
+        let sampler = self.input.sampler_index(event.key, pitch, velocity)?;
+        let capacity = self
+            .mutable
+            .as_ref()
+            .map_or(VOICES, NativeInstrumentRuntimePair::max_active_occurrences);
+        if !self.supported.get(sampler).copied().unwrap_or(false)
+            || self.scratch.iter().flatten().count() >= capacity
+        {
+            self.input.reject();
+            self.fail_capture(crate::midi_capture::MidiCaptureFault::Capacity);
+            self.scratch_rejected_desired[event.key] = event.word;
+            if let Some((queue, batch)) = self
+                .input
+                .lease()
+                .and_then(|input| input.ordered_keys.as_ref())
+                .zip(
+                    self.capture
+                        .as_ref()
+                        .and_then(|capture| capture.key_batch.as_ref()),
+                )
+            {
+                queue.fault(batch.activation);
+            }
+            return Ok(());
+        }
+        let next = self
+            .scratch_next_id
+            .checked_add(1)
+            .ok_or(Invalid("computer keyboard identity exhausted"))?;
+        let slot = self
+            .scratch
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(Invalid("computer keyboard voice capacity is unavailable"))?;
+        *slot = Some(Voice {
+            source: VoiceSource::Physical,
+            inline_override: None,
+            key: event.key,
+            token: event.word,
+            sampler,
+            age: 0,
+            gate: None,
+            id: next,
+        });
+        self.scratch_next_id = next;
+        events[*len] = NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: next,
+            pitch,
+            velocity,
+        };
+        *len += 1;
         Ok(())
     }
 
@@ -148,6 +255,7 @@ impl ComputerKeyboardRuntime {
         if !self.supported.get(sampler).copied().unwrap_or(false)
             || self.scratch.iter().flatten().count() >= capacity
         {
+            self.fail_capture(crate::midi_capture::MidiCaptureFault::Capacity);
             if let Some(input) = self
                 .input
                 .lease()

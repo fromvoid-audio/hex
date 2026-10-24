@@ -37,6 +37,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         sampler_load_complete: None,
         sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        midi_take_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,

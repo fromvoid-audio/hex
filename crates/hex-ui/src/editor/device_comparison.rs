@@ -193,7 +193,7 @@ impl EditorView {
             || self.preset_dialog_open
             || self.theme_settings.open
             || self.tuning.open
-            || self.gain_recorder.blocks_edits()
+            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
         {
             self.error = Some("finish the current action before comparing device settings".into());
             cx.notify();

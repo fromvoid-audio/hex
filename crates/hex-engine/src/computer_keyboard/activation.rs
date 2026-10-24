@@ -57,6 +57,9 @@ impl ComputerKeyboardInput {
     /// owners may conservatively charge the same small clock; no native resource is represented.
     pub fn control_storage_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
+            + self.ordered_keys.as_ref().map_or(0, |_| {
+                std::mem::size_of::<super::ordered_keys::OrderedKeys>()
+            })
             + 2 * std::mem::size_of::<usize>()
             + self.output_activation.as_ref().map_or(0, |_| {
                 std::mem::size_of::<KeyboardActivationClock>() + 2 * std::mem::size_of::<usize>()
@@ -78,8 +81,11 @@ impl ComputerKeyboardInput {
             self.cancel();
             return;
         };
-        for word in &self.notes {
-            word.store(0, SeqCst);
+        for (key, word) in self.notes.iter().enumerate() {
+            let before = word.swap(0, SeqCst);
+            if let Some(queue) = &self.ordered_keys {
+                queue.publish_change(key, before, 0);
+            }
         }
         self.sequence.store(after, SeqCst);
     }

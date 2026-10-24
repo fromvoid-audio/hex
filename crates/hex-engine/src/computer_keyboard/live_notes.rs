@@ -448,6 +448,11 @@ impl LiveNoteInput {
         Self::state(self.activation.load(Ordering::Acquire)) == ACTIVATION_FAULTED
     }
 
+    pub(crate) fn activation_rejected(&self, activation: LiveNoteActivation) -> bool {
+        self.activation.load(Ordering::Acquire)
+            == ((activation.epoch() << ACTIVATION_STATE_BITS) | ACTIVATION_FAULTED)
+    }
+
     pub fn same_current_activation(&self, activation: LiveNoteActivation) -> bool {
         !self.retired.load(Ordering::Acquire)
             && self.activation.load(Ordering::Acquire) == activation.0
