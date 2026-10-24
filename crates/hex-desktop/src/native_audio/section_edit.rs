@@ -27,10 +27,10 @@ impl NativeAudioSink {
         {
             return Err("arrangement audio context changed".into());
         }
-        let (_, revision) = self
+        let submitted = self
             .resident
             .current_submission
-            .filter(|(source, _)| *source == context)
+            .filter(|submitted| submitted.source_context == Some(context))
             .ok_or("arrangement audio has not been submitted")?;
         let control = self
             .output
@@ -40,6 +40,10 @@ impl NativeAudioSink {
         let output = control
             .output_identity()
             .ok_or("arrangement output identity unavailable")?;
+        if output != submitted.output_identity {
+            return Err("arrangement output changed".into());
+        }
+        let revision = submitted.audio_revision;
         let fence = if allow_playing {
             control.request_live_arrangement_edit_fence(context.project_generation, revision)
         } else {
