@@ -101,6 +101,10 @@ time selection, or the selected main sections. **command+l** also sets this loop
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** plays a note.
 
+a time selection shows a dark dot when its musical length is a power of two,
+such as two or four beats. the dot follows the dragged top-right or top-left
+corner and stays visible after release.
+
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
 keeps its own outline in either flavor.
