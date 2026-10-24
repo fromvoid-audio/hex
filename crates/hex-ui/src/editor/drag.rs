@@ -1038,15 +1038,12 @@ impl super::EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        let tracks = self
-            .arrangement_tracks(&state.project)
-            .map(|(_, t)| t)
-            .collect::<Vec<_>>();
+        let tracks = self.arrangement_track_indices();
         if tracks.is_empty() {
             return Some((None, timeline, pointer_y));
         }
 
-        let first = tracks.first()?;
+        let first = state.project.tracks().get(*tracks.first()?)?;
         if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
             let first_lane = *self.drag_lanes.get(&first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
@@ -1057,8 +1054,8 @@ impl super::EditorView {
         }
 
         for index in 1..tracks.len() {
-            let previous = tracks.get(index - 1)?;
-            let next = tracks.get(index)?;
+            let previous = state.project.tracks().get(*tracks.get(index - 1)?)?;
+            let next = state.project.tracks().get(*tracks.get(index)?)?;
             if self.drag_lane_epochs.get(&previous.id()) != Some(&self.drag_layout_generation)
                 || self.drag_lane_epochs.get(&next.id()) != Some(&self.drag_layout_generation)
             {
@@ -1072,7 +1069,7 @@ impl super::EditorView {
             }
         }
 
-        let last = tracks.last()?;
+        let last = state.project.tracks().get(*tracks.last()?)?;
         if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
             return None;
         }

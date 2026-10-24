@@ -335,23 +335,22 @@ impl EditorView {
             .or_else(|| self.track_reorder.gesture.as_ref()?.destination)?;
         let bounds = self.arrangement_bounds?;
         let state = self.state.as_ref()?;
-        let tracks = self
-            .arrangement_tracks(&state.project)
-            .map(|(_, t)| t)
-            .collect::<Vec<_>>();
+        let tracks = self.arrangement_track_indices();
         let index = match destination.before {
-            Some(id) => tracks.iter().position(|t| t.id() == id)?,
+            Some(id) => tracks
+                .iter()
+                .position(|i| state.project.tracks().get(*i).is_some_and(|t| t.id() == id))?,
             None => tracks.len(),
         };
         let top = self.track_scroll.list.logical_scroll_top();
         let mut y = -f32::from(top.offset_in_item);
         if index >= top.item_ix {
             for track in tracks.iter().skip(top.item_ix).take(index - top.item_ix) {
-                y += self.track_height(track.id());
+                y += self.track_height(state.project.tracks().get(*track)?.id());
             }
         } else {
             for track in tracks.iter().skip(index).take(top.item_ix - index) {
-                y -= self.track_height(track.id());
+                y -= self.track_height(state.project.tracks().get(*track)?.id());
             }
         }
         if y < 0.0 || y > bounds.height {

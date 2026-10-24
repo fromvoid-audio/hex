@@ -110,11 +110,15 @@ impl EditorView {
         &'a self,
         project: &'a Project,
     ) -> impl Iterator<Item = (usize, &'a Track)> {
-        project
-            .tracks()
+        self.arrangement_focus
+            .indices
             .iter()
-            .enumerate()
-            .filter(|(_, track)| self.arrangement_track_visible(track.id()))
+            .copied()
+            .filter_map(move |index| project.tracks().get(index).map(|track| (index, track)))
+    }
+    /// Canonical indices in visible row order; borrowed for pointer geometry.
+    pub(super) fn arrangement_track_indices(&self) -> &[usize] {
+        &self.arrangement_focus.indices
     }
     pub(super) fn arrangement_track_index(&self, row: usize) -> Option<usize> {
         self.arrangement_focus.indices.get(row).copied()
