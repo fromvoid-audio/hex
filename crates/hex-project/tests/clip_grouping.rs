@@ -384,3 +384,23 @@ fn directed_midi_group_materializes_note_gates_and_volume_in_forward_output_time
     assert!(e.redo());
     assert_eq!(e.project().snapshot(), grouped);
 }
+
+#[test]
+fn grouping_a_source_event_range_in_a_directed_view_refuses_atomically() {
+    let (mut e, _, clips) = audio_fixture();
+    e.execute(Command::ReverseClips(vec![clips[0]])).unwrap();
+    let before = e.project().snapshot();
+    assert!(
+        e.execute(Command::GroupAudioEventRange {
+            clip: clips[0],
+            start: 20,
+            end: 40
+        })
+        .is_err()
+    );
+    assert_eq!(e.project().snapshot(), before);
+    assert!(e.undo());
+    assert!(e.project().clip(clips[0]).unwrap().audio_edit().is_none());
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), before);
+}

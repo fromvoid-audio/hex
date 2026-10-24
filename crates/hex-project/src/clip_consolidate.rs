@@ -354,6 +354,11 @@ pub(crate) fn event_range(
         .ok_or(Invalid("audio clip no longer exists"))?
         .clone();
     let root = original.audio_event_root();
+    if root.content_view.is_some() {
+        return Err(Invalid(
+            "group source events before reversing their clip; directed range grouping is unsupported",
+        ));
+    }
     if root.placement.is_some() || start >= end || start < root.view_start || end > root.view_end {
         return Err(Invalid(
             "select one positive audio span inside a single placed occurrence",
