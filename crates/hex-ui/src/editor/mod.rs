@@ -1563,6 +1563,7 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
         if let Some(state) = self.state.as_ref() {
             self.gain_lane.change_owner(track, &state.project);
         }
@@ -1807,6 +1808,7 @@ impl EditorView {
             }
         }
         self.selected_track = Some(track);
+        self.arrangement_focus.observe_active_track(Some(track));
         if !self.track_selection.contains(track)
             && let Some(state) = self.state.as_ref()
         {
