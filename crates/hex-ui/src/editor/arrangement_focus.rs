@@ -3,7 +3,7 @@
 //! Nonadjacent sections form a union, not a hull. No selection leaves the normal
 //! view visible while the mode stays armed. Edits retain canonical IDs/indices.
 //! A newly acknowledged track stays visible while it is the active track. This
-//! exception is view-only and ends on selection, section, mode or document change.
+//! exception is view-only and ends on selection, section, focus-mode or document change.
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, Entity, Focusable, Subscription, Window, div, prelude::*, px};
@@ -81,9 +81,7 @@ impl State {
         }
         if !self.enabled
             || self.selected != selected
-            || self
-                .new_track
-                .is_some_and(|id| active_track != Some(id) || project.track(id).is_none())
+            || self.new_track.is_some_and(|id| active_track != Some(id))
         {
             self.new_track = None;
         }
@@ -101,7 +99,9 @@ impl State {
         } else {
             Rc::from([])
         };
-        if self.ranges != ranges {
+        // Validate track existence only on an invalidated projection, so an
+        // unchanged repaint retains the constant-time stamp path.
+        if self.ranges != ranges || self.new_track.is_some_and(|id| project.track(id).is_none()) {
             self.new_track = None;
             stamp.new_track = None;
         }

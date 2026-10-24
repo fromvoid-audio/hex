@@ -151,7 +151,7 @@ fn section_focus_keeps_new_active_track_through_authoring_then_filters_on_select
             })));
         });
         pump(&editor, &mut visual);
-        // Keyboard focus in a device editor is not a change of active track.
+        // Keyboard focus in a track's authoring editor is not a change of active track.
         visual.update(|window, cx| {
             editor.update(cx, |v, cx| {
                 v.midi_focus.focus(window);
