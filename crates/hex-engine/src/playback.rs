@@ -301,7 +301,7 @@ pub struct Playback {
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
     // Control-minted publication identity; no callback owner or allocation.
-    pub(crate) resident_pcm_publication: Option<u64>,
+    pub(crate) resident_pcm_publication: Option<std::num::NonZeroU64>,
     session_runtime: Option<Box<SessionPlayback>>,
     linear_runtime: Option<Box<RendererRuntime>>,
     session_unavailable: Option<crate::SessionPlaybackError>,

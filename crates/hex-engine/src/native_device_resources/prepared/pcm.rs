@@ -5,7 +5,7 @@
 use super::*;
 
 pub(super) struct PcmPublication {
-    pub(super) id: u64,
+    pub(super) id: std::num::NonZeroU64,
     sources: Vec<crate::Audio>,
 }
 impl PcmPublication {
@@ -26,7 +26,8 @@ impl PcmPublication {
             }
         }
         Ok(Self {
-            id: crate::audio_only_inputs::handle()?,
+            id: std::num::NonZeroU64::new(crate::audio_only_inputs::handle()?)
+                .ok_or(AudioStorageError::HandleExhausted)?,
             sources,
         })
     }
@@ -66,7 +67,7 @@ impl PcmPublications {
     pub(super) fn sources(&self) -> impl Iterator<Item = &crate::Audio> + Clone {
         self.entries.iter().flat_map(PcmPublication::sources)
     }
-    pub(super) fn find(&self, id: Option<u64>) -> Option<usize> {
+    pub(super) fn find(&self, id: Option<std::num::NonZeroU64>) -> Option<usize> {
         self.entries.iter().position(|entry| Some(entry.id) == id)
     }
     pub(super) fn release(&mut self, index: usize) {
