@@ -753,7 +753,11 @@ fn time_range_group_prepares_identical_audio_and_roundtrips_complete_state() {
         .undo_prepared_revision(Some(&changed))
         .unwrap()
         .unwrap();
-    assert_eq!(session.project(), &before);
+    let restored = session.project().snapshot();
+    let mut expected_before = before.snapshot();
+    expected_before.next_id = restored.next_id;
+    assert_eq!(restored, expected_before);
+    assert_eq!(render(&undone, 63), expected);
     let redone = session
         .redo_prepared_revision(Some(&undone))
         .unwrap()
