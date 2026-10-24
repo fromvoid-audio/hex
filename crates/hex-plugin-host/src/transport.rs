@@ -7,11 +7,13 @@
 //!
 //! One immutable quantum Q (at most 256 stereo frames) has exactly 2Q frames of
 //! pipeline latency. A physical callback must contain at most Q frames. Input is
-//! staged until final host conversion succeeds; only then may it reach a worker.
+//! staged across contiguous graph segments until the complete physical callback
+//! passes final host conversion; only then may it reach a worker.
 //! Missing/malformed output or saturation revokes the entire one-shot exchange.
 //! No stale-buffer replay, waiting, waking, allocation or DSP rollback occurs.
 
-use hex_engine::Frame;
+type Frame = [f32; 2];
+use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{
     Arc,
@@ -20,25 +22,13 @@ use std::sync::{
         Ordering::{Acquire, Release},
     },
 };
+mod storage;
 pub mod wire;
-mod worker;
-pub(crate) use worker::Reaper;
-pub(crate) use worker::spawn;
+pub use storage::{ConstructorStorage, channel_storage_bound};
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
 pub const QUEUE_CAPACITY: usize = 8;
-
-/// Exact instance/root/graph/transport epoch. Recreate this copied exchange on
-/// discontinuity; retaining a loaded native instance requires its separate actual
-/// quiescence/resume ACK, not mutation of these immutable endpoint bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Binding {
-    pub root: u64,
-    pub instance: u64,
-    pub graph: u64,
-    pub epoch: u64,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -199,6 +189,10 @@ struct State {
 struct Stage {
     state: State,
     request: Option<Block>,
+    expected_frames: usize,
+    staged_frames: usize,
+    input_events: usize,
+    output_events: usize,
 }
 
 /// Callback endpoint. Install before native callback reservation; return the
@@ -242,10 +236,7 @@ pub fn channel_from_completed_prefix(
     quantum: u16,
     completed_blocks: u64,
 ) -> Result<(Control, Callback, Worker), Fault> {
-    if [binding.root, binding.instance, binding.graph, binding.epoch].contains(&0)
-        || quantum == 0
-        || usize::from(quantum) > MAX_FRAMES
-    {
+    if !binding.is_valid() || quantum == 0 || usize::from(quantum) > MAX_FRAMES {
         return Err(Fault::Configuration);
     }
     let position = completed_blocks
@@ -288,11 +279,29 @@ pub fn channel_from_completed_prefix(
 }
 
 impl Callback {
-    pub(crate) fn reject(&mut self, fault: Fault) {
+    /// Permanently refuse this exchange at its actual host validation boundary.
+    /// Rejection neither replays work nor destroys either endpoint.
+    pub fn reject(&mut self, fault: Fault) {
         let _ = self.fail::<()>(fault);
+    }
+    /// Constructor pairing only; never native/root publication authority.
+    pub fn matches_control(&self, control: &Control) -> bool {
+        Arc::ptr_eq(&self.revoked, &control.revoked)
     }
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+    /// Diagnostic observation of actual committed transport progress. Staging
+    /// alone does not advance it; this grants no worker/readiness authority.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn committed_position_for_test(&self) -> u64 {
+        self.state.position
+    }
+    /// Snapshot the original producer's pending requests. This is diagnostic
+    /// progress only, not processing completion or native/publication custody.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_requests_for_test(&self) -> usize {
+        QUEUE_CAPACITY - self.requests.slots()
     }
     pub fn quantum_frames(&self) -> usize {
         usize::from(self.quantum)
@@ -304,6 +313,18 @@ impl Callback {
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
     }
+    /// Whether the visited physical callback has complete staged coverage.
+    /// This is not final host acceptance and grants no dispatch authority.
+    pub fn has_complete_staged_callback(&self) -> bool {
+        self.staged
+            .as_ref()
+            .is_some_and(|stage| stage.staged_frames == stage.expected_frames)
+    }
+    /// Current epoch revocation, including a worker/control request that the
+    /// callback has not yet visited. This read grants no future liveness.
+    pub fn is_revoked(&self) -> bool {
+        self.revoked.load(Acquire)
+    }
     pub fn fault(&self) -> Option<Fault> {
         self.fault
     }
@@ -313,9 +334,29 @@ impl Callback {
         self.staged = None;
         Err(fault)
     }
-    /// Stage one actual physical callback (not one chunk of a larger callback).
-    /// Output events use offsets within this callback. The first 2Q frames are
-    /// explicit pipeline warmup silence, not an audible-start guarantee.
+    /// Declare one actual physical callback, even when the graph renders it in
+    /// several ordered segments. The complete extent remains at most Q; graph
+    /// chunking never grants a second dispatch or same-callback worker wait.
+    pub fn begin_physical_callback(&mut self, frames: usize) -> Result<(), Fault> {
+        if self.revoked.load(Acquire) {
+            return self.fail(Fault::Revoked);
+        }
+        if self.staged.is_some() || frames == 0 || frames > usize::from(self.quantum) {
+            return self.fail(Fault::Protocol);
+        }
+        self.staged = Some(Stage {
+            state: self.state,
+            request: None,
+            expected_frames: frames,
+            staged_frames: 0,
+            input_events: 0,
+            output_events: 0,
+        });
+        Ok(())
+    }
+    /// Stage one whole physical callback. Output events use offsets within it.
+    /// The first 2Q frames are explicit pipeline warmup silence, not an
+    /// audible-start guarantee. Segment callers declare the full extent first.
     pub fn stage(
         &mut self,
         input: &[Frame],
@@ -323,15 +364,32 @@ impl Callback {
         output: &mut [Frame],
     ) -> Result<Events, Fault> {
         output.fill([0.0; 2]);
-        let result = self.stage_inner(input, events, output);
+        self.begin_physical_callback(input.len())?;
+        self.stage_segment(0, input, events, output)
+    }
+    /// Append the next contiguous graph segment. Input and output event offsets
+    /// are relative to this segment. Replies may be consumed, but no request is
+    /// published before the single final host-format acceptance in `finish`.
+    /// Any gap, overlap, incomplete callback or refusal revokes the whole epoch;
+    /// already consumed replies/foreign history are never rolled back/replayed.
+    pub fn stage_segment(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        events: &[MidiEvent],
+        output: &mut [Frame],
+    ) -> Result<Events, Fault> {
+        output.fill([0.0; 2]);
+        let result = self.stage_segment_inner(frame_offset, input, events, output);
         if let Err(fault) = result {
             output.fill([0.0; 2]);
             return self.fail(fault);
         }
         result
     }
-    fn stage_inner(
+    fn stage_segment_inner(
         &mut self,
+        frame_offset: usize,
         input: &[Frame],
         events: &[MidiEvent],
         output: &mut [Frame],
@@ -339,26 +397,26 @@ impl Callback {
         if self.revoked.load(Acquire) {
             return Err(Fault::Revoked);
         }
-        if self.staged.is_some()
+        let stage = self.staged.as_mut().ok_or(Fault::Protocol)?;
+        let end = frame_offset
+            .checked_add(input.len())
+            .ok_or(Fault::Protocol)?;
+        if frame_offset != stage.staged_frames
             || input.is_empty()
             || input.len() != output.len()
-            || input.len() > usize::from(self.quantum)
+            || end > stage.expected_frames
         {
             return Err(Fault::Protocol);
         }
         if !input.iter().flatten().all(|x| x.is_finite()) {
             return Err(Fault::InvalidSamples);
         }
-        if events.len() > MAX_EVENTS
+        if events.len() > MAX_EVENTS - stage.input_events
             || !events.iter().all(|e| e.valid(input.len()))
             || events.windows(2).any(|w| w[0].frame > w[1].frame)
         {
             return Err(Fault::InvalidEvents);
         }
-        let mut stage = Stage {
-            state: self.state,
-            request: None,
-        };
         let q = u64::from(self.quantum);
         let mut result = Events::default();
         let mut event_index = 0;
@@ -406,7 +464,12 @@ impl Callback {
                 stage.request = Some(stage.state.input);
             }
         }
-        self.staged = Some(stage);
+        if result.as_slice().len() > MAX_EVENTS - stage.output_events {
+            return Err(Fault::InvalidEvents);
+        }
+        stage.input_events += events.len();
+        stage.output_events += result.as_slice().len();
+        stage.staged_frames = end;
         Ok(result)
     }
     /// Call only after final host-format validation. Refusal terminates this
@@ -421,6 +484,9 @@ impl Callback {
         let Some(stage) = self.staged.take() else {
             return self.fail(Fault::Protocol);
         };
+        if stage.staged_frames != stage.expected_frames {
+            return self.fail(Fault::Protocol);
+        }
         if let Some(request) = stage.request {
             if self.requests.push(request).is_err() {
                 return self.fail(Fault::Saturated);
@@ -432,8 +498,17 @@ impl Callback {
 }
 
 impl Worker {
-    #[cfg(test)]
-    pub(crate) fn pending_requests_for_test(&self) -> usize {
+    /// Queue-independent revocation by the joining worker owner. Does not
+    /// dispose either endpoint or grant native/canonical acceptance.
+    pub fn revoke(&self) {
+        self.revoked.store(true, Release);
+    }
+    /// Diagnostic count after matching completion publication, never custody.
+    pub fn completed_blocks(&self) -> u64 {
+        self.sequence
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_requests_for_test(&self) -> usize {
         self.requests.slots()
     }
     fn fail<T>(&self, fault: Fault) -> Result<T, Fault> {
