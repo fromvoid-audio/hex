@@ -181,7 +181,8 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     let main_lane = visual.debug_bounds("main-track-lane").expect("main lane");
     let click = point(
         main_lane.origin.x + main_lane.size.width * 0.1,
-        main_lane.origin.y + main_lane.size.height * 0.7,
+        main_lane.origin.y
+            + px(super::time_selection::header_hit_height(f32::from(main_lane.size.height)) * 0.5),
     );
     let unsnapped = Modifiers {
         platform: true,
