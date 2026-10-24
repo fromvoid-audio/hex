@@ -8,6 +8,7 @@ use hex_lattice::{
 use hex_project::{Command, Created, Editor, Project};
 
 mod deadlines;
+mod epoch;
 #[cfg(not(debug_assertions))]
 mod profile;
 mod reorder;
@@ -704,6 +705,24 @@ fn replacement_preparation(
     project: &Project,
     samples: &[[f32; 2]],
 ) -> crate::AudioCandidateTicket {
+    replacement_preparation_inner(control, bindings, project, samples, None)
+}
+fn replacement_epoch_preparation(
+    control: &mut Control,
+    bindings: &[Binding],
+    project: &Project,
+    samples: &[[f32; 2]],
+    fence: StoppedEditFence,
+) -> crate::AudioCandidateTicket {
+    replacement_preparation_inner(control, bindings, project, samples, Some(fence))
+}
+fn replacement_preparation_inner(
+    control: &mut Control,
+    bindings: &[Binding],
+    project: &Project,
+    samples: &[[f32; 2]],
+    fence: Option<StoppedEditFence>,
+) -> crate::AudioCandidateTicket {
     let quote = control
         .with_native_effect_definition(bindings, |definition| {
             let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
@@ -773,9 +792,20 @@ fn replacement_preparation(
         crate::AudioCandidatePreparationProgress::Ready,
         "actual reserved preparation: {preparation_error:?}"
     );
-    let ticket = control
-        .stage_audio_candidate_preparation(token, 41)
-        .unwrap();
+    let ticket = if let Some(fence) = fence {
+        assert!(
+            control
+                .stage_audio_candidate_preparation(token, 41)
+                .is_err()
+        );
+        control
+            .stage_native_epoch_preparation(token, fence)
+            .unwrap()
+    } else {
+        control
+            .stage_audio_candidate_preparation(token, 41)
+            .unwrap()
+    };
     assert!(
         control
             .prepare_audio_candidate_with_native_sources_on_control(token, bindings, |_, _| {

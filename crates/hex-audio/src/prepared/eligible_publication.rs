@@ -255,13 +255,54 @@ impl PublicationControl {
         token: crate::AudioCandidatePreparationToken,
         context_generation: u64,
     ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        self.stage_audio_candidate_preparation_inner(token, context_generation, None)
+    }
+    /// Publish the successor of this exact native Stop gate. Root validates the
+    /// prepared owner's unchanged canonical context under its original custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn stage_native_epoch_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        fence: StoppedEditFence,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        let context = self
+            .status
+            .sampler_edit
+            .native_epoch_context(fence)
+            .filter(|_| self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready)
+            .ok_or("native epoch fence is not ready")?;
+        if self.status.applied_audio_source().is_some() {
+            return Err("native epoch old runtime has not returned");
+        }
+        self.stage_audio_candidate_preparation_inner(
+            token,
+            context.project_generation,
+            Some(context),
+        )
+    }
+    fn stage_audio_candidate_preparation_inner(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context_generation: u64,
+        expected_context: Option<hex_engine::AudioSourceContext>,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
+        }
+        if self.status.sampler_edit.native_epoch_active() && expected_context.is_none() {
+            return Err("native epoch publication requires its exact ready fence");
         }
         if self.revision == u64::MAX {
             return Err("playback revision exhausted");
         }
-        if !self.status.publication_pending.reserve_publication() {
+        let reserved = if expected_context.is_some() {
+            self.status
+                .publication_pending
+                .reserve_native_epoch_publication()
+        } else {
+            self.status.publication_pending.reserve_publication()
+        };
+        if !reserved {
             return Err("playback publication already pending");
         }
         let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
@@ -274,11 +315,15 @@ impl PublicationControl {
             context_generation,
             PublicationPolicy::InheritRuntime,
         );
-        match self
-            .candidate_root
-            .stage_runtime_preparation(token, self.rate, header, |queued| {
+        match self.candidate_root.stage_runtime_preparation(
+            token,
+            self.rate,
+            header,
+            expected_context,
+            |queued| {
                 chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
-            }) {
+            },
+        ) {
             Ok(ticket) => {
                 self.revision = revision;
                 self.status.submitted_revision.store(revision, Release);
@@ -317,6 +362,8 @@ impl PublicationControl {
     ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateEligibleStageRefusal> {
         let reason = if !self.native_custody || self.status.closing.load(Acquire) {
             Some("candidate native custody unavailable")
+        } else if self.status.sampler_edit.native_epoch_active() {
+            Some("native epoch publication requires its exact ready fence")
         } else if owner.sample_rate() != self.rate
             || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
         {

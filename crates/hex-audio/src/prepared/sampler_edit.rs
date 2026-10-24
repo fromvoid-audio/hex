@@ -1,4 +1,4 @@
-//! One reversible control edit fence shared by stopped sampler and Arrangement edits. Scalar transport exclusion,
+//! One reversible control edit fence shared by stopped sampler, native epochs and Arrangement edits. Scalar transport exclusion,
 //! not a source lease, graph admission or installation receipt.
 use super::*;
 
@@ -20,6 +20,7 @@ pub(super) struct Fence {
     // introduce a pre-fence command after the fence has been released.
     serial: AtomicU64,
     resident: AtomicBool,
+    native_epoch: AtomicBool,
     allow_playing: AtomicBool,
     playing: AtomicBool,
     position: AtomicU64,
@@ -46,6 +47,34 @@ pub(super) fn is_stop(action: PlaybackAction) -> bool {
     )
 }
 impl Fence {
+    /// Match the original acknowledged source again at a later callback
+    /// frontier; readiness alone may describe an older active publication.
+    pub(super) fn matches_source(
+        &self,
+        token: StoppedEditFence,
+        source: AppliedAudioSource,
+    ) -> bool {
+        self.state(token) == StoppedEditFenceState::Ready
+            && source.output_identity == self.output.load(SeqCst)
+            && source.audio_revision == self.audio.load(SeqCst)
+            && source.context.project_generation == self.generation.load(SeqCst)
+            && source.context.editor_revision == self.editor.load(SeqCst)
+            && self.gate() == token.operation
+    }
+    pub(super) fn native_epoch_active(&self) -> bool {
+        self.active() && self.native_epoch.load(SeqCst)
+    }
+    pub(super) fn native_epoch_context(
+        &self,
+        token: StoppedEditFence,
+    ) -> Option<hex_engine::AudioSourceContext> {
+        (self.native_epoch_active() && self.state(token) == StoppedEditFenceState::Ready).then(
+            || hex_engine::AudioSourceContext {
+                project_generation: self.generation.load(SeqCst),
+                editor_revision: self.editor.load(SeqCst),
+            },
+        )
+    }
     pub(super) fn gate(&self) -> u64 {
         self.serial.load(SeqCst)
     }
@@ -57,14 +86,15 @@ impl Fence {
         source: AppliedAudioSource,
         cut: u64,
     ) -> Result<StoppedEditFence, &'static str> {
-        self.begin_source(source, cut, false, false)
+        self.begin_source(source, cut, false, false, false)
     }
-    fn begin_source(
+    pub(super) fn begin_source(
         &self,
         source: AppliedAudioSource,
         cut: u64,
         resident: bool,
         allow_playing: bool,
+        native_epoch: bool,
     ) -> Result<StoppedEditFence, &'static str> {
         self.retire_abort_on_control();
         let prior = self.gate();
@@ -74,6 +104,7 @@ impl Fence {
             .ok_or("sampler edit is busy or its identity is exhausted")?;
         self.allow_playing.store(allow_playing, SeqCst);
         self.resident.store(resident, SeqCst);
+        self.native_epoch.store(native_epoch, SeqCst);
         self.output.store(source.output_identity, SeqCst);
         self.generation
             .store(source.context.project_generation, SeqCst);
@@ -120,14 +151,14 @@ impl Fence {
     }
     fn acknowledge(
         &self,
+        operation: u64,
         source: Option<AppliedAudioSource>,
         playing: bool,
         keyboard_epoch: u64,
         faulted: bool,
         consumed: u64,
     ) {
-        let operation = self.gate();
-        if operation & 1 == 0 || consumed < self.cut.load(SeqCst) {
+        if operation & 1 == 0 || self.gate() != operation || consumed < self.cut.load(SeqCst) {
             return;
         }
         if self.abort.load(SeqCst) == operation {
@@ -237,6 +268,7 @@ impl PublicationControl {
             self.status.admitted_ticket.load(Acquire),
             true,
             allow_playing,
+            false,
         )
     }
     /// Actual callback-observed frame, available only for this ready arrangement gate.
@@ -280,6 +312,9 @@ impl PublicationControl {
     }
     pub fn release_stopped_edit_fence(&self, token: StoppedEditFence) {
         self.status.sampler_edit.release(token);
+        if !self.status.sampler_edit.active() {
+            self.status.publication_pending.release_native_epoch();
+        }
     }
     /// Terminal cancellation after authored commit, before old output drain.
     pub fn commit_sampler_edit_fence(&self, token: StoppedEditFence) -> Result<(), &'static str> {
@@ -292,7 +327,10 @@ impl PublicationControl {
 }
 impl Callback {
     pub(super) fn acknowledge_sampler_edit(&self) {
-        if !self.status.sampler_edit.active() {
+        // Pin the operation before selecting its runtime witness. An ACK from
+        // one kind of edit must not acknowledge a later gate on the same source.
+        let operation = self.status.sampler_edit.gate();
+        if operation & 1 == 0 {
             return;
         }
         if self.status.sampler_edit.resident.load(Acquire) {
@@ -308,7 +346,6 @@ impl Callback {
                             editor_revision: 0,
                         },
                     });
-            let operation = self.status.sampler_edit.gate();
             if self.status.sampler_edit.ack.load(SeqCst) != operation {
                 let region = active.and_then(|a| a.playback.section_loop());
                 self.status
@@ -329,6 +366,7 @@ impl Callback {
                     .store(self.status.transport_epoch.load(Acquire), SeqCst);
             }
             self.status.sampler_edit.acknowledge(
+                operation,
                 source,
                 active.is_none_or(|a| a.playback.playing()),
                 0,
@@ -345,10 +383,17 @@ impl Callback {
             _ => None,
         };
         let source = active.and_then(|a| a.applied_audio_source());
-        let status = active
-            .and_then(|a| a.runtime())
-            .and_then(|r| r.current_sampler_edit_status());
+        let status = active.and_then(|a| a.runtime()).and_then(|r| {
+            if self.status.sampler_edit.native_epoch.load(Acquire) {
+                // Native effects need the real runtime Stop witness; they do
+                // not require a sampler source collection to exist.
+                r.status().map(|status| (status, 0))
+            } else {
+                r.current_sampler_edit_status()
+            }
+        });
         self.status.sampler_edit.acknowledge(
+            operation,
             source,
             status.is_none_or(|s| s.0.playing),
             status.map_or(0, |s| s.1),
@@ -382,6 +427,18 @@ mod tests {
         }
     }
     #[test]
+    fn earlier_witness_cannot_acknowledge_a_later_gate_on_the_same_source() {
+        let fence = Fence::default();
+        let first = fence.begin(source(), 0).unwrap();
+        fence.acknowledge(first.operation, Some(source()), false, 0, false, 0);
+        fence.release(first);
+        let next = fence.begin_source(source(), 0, false, false, true).unwrap();
+        fence.acknowledge(first.operation, Some(source()), false, 0, false, 0);
+        assert_eq!(fence.state(next), StoppedEditFenceState::Pending);
+        fence.acknowledge(next.operation, Some(source()), false, 0, false, 0);
+        assert_eq!(fence.native_epoch_context(next), Some(source().context));
+    }
+    #[test]
     fn earlier_play_is_consumed_before_stopped_ack_and_later_play_never_replays() {
         let fence = Fence::default();
         let older = play(1, fence.gate());
@@ -389,9 +446,9 @@ mod tests {
         assert!(fence.permits(older));
         // A request can arrive after this callback took its consumption cut.
         // It must wait for the following callback to consume that earlier Play.
-        fence.acknowledge(Some(source()), false, 9, false, 0);
+        fence.acknowledge(fence.gate(), Some(source()), false, 9, false, 0);
         assert_eq!(fence.state(token), StoppedEditFenceState::Pending);
-        fence.acknowledge(Some(source()), true, 9, false, 1);
+        fence.acknowledge(fence.gate(), Some(source()), true, 9, false, 1);
         assert_eq!(fence.state(token), StoppedEditFenceState::Refused);
         let raced = play(2, 0);
         assert!(!fence.permits(raced));
@@ -414,7 +471,7 @@ mod tests {
             action: PlaybackAction::Transport(PlaybackCommand::Stop),
             ..play(1, 0)
         }));
-        fence.acknowledge(Some(source()), false, 9, false, 0);
+        fence.acknowledge(fence.gate(), Some(source()), false, 9, false, 0);
         assert_eq!(fence.state(token), StoppedEditFenceState::Ready);
         assert!(fence.permits_keyboard(9, 9));
         assert!(!fence.permits_keyboard(10, 9));
@@ -423,7 +480,7 @@ mod tests {
         let next = fence.begin(source(), 0).unwrap();
         let mut changed = source();
         changed.audio_revision += 1;
-        fence.acknowledge(Some(changed), false, 9, false, 0);
+        fence.acknowledge(fence.gate(), Some(changed), false, 9, false, 0);
         assert_eq!(fence.state(next), StoppedEditFenceState::Refused);
         assert_eq!(fence.state(token), StoppedEditFenceState::Refused);
     }
@@ -440,10 +497,10 @@ mod tests {
         assert!(fence.begin(source(), 2).is_err());
         assert!(fence.permits(earlier));
         assert!(!fence.permits(raced));
-        fence.acknowledge(Some(source()), true, 0, false, 0);
+        fence.acknowledge(fence.gate(), Some(source()), true, 0, false, 0);
         fence.retire_abort_on_control();
         assert!(fence.active());
-        fence.acknowledge(Some(source()), true, 0, false, 1);
+        fence.acknowledge(fence.gate(), Some(source()), true, 0, false, 1);
         fence.retire_abort_on_control();
         assert!(!fence.active());
         assert!(!fence.permits(raced));
@@ -462,7 +519,7 @@ mod tests {
         let fence = Fence::default();
         let token = fence.begin(source(), 0).unwrap();
         assert!(fence.begin(source(), 0).is_err());
-        fence.acknowledge(Some(source()), false, 0, true, 0);
+        fence.acknowledge(fence.gate(), Some(source()), false, 0, true, 0);
         assert_eq!(fence.state(token), StoppedEditFenceState::Refused);
         fence.release(token);
         fence.serial.store(u64::MAX - 1, SeqCst);

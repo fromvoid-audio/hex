@@ -57,6 +57,14 @@ pub(crate) struct Stamp {
 pub struct AudioCandidateTicket {
     stamp: Stamp,
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) struct NativeEpochTarget(Stamp);
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl AudioCandidateTicket {
+    pub(crate) fn native_epoch_target(&self, root: u64) -> Option<NativeEpochTarget> {
+        (self.stamp.root == root).then_some(NativeEpochTarget(self.stamp))
+    }
+}
 pub struct AudioCandidateStageRefusal {
     pub reason: &'static str,
     pub owner: AudioCandidateOwner,
@@ -74,6 +82,10 @@ pub enum AudioCandidateReturnKind {
     NeverInstalled,
     FinalActive,
     Replaced,
+    /// Exact callback-observed native Stop, before successor construction.
+    /// This has no replacement manifest and is not terminal backend shutdown.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    StoppedForNativeEpoch,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -532,6 +544,7 @@ impl CandidateRoot {
         token: AudioCandidatePreparationToken,
         rate: u32,
         header: (u64, u64, crate::prepared::PublicationPolicy),
+        expected_context: Option<hex_engine::AudioSourceContext>,
         enqueue: impl FnOnce(QueuedEligibleCandidate),
     ) -> Result<AudioCandidateTicket, &'static str> {
         let result = self.0.eligible.stage_runtime_preparation(
@@ -543,6 +556,7 @@ impl CandidateRoot {
                 policy: header.2,
             },
             rate,
+            expected_context,
             enqueue,
         );
         crate::lifecycle::request_candidate_cleanup(self);

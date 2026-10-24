@@ -1,4 +1,4 @@
-//! Failed construction keeps the same source/queues in existing control custody.
+//! Failed construction/epoch keeps the same source/queues in existing control custody.
 //! No callback has been loaned by this path; native disposal is independent of
 //! final control-side queue/metadata destruction by the enclosing Root owner.
 use super::*;
@@ -19,7 +19,7 @@ enum Custody {
     },
 }
 
-/// Original startup refusal and its actual native/endpoint owners. Retain this
+/// Original startup/epoch refusal and its actual native/endpoint owners. Retain this
 /// on control until disposal is observed, then destroy it on control. Timeout
 /// and lost custody never return a reusable source or permit a startup retry.
 pub struct NativeWorkerStartFailure {
@@ -112,6 +112,58 @@ impl NativeWorkerStartFailure {
 }
 
 impl NativeWorker {
+    /// Consume the original control and paired callback only after their Root
+    /// carrier returned. Success drops old queues on control and returns the
+    /// same quiescent child. Failure keeps the actual old pair and native lease
+    /// in the existing refusal packet until independently observed disposal.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn into_quiescent_on_control(
+        mut self,
+        callback: Callback,
+    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+        let mismatch = !self.owns_callback(&callback);
+        let joined = self.reaper.join_on_control();
+        let mut cause = if mismatch {
+            Some(Error::Protocol("native quiescence callback differs"))
+        } else if self.retirement_requested {
+            Some(Error::Protocol("native worker retirement is terminal"))
+        } else {
+            joined.err().map(|fault| Error::Protocol(fault.message()))
+        };
+        let mut native = None;
+        if let Some(state) = self.reaper.worker.as_mut() {
+            // Preserve the actual native error ahead of the transport summary.
+            if let Some(error) = state.native_error.take() {
+                cause = Some(error);
+            }
+            match state.processor.take() {
+                Some(Processor::Native(instance)) => {
+                    if cause.is_some() {
+                        native = Some((*instance).cancel_retained_on_control());
+                    } else {
+                        match (*instance).quiesce_retained_on_control() {
+                            Ok(source) => return Ok(source),
+                            Err(mut failure) => {
+                                cause = Some(failure.take_cause_on_control());
+                                native = Some(failure);
+                            }
+                        }
+                    }
+                }
+                other => state.processor = other,
+            }
+        }
+        Err(NativeWorkerStartFailure {
+            cause: cause.unwrap_or(Error::Protocol("native quiescence source missing")),
+            binding: self.binding,
+            custody: Custody::Pair {
+                reaper: self.reaper,
+                _callback: callback,
+                native,
+            },
+        })
+    }
+
     /// Retain the original native source and any constructed queue pair on
     /// every refusal, including std thread creation failure. Success transfers
     /// the exact live pair; failure cannot be used as a worker or callback.

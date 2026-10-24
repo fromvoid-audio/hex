@@ -63,6 +63,23 @@ impl NativeEffectStorage {
     }
 }
 impl NativeEffect {
+    /// Root calls this only after all graph references and the unique endpoint
+    /// loan have returned. Old copied queues/dry history are destroyed on this
+    /// control lane; failures retain the exact native/transport custody packet.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn into_quiescent_on_control(
+        self,
+    ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
+        let Self { worker, callback } = self;
+        let NativeEffectCallback {
+            transport,
+            configuration,
+            dry,
+            ..
+        } = callback;
+        drop((configuration, dry));
+        worker.into_quiescent_on_control(transport)
+    }
     pub fn prepare_on_control(
         identity: ProcessorInstanceIdentity,
         instance: Prepared,

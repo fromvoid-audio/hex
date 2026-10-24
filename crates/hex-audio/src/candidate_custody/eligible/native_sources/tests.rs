@@ -19,6 +19,7 @@ pub(crate) fn source_reservation() -> NativeSourceDataReservation {
 mod completion;
 mod definition;
 mod effect;
+mod epoch;
 
 pub(crate) fn input() -> (InstanceBuild, native::Source, native::Preparation) {
     input_for(
