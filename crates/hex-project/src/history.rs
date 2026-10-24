@@ -158,6 +158,7 @@ impl Editor {
         let result = candidate.apply(command)?;
         let alias_changed = alias_plan.finish(&mut candidate)?;
         if alias_changed { Project::from_snapshot(candidate.snapshot())?; }
+        candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
@@ -272,6 +273,7 @@ impl Editor {
             }
             if alias_changed { Project::from_snapshot(candidate.snapshot())?; }
         }
+        candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;

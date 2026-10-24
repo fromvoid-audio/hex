@@ -40,6 +40,10 @@ impl Project {
         selection: &TrackSelectionIds,
         before: Option<TrackId>,
     ) -> Result<Created, Invalid> {
+        if self.has_group_tracks() {
+            let destination = self.track_destination_before(before)?;
+            return self.reparent_tracks(selection, destination);
+        }
         let ids = selection.ids();
         if let [track] = ids {
             return self.move_track_before(*track, before);
@@ -106,6 +110,11 @@ impl Project {
         track: TrackId,
         before: Option<TrackId>,
     ) -> Result<Created, Invalid> {
+        if self.has_group_tracks() {
+            let selection = TrackSelectionIds::new(&[track])?;
+            let destination = self.track_destination_before(before)?;
+            return self.reparent_tracks(&selection, destination);
+        }
         let source = self
             .tracks
             .iter()

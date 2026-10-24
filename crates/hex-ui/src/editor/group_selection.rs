@@ -1,4 +1,4 @@
-//! Whole-clip Arrangement grouping from the focused editor shortcut.
+//! Time-span or whole-clip Arrangement grouping from the focused editor shortcut.
 use super::{EditorMode, EditorView};
 use gpui::Window;
 use hex_session::service::Request;
@@ -19,6 +19,24 @@ impl EditorView {
         }
         if self.edit_pending() {
             self.error = Some("applying edit · wait before grouping clips".into());
+            return;
+        }
+        if self
+            .time_selection
+            .is_some_and(|range| range.anchor_frame != range.end_frame)
+        {
+            let Some(range) = self.normalized_time_selection() else {
+                self.error = Some("time selection no longer belongs to current tracks".into());
+                return;
+            };
+            let Some(state) = &self.state else {
+                return;
+            };
+            self.enqueue(Request::GroupTimeRange {
+                project_generation: self.project_generation,
+                revision: state.revision,
+                range,
+            });
             return;
         }
         let clips = self.selected_clip_ids();

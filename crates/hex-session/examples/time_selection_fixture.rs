@@ -79,6 +79,8 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             });
         }
         tracks.push(TrackSnapshot {
+            kind: hex_project::TrackKind::Ordinary,
+            parent_group: None,
             color: hex_project::ElementColor::default(),
             id: track,
             name: format!("profile {index:03}"),

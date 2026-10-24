@@ -164,6 +164,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
     schema::clip_aliases::require_legacy_compatible(project)?;
+    schema::track_groups::require_legacy_compatible(project)?;
     schema::grouped_audio::require_legacy_compatible(project)?;
     schema::audio_events::require_legacy_compatible(project)?;
     schema::content_views::require_legacy_compatible(project)?;

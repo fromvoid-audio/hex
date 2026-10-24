@@ -8,7 +8,7 @@ use gpui::{PathBuilder, point};
 impl NumericControl {
     pub(super) fn vertical_fader(&self, value: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let style = self.style;
-        let enabled = self.enabled;
+        let enabled = self.availability.painted_enabled();
         let rail_id = format!("{}-slider", self.id);
         let handle_id = format!("{}-slider-thumb", self.id);
         div()

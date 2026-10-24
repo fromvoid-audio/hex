@@ -12,6 +12,11 @@
 //! normalizing or rewriting the source document. Source events and DSP tails have
 //! their own owners and are not top-level Arrangement occupancy.
 //!
+//! Track hierarchy is one bounded preorder inventory with typed kind/parent IDs.
+//! Group subtrees are indivisible for structural edits and clipboard membership;
+//! group rows own mixer/effect state, never clips, instruments or Console cells.
+//! Playback admission is owned by hex-engine and may refuse unsupported hierarchy.
+//!
 //! # Dependencies
 //! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
 //!
@@ -30,9 +35,13 @@ mod audio_events;
 pub use audio_event_fade::AudioEventFade;
 mod project_tempo;
 mod retained_audio;
+mod track_groups;
 mod track_order;
 pub use audio_events::{
     AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS, RetainedAudioRoot,
+};
+pub use track_groups::{
+    MAX_GROUP_DEPTH, TrackDestination, TrackHierarchy, TrackHierarchyRow, TrackKind,
 };
 pub use track_order::TrackSelectionIds;
 mod audio_edit;
@@ -464,6 +473,8 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) kind: TrackKind,
+    pub(crate) parent_group: Option<TrackId>,
     pub(crate) color: crate::ElementColor,
     pub(crate) gain_lane: GainLane,
     pub(crate) id: TrackId,
@@ -481,6 +492,15 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    pub fn kind(&self) -> TrackKind {
+        self.kind
+    }
+    pub fn is_group(&self) -> bool {
+        self.kind == TrackKind::Group
+    }
+    pub fn parent_group(&self) -> Option<TrackId> {
+        self.parent_group
+    }
     pub fn color(&self) -> ElementColor {
         self.color
     }

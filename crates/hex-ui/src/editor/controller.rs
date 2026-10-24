@@ -3100,6 +3100,7 @@ impl EditorView {
                 | Request::DuplicateAliasClips { .. }
                 | Request::DuplicateSessionCell { .. }
                 | Request::GroupClips { .. }
+                | Request::GroupTimeRange { .. }
                 | Request::GroupAudioEvents { .. }
                 | Request::Edit(_)
                 | Request::BounceArrangement { .. }

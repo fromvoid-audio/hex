@@ -100,6 +100,12 @@ remain retained. grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 
+with a positive arrange time selection, **g** instead groups only the included
+pieces, splitting clips at both selection edges and preserving outside material.
+each populated track gets its own clip, preserving track routing; empty tracks
+are skipped. each track must contain one media kind with matching activation.
+the final track's result becomes the selected clip. one undo restores all tracks.
+
 in the lower audio editor, **g** makes the selected event or time span its own
 clip and keeps the material on either side. select one visible, nonrepeating
 span. text fields, device controls and the piano editor keep their own key input;
@@ -218,9 +224,9 @@ transport and audible result; a selected item is not evidence that it is playing
 
 ## arrangement automation view
 
-use the toolbar's **a** control to show track-gain automation over faded clips.
-click it again to return to clip editing. switching views preserves clips,
-selection, automation and undo history. **a** and **0** toggle contextual
+press **a** or use the toolbar's **a** control to show track-gain automation over
+faded clips. repeat to return to clip editing. switching views preserves clips,
+selection, automation and undo history. **c** and **0** toggle contextual
 activation outside automation view: the focused device, track, selected clips,
 or selected time span. a partial time span splits clips at its edges. text fields
 and the computer midi keyboard keep their own input.
@@ -485,8 +491,8 @@ the complete edit.
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
 | bounce in place / to a new track | b / command+b |
-| arrangement automation view | toolbar a control |
-| contextual activation | a / 0 |
+| arrangement automation view | a / toolbar a control |
+| contextual activation | c / 0 |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

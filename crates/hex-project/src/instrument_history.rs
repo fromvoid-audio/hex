@@ -101,6 +101,8 @@ impl Project {
         let mut changed = None;
         for (current, next) in tracks.iter().zip(&target.tracks) {
             let Track {
+                kind,
+                parent_group,
                 color,
                 gain_lane,
                 id,
@@ -120,7 +122,9 @@ impl Project {
                 spans,
                 recording_epoch,
             } = gain_lane;
-            if color != &next.color
+            if kind != &next.kind
+                || parent_group != &next.parent_group
+                || color != &next.color
                 || id != &next.id
                 || name != &next.name
                 || gain != &next.gain
