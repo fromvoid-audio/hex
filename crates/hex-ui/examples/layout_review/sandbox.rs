@@ -172,7 +172,7 @@ impl Sandbox {
         if let Some(sample) = self.samples.get(&index).cloned() {
             let enabled = sample.read(cx).enabled;
             tools = tools.child(
-                hex_widgets::action(
+                hex_widgets::toggle_action(
                     theme::text(if enabled { "disable" } else { "enable" }),
                     theme::action_style(),
                 )
@@ -185,7 +185,7 @@ impl Sandbox {
         }
         if let Some(sample) = self.samples.get(&index).cloned() {
             tools = tools.child(
-                hex_widgets::action(theme::text("narrow / wide"), theme::action_style())
+                hex_widgets::toggle_action(theme::text("narrow / wide"), theme::action_style())
                     .id(("sample-width", index))
                     .debug_selector(move || format!("sample-{index}-width"))
                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -218,7 +218,7 @@ impl Render for Sandbox {
         let mut categories = div().flex().flex_wrap().gap(px(4.0));
         for category in CATEGORIES {
             categories = categories.child(
-                hex_widgets::action(
+                hex_widgets::toggle_action(
                     theme::text(category),
                     theme::device_segment_style(category == self.category),
                 )
@@ -258,7 +258,7 @@ impl Render for Sandbox {
                 .filter(|item| item.page() == candidate)
                 .count();
             nav = nav.child(
-                hex_widgets::action(
+                hex_widgets::toggle_action(
                     theme::text(format!("{} · {count}", candidate.name)),
                     theme::device_segment_style(candidate == page),
                 )
@@ -338,7 +338,7 @@ impl Render for Sandbox {
                 }),
             ));
         }
-        let theme_button = hex_widgets::action(
+        let theme_button = hex_widgets::toggle_action(
             theme::text(
                 if theme::preferences() == hex_preferences::ThemePreferences::default() {
                     "light theme"
