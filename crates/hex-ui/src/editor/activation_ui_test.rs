@@ -65,7 +65,7 @@ fn split_midi_trim_preview_keeps_the_retained_source_window() {
 }
 
 #[gpui::test]
-fn activation_zero_toggles_mixed_clips_atomically_with_history(cx: &mut TestAppContext) {
+fn activation_a_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
@@ -84,10 +84,11 @@ fn activation_zero_toggles_mixed_clips_atomically_with_history(cx: &mut TestAppC
             Some(true)
         );
     });
-    for (key, expected) in [("0", false), ("0", true)] {
+    for (key, expected) in [("a", false), ("0", true)] {
         visual.simulate_keystrokes(key);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
+            assert!(!v.automation_view.enabled);
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.clip_active(audio), Some(expected));
             assert_eq!(p.clip_active(midi), Some(expected));
@@ -125,7 +126,7 @@ fn activation_time_span_splits_only_inside_and_header_focus_targets_track(cx: &m
         });
         track
     });
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("a");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let clips = v
@@ -145,7 +146,7 @@ fn activation_time_span_splits_only_inside_and_header_focus_targets_track(cx: &m
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| v.track_header_focus(track, cx).focus(window));
     });
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("a");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.track(track).unwrap();
