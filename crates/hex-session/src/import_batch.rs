@@ -163,7 +163,13 @@ impl Session {
                 }
             }
         }
-        let (mut commands, console_cell) = console::prefix(self.project(), destination, count)?;
+        let track_name = prepared
+            .first()
+            .and_then(|member| member.path.file_stem())
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "imported audio".into());
+        let (mut commands, console_cell) =
+            console::prefix(self.project(), destination, count, &track_name)?;
         let mut residents: Vec<ResidentAsset> = Vec::new();
         commands
             .try_reserve_exact(count)

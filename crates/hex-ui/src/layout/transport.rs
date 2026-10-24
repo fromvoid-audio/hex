@@ -22,6 +22,10 @@ impl Daw {
             }))
     }
 
+    pub(crate) fn toggle_button(label: &'static str, active: bool) -> Div {
+        Self::button(label, active).rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
+    }
+
     pub(crate) fn with_tooltip(
         button: gpui::Stateful<Div>,
         description: &'static str,
@@ -50,7 +54,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button("◀", false).id("browser-toggle"),
+                    Self::toggle_button("◀", false).id("browser-toggle"),
                     "toggle browser",
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -60,7 +64,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button(if playing { "Ⅱ" } else { "▶" }, playing).id("play"),
+                    Self::toggle_button(if playing { "Ⅱ" } else { "▶" }, playing).id("play"),
                     if playing {
                         "pause playback"
                     } else {
@@ -74,7 +78,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button("■", false).id("stop"),
+                    Self::toggle_button("■", false).id("stop"),
                     "stop and return to start · escape",
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -126,7 +130,8 @@ impl Daw {
             .child(div().flex_1())
             .child(
                 Self::with_tooltip(
-                    Self::button("arrangement", self.mode == Mode::Arrangement).id("arrangement"),
+                    Self::toggle_button("arrangement", self.mode == Mode::Arrangement)
+                        .id("arrangement"),
                     "show arrangement",
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -138,7 +143,7 @@ impl Daw {
             )
             .child(
                 Self::with_tooltip(
-                    Self::button("session", self.mode == Mode::Session).id("session"),
+                    Self::toggle_button("session", self.mode == Mode::Session).id("session"),
                     "show session",
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -172,7 +177,7 @@ impl Daw {
         if !self.browser_open {
             return browser.w(px(30.0)).child(
                 Self::with_tooltip(
-                    Self::button(">", false).id("browser-expand"),
+                    Self::toggle_button(">", false).id("browser-expand"),
                     "show browser",
                 )
                 .on_click(cx.listener(|this, _, _, cx| {

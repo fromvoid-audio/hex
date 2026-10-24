@@ -2,9 +2,16 @@
 //! Structural relocation may freeze original tempo/root context independently of
 //! destination placement. Cache identity, mapping, fades and events all consume
 //! that retained processing law; a crop never restarts full-root analysis.
+//! Finite Once/Repeat placements compose the canonical projection into one
+//! resident outer buffer, shared with waveform preparation. Their distinct
+//! cache identity retains complete geometry and tempo. Outer frames and summed
+//! musical full-root work each cap at 16777216; at most 8192 occurrences are
+//! admitted before PCM allocation. Unsupported streamed placement preparation
+//! refuses without changing project or media. Ordinary crops keep their path.
 mod budget;
 mod events;
 mod mapping;
+mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
 use hex_project::{
@@ -18,6 +25,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+pub use view::AudioPreviewRoot;
 fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     Ok(if domain.warp_enabled {
         match domain
@@ -80,15 +88,26 @@ pub const MAX_RETAINED_DERIVED_BYTES: usize = budget::RETAINED_LIMIT;
 
 struct Entry {
     source: Audio,
-    domain: Arc<AudioClipDomain>,
-    tempo: Option<Arc<hex_project::TempoMap>>,
-    origin: i128,
+    key: EntryKey,
     algorithm_version: u32,
     conversion: u32,
     source_rate: u32,
     prepared: Audio,
     bytes: usize,
     source_bytes: usize,
+}
+enum EntryKey {
+    Root {
+        domain: Arc<AudioClipDomain>,
+        tempo: Option<Arc<hex_project::TempoMap>>,
+        origin: i128,
+    },
+    View {
+        edit: AudioClipEdit,
+        tempo: Arc<hex_project::TempoMap>,
+        start: u64,
+        duration: u64,
+    },
 }
 struct Cache {
     entries: VecDeque<Entry>,
@@ -365,15 +384,25 @@ impl AudioTransformPreparation {
         origin: i128,
         asset: &Asset,
     ) -> Result<Option<Audio>, Invalid> {
+        self.lookup_key(source, asset, |key| {
+            matches!(key, EntryKey::Root { domain, tempo: retained, origin: at }
+                if (Arc::ptr_eq(domain, &edit.domain) || domain == &edit.domain)
+                    && *at == origin && retained.as_deref() == tempo.as_deref())
+        })
+    }
+    fn lookup_key(
+        &self,
+        source: &Audio,
+        asset: &Asset,
+        key_matches: impl Fn(&EntryKey) -> bool,
+    ) -> Result<Option<Audio>, Invalid> {
         let matching = |entry: &Entry| {
             entry.algorithm_version == hex_warp::ALGORITHM_VERSION
                 && entry.source.shares_pcm_with(source)
                 && entry.source.sample_rate() == source.sample_rate()
-                && (Arc::ptr_eq(&entry.domain, &edit.domain) || entry.domain == edit.domain)
-                && entry.origin == origin
                 && entry.conversion == asset.conversion_version()
                 && entry.source_rate == asset.source_sample_rate()
-                && entry.tempo.as_deref() == tempo.as_deref()
+                && key_matches(&entry.key)
         };
         if let Some(entries) = self
             .pending
@@ -538,9 +567,11 @@ impl AudioTransformPreparation {
         let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
-            domain: Arc::clone(&edit.domain),
-            tempo,
-            origin,
+            key: EntryKey::Root {
+                domain: Arc::clone(&edit.domain),
+                tempo,
+                origin,
+            },
             algorithm_version: hex_warp::ALGORITHM_VERSION,
             conversion: asset.conversion_version(),
             source_rate: asset.source_sample_rate(),
@@ -590,6 +621,11 @@ impl AudioTransformPreparation {
             return direct_clip(clip, source).map(Some);
         };
         edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
+        if edit.placement.is_some() {
+            return self
+                .compile_view(project, clip, edit, asset, source)
+                .map(Some);
+        }
         let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map())?;
         let domain = &edit.domain;
         let direct = domain.events.is_none()

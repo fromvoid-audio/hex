@@ -190,13 +190,17 @@ impl SessionPlayback {
                     }
                 }
                 RouteOwner::Session { clip, origin } => {
-                    let prepared = self
-                        .revision
-                        .session()
-                        .midi_clip_for_track(clip, track_id)
-                        .ok_or(SessionPlaybackError::UnknownClip)?;
-                    let timing =
-                        timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                    let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip_for_track(clip, track_id)
+                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                    let timing = timing_view_for(
+                        self.revision.session(),
+                        self.periodic_tempo(),
+                        self.anchor,
+                    );
                     prepared
                         .instrument_template()
                         .query_with_origin(origin, &timing, start, cut, &mut self.spans)
@@ -233,19 +237,20 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         let (incoming_voices, incoming_onsets) = match next {
             RouteOwner::Session { clip, origin } => {
-                let prepared = self
-                    .revision
-                    .session()
-                    .midi_clip_for_track(clip, route.id)
-                    .ok_or(SessionPlaybackError::UnknownClip)?;
+                let prepared = crate::session_inventory::EffectiveSessionMidi::new(
+                    self.revision.session(),
+                    self.midi_admission.as_ref(),
+                )
+                .midi_clip_for_track(clip, route.id)
+                .ok_or(SessionPlaybackError::UnknownClip)?;
                 let timing =
-                    timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+                    timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
                 prepared
                     .instrument_template()
                     .query_with_origin(origin, &timing, cut, end, &mut self.spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 (
-                    prepared.work.active_voices,
+                    prepared.work().active_voices,
                     self.spans.spans().filter(|s| s.start_frame == cut).count(),
                 )
             }
@@ -316,7 +321,7 @@ impl SessionPlayback {
             };
             let is_audio = matches!(pending.target,RouteTarget::Session(clip) if self.revision.session().audio_clip(clip).is_some());
             let beat = if matches!(pending.target, RouteTarget::Session(_)) && !is_audio {
-                timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor)
+                timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
                     .frame_to_beat(performance)
                     .map_err(|_| SessionPlaybackError::TempoConversion)?
             } else {

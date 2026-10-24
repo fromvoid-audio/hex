@@ -4,6 +4,143 @@ use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
 use std::sync::Arc;
 
 #[gpui::test]
+fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().clone());
+    let original = visual
+        .debug_bounds("arrangement-audio-clip-view")
+        .unwrap()
+        .size
+        .height;
+    let down = visual.debug_bounds("clip-detail-resize").unwrap().center();
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        down + point(px(0.0), original + px(40.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(visual.debug_bounds("clip-detail-resize").is_none());
+    assert!(editor.read_with(&visual, |view, _| view.clip_detail_resize.is_active()));
+    // Capture stays mounted outside the hidden handle and can reopen the preview.
+    visual.simulate_mouse_move(
+        down - point(px(0.0), px(20.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(visual.debug_bounds("clip-detail-resize").is_some());
+    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        visual
+            .debug_bounds("arrangement-audio-clip-view")
+            .unwrap()
+            .size
+            .height,
+        original
+    );
+    for (grip, panel, direction) in [
+        ("clip-detail-resize", "arrangement-audio-clip-view", -1.0),
+        ("project-spectrum-resize", "project-spectrum", 1.0),
+    ] {
+        for replace_source in [false, true] {
+            let original = visual.debug_bounds(panel).unwrap().size.height;
+            let down = visual.debug_bounds(grip).unwrap().center();
+            let moved = down + point(px(0.0), px(30.0 * direction));
+            visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert!(
+                    view.clip_detail_resize.is_active() || view.project_spectrum.resize_is_active()
+                );
+            });
+            if replace_source {
+                editor.update(&mut visual, |view, cx| {
+                    view.project_generation += 1;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+            } else {
+                visual.simulate_mouse_move(moved, None, Modifiers::default());
+            }
+            visual.simulate_mouse_up(
+                moved + point(px(0.0), px(20.0 * direction)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            assert_eq!(visual.debug_bounds(panel).unwrap().size.height, original);
+            editor.read_with(&visual, |view, _| {
+                assert!(!view.clip_detail_resize.is_active());
+                assert!(!view.project_spectrum.resize_is_active());
+                assert_eq!(view.state.as_ref().unwrap().project, before.project);
+                assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+                assert!(view.pending_requests.is_empty());
+                assert!(view.pending_audio_commands.is_empty());
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn starting_spectrum_splitter_retires_detail_capture_before_new_preview(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.selected_clip = Some(clip);
+        view.clip_view_open = true;
+        view.device_panel_active = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let original = visual
+        .debug_bounds("arrangement-audio-clip-view")
+        .unwrap()
+        .size
+        .height;
+    let detail = visual.debug_bounds("clip-detail-resize").unwrap().center();
+    visual.simulate_mouse_down(detail, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        detail - point(px(0.0), px(30.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let spectrum = visual
+        .debug_bounds("project-spectrum-resize")
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(spectrum, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.clip_detail_resize.is_active());
+        assert!(view.project_spectrum.resize_is_active());
+    });
+    assert_eq!(
+        visual
+            .debug_bounds("arrangement-audio-clip-view")
+            .unwrap()
+            .size
+            .height,
+        original
+    );
+    visual.simulate_mouse_up(spectrum, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.project_spectrum.resize_is_active())
+    });
+}
+
+#[gpui::test]
 fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     for (midi, session) in [(false, false), (true, false), (false, true), (true, true)] {

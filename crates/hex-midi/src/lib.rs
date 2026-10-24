@@ -9,9 +9,11 @@
 //! note hosting is outside this input-capture boundary. Physical held snapshots
 //! support control-side step entry without scheduling or monitoring sound.
 mod held_notes;
+mod note_events;
 pub use held_notes::{
     HELD_NOTE_COUNT, HeldNote, HeldNoteFault, HeldNoteInput, HeldNotes, HeldNotesRead,
 };
+pub use note_events::NoteEvent;
 
 use std::sync::{
     Arc,
@@ -72,12 +74,25 @@ impl Decoder {
         self.held_fault
     }
     pub fn byte(&mut self, byte: u8, channel: u8, current: Controllers) -> Option<Controllers> {
+        self.byte_with_notes(byte, channel, current, &|_| {})
+    }
+    /// Delivers each complete note message synchronously, in wire order. Unlike
+    /// `take_held_notes`, this preserves an on/off pair within one packet. The
+    /// sink must perform bounded nonblocking work; it never owns this decoder.
+    pub fn byte_with_notes(
+        &mut self,
+        byte: u8,
+        channel: u8,
+        current: Controllers,
+        note: &dyn Fn(NoteEvent),
+    ) -> Option<Controllers> {
         if byte == 0xff {
             self.held.clear();
             self.held_changed = true;
             self.status = 0;
             self.used = 0;
             self.sysex = false;
+            note(NoteEvent::AllNotesOff);
         }
         if byte >= 0xf8 {
             return None;
@@ -115,7 +130,13 @@ impl Decoder {
                     self.held.clear();
                     self.held_fault = Some(fault);
                     self.held_changed = true;
+                    note(NoteEvent::InputLost(fault));
                 }
+            }
+            if self.held_fault.is_none()
+                && let Some(event) = NoteEvent::parse(&message[..width + 1], channel)
+            {
+                note(event);
             }
         }
         parse(&message[..width + 1], channel, current)
@@ -132,21 +153,45 @@ const CALLBACK_PACKETS: usize = 1024;
 pub fn deliver_packets<'a>(
     decoder: &mut Decoder,
     channel: u8,
-    mut current: Controllers,
+    current: Controllers,
     packets: impl IntoIterator<Item = &'a [u8]>,
     notes: &HeldNoteInput,
     publish: &dyn Fn(Controllers),
 ) -> Controllers {
+    deliver_packets_with_notes(decoder, channel, current, packets, notes, publish, &|_| {})
+}
+
+/// Ordered-note counterpart of `deliver_packets`, sharing its byte/packet and
+/// held-snapshot limits. Input loss is terminal: publish one explicit loss event
+/// and stop delivery. The sink must cancel its host activation on loss; it must
+/// never silently drop a note-off when its own handoff is full.
+pub fn deliver_packets_with_notes<'a>(
+    decoder: &mut Decoder,
+    channel: u8,
+    mut current: Controllers,
+    packets: impl IntoIterator<Item = &'a [u8]>,
+    notes: &HeldNoteInput,
+    publish: &dyn Fn(Controllers),
+    note: &dyn Fn(NoteEvent),
+) -> Controllers {
+    if notes.is_cancelled() {
+        return current;
+    }
     let mut remaining = CALLBACK_BYTES;
     for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS).enumerate() {
         for byte in bytes.iter().take(remaining) {
-            if let Some(next) = decoder.byte(*byte, channel, current) {
+            if let Some(next) = decoder.byte_with_notes(*byte, channel, current, note) {
                 current = next;
                 publish(current);
+            }
+            if let Some(fault) = decoder.held_note_fault() {
+                notes.fail(fault);
+                return current;
             }
         }
         if bytes.len() >= remaining || index == CALLBACK_PACKETS - 1 {
             notes.fail(HeldNoteFault::PacketLimit);
+            note(NoteEvent::InputLost(HeldNoteFault::PacketLimit));
             *decoder = Decoder::default();
             return current;
         }
@@ -168,6 +213,8 @@ pub struct Port {
 /// Constructed on control; the native callback only invokes this bounded sink.
 pub struct Sink {
     pub publish: Box<dyn Fn(Controllers) + Send>,
+    /// Ordered native input messages, independent of the step-entry snapshot.
+    pub note: Box<dyn Fn(NoteEvent) + Send>,
     pub notes: Arc<HeldNoteInput>,
     pub cancel: Box<dyn Fn() + Send>,
     pub is_cancelled: Box<dyn Fn() -> bool + Send>,
@@ -287,6 +334,7 @@ mod native {
         _client: Client,
         source: Source,
         cancel: Box<dyn Fn() + Send>,
+        is_cancelled: Box<dyn Fn() -> bool + Send>,
         notes: Arc<HeldNoteInput>,
     }
     impl Drop for Active {
@@ -340,16 +388,18 @@ mod native {
             let mut decoder = Decoder::default();
             let mut current = Controllers::default();
             let publish = sink.publish;
+            let note = sink.note;
             let notes = Arc::clone(&sink.notes);
             let input = client
                 .input_port("hex controller input", move |packets| {
-                    current = deliver_packets(
+                    current = deliver_packets_with_notes(
                         &mut decoder,
                         channel,
                         current,
                         packets.iter().map(|packet| packet.data()),
                         &notes,
                         publish.as_ref(),
+                        note.as_ref(),
                     );
                 })
                 .map_err(|status| format!("controller port creation failed: {status}"))?;
@@ -365,6 +415,7 @@ mod native {
                 _client: client,
                 source,
                 cancel: sink.cancel,
+                is_cancelled: sink.is_cancelled,
                 notes: sink.notes,
             }),
             Err(error) => {
@@ -432,7 +483,7 @@ mod native {
                     .unique_id()
                     .and_then(source_by_id)
                     .is_some_and(|source| source == connection.source);
-                if !present {
+                if !present || connection.notes.is_cancelled() || (connection.is_cancelled)() {
                     let activation = connection.activation;
                     active.take();
                     let _ = events.try_send(Event::Connection {
@@ -580,6 +631,7 @@ mod tests {
                     sink: Sink {
                         notes: Arc::clone(&notes),
                         publish: Box::new(|_| {}),
+                        note: Box::new(|_| {}),
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false),
                     }
@@ -604,6 +656,7 @@ mod tests {
                     sink: Sink {
                         notes: Arc::clone(&notes),
                         publish: Box::new(|_| {}),
+                        note: Box::new(|_| {}),
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false),
                     }
@@ -631,6 +684,7 @@ mod tests {
                     sink: Sink {
                         notes: Arc::clone(&notes),
                         publish: Box::new(|_| {}),
+                        note: Box::new(|_| {}),
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false)
                     }

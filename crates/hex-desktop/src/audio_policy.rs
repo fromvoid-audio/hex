@@ -16,7 +16,13 @@ pub(super) struct AudioPolicy {
     pub(super) ordinary_graph_metadata_bytes: usize,
 }
 pub(super) const RUNTIME_CELLS: usize = 3;
-pub(super) const MAX_RESIDENT_FRAMES: u64 = 8_000_000;
+const MAX_SOURCE_FRAMES: u64 = 8_000_000;
+// Originals and converted PCM remain live while the active, queued and constructing
+// graphs retain their own conservative PCM allowances. One 8M-frame envelope for
+// their entire union refused ordinary tempo edits even below 64MB of distinct PCM.
+// Reserve one source role plus the existing three graph roles: 32M stereo frames
+// (256MB PCM), still checked at every admission. This is not an RSS reservation.
+pub(super) const MAX_RESIDENT_FRAMES: u64 = MAX_SOURCE_FRAMES * (RUNTIME_CELLS as u64 + 1);
 impl AudioPolicy {
     pub(super) fn source_reservation() -> SourcePlanReservation {
         let stream = hex_stream::StreamConfig::initial();
@@ -24,7 +30,7 @@ impl AudioPolicy {
             reader: hex_media::VerifiedWavReaderLimits::new(
                 hex_media::WavReaderLimits::new(
                     64 * 1024 * 1024,
-                    8_000_000,
+                    MAX_SOURCE_FRAMES,
                     32,
                     // Output pages are not source windows: downsampling also
                     // needs the resampler halo. The worker already reserves
@@ -182,7 +188,8 @@ impl AudioPolicy {
         // One physical PCM allowance is shared by Session/staged/export/native
         // owners. Immutable metadata covers three native roles plus the three
         // Service current/staged/export selections; runtime has its own32MiB
-        // per-owner limit, including the independent exporter. No frame cap grows.
+        // per-owner limit, including the independent exporter. PCM uses the bounded
+        // source-plus-publication-role envelope above; source read/scan limits stay8M.
         let immutable_roles = RUNTIME_CELLS.checked_mul(2).ok_or("native role overflow")?;
         let runtime_roles = RUNTIME_CELLS.checked_add(1).ok_or("native role overflow")?;
         let native_retained = input
@@ -204,7 +211,7 @@ impl AudioPolicy {
             .and_then(|n| n.checked_add(native_quote.metadata_data_bytes))
             .ok_or("native construction reservation overflow")?;
         let resident_native = hex_session::ResidentNativeReservation {
-            max_scan_frames: MAX_RESIDENT_FRAMES,
+            max_scan_frames: MAX_SOURCE_FRAMES,
             storage: hex_engine::AudioStorageLedgerReservation {
                 data_rows: native_quote
                     .data_rows

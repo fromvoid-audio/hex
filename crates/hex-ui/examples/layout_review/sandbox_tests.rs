@@ -36,6 +36,58 @@ fn selector(view: &Entity<Sandbox>, cx: &TestAppContext, suffix: &str) -> &'stat
     key(view.read_with(cx, |s, _| format!("sample-{}-{suffix}", s.selected)))
 }
 #[gpui::test]
+fn navigation_and_fixture_toggles_keep_small_corners_across_selection_and_theme(
+    cx: &mut TestAppContext,
+) {
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, view) = open(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1040.0), px(720.0)));
+    for _ in 0..2 {
+        visual.run_until_parked();
+        let scale = visual.update(|window, _| window.scale_factor());
+        for category in ["discrete", "numeric"] {
+            let target = visual.debug_bounds(category).expect("category");
+            visual.simulate_click(target.center(), Modifiers::default());
+            visual.run_until_parked();
+            view.read_with(cx, |s, _| assert_eq!(s.category, category));
+            let pages = view.read_with(cx, |s, _| {
+                s.pages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, page)| page.category == category)
+                    .map(|(index, _)| key(format!("page-{index}")))
+                    .collect::<Vec<_>>()
+            });
+            for page in &pages {
+                let target = visual.debug_bounds(page).expect("page");
+                visual.simulate_click(target.center(), Modifiers::default());
+                visual.run_until_parked();
+                for selector in ["numeric", "discrete", "sandbox-theme"]
+                    .into_iter()
+                    .chain(pages.iter().copied())
+                    .chain([
+                        selector(&view, &visual, "enable"),
+                        selector(&view, &visual, "width"),
+                    ])
+                {
+                    assert_eq!(
+                        visual
+                            .rendered_surface_geometry(selector)
+                            .expect("toggle surface")
+                            .0
+                            .top_left,
+                        px(hex_widgets::TOGGLE_CORNER_RADIUS).scale(scale),
+                        "{selector}"
+                    );
+                }
+            }
+        }
+        view.update(&mut visual, |s, cx| s.theme(cx));
+    }
+}
+
+#[gpui::test]
 fn every_named_entry_renders_in_bounded_native_viewports(cx: &mut TestAppContext) {
     let _restore = RestoreTheme(theme::preferences());
     let (handle, view) = open(cx);
@@ -174,8 +226,34 @@ fn bars_graph_color_and_chrome_accept_real_pointer_input(cx: &mut TestAppContext
         let hit = visual
             .debug_bounds(self::selector(&view, cx, selector))
             .expect(name);
-        visual.simulate_click(hit.center(), Modifiers::default());
-        visual.run_until_parked();
+        if name == "action" {
+            let action = self::selector(&view, cx, "chrome-action");
+            let bounds = visual.debug_bounds(action).unwrap();
+            visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            let hover = visual.rendered_background(action);
+            visual.simulate_mouse_down(
+                bounds.center(),
+                gpui::MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_background(action),
+                Some(rgb(theme::action_press_style(theme::action_style()).background).into())
+            );
+            assert_ne!(visual.rendered_background(action), hover);
+            visual.simulate_mouse_up(
+                bounds.center(),
+                gpui::MouseButton::Left,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert_eq!(visual.rendered_background(action), hover);
+        } else {
+            visual.simulate_click(hit.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
         view.read_with(cx, |s, cx| {
             assert!(
                 s.samples[&s.selected].read(cx).status.starts_with(prefix),

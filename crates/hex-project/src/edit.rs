@@ -723,6 +723,18 @@ pub enum Command {
         source: ClipId,
         scene: crate::SceneId,
     },
+    /// Create one normal track and optional scene, then copy through the same
+    /// Session law. Editor prepares the whole candidate and commits one history edge.
+    CopyArrangementAudioClipToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
+    CopyArrangementMidiToNewSessionTrack {
+        source: ClipId,
+        before_track: Option<TrackId>,
+        scene: crate::SessionSceneTarget,
+    },
     MoveSessionCell {
         from_track: TrackId,
         from_scene: crate::SceneId,
@@ -804,6 +816,12 @@ pub enum Command {
         loop_end: crate::BeatTime,
         looping: bool,
         length: crate::BeatTime,
+    },
+    /// Recompute a clip-local MIDI loop edit from its current source/window.
+    /// Outer growth uses the common occupancy planner; cycle edits keep length.
+    ResizeMidiClipView {
+        clip: ClipId,
+        operation: crate::MidiViewResizeOperation,
     },
     /// Replace one clip-owned source-beat volume curve in either MIDI domain.
     ReplaceMidiClipVolume {
@@ -1745,6 +1763,7 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
+            | Command::ResizeMidiClipView { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::StretchMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
@@ -1783,6 +1802,8 @@ impl Project {
             | Command::CreateSessionAudioClip { .. }
             | Command::CopyArrangementAudioClipToSession { .. }
             | Command::CopyArrangementMidiToSession { .. }
+            | Command::CopyArrangementAudioClipToNewSessionTrack { .. }
+            | Command::CopyArrangementMidiToNewSessionTrack { .. }
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }

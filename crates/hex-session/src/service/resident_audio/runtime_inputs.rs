@@ -42,9 +42,10 @@ impl RuntimeInputs {
         Ok(bytes)
     }
     pub(in crate::service) fn allowance(&self) -> Result<usize, SessionError> {
-        let keyboard = self.keyboard.as_ref().map_or(0, |_| {
-            hex_engine::computer_keyboard::MAX_COMPUTER_KEYBOARD_STORAGE_BYTES
-        });
+        let keyboard = self
+            .keyboard
+            .as_ref()
+            .map_or(0, |(_, input)| input.runtime_storage_limit_on_control());
         keyboard
             .checked_add(if self.audition.is_some() {
                 hex_engine::tuning_audition::MAX_TUNING_AUDITION_STORAGE_BYTES

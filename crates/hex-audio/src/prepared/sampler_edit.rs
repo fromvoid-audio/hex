@@ -192,7 +192,7 @@ impl PublicationControl {
     ) -> Result<StoppedEditFence, &'static str> {
         if self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
-            || self.status.publication_pending.gain_active()
+            || self.status.publication_pending.recording_active()
             || self.status.applied_audio_source().is_some()
             || revision == 0
             || self.status.applied_revision.load(Acquire) != revision

@@ -67,26 +67,10 @@ impl EditorView {
             .selected_track
             .filter(|id| state.project.track(*id).is_some())
             .ok_or("sample insertion refused · select an arrangement track")?;
-        let mut start = self.cursor_position();
-        if self.browser.insert_quantized {
-            if self.snap_grid.is_off() {
-                return Err("sample insertion refused · enable the arrangement grid".into());
-            }
-            let lane = self
-                .main_track_lane_bounds
-                .filter(|lane| lane.width.is_finite() && lane.width > 0.0)
-                .filter(|_| self.main_track_lane_epoch == self.drag_layout_generation)
-                .ok_or("sample insertion refused · arrangement grid layout is not ready")?;
-            start = self
-                .snap_grid
-                .snap_frame(
-                    &state.project,
-                    start,
-                    self.visible_viewport(state.timeline_frames),
-                    lane.width,
-                )
-                .ok_or("sample insertion refused · cannot resolve arrangement grid")?;
-        }
+        let grid = self.resolve_input_grid()?;
+        let start = grid
+            .snap_frame(state.project.tempo_map(), self.cursor_position())
+            .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
         Request::audio_batch(
             vec![path],
             AudioBatchDestination::Track { track, start },
