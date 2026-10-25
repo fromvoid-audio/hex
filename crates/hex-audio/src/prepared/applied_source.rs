@@ -53,6 +53,20 @@ impl AppliedSourceStatus {
     }
 }
 impl Status {
+    /// Exact installed source for native epoch renewal. Ordinary native effects
+    /// reuse the coherent recording-source ACK and its matching native revision;
+    /// constructor/sampler `applied_audio_source` keeps its existing meaning.
+    /// This observation grants no graph, endpoint or native preparation custody.
+    pub fn native_effect_source(&self) -> Option<AppliedAudioSource> {
+        self.applied_audio_source().or_else(|| {
+            let revision = self.ordinary_native_revision.load(Acquire);
+            if revision == 0 {
+                return None;
+            }
+            self.recording_source()
+                .filter(|source| source.audio_revision == revision)
+        })
+    }
     /// Canonical source captured with the actual installed ordinary or eligible
     /// graph. This is correlation, not sink delivery or admission authority.
     pub fn recording_source(&self) -> Option<AppliedAudioSource> {

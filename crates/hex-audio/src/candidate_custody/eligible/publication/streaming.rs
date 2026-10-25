@@ -4,8 +4,14 @@ use super::*;
 use hex_engine::StreamPageExtent;
 mod actions;
 mod demand;
+mod ordinary;
 mod prewarm;
+mod view;
 pub(crate) use actions::StageAction;
+pub(in crate::candidate_custody) use ordinary::OrdinaryReservation;
+pub(crate) use ordinary::OrdinaryStreams;
+pub(crate) use view::ActiveView;
+use view::StateView;
 #[derive(Clone, Copy)]
 struct ScheduledAction {
     ticket: u64,
@@ -30,7 +36,7 @@ pub(super) struct Workspace {
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) role: Option<hex_stream::ProtectionRole>,
-    pub(super) predecessor: Option<AudioCandidateIdentity>,
+    pub(super) predecessor: Option<hex_stream::ReadinessArtifact>,
     pending_action: Option<PendingAction>,
     scheduled: Option<ScheduledAction>,
     prewarm_stamps: [Option<hex_stream::ReadinessStamp>; 2],

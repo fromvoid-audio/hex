@@ -132,6 +132,18 @@ impl Lane {
             return Err("section launch requires its exact enabled loop start".into());
         }
         let selected = selected_source(&intent, current, admission.preview)?;
+        let files = selected
+            .file_sources
+            .as_ref()
+            .map(|sources| {
+                sink.resident_file_seek_preparer()
+                    .map(|prepare| (sources.clone(), prepare))
+                    .ok_or_else(|| "file-backed seek preparation is unavailable".to_string())
+            })
+            .transpose()?;
+        let file_storage = selected.file_sources.as_ref().map_or(Ok(0), |sources| {
+            sink.resident_file_seek_storage_bytes(&selected.prepared, sources)
+        })?;
         let index = self
             .active
             .iter()
@@ -152,7 +164,13 @@ impl Lane {
                 },
             )
             .map_err(|e| e.to_string())?;
-        let input_capture = selected.inputs.capture_bytes().map_err(|e| e.to_string())?;
+        let input_capture = selected
+            .inputs
+            .capture_bytes()
+            .map_err(|e| e.to_string())?
+            .checked_add(std::mem::size_of_val(&files))
+            .and_then(|n| n.checked_add(file_storage))
+            .ok_or("seek storage allowance overflow")?;
         let capture_quote = selected
             .resources
             .metadata_bytes()
@@ -259,6 +277,7 @@ impl Lane {
                 job,
                 capture,
                 Arc::clone(&intent.cancelled),
+                files,
             )
             .map_err(|e| format!("seek worker refused: {e:?}"))?;
         drop(registered);
@@ -267,6 +286,7 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
+                file_sources: selected.file_sources.clone(),
                 prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
                 inputs: selected.inputs.clone(),

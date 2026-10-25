@@ -90,6 +90,17 @@ invalid layer contexts/ranges/geometry and near-order-overflow reservations.
 macOS native image-buffer Surface allocation is outside this fixture; its
 unchanged shared append branch remains compiled, without a fake native handle.
 
+Live draw order is resolved after best-fit descent, starting at the nearby leaf
+and visiting the original sibling subtrees in reverse path order. A high nearby
+order can prune older branches sooner. Placement topology, bounds arithmetic and
+queried geometry stay unchanged; no placement-path bounds check is introduced,
+because floating-point origin + size unions can round an edge inward. Reserved
+replay intervals keep their checked admission and skip the live query. A locked-
+graph test-support verifier checks insert/reserve/clear/overflow against a linear
+scan over deterministic mixed geometry at 1×/2× and a rounded-ancestor case,
+alongside the mixed-primitive replay oracle. No balancing, primitive/layer
+grouping, native API, allocation or dependency is added.
+
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
 and `fr` helpers accept `Into<f32>`; this preserves the same values/layout and

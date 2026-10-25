@@ -124,6 +124,10 @@ pub enum SessionPlaybackError {
     SessionTempoUnavailable(crate::PreparedTempoError),
     ReleaseBankFull,
     DeviceRuntime,
+    /// The exact foreign endpoint is still needed by an outgoing tail. A
+    /// publication owner may retry pure handoff planning after real rendering
+    /// advances that tail; it must not duplicate, reset or substitute the source.
+    ForeignTailSourceBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -158,6 +162,9 @@ impl SessionPlaybackError {
             Self::TempoConversion => "session playback timing conversion failed",
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
+            Self::ForeignTailSourceBusy => {
+                "native effect endpoint is still owned by an outgoing tail"
+            }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
             }
@@ -474,6 +481,42 @@ fn effective_midi_route(
 }
 
 impl SessionPlayback {
+    pub(crate) fn visit_foreign_runtime_bindings(
+        &self,
+        visit: &mut impl FnMut(Option<hex_lattice_contract::ForeignProcessorBinding>),
+    ) {
+        let chains = self
+            .device_chains
+            .iter()
+            .chain(self.return_chains.iter())
+            .chain(std::iter::once(&self.main_chain))
+            .chain(
+                self.tail_groups
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, chain)| {
+                        self.tail_output_active
+                            .get(index)
+                            .copied()
+                            .unwrap_or(false)
+                            .then_some(chain.as_ref())
+                            .flatten()
+                    }),
+            )
+            .chain(
+                self.return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .filter(|tail| tail.output_active)
+                    .map(|tail| &tail.chain),
+            );
+        for chain in chains {
+            for binding in chain.foreign_bindings() {
+                visit(binding);
+            }
+        }
+    }
     pub(crate) fn device_resource_lease_on_control(
         &self,
         track: TrackId,
@@ -2057,6 +2100,7 @@ pub use stream_actions::PreparedStreamAction;
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+    PreparedPrerollPages,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
 #[cfg(test)]

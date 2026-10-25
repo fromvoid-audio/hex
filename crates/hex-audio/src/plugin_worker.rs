@@ -347,6 +347,11 @@ impl NativeWorker {
     pub fn revoke_on_control(&self) {
         self.reaper.revoke();
     }
+    /// Same paired transport's actual revocation state. This grants no source
+    /// custody or native ACK; graph admission also validates the retained pair.
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        !self.retirement_requested && !self.reaper.control.is_revoked()
+    }
     /// Diagnostic publication progress only; never native/root/graph readiness.
     pub fn published_blocks_on_control(&self) -> u64 {
         self.reaper.completed_blocks()

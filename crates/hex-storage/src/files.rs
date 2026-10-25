@@ -1,4 +1,4 @@
-use crate::{MAX_DOCUMENT_BYTES, StorageError, decode, encode};
+use crate::{StorageError, decode, encode};
 use hex_project::Project;
 use std::{
     fs::{self, File, OpenOptions},
@@ -15,7 +15,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
     decode(&read_document(path.as_ref())?)
 }
 
-/// Opaque bounded exact-byte content snapshot, shared cheaply between owners.
+/// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
 pub struct FileToken(pub(super) Arc<[u8]>, bool);
@@ -34,6 +34,16 @@ impl FileToken {
     /// an unexpected header conservatively requires confirmation too.
     pub fn requires_format_upgrade(&self) -> bool {
         self.1
+    }
+
+    /// Control-side preflight for replacing a file an older reader could open.
+    /// The saved layout is unchanged, but crossing its former byte ceiling loses
+    /// reader compatibility just as a schema upgrade does. Already-large files
+    /// do not acquire a new compatibility loss on subsequent saves.
+    pub fn requires_save_confirmation(&self, project: &Project) -> Result<bool, StorageError> {
+        Ok(self.requires_format_upgrade()
+            || (self.0.len() <= crate::LEGACY_READER_DOCUMENT_BYTES
+                && encode(project)?.len() > crate::LEGACY_READER_DOCUMENT_BYTES))
     }
 
     pub(super) fn from_validated_bytes(bytes: Arc<[u8]>) -> Self {
@@ -62,7 +72,7 @@ impl FileToken {
     }
 }
 
-/// Decode and capture the same single bounded read, preserving original saved-format
+/// Decode and capture the same single read, preserving original saved-format
 /// bytes including whitespace rather than re-encoding the decoded project.
 pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), StorageError> {
     let bytes = read_document(path.as_ref())?;
@@ -71,15 +81,27 @@ pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), S
 }
 
 pub(super) fn read_document(path: &Path) -> Result<Vec<u8>, StorageError> {
-    let file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.take(MAX_DOCUMENT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(StorageError::Invalid("project document exceeds byte limit"));
-    }
-    Ok(bytes)
+    read_bytes(File::open(path)?)
 }
+
+/// Grow owned I/O buffers fallibly without an arbitrary document-size ceiling.
+/// Read in chunks rather than trusting filesystem metadata or framed lengths.
+fn read_bytes(mut reader: impl Read) -> Result<Vec<u8>, StorageError> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let count = match reader.read(&mut chunk) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Ok(bytes);
+        }
+        bytes.try_reserve(count).map_err(std::io::Error::other)?;
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+}
+
 struct Temporary(PathBuf);
 impl Drop for Temporary {
     fn drop(&mut self) {
@@ -489,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn token_loading_and_comparison_refuse_invalid_or_oversized_documents() {
+    fn token_loading_refuses_invalid_documents_and_comparison_detects_large_external_changes() {
         let dir = TestDir::new();
         let path = dir.0.join("bounded.hex");
         fs::write(&path, b"invalid json").expect("invalid fixture");
@@ -497,14 +519,12 @@ mod tests {
         fs::remove_file(&path).expect("remove owned fixture");
         save_new(&path, &Project::new(48_000).expect("project")).expect("valid fixture");
         let (_, token) = load_with_token(&path).expect("token");
-        fs::write(&path, vec![b' '; MAX_DOCUMENT_BYTES + 1]).expect("oversized fixture");
-        assert!(matches!(
-            load_with_token(&path),
-            Err(StorageError::Invalid("project document exceeds byte limit"))
-        ));
+        fs::write(&path, vec![b' '; crate::LEGACY_READER_DOCUMENT_BYTES + 1])
+            .expect("oversized fixture");
+        assert!(load_with_token(&path).is_err());
         assert!(matches!(
             token.check_unchanged(&path),
-            Err(StorageError::Invalid("project document exceeds byte limit"))
+            Err(StorageError::Conflict { .. })
         ));
     }
 

@@ -576,6 +576,19 @@ impl NativeRuntimeEntryStorage<'_> {
 }
 
 impl NativeRuntimeChain {
+    /// Bounded scalar observation of the actual retained foreign entries.
+    /// May be used by their audio owner without allocation or ownership moves;
+    /// it does not permit concurrent access or establish native source custody.
+    pub fn foreign_bindings(
+        &self,
+    ) -> impl Iterator<Item = Option<hex_lattice_contract::ForeignProcessorBinding>> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match &entry.runtime {
+                RuntimeOwnership::Foreign(value) => Some(value.prepared.binding()),
+                _ => None,
+            })
+    }
     /// Control-side inventory or bounded scalar test observation only. This
     /// does not authorize concurrent access to an active runtime.
     pub fn storage_view(&self) -> NativeRuntimeStorage<'_> {

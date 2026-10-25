@@ -12,6 +12,12 @@ impl NativeEffect {
     pub(crate) fn loan_on_control(
         self,
     ) -> Result<(NativeEffectControl, NativeEffectCallback), Self> {
+        // Physical return preserves custody, not processing eligibility. Stop
+        // and rejected delivery revoke this exact transport permanently; only
+        // retained native quiescence/resume can construct a fresh paired epoch.
+        if self.callback.transport.is_revoked() {
+            return Err(self);
+        }
         let Some(storage) = self.constructor_storage_on_control() else {
             return Err(self);
         };
@@ -24,6 +30,9 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        self.worker.transport_is_live_on_control()
+    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_published_blocks(&self) -> u64 {
         self.worker.published_blocks_on_control()
@@ -77,6 +86,19 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn completed_blocks_on_control(&self) -> u64 {
+        match self {
+            Self::Unsplit(effect) => effect.worker.published_blocks_on_control(),
+            Self::Loaned(control) => control.worker.published_blocks_on_control(),
+        }
+    }
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        match self {
+            Self::Unsplit(effect) => !effect.callback.transport.is_revoked(),
+            Self::Loaned(control) => control.transport_is_live_on_control(),
+        }
+    }
     pub(crate) fn matches_prepared(&self, node: &hex_lattice::PreparedRuntimeInstance) -> bool {
         let config = self.configuration();
         node.owner == config.identity.owner()

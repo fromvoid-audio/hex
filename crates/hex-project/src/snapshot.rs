@@ -321,7 +321,7 @@ impl Project {
                             .iter()
                             .map(|clip| ClipSnapshot {
                                 active: clip.active,
-                                name: clip.name.clone(),
+                                name: clip.name().to_owned(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
                                 asset: clip.asset.0,
@@ -707,7 +707,7 @@ impl Project {
                 }
                 compiled_audio.push(Clip {
                     active: clip.active,
-                    name: clip.name.clone(),
+                    name: clip.name.into(),
                     flavor: clip.flavor,
                     id: ClipId(clip.id),
                     asset: AssetId(clip.asset),

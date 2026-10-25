@@ -126,21 +126,38 @@ fn source_for_profile(
             ],
         );
     preparation.quantum = quantum;
-    let binding = control
-        .begin_native_source_preparation(
-            identity,
+    assert_eq!(
+        control.requested_physical_callback_frames_on_control(),
+        Some(quantum)
+    );
+    let identity_bytes = source.identity();
+    let executable_digest = hex_digest(identity_bytes.binary.executable_sha256);
+    let info_digest = hex_digest(identity_bytes.binary.info_sha256);
+    let path = fixture_path(fixture);
+    let hosting = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let binding = hosting
+        .begin_on_control(
+            control,
+            crate::plugin_effects::EffectSelection {
+                module: &path,
+                executable: "Contents/MacOS/fixture",
+                cid: identity_bytes.class.bytes(),
+                executable_sha256: &executable_digest,
+                info_sha256: &info_digest,
+            },
+            identity.owner(),
+            identity.device_id(),
             12,
-            &build,
-            source,
-            preparation,
+            48_000,
             restore,
-            native::TrustUserCode::Acknowledged,
         )
         .unwrap();
-    control
-        .complete_native_source_preparation(
+    hosting
+        .complete_on_control(
+            control,
             binding,
-            Some(hex_plugin_host::protocol::PresentationLatency {
+            Some(crate::plugin_effects::EffectPresentation {
+                // Explicit headless fixture inputs, not production/device measurements.
                 input_frames: 77,
                 output_frames: 91,
             }),
@@ -148,6 +165,15 @@ fn source_for_profile(
         .unwrap();
     control.start_native_effect(binding).unwrap();
     binding
+}
+fn hex_digest(bytes: [u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+fn fixture_path(fixture: &str) -> std::path::PathBuf {
+    let receipt = std::path::PathBuf::from(std::env::var_os("HEX_VST3_MACOS_RECEIPT").unwrap());
+    receipt.parent().unwrap().join(format!(
+        "hex-vst3-host.app/Contents/Resources/fixtures/{fixture}.vst3"
+    ))
 }
 fn recover(control: &mut Control, binding: Binding) -> crate::NativeSourcePreparationReturn {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -184,11 +210,99 @@ fn allocation_free(call: impl FnOnce()) {
 }
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_reservation() {
+    let _serial = serial();
+    let (mut control, data, errors, mut retirement, original) = setup();
+    let original_state = control.native_source_prepared_state(original).unwrap();
+    let (build, source, preparation) =
+        crate::candidate_custody::native_source_test_fixture::input();
+    let identity = source.identity();
+    let executable = hex_digest(identity.binary.executable_sha256);
+    let info = hex_digest(identity.binary.info_sha256);
+    let path = fixture_path("processing");
+    let hosting = crate::plugin_effects::Hosting::from_test_build(build, preparation.limits);
+    let wrong = "0".repeat(64);
+    assert_ne!(executable, wrong);
+    assert_ne!(info, wrong);
+    let missing = path.join("missing.vst3");
+    for case in 0..5 {
+        let selected = crate::plugin_effects::EffectSelection {
+            module: if case == 4 { &missing } else { &path },
+            executable: if case == 3 {
+                "Contents/MacOS/missing"
+            } else {
+                "Contents/MacOS/fixture"
+            },
+            cid: if case == 2 {
+                [0; 16]
+            } else {
+                identity.class.bytes()
+            },
+            executable_sha256: if case == 0 { &wrong } else { &executable },
+            info_sha256: if case == 1 { &wrong } else { &info },
+        };
+        assert!(
+            hosting
+                .begin_on_control(
+                    &mut control,
+                    selected,
+                    hex_engine::ProcessorChainOwner::Main,
+                    3,
+                    12,
+                    48_000,
+                    None,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            control.native_source_prepared_state(original),
+            Some(original_state.clone())
+        );
+    }
+    let next = source_for_fixture(
+        &mut control,
+        hex_lattice::ProcessorInstanceIdentity::new(hex_engine::ProcessorChainOwner::Main, 3)
+            .unwrap(),
+        "processing",
+    );
+    assert_eq!(
+        next.epoch,
+        original.epoch + 1,
+        "refused selections must not reserve native cells or start a child"
+    );
+    for binding in [original, next] {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !control.retire_native_source_preparation(binding) {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let returned = recover(&mut control, binding);
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, native::PreparationDisposal::Reaped(ref retired) if retired.status.success())
+        );
+    }
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
+}
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_disposal() {
     let _serial = serial();
     let (mut control, mut data, errors, mut retirement, binding) = setup();
     let state = control.native_source_prepared_state(binding).unwrap();
+    assert_ne!(
+        control.native_source_endpoint_installed(binding),
+        Some(true)
+    );
     control.publish_native_source_endpoint(binding).unwrap();
+    assert_ne!(
+        control.native_source_endpoint_installed(binding),
+        Some(true),
+        "queueing an original endpoint is not callback installation"
+    );
     allocation_free(|| {
         assert_eq!(
             control.publish_native_source_endpoint(binding),
@@ -224,12 +338,36 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
             assert!(callback.has_native_source_endpoints());
         })
     });
-    assert!(control.retire_native_source_preparation(binding));
-    control.reclaim();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while control.native_source_endpoint_installed(binding) != Some(true) {
+        assert!(Instant::now() < deadline, "actual original endpoint ACK");
+        std::thread::yield_now();
+    }
     assert_eq!(
-        control.native_source_preparation_progress(binding),
-        Some(crate::NativeSourcePreparationProgress::Retiring)
+        control.native_source_endpoint_installed(Binding {
+            epoch: binding.epoch + 1,
+            ..binding
+        }),
+        None
     );
+    assert!(control.retire_native_source_preparation(binding));
+    assert_ne!(
+        control.native_source_endpoint_installed(binding),
+        Some(true)
+    );
+    control.reclaim();
+    // This query is nonblocking: the lifecycle worker can briefly hold Bank.
+    // Observe a status before asserting retirement, without returning the
+    // original callback endpoint or accepting a completed/failed source.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let progress = loop {
+        if let Some(progress) = control.native_source_preparation_progress(binding) {
+            break progress;
+        }
+        assert!(Instant::now() < deadline, "native source retirement status");
+        std::thread::yield_now();
+    };
+    assert_eq!(progress, crate::NativeSourcePreparationProgress::Retiring);
     assert!(control.recover_native_source_preparation(binding).is_none());
     // Fill the actual return ring with real, control-constructed empty graph
     // owners. Pressure must leave this original endpoint in its callback cell.
@@ -249,6 +387,9 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     section_launch_frame: None,
+                    streams: None,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    native_references: None,
                     playback: Box::new(graph),
                 }))
                 .is_ok()
@@ -326,16 +467,22 @@ fn actual_installed_native_endpoint_requires_both_carriers_and_completed_backend
         let mut backend = Some(());
         let mut pending = false;
         let mut disposed = false;
-        assert!(
-            crate::lifecycle::test_dispose_backend(
-                &mut backend,
-                &mut pending,
-                &mut disposed,
-                &mut retirement,
-                |_| Ok(())
-            )
-            .unwrap()
-        );
+        // Backend disposal supplies its actual frontier once; native return
+        // and cleanup may still be pending on the existing Work lane. Preserve
+        // all owners while driving the same supported retirement operation.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap()
+        {
+            assert!(Instant::now() < deadline, "original native retirement");
+            std::thread::yield_now();
+        }
         finish(&mut retirement);
         assert!(
             retirement

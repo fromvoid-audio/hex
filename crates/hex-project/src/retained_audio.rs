@@ -24,7 +24,7 @@ impl Clip {
     pub fn retained_snapshot(&self) -> ClipSnapshot {
         ClipSnapshot {
             active: self.active,
-            name: self.name.clone(),
+            name: self.name().to_owned(),
             flavor: self.flavor,
             id: self.id.0,
             asset: self.asset.0,
@@ -49,12 +49,15 @@ impl Project {
         snapshot: ClipSnapshot,
         tempo: Arc<TempoMap>,
     ) -> Result<RetainedAudioRoot, Invalid> {
+        // The snapshot is public input. Bound its label before allocating the
+        // shared backing, as ordinary snapshot admission does.
+        crate::edit::name_valid(&snapshot.name)?;
         let root = RetainedAudioRoot {
             id,
             tempo,
             clip: Clip {
                 active: snapshot.active,
-                name: snapshot.name,
+                name: snapshot.name.into(),
                 flavor: snapshot.flavor,
                 id: crate::ClipId(snapshot.id),
                 asset: AssetId(snapshot.asset),

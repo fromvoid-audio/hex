@@ -18,6 +18,7 @@ pub(super) struct Snapshot {
     pub(super) prepared: Arc<PreparedRevision>,
     pub(super) resources: PreparedDeviceResources,
     pub(super) inputs: RuntimeInputs,
+    pub(super) file_sources: Option<ResidentFileSet>,
 }
 struct Inputs<'a> {
     native: NativeSamplerSources<'a>,
@@ -25,6 +26,7 @@ struct Inputs<'a> {
     max_frames: u64,
     shutdown: &'a AtomicBool,
     cancel: Option<&'a AtomicBool>,
+    plugin_effect: Option<&'a PluginEffectControl>,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
     predecessor: Option<&'a Session>,
@@ -110,27 +112,32 @@ impl Inputs<'_> {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)] // Existing compile inputs plus the captured native source context.
     fn prepare(
         &self,
         project: &Project,
-        sink: &dyn WorkerAudioSink,
+        sink: &mut dyn WorkerAudioSink,
         media: &MediaBank,
         table: Arc<hex_engine::SineTable>,
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
-        self.prepare_with_gain(project, sink, media, table, transforms, waveforms, None)
+        self.prepare_with_gain(
+            project, sink, media, table, transforms, waveforms, None, context,
+        )
     }
     #[allow(clippy::too_many_arguments)] // Existing compile inputs plus one transient raw-fader target.
     fn prepare_with_gain(
         &self,
         project: &Project,
-        sink: &dyn WorkerAudioSink,
+        sink: &mut dyn WorkerAudioSink,
         media: &MediaBank,
         table: Arc<hex_engine::SineTable>,
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
         gain_recording: Option<hex_project::TrackId>,
+        context: hex_engine::AudioSourceContext,
     ) -> Result<Snapshot, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
@@ -169,24 +176,75 @@ impl Inputs<'_> {
                 ))?,
         )?;
         let work = resources.compiler_scan_work_on_control(project)?;
-        let prepared =
+        let file_refs = media.required_verified_sources(project);
+        let file_sources = if file_refs.is_empty() {
+            None
+        } else {
+            let input = ResidentFileInput {
+                context,
+                semantic_source_epoch: media.epoch,
+                files: &file_refs,
+            };
+            let metadata = sink
+                .prepare_resident_file_metadata(ResidentFileInput {
+                    context,
+                    semantic_source_epoch: media.epoch,
+                    files: &file_refs,
+                })
+                .map_err(SessionError::NativeAudio)?
+                .ok_or(SessionError::Invalid(
+                    "ordinary file source metadata unavailable",
+                ))?;
+            Some(ResidentFileSet::capture(input, metadata)?)
+        };
+
+        let prepare = |effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>| {
             crate::prepare_with_waveforms_using(project, media, transforms, waveforms, || {
-                PreparedRevision::prepare_with_device_resources(
+                media.prepare_with_device_resources_and_catalog(
                     project,
-                    &media.resident,
-                    table,
+                    Arc::clone(&table),
                     self.current.map(|s| s.prepared.session().as_ref()),
                     transforms,
                     &resources,
                     work,
                     self.shutdown,
+                    file_sources.as_ref().map(|sources| {
+                        (
+                            sources.metadata().catalog_generation(),
+                            sources.metadata().sources(),
+                        )
+                    }),
+                    effects,
                 )
-            })?;
+            })
+        };
+        let mut invoked = false;
+        let hosted = sink
+            .prepare_resident_effects(ResidentEffectPreparation { project }, &mut |effects| {
+                if invoked {
+                    return Err(hex_engine::Invalid(
+                        "host effect compiler was invoked more than once",
+                    ));
+                }
+                invoked = true;
+                prepare(Some(effects))
+            })
+            .map_err(SessionError::NativeAudio)?;
+        let prepared = match (hosted, invoked) {
+            (Some(prepared), true) => prepared,
+            (None, false) => prepare(None)?,
+            _ => {
+                return Err(SessionError::Invalid(
+                    "host effect compiler result differs from its invocation",
+                ));
+            }
+        };
         let prepared = match gain_recording {
             Some(track) => prepared.arm_gain_recording(project, track)?,
             None => prepared,
         };
         let snapshot = Snapshot {
+            file_sources,
             resources,
             prepared: Arc::new(prepared),
             inputs: if self.predecessor.is_some() {
@@ -427,7 +485,8 @@ impl Inputs<'_> {
             runtime,
             snapshot.resources.metadata_bytes()?,
         )?;
-        sink.publish_resident(
+        let mut plugin_admitted = false;
+        sink.publish_resident_with_files(
             playback,
             Some(&snapshot.resources),
             observation,
@@ -452,8 +511,24 @@ impl Inputs<'_> {
                 {
                     return Err("resident publication cancelled".into());
                 }
+                if let Some(control) = self.plugin_effect
+                    && !plugin_admitted
+                {
+                    if !control.begin_commit() {
+                        return Err("vst3 effect insertion cancelled before admission".into());
+                    }
+                    plugin_admitted = true;
+                }
                 Ok(())
             },
+            snapshot
+                .file_sources
+                .as_ref()
+                .map(|sources| ResidentFilePublication {
+                    sources,
+                    shutdown: self.shutdown,
+                    cancel: self.cancel,
+                }),
         )
         .map_err(|refused| SessionError::NativeAudio(refused.error))
     }
@@ -760,6 +835,7 @@ pub(super) fn prepare_bounce_import(
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
+        plugin_effect: None,
         predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
@@ -779,6 +855,7 @@ pub(super) fn prepare_bounce_import(
         input.table,
         input.transforms,
         input.waveforms,
+        context,
     )?;
     admit()?;
     if let Some(frame) = stopped {
@@ -787,6 +864,45 @@ pub(super) fn prepare_bounce_import(
         inputs.publish(&mut snapshot, input.project, sink, context)?;
     }
     Ok(snapshot)
+}
+
+/// Planning hint derived from the same owners as final publication admission.
+/// This permits choosing file backing before allocating a whole decoded source.
+pub(super) fn import_frame_allowance(
+    session: &Session,
+    sink: &dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+) -> Result<u64, SessionError> {
+    Ok(if session.source_plan_reservation().is_some() {
+        // Plan before decoding against the same actual native/current/export
+        // owners used by final admission, including original sampler banks.
+        let native = sink.resident_admission();
+        let current_sets = current.map(|snapshot| [&snapshot.resources]);
+        let current_revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
+        let current_view = DeviceResourceAdmission::new(
+            current_sets.as_ref().map_or(&[], |sets| sets.as_slice()),
+            &[],
+        )
+        .with_prepared_revisions(
+            current_revisions
+                .as_ref()
+                .map_or(&[], |revisions| revisions.as_slice()),
+        );
+        let mut registered = admission.registered.to_vec();
+        registered.push(current_view);
+        registered.extend(native);
+        sampler_export::Admission {
+            registered: &registered,
+            native: sink.native_sampler_hold(),
+            ..admission
+        }
+        .append_original_frame_allowance(session)?
+    } else {
+        session
+            .max_resident_frames()
+            .saturating_sub(session.resident_frames())
+    })
 }
 
 #[allow(clippy::too_many_arguments)] // Captured file/destination and current publication union are one synchronous import.
@@ -809,11 +925,29 @@ pub(super) fn import_file(
     {
         return Err(SessionError::Invalid("session target cell is occupied"));
     }
-    let remaining = session
-        .max_resident_frames()
-        .checked_sub(session.resident_frames())
-        .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
-    let output_limit = usize::try_from(remaining)
+    let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
+    if let Some(source) = session.plan_file_import_with_allowance(&path, allowance)? {
+        let expected = session.project().clone();
+        let mut accepted = None;
+        let (_, prepared) = session.import_verified_batch_revision(
+            vec![source],
+            destination,
+            &expected,
+            current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+            overwrite,
+            || Ok(()),
+            |input, admit| {
+                let snapshot =
+                    prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+                let prepared = Arc::clone(&snapshot.prepared);
+                accepted = Some(snapshot);
+                Ok(prepared)
+            },
+        )?;
+        *current = accepted;
+        return Ok(prepared);
+    }
+    let output_limit = usize::try_from(allowance)
         .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
     if output_limit == 0 {
         return Err(SessionError::Invalid("resident audio frame limit reached"));
@@ -854,6 +988,10 @@ pub(super) fn import_file(
 
 enum Transition {
     Command(Box<Command>),
+    PluginEffect {
+        command: Box<Command>,
+        control: Arc<PluginEffectControl>,
+    },
     History {
         redo: bool,
     },
@@ -936,6 +1074,7 @@ impl Session {
             destination,
             |project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
+                    plugin_effect: None,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -946,13 +1085,22 @@ impl Session {
                     current,
                     legacy: legacy_refs.clone(),
                 };
-                let sink = sink.try_borrow().map_err(|_| {
+                let mut sink = sink.try_borrow_mut().map_err(|_| {
                     SessionError::Invalid("resident publication is already borrowed")
                 })?;
-                inputs.prepare(project, &**sink, media, table, transforms, waveforms)
+                inputs.prepare(
+                    project,
+                    &mut **sink,
+                    media,
+                    table,
+                    transforms,
+                    waveforms,
+                    context,
+                )
             },
             |project, snapshot, stage| {
                 let inputs = Inputs {
+                    plugin_effect: None,
                     predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -1177,6 +1325,7 @@ impl Session {
         cancelled: Option<&'a AtomicBool>,
     ) -> Result<Inputs<'a>, SessionError> {
         Ok(Inputs {
+            plugin_effect: None,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1206,6 +1355,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            plugin_effect: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -1229,6 +1379,7 @@ impl Session {
             self.sine_table(),
             &self.audio_transforms,
             &self.audio_clip_waveforms,
+            context,
         )?;
         let metadata = ResidentPublicationMetadata {
             context,
@@ -1260,6 +1411,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            plugin_effect: None,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1283,10 +1435,54 @@ impl Session {
             self.sine_table(),
             &self.audio_transforms,
             &self.audio_clip_waveforms,
+            context,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
+
+    /// Recompile the same canonical project after the native owner renewed its
+    /// endpoints. No editor command, revision advance or history entry occurs.
+    pub(super) fn restore_resident_snapshot(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = self.resident_seek_inputs(admission, current, None)?;
+        let mut snapshot = inputs.prepare(
+            self.project(),
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            context,
+        )?;
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: true,
+            computer_keyboard_request: None,
+            gain_recording_track: snapshot.prepared.gain_recording_track(),
+            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+        };
+        let selected = snapshot.inputs.clone();
+        self.publish_resident_runtime_inputs(
+            &mut snapshot,
+            sink,
+            admission,
+            metadata,
+            ResidentPublicationPolicy::InstallFreshRuntime,
+            selected,
+            None,
+        )?;
+        Ok(snapshot)
+    }
+
     pub(super) fn prepare_resident_preview(
         &self,
         command: Command,
@@ -1306,6 +1502,7 @@ impl Session {
                 self.sine_table(),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
+                context,
             )?;
             let project = Arc::new(candidate.clone());
             let metadata = ResidentPublicationMetadata {
@@ -1346,6 +1543,7 @@ impl Session {
             &self.audio_transforms,
             &self.audio_clip_waveforms,
             Some(track),
+            context,
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
@@ -1458,6 +1656,30 @@ impl Session {
             "resident command produced no transition",
         ))
     }
+    pub(super) fn plugin_effect_resident_snapshot(
+        &mut self,
+        command: Command,
+        control: Arc<PluginEffectControl>,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<(Created, Snapshot), SessionError> {
+        self.resident_transition(
+            Transition::PluginEffect {
+                command: Box::new(command),
+                control,
+            },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "plugin effect produced no transition",
+        ))
+    }
     /// A same-audio A/B edge retains its proved compiler owner and existing correlation binding.
     /// An audible edge constructs/admit/enqueues before the Editor's reserved canonical commit.
     pub(super) fn comparison_resident_snapshot(
@@ -1479,6 +1701,7 @@ impl Session {
             return Err(SessionError::Invalid("comparison command required"));
         }
         let inputs = Inputs {
+            plugin_effect: None,
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1506,8 +1729,6 @@ impl Session {
                     target,
                     current.filter(|_| reuse).map(|snapshot| &snapshot.prepared),
                     || {
-                        let mut snapshot =
-                            inputs.prepare(target, sink, &media, table, transforms, waveforms)?;
                         // Unknown previous audio correlation cannot justify reusing a no-op compiler
                         // owner, but it still must publish at the unchanged authored revision.
                         let context = if source == target {
@@ -1518,6 +1739,8 @@ impl Session {
                         } else {
                             context
                         };
+                        let mut snapshot = inputs
+                            .prepare(target, sink, &media, table, transforms, waveforms, context)?;
                         inputs.publish(&mut snapshot, target, sink, context)?;
                         Ok((Arc::clone(&snapshot.prepared), snapshot))
                     },
@@ -1552,6 +1775,7 @@ impl Session {
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         if let Transition::Command(command)
+        | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
         | Transition::SectionCommand { command, .. } = &transition
         {
@@ -1563,7 +1787,12 @@ impl Session {
                 return Err(SessionError::DeviceAssetClipUnsupported(*asset));
             }
         }
+        let plugin_control = match &transition {
+            Transition::PluginEffect { control, .. } => Some(Arc::clone(control)),
+            _ => None,
+        };
         let inputs = Inputs {
+            plugin_effect: plugin_control.as_deref(),
             predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
@@ -1603,8 +1832,6 @@ impl Session {
             Transition::SectionCommand { .. } | Transition::SectionHistory { .. }
         );
         let prepare = |source: &Project, project: &Project| {
-            let mut snapshot =
-                inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
             let context = if source == project {
                 hex_engine::AudioSourceContext {
                     editor_revision: context.editor_revision.saturating_sub(1),
@@ -1613,6 +1840,8 @@ impl Session {
             } else {
                 context
             };
+            let mut snapshot =
+                inputs.prepare(project, sink, &media, table, transforms, waveforms, context)?;
             if let Some(frame) = stopped_bounce_frame {
                 inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
             } else if let Some(cursor) = stopped_cursor {
@@ -1661,7 +1890,9 @@ impl Session {
             Ok(snapshot)
         };
         match transition {
-            Transition::Command(command) | Transition::SectionCommand { command, .. } => self
+            Transition::Command(command)
+            | Transition::PluginEffect { command, .. }
+            | Transition::SectionCommand { command, .. } => self
                 .editor
                 .execute_prepared_transition(*command, prepare)
                 .map(Some),
@@ -1687,6 +1918,7 @@ impl Session {
 mod tests {
     mod bounce_tests;
     mod export_tests;
+    mod plugin_effect_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;
@@ -1700,6 +1932,12 @@ mod tests {
         publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
         keyboard_peak: Mutex<f32>,
         keyboard_publications: AtomicUsize,
+        effect_compilations: AtomicUsize,
+        plugin_preparations: AtomicUsize,
+        plugin_ready: AtomicBool,
+        plugin_terminals: Mutex<Vec<(Arc<PluginEffectControl>, bool)>>,
+        cancel_at_admission: Mutex<Option<Arc<PluginEffectControl>>>,
+        cancel_after_admission: Mutex<Option<Arc<PluginEffectControl>>>,
     }
     struct OfflineSink {
         observed: Arc<Observed>,
@@ -1710,6 +1948,52 @@ mod tests {
         )>,
     }
     impl WorkerAudioSink for OfflineSink {
+        fn prepare_plugin_effect(
+            &mut self,
+            _input: PluginEffectPreparation<'_>,
+        ) -> Result<PluginEffectPreparationState, String> {
+            self.observed
+                .plugin_preparations
+                .fetch_add(1, Ordering::Release);
+            if self.observed.plugin_ready.load(Ordering::Acquire) {
+                // Deliberately wrong provider: the worker must refuse rather than admit it.
+                hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .map(PluginEffectPreparationState::Ready)
+                .map_err(|e| e.to_string())
+            } else {
+                Ok(PluginEffectPreparationState::Preparing)
+            }
+        }
+        fn plugin_effect_ready(&self) -> bool {
+            self.observed.plugin_ready.load(Ordering::Acquire)
+        }
+        fn finish_plugin_effect(&mut self, control: &Arc<PluginEffectControl>, accepted: bool) {
+            self.observed
+                .plugin_terminals
+                .lock()
+                .unwrap()
+                .push((Arc::clone(control), accepted));
+        }
+        fn prepare_resident_effects(
+            &mut self,
+            _input: ResidentEffectPreparation<'_>,
+            prepare: &mut dyn FnMut(
+                &hex_engine::AudioCandidateEffects<'_, '_>,
+            ) -> Result<PreparedRevision, hex_engine::Invalid>,
+        ) -> Result<Option<PreparedRevision>, String> {
+            // Real registered compiler/resource tests now traverse the same
+            // borrowed host-facts hook. This fixture supplies builtins only;
+            // native instance/endpoint admission remains a desktop test.
+            self.observed
+                .effect_compilations
+                .fetch_add(1, Ordering::Release);
+            hex_engine::AudioCandidateEffects::with_host_definitions(&[], prepare)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
         fn resident_publication_enabled(&self) -> bool {
             true
         }
@@ -1751,7 +2035,16 @@ mod tests {
                 let candidate =
                     DeviceResourceAdmission::unpublished_on_control(&playback, Some(&resources));
                 let old = self.resident_admission();
+                if let Some(control) = self.observed.cancel_at_admission.lock().unwrap().take() {
+                    assert!(control.cancel());
+                }
                 admit(&[candidate, old[0]])?;
+                if let Some(control) = self.observed.cancel_after_admission.lock().unwrap().take() {
+                    assert!(
+                        !control.cancel(),
+                        "accepted admission must win over a late cancellation"
+                    );
+                }
                 if self.observed.refuse.load(Ordering::Acquire) {
                     return Err("fixture publication refused".into());
                 }
@@ -1963,6 +2256,7 @@ mod tests {
             .unwrap();
         let added = receive();
         assert!(added.error.is_none(), "{:?}", added.error);
+        assert!(observed.effect_compilations.load(Ordering::Acquire) > 0);
         assert!(added.playback.is_none());
         let track = added.state.project.tracks()[0].id();
         let state = hex_engine::default_native_device_state_for_class(
@@ -2580,6 +2874,7 @@ mod tests {
                     )
                     .unwrap();
                 let captured = Snapshot {
+                    file_sources: current.file_sources.clone(),
                     prepared: Arc::clone(&current.prepared),
                     resources: current.resources.capture_on_control(bytes).unwrap(),
                     inputs: current.inputs.clone(),

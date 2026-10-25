@@ -88,6 +88,10 @@ struct ResidentWork {
     job: u64,
     resources: PreparedDeviceResources,
     cancelled: Arc<AtomicBool>,
+    files: Option<(
+        crate::service::ResidentFileSet,
+        crate::service::ResidentFileSeekPreparer,
+    )>,
 }
 /// Existing pending/running/ready/retired slots plus the worker's bounded local destruction.
 /// Canonical native dispatch must retain at most this many actual anchored jobs.
@@ -190,6 +194,10 @@ impl ArrangementSeekWorker {
         job: u64,
         resources: PreparedDeviceResources,
         cancelled: Arc<AtomicBool>,
+        files: Option<(
+            crate::service::ResidentFileSet,
+            crate::service::ResidentFileSeekPreparer,
+        )>,
     ) -> Result<u64, ArrangementSeekSubmitError> {
         self.submit_work(
             spec,
@@ -197,6 +205,7 @@ impl ArrangementSeekWorker {
                 job,
                 resources,
                 cancelled,
+                files,
             }),
         )
     }
@@ -499,29 +508,38 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
         let (mut work, cancelled) = work;
         let job = work.resident.as_ref().map(|r| r.job);
         let result = if let Some(resident) = work.resident.take() {
-            let runtime = match work.spec.mode {
-                ArrangementSeekMode::SectionLoop(region) => {
-                    SessionPlayback::prepare_section_arrangement_preroll(
-                        Arc::clone(&work.spec.prepared_revision),
-                        Some(&resident.resources),
-                        region,
-                        work.spec.work_budget_frames,
-                        &cancelled,
-                    )
-                }
-                _ => {
-                    SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
-                        Arc::clone(&work.spec.prepared_revision),
-                        &resident.resources,
-                        work.spec.destination_frame,
-                        work.spec.work_budget_frames,
-                        work.spec.start_playing,
-                        &cancelled,
-                    )
-                }
+            let result = if let Some((sources, prepare)) = &resident.files {
+                prepare(crate::service::ResidentFileSeekRequest {
+                    spec: &work.spec,
+                    resources: &resident.resources,
+                    sources,
+                    cancelled: &cancelled,
+                })
+            } else {
+                let runtime = match work.spec.mode {
+                    ArrangementSeekMode::SectionLoop(region) => {
+                        SessionPlayback::prepare_section_arrangement_preroll(
+                            Arc::clone(&work.spec.prepared_revision),
+                            Some(&resident.resources),
+                            region,
+                            work.spec.work_budget_frames,
+                            &cancelled,
+                        )
+                    }
+                    _ => {
+                        SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                            Arc::clone(&work.spec.prepared_revision),
+                            &resident.resources,
+                            work.spec.destination_frame,
+                            work.spec.work_budget_frames,
+                            work.spec.start_playing,
+                            &cancelled,
+                        )
+                    }
+                };
+                // Keep one large constructor Result live, matching the existing preroll stack contract.
+                runtime.and_then(Playback::from_interactive_arrangement_preroll)
             };
-            // Keep one large constructor Result live, matching the existing preroll stack contract.
-            let result = runtime.and_then(Playback::from_interactive_arrangement_preroll);
             drop(resident);
             result
         } else {
@@ -715,6 +733,7 @@ mod tests {
                 71,
                 resources.capture_on_control(10_000).unwrap(),
                 Arc::new(AtomicBool::new(false)),
+                None,
             )
             .unwrap();
         wait_for_ready(&worker);

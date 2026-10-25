@@ -33,7 +33,10 @@ impl Custody {
             {
                 return Err("native source is not awaiting completion");
             }
-            if !matches!(work.sources.cells[index].owner, Some(Owner::Pending(_))) {
+            if !matches!(
+                work.sources.cells[index].owner,
+                Some(Owner::Pending(_) | Owner::Quiescent(_))
+            ) {
                 return Err("native preparation owner differs");
             }
             slot.starting = true;
@@ -53,6 +56,15 @@ impl Custody {
                     cell.owner = Some(Owner::Refused(owner));
                 }
             },
+            Some(Owner::Quiescent(owner)) => {
+                match owner.resume_retained_on_control(binding, presentation) {
+                    Ok(owner) => cell.owner = Some(Owner::Prepared(owner)),
+                    Err(owner) => {
+                        cell.constructor_refused = true;
+                        cell.owner = Some(Owner::Refused(owner));
+                    }
+                }
+            }
             other => cell.owner = other,
         }));
         if let Err(payload) = result {

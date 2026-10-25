@@ -34,7 +34,21 @@ pub enum ArrangementPrerollError {
     UnsupportedTransportLoop,
     ArithmeticOverflow,
     CandidatePositionMismatch,
+    MediaPreparation(&'static str),
     Playback(SessionPlaybackError),
+}
+
+/// Control-only page preparation for one bounded preroll candidate. Implementors
+/// must protect the exact demand before rendering and refuse unexpected misses.
+/// This borrow grants no native source, endpoint, readiness or publication custody.
+pub trait PreparedPrerollPages: crate::MediaPages {
+    fn prepare_chunk(
+        &mut self,
+        playback: &SessionPlayback,
+        maximum_frames: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<usize, ArrangementPrerollError>;
+    fn complete_chunk(&mut self) -> Result<(), ArrangementPrerollError>;
 }
 
 impl From<SessionPlaybackError> for ArrangementPrerollError {
@@ -83,6 +97,7 @@ impl SessionPlayback {
             PrerollRuntimePolicy::SectionLoop(region),
             resources,
             || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
         )
     }
 
@@ -164,6 +179,7 @@ impl SessionPlayback {
             PrerollRuntimePolicy::Interactive,
             None,
             || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
         )
     }
 
@@ -203,6 +219,7 @@ impl SessionPlayback {
             PrerollRuntimePolicy::LinearExport,
             None,
             is_cancelled,
+            |candidate, output| candidate.render(output).map_err(Into::into),
         )
     }
 
@@ -229,6 +246,59 @@ impl SessionPlayback {
             PrerollRuntimePolicy::Interactive,
             Some(resources),
             || cancelled.load(Ordering::Acquire),
+            |candidate, output| candidate.render(output).map_err(Into::into),
+        )
+    }
+
+    /// Reconstruct a source-bearing ordinary seek or section on control using
+    /// the exact ordinary compiler scope and independently prepared page view.
+    /// Existing replay/storage/cancellation limits and route fences still apply.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_ordinary_arrangement_preroll_with_pages<P: PreparedPrerollPages>(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        section: Option<hex_project::LoopRegion>,
+        cancelled: &AtomicBool,
+        pages: &mut P,
+    ) -> Result<Self, ArrangementPrerollError> {
+        if section.is_some_and(|region| {
+            !region.enabled() || region.start() != destination_frame || !start_playing
+        }) {
+            return Err(ArrangementPrerollError::CandidatePositionMismatch);
+        }
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            section.map_or(
+                PrerollRuntimePolicy::Interactive,
+                PrerollRuntimePolicy::SectionLoop,
+            ),
+            Some(resources),
+            || cancelled.load(Ordering::Acquire),
+            |candidate, output| {
+                let mut offset = 0;
+                while offset < output.len() {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(ArrangementPrerollError::Cancelled);
+                    }
+                    let count = pages.prepare_chunk(candidate, output.len() - offset, cancelled)?;
+                    if count == 0 || count > output.len() - offset {
+                        return Err(ArrangementPrerollError::MediaPreparation(
+                            "invalid preroll page demand width",
+                        ));
+                    }
+                    candidate.render_with_pages(&mut output[offset..offset + count], pages)?;
+                    pages.complete_chunk()?;
+                    offset += count;
+                }
+                Ok(())
+            },
         )
     }
 
@@ -242,6 +312,7 @@ impl SessionPlayback {
         policy: PrerollRuntimePolicy,
         resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         mut is_cancelled: impl FnMut() -> bool,
+        mut render_chunk: impl FnMut(&mut Self, &mut [Frame]) -> Result<(), ArrangementPrerollError>,
     ) -> Result<Self, ArrangementPrerollError> {
         if is_cancelled() {
             return Err(ArrangementPrerollError::Cancelled);
@@ -327,7 +398,7 @@ impl SessionPlayback {
             }
             let count = usize::try_from(remaining.min(PREROLL_BLOCK_FRAMES as u64))
                 .map_err(|_| ArrangementPrerollError::ArithmeticOverflow)?;
-            candidate.render(&mut block[..count])?;
+            render_chunk(&mut candidate, &mut block[..count])?;
             remaining = remaining
                 .checked_sub(count as u64)
                 .ok_or(ArrangementPrerollError::ArithmeticOverflow)?;

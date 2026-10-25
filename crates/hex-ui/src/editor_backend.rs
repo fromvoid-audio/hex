@@ -65,6 +65,12 @@ pub enum EditorPublicationState {
     Submitted {
         audio_revision: u64,
     },
+    /// Verified-source preview correlation, distinct from canonical or resident
+    /// publication. Actual application still requires output/revision callback status.
+    VerifiedPreviewSubmitted {
+        audio_revision: u64,
+        identity: hex_session::service::DevicePreviewIdentity,
+    },
     /// Exact submission correlation and bounded resource-free observation endpoints. Application
     /// still needs the output/revision callback ACK; no graph or native resource owner crosses.
     ResidentSubmitted {

@@ -37,6 +37,11 @@ mod clip_selection;
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
+mod plugin_effect;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use plugin_effect::fixture_view as plugin_effect_fixture_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
@@ -634,7 +639,13 @@ pub(crate) fn sampler_load_fixture(
     }
     let home = root.join("home");
     std::fs::create_dir_all(home.join("Music")).map_err(|e| e.to_string())?;
-    let preferences = root.join("browser.json");
+    // Catalog publication refuses linked ancestors, including macOS's /var
+    // temporary alias. Keep library paths as supplied, but use the physical
+    // owned root for preference/catalog persistence.
+    let preferences = root
+        .canonicalize()
+        .map_err(|error| error.to_string())?
+        .join("browser.json");
     let places =
         hex_preferences::BrowserPlaces::new(vec![directory.clone()]).map_err(|e| e.to_string())?;
     hex_preferences::save(&preferences, &places).map_err(|e| e.to_string())?;
@@ -810,6 +821,7 @@ pub(super) struct EditorView {
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1471,6 +1483,7 @@ impl EditorView {
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
+            pending_plugin_effect: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,
@@ -1751,23 +1764,6 @@ impl EditorView {
 
     pub(super) fn toggle_mute(&mut self, track: TrackId) {
         self.enqueue(Request::Edit(Command::ToggleMute(track)));
-    }
-
-    pub(super) fn gain_by(&mut self, track: TrackId, amount: f32) {
-        if self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.track(track))
-            .is_some_and(|track| {
-                !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
-            })
-        {
-            self.error = Some(
-                "automation owns gain · edit the gain lane or clear it for static fallback".into(),
-            );
-            return;
-        }
-        self.enqueue(Request::Edit(Command::GainBy { track, amount }));
     }
 
     /// Ordinary creation follows the selected row; Return/Main and an absent or

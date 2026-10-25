@@ -91,6 +91,7 @@ impl NativeAudioSink {
         add(held, self.edit_hold())
     }
     pub(super) fn opened_output(&mut self, mut output: WorkerPreparedOutput) {
+        self.plugins.fresh_output();
         // Both production and headless factories must acquire the existing
         // exclusive Lease. Successful fresh construction proves old retirement;
         // neither a cleared Option nor UI endpoint acknowledgement does so.
@@ -125,14 +126,31 @@ impl NativeAudioSink {
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(|policy| {
-                    output
+                    let control = output
                         .publication
                         .control()
-                        .ok_or_else(|| "audio publication endpoint is closed".to_owned())?
+                        .ok_or_else(|| "audio publication endpoint is closed".to_owned())?;
+                    control
                         .configure_device_resource_publication_on_control(
                             policy.resident_native.storage,
                         )
-                        .map_err(str::to_owned)
+                        .map_err(str::to_owned)?;
+                    let domains = if self.plugins.wants_profile() {
+                        policy.plugins.domains(policy.ordinary_domains)?
+                    } else {
+                        policy.ordinary_domains
+                    };
+                    control
+                        .configure_ordinary_streaming_on_control(
+                            domains,
+                            policy.readiness.extents_per_role,
+                            policy.ordinary_stream_metadata_bytes,
+                        )
+                        .map_err(str::to_owned)?;
+                    if let Err(error) = self.plugins.configure(control, policy.plugins) {
+                        self.plugins.refuse_profile(error);
+                    }
+                    Ok(())
                 });
             if let Err(error) = configured {
                 self.open_error = Some(error);

@@ -30,6 +30,21 @@ pub struct RoutingEdge {
 }
 
 impl Project {
+    /// Recheck combined audio and MIDI graph constraints on a canonical input.
+    ///
+    /// Control-side preparation may borrow this query without cloning a public
+    /// snapshot or reconstructing unrelated clips, devices and media metadata.
+    /// Numeric values and global identities remain established by canonical
+    /// constructors/typed edits; untrusted snapshots still require `from_snapshot`.
+    /// Sealed fields alone do not prove combined graph validity: an intermediate
+    /// prepared batch can introduce a cycle or remove a MIDI destination's
+    /// instrument. Recheck both graph owners, including sends and Return feeds.
+    /// This does not admit playback resources or supported device capabilities.
+    pub fn validate_playback_routing(&self) -> Result<(), Invalid> {
+        self.validate_routing_proposal(&[])?;
+        self.validate_playable_routes()
+    }
+
     /// Structural validation is not permission to render or adopt this graph.
     /// Existing sends have one owner and are included alongside implicit Main
     /// paths. This legacy proposal does not authorize adoption; use the canonical
@@ -138,5 +153,134 @@ impl Project {
     /// list never duplicates their gains or identities.
     pub fn authored_routing(&self) -> &[crate::ReturnFeed] {
         &self.routing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Editor, TrackDeviceSlot};
+
+    fn instrument(editor: &mut Editor) -> TrackId {
+        let Created::Track(id) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "track".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: crate::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("fixture track")
+        };
+        id
+    }
+
+    fn fixture() -> (Editor, TrackId, ReturnId) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let track = instrument(&mut editor);
+        let mut returns = Vec::new();
+        for name in ["a", "b"] {
+            let Created::ReturnTrack(id) = editor
+                .execute(Command::AddReturnTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("fixture return")
+            };
+            returns.push(id);
+        }
+        editor
+            .execute(Command::SetReturnFeed {
+                source: returns[0],
+                destination: returns[1],
+                gain: 0.5,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioFeed {
+                source: RoutingOwner::Return(returns[1]),
+                destination: track,
+                gain: 0.5,
+            })
+            .unwrap();
+        (editor, track, returns[0])
+    }
+
+    fn matches_snapshot_guard(project: &Project, expected: Result<(), Invalid>) {
+        let before = project.clone();
+        assert_eq!(project.validate_playback_routing(), expected);
+        assert_eq!(
+            Project::validate_return_feed_snapshot(&project.snapshot()).map(|_| ()),
+            expected,
+        );
+        assert_eq!(project, &before, "validation must only borrow");
+    }
+
+    #[test]
+    fn borrowed_routing_guard_rejects_return_only_cycle_without_playable_routes() {
+        let (editor, _, _) = fixture();
+        let mut candidate = editor.project().clone();
+        candidate.audio_feeds.clear();
+        assert!(candidate.midi_routes.is_empty());
+        matches_snapshot_guard(&candidate, Ok(()));
+        let mut reverse = candidate.routing[0];
+        std::mem::swap(&mut reverse.source, &mut reverse.destination);
+        reverse.id = crate::RouteId(candidate.next_id);
+        candidate.next_id += 1;
+        candidate.routing.push(reverse);
+        matches_snapshot_guard(&candidate, Err(Invalid("routing cycles are unsupported")));
+    }
+
+    #[test]
+    fn borrowed_routing_guard_rejects_combined_cycle_and_accepts_repaired_candidate() {
+        let (editor, track, return_track) = fixture();
+        let mut candidate = editor.project().clone();
+        matches_snapshot_guard(&candidate, Ok(()));
+        // Exercise the precommit candidate directly, rather than relying on
+        // Editor's final batch validation to reject before reaching this query.
+        candidate
+            .apply(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 1.0,
+            })
+            .unwrap();
+        matches_snapshot_guard(&candidate, Err(Invalid("routing cycles are unsupported")));
+        candidate
+            .apply(Command::SetReturnSend {
+                track,
+                return_track,
+                gain: 0.0,
+            })
+            .unwrap();
+        matches_snapshot_guard(&candidate, Ok(()));
+    }
+
+    #[test]
+    fn borrowed_routing_guard_rejects_midi_destination_loss_and_accepts_route_removal() {
+        let (mut editor, source, _) = fixture();
+        let destination = instrument(&mut editor);
+        editor
+            .execute(Command::SetMidiSource {
+                destination,
+                source: Some(source),
+            })
+            .unwrap();
+        let mut candidate = editor.project().clone();
+        matches_snapshot_guard(&candidate, Ok(()));
+        candidate
+            .apply(Command::RemoveInstrument { track: destination })
+            .unwrap();
+        matches_snapshot_guard(
+            &candidate,
+            Err(Invalid("midi destination requires an instrument")),
+        );
+        candidate
+            .apply(Command::SetMidiSource {
+                destination,
+                source: None,
+            })
+            .unwrap();
+        matches_snapshot_guard(&candidate, Ok(()));
     }
 }
