@@ -90,7 +90,9 @@ impl DeviceMeter {
     }
     pub(crate) fn observe_dynamics(&self, reading: DynamicsMeter) {
         for (target, value) in self.reduction.iter().zip(reading.reduction_db) {
-            if value.is_finite() && value >= 0.0 {
+            // Both signs of zero mean no attenuation. The -0 bit pattern
+            // would otherwise outrank every positive finite reading.
+            if value.is_finite() && value > 0.0 {
                 target.fetch_max(value.to_bits(), Relaxed);
             }
         }
@@ -139,6 +141,20 @@ mod tests {
         meter.observe_output(&[[f32::NAN, f32::INFINITY]]);
         assert_eq!(meter.take_peaks(), [1.2, 0.8]);
         assert_eq!(meter.take_peaks(), [0.0; 2]);
+    }
+
+    #[test]
+    fn negative_zero_does_not_hide_later_attenuation() {
+        let meter = DeviceMeter::default();
+        meter.observe_dynamics(DynamicsMeter {
+            reduction_db: [-0.0, 0.0],
+            clipped: false,
+        });
+        meter.observe_dynamics(DynamicsMeter {
+            reduction_db: [6.0, 3.0],
+            clipped: false,
+        });
+        assert_eq!(meter.take_dynamics().reduction_db, [6.0, 3.0]);
     }
 
     #[test]
