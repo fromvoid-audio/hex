@@ -4343,12 +4343,16 @@ mod tests {
                 balance: 0.0,
                 muted: false,
                 soloed: false,
-                devices: vec![DeviceSnapshot {
-                    comparison: None,
-                    id: TRACK_DEVICE_ID,
-                    bypassed: false,
-                    state: make_state(),
-                }],
+                devices: state
+                    .as_ref()
+                    .map(|state| DeviceSnapshot {
+                        comparison: None,
+                        id: TRACK_DEVICE_ID,
+                        bypassed: false,
+                        state: state.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
@@ -4377,12 +4381,16 @@ mod tests {
                 name: "saturator return fixture".into(),
                 gain: 0.75,
                 muted: false,
-                devices: vec![DeviceSnapshot {
-                    comparison: None,
-                    id: RETURN_DEVICE_ID,
-                    bypassed: false,
-                    state: make_state(),
-                }],
+                devices: state
+                    .as_ref()
+                    .map(|state| DeviceSnapshot {
+                        comparison: None,
+                        id: RETURN_DEVICE_ID,
+                        bypassed: false,
+                        state: state.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
             }],
             session: SessionSnapshot::default(),
             loop_region: None,
@@ -4568,11 +4576,13 @@ mod tests {
             )
             .expect("gate floor")
         };
-        native_track_and_return_graph(make_state())
+        native_track_and_return_graph(Some(make_state()))
     }
 
     #[cfg(feature = "allocation-probe")]
-    fn native_track_and_return_graph(state: hex_lattice_contract::NativeDeviceState) -> Playback {
+    fn native_track_and_return_graph(
+        state: Option<hex_lattice_contract::NativeDeviceState>,
+    ) -> Playback {
         use hex_project::{
             AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
             Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
@@ -4586,7 +4596,6 @@ mod tests {
         const RETURN_ID: u64 = 7;
         const RETURN_DEVICE_ID: u64 = 8;
         const FRAMES: u64 = 512;
-        let make_state = || state.clone();
         let project = CanonicalProject::from_snapshot(Snapshot {
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -5224,7 +5233,7 @@ mod tests {
 
     #[cfg(feature = "allocation-probe")]
     #[test]
-    fn reverb_track_return_render_edit_stop_seek_and_shutdown_allocate_nothing() {
+    fn reverb_track_return_render_edit_removal_stop_seek_and_shutdown_allocate_nothing() {
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
         let state =
             hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))
@@ -5239,7 +5248,7 @@ mod tests {
         let mut block = [[0.0; 2]; 127];
         for state in [state, changed] {
             control
-                .publish(native_track_and_return_graph(state))
+                .publish(native_track_and_return_graph(Some(state)))
                 .unwrap();
             control.command(PlaybackCommand::Play).unwrap();
             let counts = allocation_counter::measure(|| {
@@ -5260,6 +5269,29 @@ mod tests {
             assert!(block.iter().flatten().any(|v| v.abs() > 0.0));
             control.reclaim();
         }
+        control
+            .publish(native_track_and_return_graph(None))
+            .unwrap();
+        let counts = allocation_counter::measure(|| {
+            for _ in 0..8 {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(
+            block.iter().flatten().any(|v| v.abs() > 0.0),
+            "removed effects drain their real boxed histories"
+        );
+        control.reclaim();
         for command in [PlaybackCommand::Seek(0), PlaybackCommand::Stop] {
             control.command(command).unwrap();
             let counts = allocation_counter::measure(|| {
