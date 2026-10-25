@@ -844,6 +844,25 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn prepare_stopped_playback_restore(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<bool>, String> {
+        let Some(output) = self.output.as_mut() else {
+            return Ok(None);
+        };
+        self.plugins.prepare_restore(output, context)
+    }
+    fn stopped_playback_restore_ready(&self) -> bool {
+        self.plugins.restore_ready()
+    }
+    fn cancel_stopped_playback_restore(&mut self) {
+        self.plugins.cancel_restore(
+            self.output
+                .as_mut()
+                .and_then(|output| output.publication.control()),
+        );
+    }
     fn prepare_plugin_effect(
         &mut self,
         input: hex_session::service::PluginEffectPreparation<'_>,

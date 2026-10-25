@@ -22,6 +22,18 @@ struct ResidentSink {
     pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn prepare_stopped_playback_restore(
+        &mut self,
+        context: AudioSourceContext,
+    ) -> Result<Option<bool>, String> {
+        self.inner.prepare_stopped_playback_restore(context)
+    }
+    fn stopped_playback_restore_ready(&self) -> bool {
+        self.inner.stopped_playback_restore_ready()
+    }
+    fn cancel_stopped_playback_restore(&mut self) {
+        self.inner.cancel_stopped_playback_restore();
+    }
     fn prepare_plugin_effect(
         &mut self,
         input: hex_session::service::PluginEffectPreparation<'_>,

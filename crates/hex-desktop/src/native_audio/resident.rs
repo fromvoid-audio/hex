@@ -350,7 +350,17 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
-                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
+                    match self.plugins.restore_policy(metadata.context) {
+                        Ok(Some(policy)) if metadata.stopped_restore => policy,
+                        Ok(None) => hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
+                        Ok(Some(_)) => {
+                            return Err(ResidentPublicationRefusal {
+                                playback,
+                                error: "stopped vst3 restore owns publication".into(),
+                            });
+                        }
+                        Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+                    }
                 }
                 ResidentPublicationPolicy::ReplaceDocument => {
                     return Err(ResidentPublicationRefusal {
@@ -412,6 +422,9 @@ impl NativeAudioSink {
             );
             return match result {
                 Ok(audio_revision) => {
+                    if metadata.stopped_restore {
+                        self.plugins.restore_submitted(audio_revision);
+                    }
                     // Initial worker publication can precede Client exposure. The accepted
                     // control already proves this identity; retain its exact submission now
                     // rather than losing the observation while deliver_open is still pending.

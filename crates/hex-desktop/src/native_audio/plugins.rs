@@ -11,6 +11,8 @@ use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
 use hex_session::service::{
     PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState,
 };
+mod restore;
+use restore::Restore;
 
 struct Source {
     binding: Binding,
@@ -37,6 +39,7 @@ pub(super) struct Plugins {
     pub(super) pool_held: bool,
     sources: Vec<Source>,
     pending: Option<Pending>,
+    restore: Option<Restore>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -84,11 +87,20 @@ impl Plugins {
     /// Preserve an unresolved request's terminal rather than silently restarting it.
     pub fn fresh_output(&mut self) {
         self.output_closed();
+        // Session already completed an accepted submission. A fresh exclusive
+        // Lease proves the old Root/gate retired even if its final ACK was lost
+        // to output replacement. Unsubmitted requests still need their refusal.
+        if self.restore.as_ref().is_some_and(Restore::submitted) {
+            self.restore = None;
+        }
         self.sources.clear();
         self.pool_held = false;
     }
     pub fn output_closed(&mut self) {
         self.configured = false;
+        if let Some(restore) = self.restore.as_mut() {
+            restore.output_closed();
+        }
         if let Some(pending) = self.pending.as_mut() {
             pending.result = Some(Err("vst3 insertion cancelled · output changed".into()));
         }
@@ -146,6 +158,9 @@ impl Plugins {
                 return Err("another vst3 source operation is pending".into());
             }
         } else {
+            if self.restore.is_some() {
+                return Err("stopped vst3 restoration is pending".into());
+            }
             if !self.configured {
                 return Err(self
                     .unavailable
@@ -238,6 +253,7 @@ impl Plugins {
             self.output_closed();
             return;
         };
+        self.poll_restore(control, context);
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = self.completed.as_ref() {
             let count = self
@@ -263,56 +279,15 @@ impl Plugins {
                     .iter_mut()
                     .find(|s| s.binding == pending.binding)
                 {
-                    let result = (|| {
-                        match control.native_source_preparation_progress(source.binding) {
-                            Some(Progress::Facts(_)) => {
-                                #[cfg(not(all(test, feature = "allocation-probe")))]
-                                let presentation = None;
-                                #[cfg(all(test, feature = "allocation-probe"))]
-                                let presentation = self.presentation;
-                                self.host
-                                    .as_ref()
-                                    .ok_or("qualified vst3 helper unavailable")?
-                                    .complete_on_control(control, source.binding, presentation)?;
-                            }
-                            Some(Progress::Prepared { .. }) => control
-                                .start_native_effect(source.binding)
-                                .map_err(str::to_owned)?,
-                            Some(Progress::Effect { .. }) => {
-                                if let Some((loaned, live)) =
-                                    control.native_source_endpoint_status(source.binding)
-                                {
-                                    if !live || (source.queued && !loaned) {
-                                        return Err(
-                                            "vst3 endpoint returned or stopped before insertion"
-                                                .into(),
-                                        );
-                                    }
-                                }
-                                if !source.queued {
-                                    match control.publish_native_source_endpoint(source.binding) {
-                                        Ok(()) => source.queued = true,
-                                        Err("native endpoint publication is busy") => {
-                                            return Ok(None);
-                                        }
-                                        Err(reason) => return Err(reason.to_owned()),
-                                    }
-                                }
-                                if control.native_source_endpoint_installed(source.binding)
-                                    == Some(true)
-                                {
-                                    return Ok(control.native_source_prepared_state(source.binding));
-                                }
-                            }
-                            Some(Progress::Failed | Progress::Complete | Progress::Retiring) => {
-                                return Err(control
-                                    .native_source_preparation_error(source.binding)
-                                    .unwrap_or_else(|| "vst3 preparation refused".into()));
-                            }
-                            Some(Progress::Preparing) | None => {}
-                        }
-                        Ok(None)
-                    })();
+                    #[cfg(not(all(test, feature = "allocation-probe")))]
+                    let presentation = None;
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    let presentation = self.presentation;
+                    let result = self
+                        .host
+                        .as_ref()
+                        .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
+                        .and_then(|host| advance_source(host, presentation, control, source));
                     match result {
                         Ok(Some(state)) => pending.result = Some(Ok(state)),
                         Ok(None) => {}
@@ -327,7 +302,10 @@ impl Plugins {
         // recovery. Accepted sources stay warm for canonical Undo/Redo, bounded
         // by this document's finite source pool, until output retirement.
         let mut index = 0;
-        while index < self.sources.len() {
+        // Renewal's bounded indices refer to this original record set. Leave
+        // refused records in control custody until the epoch operation retires;
+        // removing one here would shift a later source past its renewal stage.
+        while self.restore.is_none() && index < self.sources.len() {
             let source = &self.sources[index];
             if source.retiring {
                 let _ = control.retire_native_source_preparation(source.binding);
@@ -390,4 +368,48 @@ fn bounded_error(error: String) -> String {
     // Root retains the original complete diagnostic; UI correlation keeps only
     // a bounded explanation while its actual owner reaches disposal/recovery.
     error.chars().take(1024).collect()
+}
+
+/// The same original preparation and endpoint ACK protocol serves insertion and
+/// stopped renewal. Returning captured state never admits a canonical graph.
+fn advance_source(
+    host: &Hosting,
+    presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
+    control: &mut hex_audio::prepared::PublicationControl,
+    source: &mut Source,
+) -> Result<Option<NativeDeviceState>, String> {
+    match control.native_source_preparation_progress(source.binding) {
+        Some(Progress::Facts(_)) => {
+            host.complete_on_control(control, source.binding, presentation)?;
+        }
+        Some(Progress::Prepared { .. }) => control
+            .start_native_effect(source.binding)
+            .map_err(str::to_owned)?,
+        Some(Progress::Effect { .. }) => {
+            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding) {
+                if !live || (source.queued && !loaned) {
+                    return Err("vst3 endpoint returned or stopped before publication".into());
+                }
+            }
+            if !source.queued {
+                match control.publish_native_source_endpoint(source.binding) {
+                    Ok(()) => source.queued = true,
+                    Err("native endpoint publication is busy") => {
+                        return Ok(None);
+                    }
+                    Err(reason) => return Err(reason.to_owned()),
+                }
+            }
+            if control.native_source_endpoint_installed(source.binding) == Some(true) {
+                return Ok(control.native_source_prepared_state(source.binding));
+            }
+        }
+        Some(Progress::Failed | Progress::Complete | Progress::Retiring) => {
+            return Err(control
+                .native_source_preparation_error(source.binding)
+                .unwrap_or_else(|| "vst3 preparation refused".into()));
+        }
+        Some(Progress::Preparing) | None => {}
+    }
+    Ok(None)
 }

@@ -726,6 +726,8 @@ pub enum Request {
     },
     /// Reprepare the current canonical sound after the caller explicitly stops.
     RestoreStoppedPlayback,
+    /// Worker-local continuation of the existing stopped restoration request.
+    ContinueStoppedPlaybackRestore,
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
     ExportRange {
@@ -1977,12 +1979,14 @@ fn run_worker(
 
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
+    let mut pending_stopped_restore = None;
     while let Some(request) = events.next_request_with_control_poll(
         &requests,
         session.native_reservation.is_some(),
         pending_plugin_effect
             .as_ref()
             .map(|pending| &pending.insertion),
+        pending_stopped_restore,
         hex_engine::AudioSourceContext {
             project_generation,
             editor_revision: revision,
@@ -2053,7 +2057,9 @@ fn run_worker(
         let mut seek_submitted = false;
         let request_complete = !matches!(
             &request,
-            Request::ContinueSamplerEdit | Request::ContinuePluginEffect
+            Request::ContinueSamplerEdit
+                | Request::ContinuePluginEffect
+                | Request::ContinueStoppedPlaybackRestore
         );
         let mut plugin_effect_complete = Vec::new();
         let mut sampler_edit_complete = None;
@@ -5595,7 +5601,7 @@ fn run_worker(
                         }
                     }
                 }
-                Request::RestoreStoppedPlayback => {
+                Request::RestoreStoppedPlayback | Request::ContinueStoppedPlaybackRestore => {
                     stopped_playback_restore_complete = true;
                     if device_gesture.snapshot().is_some() {
                         error = Some(
@@ -5605,12 +5611,44 @@ fn run_worker(
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
                         let result = (|| {
-                            let snapshot = resident_snapshot.as_mut().ok_or(
-                                SessionError::Invalid("current playback revision is unavailable"),
-                            )?;
+                            let context = hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            };
+                            if pending_stopped_restore.is_some_and(|old| old != context) {
+                                return Err(SessionError::Invalid(
+                                    "stopped restore source changed",
+                                ));
+                            }
                             let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                 "native restore output unavailable",
                             ))?;
+                            match sink
+                                .prepare_stopped_playback_restore(context)
+                                .map_err(SessionError::NativeAudio)?
+                            {
+                                Some(false) => {
+                                    pending_stopped_restore = Some(context);
+                                    stopped_playback_restore_complete = false;
+                                    return Ok(());
+                                }
+                                Some(true) => {
+                                    let snapshot = session.restore_resident_snapshot(
+                                        context, sink,
+                                        export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None),
+                                        resident_snapshot.as_ref(),
+                                    )?;
+                                    compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                                    resident_snapshot = Some(snapshot);
+                                    resident_preview = None;
+                                    pending_stopped_restore = None;
+                                    return Ok(());
+                                }
+                                None => {}
+                            }
+                            let snapshot = resident_snapshot.as_mut().ok_or(
+                                SessionError::Invalid("current playback revision is unavailable"),
+                            )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
                                 context: hex_engine::AudioSourceContext {
@@ -5627,11 +5665,18 @@ fn run_worker(
                                     .prepared
                                     .arrangement_seek_requires_preroll(),
                             };
-                            resident_preview::publish_inputs(&session, &mut resident_snapshot, &mut resident_preview, sink, export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None), metadata, ResidentPublicationPolicy::InstallFreshRuntime, selected, None)
+                            resident_preview::publish_inputs(&session, &mut resident_snapshot, &mut resident_preview, sink, export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None), metadata, ResidentPublicationPolicy::InstallFreshRuntime, selected, None)?;
+                            Ok(())
                         })();
                         match result {
                             Ok(_) => status = Some("restoring stopped playback".into()),
-                            Err(reason) => error = Some(reason.to_string()),
+                            Err(reason) => {
+                                pending_stopped_restore = None;
+                                if let Some(sink) = events.resident_audio() {
+                                    sink.cancel_stopped_playback_restore();
+                                }
+                                error = Some(reason.to_string());
+                            }
                         }
                     } else if let Some((compiled_revision, prepared)) = compiled.as_ref()
                         && *compiled_revision == revision
@@ -6526,6 +6571,21 @@ fn run_worker(
         }) && let Some(pending) = pending_plugin_effect.take()
         {
             plugin_effect_complete.push(pending.finish(events.sampler_edit_audio(), false));
+        }
+        if pending_stopped_restore.is_some_and(|captured| {
+            captured
+                != hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                }
+                || device_gesture.snapshot().is_some()
+                || tuning_gesture.snapshot().is_some()
+        }) {
+            pending_stopped_restore = None;
+            if let Some(sink) = events.resident_audio() {
+                sink.cancel_stopped_playback_restore();
+            }
+            stopped_playback_restore_complete = true;
         }
         if !events.send_with_control_poll(
             Event {

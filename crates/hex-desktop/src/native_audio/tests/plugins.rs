@@ -212,6 +212,188 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_coordinator_restores_committed_effect_after_stop() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for location in 0..3 {
+        let mut h = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let files = Files::new();
+        let mut state = h.run(Request::Import(files.wav(48_000, 2048))).state;
+        (applied, _) = h.applied(applied);
+        let track = state.project.tracks()[0].id();
+        let destination = match location {
+            0 => PluginEffectDestination::Track(track),
+            1 => {
+                let added = h.run(Request::Edit(Command::AddReturnTrack {
+                    name: "effect".into(),
+                }));
+                (applied, _) = h.applied(applied);
+                let Some(Created::ReturnTrack(bus)) = added.created else {
+                    panic!("return")
+                };
+                state = h
+                    .run(Request::Edit(Command::SetReturnSend {
+                        track,
+                        return_track: bus,
+                        gain: 0.5,
+                    }))
+                    .state;
+                (applied, _) = h.applied(applied);
+                PluginEffectDestination::Return(bus)
+            }
+            _ => PluginEffectDestination::Main,
+        };
+        h.service
+            .submit(Request::InsertPluginEffect(request(&state, destination)))
+            .unwrap();
+        assert!(h.next().error.is_none());
+        let accepted = terminal(&mut h);
+        assert!(accepted.error.is_none(), "{:?}", accepted.error);
+        assert!(accepted.plugin_effect_complete[0].accepted);
+        (applied, _) = h.applied(applied);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) == 1);
+        h.audio.as_ref().unwrap().control.stop();
+        h.render_plugin_block();
+        h.service.submit(Request::RestoreStoppedPlayback).unwrap();
+        let pending = h.next();
+        assert!(pending.error.is_none(), "{:?}", pending.error);
+        assert!(!pending.stopped_playback_restore_complete);
+        assert_eq!(pending.state.project, accepted.state.project);
+        assert!(matches!(
+            h.service.try_event(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .is_err(),
+            "held restore fence admitted Play before returns and native ACK"
+        );
+        let end = Instant::now() + Duration::from_secs(10);
+        let restored = loop {
+            h.pump();
+            h.render();
+            if let Ok(event) = h.service.try_event() {
+                if event.stopped_playback_restore_complete {
+                    break event;
+                }
+            }
+            assert!(Instant::now() < end, "stopped restore terminal timed out");
+            std::thread::yield_now();
+        };
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert!(restored.stopped_playback_restore_complete);
+        assert_eq!(restored.state.project, accepted.state.project);
+        assert_eq!(restored.state.revision, accepted.state.revision);
+        assert_eq!(restored.state.can_undo, accepted.state.can_undo);
+        let (_, metadata) = h.applied(applied);
+        assert!(metadata.stopped_restore);
+        wait(|| {
+            h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .is_ok()
+        });
+        for block in 0..3 {
+            let output = h.render_plugin_block();
+            wait(|| h.plugin_completed.load(Acquire) > block + 1);
+            if block < 2 {
+                // Return-path compensation delays the dry path too, as in the
+                // original insertion PCM oracle above.
+                assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+            } else {
+                // The original child keeps its gain-ramp history across Stop.
+                let expected = if location == 1 {
+                    0.25 + 0.125 * 0.625
+                } else {
+                    0.25 * 0.625
+                };
+                assert!(
+                    output.iter().all(|frame| *frame == [expected; 2]),
+                    "location{location}, first={:?}, expected={expected}",
+                    output[0]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn native_effect_pending_restore_document_change_does_not_strand_next_output() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    let (applied, _) = h.applied(0);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &initial.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let accepted = terminal(&mut h);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    h.applied(applied);
+    h.audio.as_ref().unwrap().control.stop();
+    h.render();
+    h.service.submit(Request::RestoreStoppedPlayback).unwrap();
+    let pending = h.next();
+    assert!(pending.error.is_none());
+    assert!(!pending.stopped_playback_restore_complete);
+    // Hold the old callback's fence ACK, then replace the document on the
+    // canonical worker. Closing output custody must not strand the request.
+    let new = h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert!(new.project_replaced && new.stopped_playback_restore_complete);
+    assert!(!new.state.can_undo);
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    h.applied(0);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &new.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let next = terminal(&mut h);
+    assert!(next.error.is_none(), "{:?}", next.error);
+    assert!(next.plugin_effect_complete[0].accepted);
+    assert_eq!(next.state.revision, new.state.revision + 1);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_history_edit() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let mut h = ResidentHarness::with_plugins(host(), None);

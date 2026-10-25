@@ -1440,6 +1440,49 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
+
+    /// Recompile the same canonical project after the native owner renewed its
+    /// endpoints. No editor command, revision advance or history entry occurs.
+    pub(super) fn restore_resident_snapshot(
+        &self,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = self.resident_seek_inputs(admission, current, None)?;
+        let mut snapshot = inputs.prepare(
+            self.project(),
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            context,
+        )?;
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: true,
+            computer_keyboard_request: None,
+            gain_recording_track: snapshot.prepared.gain_recording_track(),
+            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+        };
+        let selected = snapshot.inputs.clone();
+        self.publish_resident_runtime_inputs(
+            &mut snapshot,
+            sink,
+            admission,
+            metadata,
+            ResidentPublicationPolicy::InstallFreshRuntime,
+            selected,
+            None,
+        )?;
+        Ok(snapshot)
+    }
+
     pub(super) fn prepare_resident_preview(
         &self,
         command: Command,

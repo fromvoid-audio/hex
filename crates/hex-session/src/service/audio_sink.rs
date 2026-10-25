@@ -156,6 +156,22 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Renew stopped native sources through their original output owner. None
+    /// keeps the ordinary restore path; Some(false) retains the operation until
+    /// its exact callback returns and fresh endpoint ACKs, Some(true) requests
+    /// recompilation of the unchanged canonical project before publication.
+    fn prepare_stopped_playback_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<bool>, String> {
+        Ok(None)
+    }
+    fn stopped_playback_restore_ready(&self) -> bool {
+        false
+    }
+    /// Refusal before publication releases only the matching held operation.
+    /// Accepted publication retains its gate until actual callback installation.
+    fn cancel_stopped_playback_restore(&mut self) {}
     /// Start/poll this exact explicit source request on the canonical worker.
     /// The implementation retains actual native preparation under its Root;
     /// Session receives captured state only after real native and endpoint ACKs.
@@ -569,6 +585,7 @@ impl WorkerEvents {
         requests: &Receiver<Request>,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
+        stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> Option<Request> {
@@ -619,6 +636,15 @@ impl WorkerEvents {
                         .is_some_and(|audio| audio.plugin_effect_ready())
             }) {
                 return Some(Request::ContinuePluginEffect);
+            }
+            if stopped_restore.is_some_and(|captured| {
+                captured != context
+                    || self
+                        .audio
+                        .as_ref()
+                        .is_some_and(|audio| audio.stopped_playback_restore_ready())
+            }) {
+                return Some(Request::ContinueStoppedPlaybackRestore);
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {
