@@ -175,6 +175,20 @@ fn actual_native_reverb_track_return_pcm_freeze_tail_moves_and_control_reclamati
     }));
     assert!(b_boxes.0.is_some() && b_boxes.1.is_some());
     control.reclaim();
+    // B's parameter replacement copies A's histories rather than moving its
+    // origins. Reclaim schedules asynchronous cleanup; recover A on control
+    // before staging C, then wait for the executor to release its work lock.
+    // B retains the frozen histories whose actual Box moves are checked below.
+    let a_recovery = recover(&mut control, &a_ticket);
+    let root = control.native_candidate_root();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while root.cleanup_scheduled() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "executor retained A's completed cleanup job"
+        );
+        std::thread::yield_now();
+    }
     let c_ticket = control
         .stage_eligible_audio_candidate(c, vec![], PublicationPolicy::InheritRuntime, 15)
         .unwrap_or_else(|refusal| panic!("C native stage: {}", refusal.reason));
@@ -226,10 +240,7 @@ fn actual_native_reverb_track_return_pcm_freeze_tail_moves_and_control_reclamati
     })
     .join()
     .unwrap();
-    assert_eq!(
-        recover(&mut control, &a_ticket).inputs.test_bank_identity(),
-        a_bank
-    );
+    assert_eq!(a_recovery.inputs.test_bank_identity(), a_bank);
     assert_eq!(
         recover(&mut control, &b_ticket).inputs.test_bank_identity(),
         b_bank
