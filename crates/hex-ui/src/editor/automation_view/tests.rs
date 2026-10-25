@@ -179,8 +179,10 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     click(&mut visual, audio, false);
     toggle_toolbar(&mut visual);
     visual.run_until_parked();
+    let background_selection =
+        editor.read_with(&visual, |v, _| (v.selected_track, v.selected_clip_ids()));
     let track = editor.read_with(&visual, |v, _| {
-        v.state.as_ref().unwrap().project.tracks()[0].id()
+        v.state.as_ref().unwrap().project.tracks()[1].id()
     });
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
@@ -199,6 +201,12 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
             v.active_clip_drag.is_none()
                 && v.active_trim_drag.is_none()
                 && v.time_selection_gesture.is_none()
+        );
+        assert_eq!(v.selected_track, background_selection.0);
+        assert_eq!(
+            v.selected_clip_ids(),
+            background_selection.1,
+            "foreground automation must retain background clip selection"
         );
         v.gain_lane.draft.unwrap().point
     });
@@ -235,6 +243,8 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
             &[authored]
         );
         assert_eq!(state.revision, revision);
+        assert_eq!(v.selected_track, background_selection.0);
+        assert_eq!(v.selected_clip_ids(), background_selection.1);
     });
     visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);

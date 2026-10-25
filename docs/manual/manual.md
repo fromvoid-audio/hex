@@ -256,7 +256,8 @@ activation of the retained background clips. text fields and the computer midi
 keyboard keep their own input.
 
 click a gain curve to add a point, drag a point to change its time or value, and
-release to apply the edit. **command** gives free beat placement. **escape**
+release to apply the edit. editing another track's curve keeps the background
+clip selection. **command** gives free beat placement. **escape**
 cancels a held edit; **backspace** removes the selected automation point.
 one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
