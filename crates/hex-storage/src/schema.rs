@@ -20,6 +20,7 @@ mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
+pub(crate) mod native_sources;
 mod original_sources;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
@@ -1269,6 +1270,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1308,6 +1310,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1347,6 +1350,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1393,6 +1397,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1439,6 +1444,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1485,6 +1491,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1531,6 +1538,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -1595,6 +1603,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -2038,6 +2047,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
@@ -2398,6 +2408,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
                     main_devices: Vec::new(),
                     tuning: Default::default(),
@@ -2545,6 +2556,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),

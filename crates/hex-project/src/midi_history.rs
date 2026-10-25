@@ -898,6 +898,7 @@ fn same_shell(a: &Project, b: &Project) -> bool {
         cells: _,
     } = &a.session;
     let Project {
+        native_sources,
         arrangement_sections,
         tuning,
         routing,
@@ -916,7 +917,8 @@ fn same_shell(a: &Project, b: &Project) -> bool {
         tempo_map,
         meter_map,
     } = a;
-    if arrangement_sections != &b.arrangement_sections
+    if native_sources != &b.native_sources
+        || arrangement_sections != &b.arrangement_sections
         || tuning != &b.tuning
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds
