@@ -1042,10 +1042,7 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
                 input_frames: 0,
                 output_frames: 512,
             }),
-            crate::native_audio::plugins::FactsGate {
-                reached,
-                resume: resumed,
-            },
+            crate::native_audio::plugins::FactsGate::new(reached, resumed),
         );
         let initial = h.next();
         assert!(initial.error.is_none());
@@ -1059,7 +1056,9 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
         let (release, released) = mpsc::sync_channel(1);
         let holder = h.hold_native_work_on_control(held, released);
         observed_hold.recv_timeout(Duration::from_secs(10)).unwrap();
+        let before_attempt = h.plugin_progress.lock().unwrap().attempts;
         resume.send(()).unwrap();
+        wait(|| h.plugin_progress.lock().unwrap().attempts > before_attempt);
         let pending = h.next();
         release.send(()).unwrap();
         holder.join().unwrap();

@@ -16,6 +16,13 @@ pub(crate) fn fixture_view(
             crate::PluginEffectTestView {
                 state: view.state.clone(),
                 pending: view.pending_plugin_effect.is_some(),
+                queued_requests: view.worker_requests_pending
+                    + view.pending_requests.len()
+                    + view.device_gesture_barriers.len(),
+                operation: view
+                    .pending_plugin_effect
+                    .as_ref()
+                    .map(|pending| Arc::downgrade(&pending.0)),
                 error: view.error.as_ref().map(ToString::to_string),
                 selected_owner: view
                     .state

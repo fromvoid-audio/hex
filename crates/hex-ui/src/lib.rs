@@ -96,6 +96,9 @@ pub fn open_sampler_load_test_backend(
 pub struct PluginEffectTestView {
     pub state: Option<std::sync::Arc<hex_session::service::ViewState>>,
     pub pending: bool,
+    pub queued_requests: usize,
+    /// Weak request identity only; it retains no request or native owner.
+    pub operation: Option<std::sync::Weak<hex_session::service::PluginEffectControl>>,
     pub error: Option<String>,
     pub selected_owner: Option<hex_session::service::PluginEffectDestination>,
     pub status: String,

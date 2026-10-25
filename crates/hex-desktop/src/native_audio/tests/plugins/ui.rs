@@ -14,7 +14,14 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing painted {selector}"));
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    // The Main header also contains mixer controls. Select its name area;
+    // clicking the whole header's centre can start a real numeric gesture.
+    let position = if selector == "main-track-header" {
+        gpui::point(bounds.origin.x + gpui::px(8.0), bounds.center().y)
+    } else {
+        bounds.center()
+    };
+    visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
 }
 
@@ -23,6 +30,531 @@ fn until(label: &str, mut ready: impl FnMut() -> bool) {
     while !ready() {
         assert!(Instant::now() < deadline, "{label}");
         std::thread::yield_now();
+    }
+}
+
+struct BrowserFixture {
+    window: gpui::AnyWindowHandle,
+    visual: VisualTestContext,
+    state: Arc<hex_session::service::ViewState>,
+    expected_owner: PluginEffectDestination,
+    track: hex_project::TrackId,
+    callback: Arc<Mutex<Option<HeadlessBackend>>>,
+    queued: Arc<AtomicBool>,
+    completed: Arc<AtomicU64>,
+    records: Arc<std::sync::atomic::AtomicUsize>,
+    progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
+    facts: mpsc::Receiver<()>,
+    resume: mpsc::SyncSender<()>,
+    original_catalog: Vec<u8>,
+    files: Files,
+}
+
+fn open_browser(
+    cx: &mut TestAppContext,
+    location: u8,
+    presentation: Option<EffectPresentation>,
+) -> BrowserFixture {
+    let (reached, facts) = mpsc::sync_channel(1);
+    let (resume, resumed) = mpsc::sync_channel(1);
+    let mut h = ResidentHarness::with_plugins_paused_at_facts(
+        host(),
+        presentation,
+        crate::native_audio::plugins::FactsGate::new(reached, resumed),
+    );
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let files = Files::new();
+    let mut state = h.run(Request::Import(files.wav(48_000, 4096))).state;
+    (applied, _) = h.applied(applied);
+    let track = state.project.tracks()[0].id();
+    let mut target = format!("track-name-{}", track.value());
+    if location == 1 {
+        let added = h.run(Request::Edit(Command::AddReturnTrack {
+            name: "effect".into(),
+        }));
+        (applied, _) = h.applied(applied);
+        let Some(Created::ReturnTrack(bus)) = added.created else {
+            panic!("return");
+        };
+        state = h
+            .run(Request::Edit(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.5,
+            }))
+            .state;
+        h.applied(applied);
+        target = format!("return-track-focus-{}", bus.value());
+    } else if location == 2 {
+        target = "main-track-header".into();
+    }
+    let selected = selection();
+    hex_ui::write_plugin_effect_test_catalog(&files.0, &selected).unwrap();
+    let original_catalog = fs::read(files.0.join("plugin-catalog.json")).unwrap();
+    // A real read-only request supplies the latest canonical snapshot after
+    // fixture authoring; the view never receives a fabricated project event.
+    let clip = state.project.track(track).unwrap().clips()[0].id();
+    h.service.submit(Request::CopyClips(vec![clip])).unwrap();
+    let callback = Arc::clone(&h.callback);
+    let queued = Arc::clone(&h.plugin_queued);
+    let completed = Arc::clone(&h.plugin_completed);
+    let records = Arc::clone(&h.plugin_records);
+    let progress = Arc::clone(&h.plugin_progress);
+    let backend = h.into_plugin_ui_backend();
+    let window =
+        hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
+            .unwrap();
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.update(|window, _| window.activate_window());
+    until("initial canonical snapshot", || {
+        repaint(cx, &mut visual);
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+            .state
+            .as_ref()
+            .is_some_and(|s| s.revision == state.revision)
+    });
+    click(&mut visual, Box::leak(target.into_boxed_str()));
+    let expected_owner = match location {
+        0 => PluginEffectDestination::Track(track),
+        1 => PluginEffectDestination::Return(state.project.return_tracks()[0].id()),
+        _ => PluginEffectDestination::Main,
+    };
+    assert_eq!(
+        cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
+            .unwrap()
+            .selected_owner,
+        Some(expected_owner)
+    );
+    click(&mut visual, "browser-section-vst3");
+    until("persisted catalog row paint", || {
+        repaint(cx, &mut visual);
+        visual.debug_bounds("browser-vst3-row-0").is_some()
+    });
+    BrowserFixture {
+        window,
+        visual,
+        state,
+        expected_owner,
+        track,
+        callback,
+        queued,
+        completed,
+        records,
+        progress,
+        facts,
+        resume,
+        original_catalog,
+        files,
+    }
+}
+
+impl BrowserFixture {
+    fn view(&self, cx: &mut TestAppContext) -> hex_ui::PluginEffectTestView {
+        cx.update(|app| hex_ui::plugin_effect_test_view(self.window, app))
+            .unwrap()
+    }
+    fn step(&mut self, cx: &mut TestAppContext) {
+        let mut slot = self.callback.lock().unwrap();
+        if slot
+            .as_ref()
+            .is_some_and(HeadlessBackend::shutdown_requested)
+        {
+            slot.take().unwrap().close();
+        } else if let Some(backend) = slot.as_mut() {
+            backend
+                .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
+                .unwrap();
+        }
+        drop(slot);
+        repaint(cx, &mut self.visual);
+    }
+    fn activate_to_facts(&mut self, cx: &mut TestAppContext, pointer: bool) {
+        let row = self.visual.debug_bounds("browser-vst3-row-0").unwrap();
+        if pointer {
+            self.visual.simulate_event(gpui::MouseDownEvent {
+                position: row.center(),
+                button: MouseButton::Left,
+                click_count: 2,
+                first_mouse: false,
+                modifiers: Modifiers::default(),
+            });
+            self.visual
+                .simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+        } else {
+            self.visual
+                .simulate_click(row.center(), Modifiers::default());
+            self.visual.simulate_keystrokes("enter");
+        }
+        until("actual native facts before endpoint construction", || {
+            repaint(cx, &mut self.visual);
+            let view = self.view(cx);
+            assert!(view.error.is_none() && view.pending, "{:?}", view.error);
+            self.facts.try_recv().is_ok()
+        });
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Terminal {
+    BrowserEscape,
+    EditorEscape,
+    StaleRevision,
+    UnknownPresentation,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Closing {
+    ViewDrop,
+    Discard,
+    NewDocument,
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparation(
+    cx: &mut TestAppContext,
+) {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for closing in [Closing::ViewDrop, Closing::Discard, Closing::NewDocument] {
+        let mut fixture = open_browser(
+            cx,
+            2,
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        fixture.activate_to_facts(cx, false);
+        let weak = fixture.view(cx).operation.unwrap();
+        let operation = weak.upgrade().unwrap();
+        for _ in 0..3 {
+            repaint(cx, &mut fixture.visual);
+            let view = fixture.view(cx);
+            assert!(view.pending && !operation.is_cancelled());
+            assert_eq!(view.state.as_ref().unwrap().project, fixture.state.project);
+            assert!(view.applied.is_none());
+        }
+        match closing {
+            Closing::ViewDrop => {
+                fixture.visual.update(|window, _| window.remove_window());
+                fixture.visual.run_until_parked();
+            }
+            Closing::Discard => {
+                click(&mut fixture.visual, "window-control-close");
+                assert!(cx.has_pending_prompt());
+                cx.simulate_prompt_answer("cancel");
+                cx.run_until_parked();
+                assert!(
+                    !operation.is_cancelled(),
+                    "cancelled close must leave the real operation pending"
+                );
+                assert!(fixture.view(cx).pending);
+                click(&mut fixture.visual, "window-control-close");
+                assert!(cx.has_pending_prompt());
+                cx.simulate_prompt_answer("discard");
+                cx.run_until_parked();
+            }
+            Closing::NewDocument => {
+                click(&mut fixture.visual, "main-track-header");
+                fixture.visual.simulate_keystrokes("cmd-n");
+                until("real new-project confirmation", || {
+                    repaint(cx, &mut fixture.visual);
+                    cx.has_pending_prompt()
+                });
+                cx.simulate_prompt_answer("don't save");
+                cx.run_until_parked();
+            }
+        }
+        until(
+            "exact operation cancelled by close or document request",
+            || {
+                cx.run_until_parked();
+                operation.is_cancelled()
+            },
+        );
+        if matches!(closing, Closing::NewDocument) {
+            until(
+                "fresh document installed after original output handback",
+                || {
+                    fixture.step(cx);
+                    let view = fixture.view(cx);
+                    !view.pending
+                        && view.state.as_ref().is_some_and(|state| {
+                            state.project.tracks().is_empty()
+                                && !state.can_undo
+                                && !state.can_redo
+                                && !state.unsaved
+                        })
+                        && fixture.records.load(Acquire) == 0
+                },
+            );
+            let view = fixture.view(cx);
+            assert!(view.state.unwrap().project.main_devices().is_empty());
+            assert!(view.applied.is_none());
+            assert!(view.selected_owner.is_none());
+            assert_eq!(
+                fs::read(fixture.files.0.join("plugin-catalog.json")).unwrap(),
+                fixture.original_catalog
+            );
+            fixture.visual.update(|window, _| window.remove_window());
+            fixture.visual.run_until_parked();
+        }
+        if let Some(mut callback) = fixture.callback.lock().unwrap().take() {
+            callback.close();
+        }
+        drop(operation);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            cx.run_until_parked();
+            if weak.upgrade().is_none() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{closing:?}: control owners={} windows={} native={:?} records={}",
+                weak.strong_count(),
+                cx.windows().len(),
+                fixture.progress.lock().unwrap(),
+                fixture.records.load(Acquire)
+            );
+            std::thread::yield_now();
+        }
+        // Existing exclusive output construction proves the old Root handback;
+        // no test flag substitutes for native source/worker disposal custody.
+        let mut next = ResidentHarness::with_plugins(
+            host(),
+            Some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            }),
+        );
+        assert!(next.next().error.is_none());
+        next.applied(0);
+    }
+}
+
+#[gpui::test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
+fn rendered_native_effect_terminals_preserve_canonical_history_and_original_source(
+    cx: &mut TestAppContext,
+) {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for terminal in [
+        Terminal::BrowserEscape,
+        Terminal::EditorEscape,
+        Terminal::StaleRevision,
+        Terminal::UnknownPresentation,
+    ] {
+        let presentation =
+            (!matches!(terminal, Terminal::UnknownPresentation)).then_some(EffectPresentation {
+                input_frames: 0,
+                output_frames: 512,
+            });
+        let mut fixture = open_browser(cx, 2, presentation);
+        fixture.activate_to_facts(cx, false);
+        until(
+            "pre-existing publications drained before terminal control",
+            || {
+                let mut slot = fixture.callback.lock().unwrap();
+                let backend = slot.as_mut().unwrap();
+                backend
+                    .render_native_direct(&mut [[0.0; 2]; 64], &mut [0.0; 128])
+                    .unwrap();
+                backend.ordinary_publication_idle_on_control() == Some(true)
+            },
+        );
+        let operation = fixture.view(cx).operation.unwrap().upgrade().unwrap();
+        match terminal {
+            Terminal::BrowserEscape | Terminal::EditorEscape => {
+                if matches!(terminal, Terminal::EditorEscape) {
+                    click(&mut fixture.visual, "main-track-header");
+                }
+                fixture.visual.simulate_keystrokes("escape");
+                assert!(
+                    operation.is_cancelled(),
+                    "{terminal:?} must cancel the actual request"
+                );
+            }
+            Terminal::StaleRevision => {
+                click(&mut fixture.visual, "main-track-header");
+                let before = fixture.view(cx).queued_requests;
+                fixture.visual.simulate_keystrokes("cmd-t");
+                assert_eq!(
+                    fixture.view(cx).queued_requests,
+                    before + 1,
+                    "the intervening edit must be queued before native preparation resumes"
+                );
+            }
+            Terminal::UnknownPresentation => {}
+        }
+        if matches!(terminal, Terminal::StaleRevision) {
+            until(
+                "ordinary edit commits while only native Facts are held",
+                || {
+                    repaint(cx, &mut fixture.visual);
+                    fixture.view(cx).queued_requests == 0
+                },
+            );
+            let intervening = fixture.view(cx);
+            assert!(
+                intervening.error.is_none(),
+                "intervening edit refused: {:?}",
+                intervening.error
+            );
+            assert_eq!(
+                intervening.state.as_ref().unwrap().project.tracks().len(),
+                2
+            );
+            assert!(
+                intervening
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .main_devices()
+                    .is_empty()
+            );
+        }
+        // Completed paints preserve the real ordinary edit, and never show a
+        // device for an operation cancelled/refused at this held native boundary.
+        for _ in 0..3 {
+            repaint(cx, &mut fixture.visual);
+            let view = fixture.view(cx);
+            if matches!(terminal, Terminal::StaleRevision) {
+                assert_eq!(
+                    view.state.as_ref().unwrap().revision,
+                    fixture.state.revision + 1
+                );
+                assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 2);
+            } else {
+                assert_eq!(view.state.as_ref().unwrap().project, fixture.state.project);
+                assert_eq!(
+                    view.state.as_ref().unwrap().revision,
+                    fixture.state.revision
+                );
+            }
+            if matches!(terminal, Terminal::UnknownPresentation) {
+                assert!(view.pending);
+            }
+            assert!(view.applied.is_none());
+            assert!(
+                fixture
+                    .visual
+                    .debug_bounds(Box::leak(
+                        format!("device-shell-{}", fixture.state.project.next_identity())
+                            .into_boxed_str()
+                    ))
+                    .is_none()
+            );
+        }
+        if matches!(terminal, Terminal::UnknownPresentation) {
+            fixture.resume.send(()).unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            fixture.step(cx);
+            let view = fixture.view(cx);
+            if !view.pending && fixture.records.load(Acquire) == 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{terminal:?}: pending={} records={} native={:?} revision={:?} status={} error={:?} callback={:?}",
+                view.pending,
+                fixture.records.load(Acquire),
+                fixture.progress.lock().unwrap(),
+                view.state.as_ref().map(|s| s.revision),
+                view.status,
+                view.error,
+                fixture
+                    .callback
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|b| b.status())
+                    .map(|s| (
+                        s.applied_revision.load(Acquire),
+                        s.rejected_revision(),
+                        s.render_fault_snapshot()
+                    ))
+            );
+            std::thread::yield_now();
+        }
+        let view = fixture.view(cx);
+        let state = view.state.unwrap();
+        assert!(view.applied.is_none());
+        assert!(state.project.main_devices().is_empty());
+        assert_eq!(
+            state.project.assets().collect::<Vec<_>>(),
+            fixture.state.project.assets().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.project.track(fixture.track),
+            fixture.state.project.track(fixture.track)
+        );
+        assert_eq!(
+            fs::read(fixture.files.0.join("plugin-catalog.json")).unwrap(),
+            fixture.original_catalog
+        );
+        if matches!(terminal, Terminal::StaleRevision) {
+            assert_eq!(state.revision, fixture.state.revision + 1);
+            assert_eq!(state.project.tracks().len(), 2);
+            assert!(
+                state
+                    .project
+                    .tracks()
+                    .iter()
+                    .all(|track| track.devices().is_empty())
+            );
+            click(&mut fixture.visual, "undo · cmd+z");
+            until("one Undo removes only the intervening track edit", || {
+                fixture.step(cx);
+                fixture
+                    .view(cx)
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == fixture.state.revision + 2)
+            });
+            let restored = fixture.view(cx).state.unwrap();
+            assert_eq!(restored.project.tracks(), fixture.state.project.tracks());
+            assert_eq!(
+                restored.project.main_devices(),
+                fixture.state.project.main_devices()
+            );
+            assert!(restored.can_redo);
+        } else {
+            assert_eq!(state.project, fixture.state.project);
+            assert_eq!(
+                (state.revision, state.can_undo, state.can_redo),
+                (
+                    fixture.state.revision,
+                    fixture.state.can_undo,
+                    fixture.state.can_redo
+                )
+            );
+            if matches!(terminal, Terminal::UnknownPresentation) {
+                assert!(
+                    view.error
+                        .as_ref()
+                        .is_some_and(|error| error.contains("presentation")),
+                    "{terminal:?}: {:?}",
+                    view.error
+                );
+            } else {
+                assert!(operation.is_cancelled());
+                assert!(
+                    view.error
+                        .as_ref()
+                        .is_none_or(|error| error.contains("cancel")),
+                    "{terminal:?}: {:?}",
+                    view.error
+                );
+            }
+        }
+        fixture.visual.update(|window, _| window.remove_window());
+        fixture.visual.run_until_parked();
     }
 }
 
@@ -35,115 +567,31 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
     for (location, pointer) in
         (0..3).flat_map(|location| [false, true].map(|pointer| (location, pointer)))
     {
-        let (reached, facts) = mpsc::sync_channel(1);
-        let (resume, resumed) = mpsc::sync_channel(1);
-        let mut h = ResidentHarness::with_plugins_paused_at_facts(
-            host(),
+        let mut fixture = open_browser(
+            cx,
+            location,
             Some(EffectPresentation {
                 input_frames: 0,
                 output_frames: 512,
             }),
-            crate::native_audio::plugins::FactsGate {
-                reached,
-                resume: resumed,
-            },
         );
-        assert!(h.next().error.is_none());
-        let (mut applied, _) = h.applied(0);
-        let files = Files::new();
-        let mut state = h.run(Request::Import(files.wav(48_000, 4096))).state;
-        (applied, _) = h.applied(applied);
-        let track = state.project.tracks()[0].id();
-        let mut target = format!("track-name-{}", track.value());
-        if location == 1 {
-            let added = h.run(Request::Edit(Command::AddReturnTrack {
-                name: "effect".into(),
-            }));
-            (applied, _) = h.applied(applied);
-            let Some(Created::ReturnTrack(bus)) = added.created else {
-                panic!("return");
-            };
-            state = h
-                .run(Request::Edit(Command::SetReturnSend {
-                    track,
-                    return_track: bus,
-                    gain: 0.5,
-                }))
-                .state;
-            h.applied(applied);
-            target = format!("return-track-focus-{}", bus.value());
-        } else if location == 2 {
-            target = "main-track-header".into();
-        }
-        let selected = selection();
-        hex_ui::write_plugin_effect_test_catalog(&files.0, &selected).unwrap();
-        let original_catalog = fs::read(files.0.join("plugin-catalog.json")).unwrap();
-        // A real read-only request supplies the latest canonical snapshot after
-        // fixture authoring; the view never receives a fabricated project event.
-        let clip = state.project.track(track).unwrap().clips()[0].id();
-        h.service.submit(Request::CopyClips(vec![clip])).unwrap();
-        let callback = Arc::clone(&h.callback);
-        let queued = Arc::clone(&h.plugin_queued);
-        let completed = Arc::clone(&h.plugin_completed);
-        let records = Arc::clone(&h.plugin_records);
-        let progress = Arc::clone(&h.plugin_progress);
-        let backend = h.into_plugin_ui_backend();
-        let window =
-            hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), files.0.clone())
-                .unwrap();
-        let mut visual = VisualTestContext::from_window(window, cx);
-        visual.update(|window, _| window.activate_window());
-        until("initial canonical snapshot", || {
-            repaint(cx, &mut visual);
-            cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
-                .unwrap()
-                .state
-                .as_ref()
-                .is_some_and(|s| s.revision == state.revision)
-        });
-        click(&mut visual, Box::leak(target.into_boxed_str()));
-        let expected_owner = match location {
-            0 => PluginEffectDestination::Track(track),
-            1 => PluginEffectDestination::Return(state.project.return_tracks()[0].id()),
-            _ => PluginEffectDestination::Main,
-        };
-        assert_eq!(
-            cx.update(|app| hex_ui::plugin_effect_test_view(window, app))
-                .unwrap()
-                .selected_owner,
-            Some(expected_owner)
-        );
-        click(&mut visual, "browser-section-vst3");
-        until("persisted catalog row paint", || {
-            repaint(cx, &mut visual);
-            visual.debug_bounds("browser-vst3-row-0").is_some()
-        });
-        let row = visual.debug_bounds("browser-vst3-row-0").unwrap();
-        if pointer {
-            visual.simulate_event(gpui::MouseDownEvent {
-                position: row.center(),
-                button: MouseButton::Left,
-                click_count: 2,
-                first_mouse: false,
-                modifiers: Modifiers::default(),
-            });
-            visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
-        } else {
-            visual.simulate_click(row.center(), Modifiers::default());
-            visual.simulate_keystrokes("enter");
-        }
-        until("actual native facts before endpoint construction", || {
-            repaint(cx, &mut visual);
-            let view = cx
-                .update(|app| hex_ui::plugin_effect_test_view(window, app))
-                .unwrap();
-            assert!(
-                view.error.is_none() && view.pending,
-                "location{location}: {:?}",
-                view.error
-            );
-            facts.try_recv().is_ok()
-        });
+        fixture.activate_to_facts(cx, pointer);
+        let BrowserFixture {
+            window,
+            mut visual,
+            state,
+            expected_owner,
+            track,
+            callback,
+            queued,
+            completed,
+            records,
+            progress,
+            facts: _,
+            resume,
+            original_catalog,
+            files,
+        } = fixture;
         // The real worker is held at Facts, before it can queue this endpoint.
         // Drain pre-existing UI/publication traffic through actual callbacks so
         // the following hold isolates this operation's ACK, not a full queue.

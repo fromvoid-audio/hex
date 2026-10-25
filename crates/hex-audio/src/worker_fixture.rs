@@ -94,6 +94,12 @@ impl HeadlessBackend {
         owner.run(|callback, _| empty = Some(callback.publication_queue_empty_on_control()));
         empty
     }
+    pub fn ordinary_publication_idle_on_control(&mut self) -> Option<bool> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut idle = None;
+        owner.run(|callback, _| idle = Some(callback.ordinary_publication_idle_on_control()));
+        idle
+    }
     /// Observe actual completion of all committed copied requests while the
     /// headless callback is quiescent on the test control thread. Never use a
     /// Session worker's polling cadence as the native worker's clock. None is

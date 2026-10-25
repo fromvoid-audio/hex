@@ -22,6 +22,8 @@ struct Source {
     accepted: bool,
     retiring: bool,
     queued: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    attempts: u64,
 }
 struct Pending {
     operation: Arc<PluginEffectControl>,
@@ -32,7 +34,64 @@ struct Pending {
 #[cfg(all(test, feature = "allocation-probe"))]
 pub(super) struct FactsGate {
     pub(super) reached: mpsc::SyncSender<()>,
-    pub(super) resume: mpsc::Receiver<()>,
+    resume: mpsc::Receiver<()>,
+    binding: Option<Binding>,
+    notified: bool,
+}
+#[cfg(all(test, feature = "allocation-probe"))]
+impl FactsGate {
+    pub(super) fn new(reached: mpsc::SyncSender<()>, resume: mpsc::Receiver<()>) -> Self {
+        Self {
+            reached,
+            resume,
+            binding: None,
+            notified: false,
+        }
+    }
+    // Hold only the bound source's real Facts completion. The Session worker
+    // keeps polling cancellations and unrelated requests; no readiness is made up.
+    fn held(&mut self, binding: Binding) -> bool {
+        if self.binding != Some(binding) {
+            return false;
+        }
+        if !self.notified {
+            assert!(
+                self.reached.try_send(()).is_ok(),
+                "test facts observer disconnected"
+            );
+            self.notified = true;
+        }
+        match self.resume.try_recv() {
+            Ok(()) => false,
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => panic!("test facts gate disconnected"),
+        }
+    }
+}
+#[cfg(all(test, feature = "allocation-probe"))]
+#[derive(Clone, Copy, Default)]
+pub(super) struct PreparationObservation {
+    pub(super) output: Option<u64>,
+    pub(super) binding: Option<Binding>,
+    pub(super) pending: bool,
+    pub(super) accepted: bool,
+    pub(super) retiring: bool,
+    pub(super) native: Option<Progress>,
+    pub(super) attempts: u64,
+}
+#[cfg(all(test, feature = "allocation-probe"))]
+impl std::fmt::Debug for PreparationObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("preparation")
+            .field("output", &self.output)
+            .field("binding", &self.binding)
+            .field("pending", &self.pending)
+            .field("accepted", &self.accepted)
+            .field("retiring", &self.retiring)
+            .field("attempts", &self.attempts)
+            .field("native", &self.native)
+            .finish()
+    }
 }
 #[derive(Default)]
 pub(super) struct Plugins {
@@ -56,7 +115,7 @@ pub(super) struct Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(super) facts_gate: Option<FactsGate>,
     #[cfg(all(test, feature = "allocation-probe"))]
-    pub(super) progress: Option<Arc<std::sync::Mutex<Option<Progress>>>>,
+    pub(super) progress: Option<Arc<std::sync::Mutex<PreparationObservation>>>,
 }
 impl Plugins {
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -213,6 +272,10 @@ impl Plugins {
                 output.sample_rate,
                 None,
             )?;
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some(gate) = self.facts_gate.as_mut() {
+                gate.binding = Some(binding);
+            }
             self.sources.push(Source {
                 binding,
                 owner,
@@ -221,6 +284,8 @@ impl Plugins {
                 accepted: false,
                 retiring: false,
                 queued: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                attempts: 0,
             });
             self.pending = Some(Pending {
                 operation: Arc::clone(&input.insertion.control),
@@ -245,6 +310,12 @@ impl Plugins {
             return;
         }
         let pending = self.pending.take();
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if self.facts_gate.as_ref().and_then(|gate| gate.binding)
+            == pending.as_ref().map(|pending| pending.binding)
+        {
+            self.facts_gate = None;
+        }
         if let Some(source) = self
             .sources
             .iter_mut()
@@ -289,31 +360,39 @@ impl Plugins {
                     .find(|s| s.binding == pending.binding)
                 {
                     #[cfg(all(test, feature = "allocation-probe"))]
-                    if matches!(
+                    let held = if matches!(
                         control.native_source_preparation_progress(source.binding),
                         Some(Progress::Facts(_))
-                    ) && let Some(gate) = self.facts_gate.take()
-                    {
-                        assert!(
-                            gate.reached.send(()).is_ok(),
-                            "test facts gate disconnected"
-                        );
-                        assert!(
-                            gate.resume
-                                .recv_timeout(std::time::Duration::from_secs(10))
-                                .is_ok(),
-                            "test facts gate was not released"
-                        );
-                    }
+                    ) {
+                        let held = self
+                            .facts_gate
+                            .as_mut()
+                            .is_some_and(|gate| gate.held(source.binding));
+                        if !held {
+                            self.facts_gate = None;
+                        }
+                        held
+                    } else {
+                        false
+                    };
+                    #[cfg(not(all(test, feature = "allocation-probe")))]
+                    let held = false;
                     #[cfg(not(all(test, feature = "allocation-probe")))]
                     let presentation = None;
                     #[cfg(all(test, feature = "allocation-probe"))]
                     let presentation = self.presentation;
-                    let result = self
-                        .host
-                        .as_ref()
-                        .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
-                        .and_then(|host| advance_source(host, presentation, control, source));
+                    let result = if held {
+                        Ok(None)
+                    } else {
+                        #[cfg(all(test, feature = "allocation-probe"))]
+                        {
+                            source.attempts = source.attempts.saturating_add(1);
+                        }
+                        self.host
+                            .as_ref()
+                            .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
+                            .and_then(|host| advance_source(host, presentation, control, source))
+                    };
                     match result {
                         Ok(Some(state)) => pending.result = Some(Ok(state)),
                         Ok(None) => {}
@@ -350,9 +429,18 @@ impl Plugins {
             if let Some(observed) = &self.progress
                 && let Ok(mut observed) = observed.try_lock()
             {
-                *observed = self.pending.as_ref().and_then(|pending| {
-                    control.native_source_preparation_progress(pending.binding)
-                });
+                let source = self.sources.first();
+                *observed = PreparationObservation {
+                    output: control.output_identity(),
+                    binding: source.map(|source| source.binding),
+                    pending: self.pending.is_some(),
+                    accepted: source.is_some_and(|source| source.accepted),
+                    retiring: source.is_some_and(|source| source.retiring),
+                    attempts: source.map_or(0, |source| source.attempts),
+                    native: source.and_then(|source| {
+                        control.native_source_preparation_progress(source.binding)
+                    }),
+                };
             }
             if let Some(queued) = &self.queued {
                 queued.store(

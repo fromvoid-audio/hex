@@ -281,7 +281,7 @@ pub(super) struct ResidentHarness {
     pub(super) plugin_completed: Arc<AtomicU64>,
     pub(super) plugin_queued: Arc<AtomicBool>,
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
-    pub(super) plugin_progress: Arc<Mutex<Option<hex_audio::NativeSourcePreparationProgress>>>,
+    pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
@@ -358,7 +358,9 @@ impl ResidentHarness {
         let plugin_completed = Arc::new(AtomicU64::new(0));
         let plugin_queued = Arc::new(AtomicBool::new(false));
         let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let plugin_progress = Arc::new(Mutex::new(None));
+        let plugin_progress = Arc::new(Mutex::new(
+            crate::native_audio::plugins::PreparationObservation::default(),
+        ));
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.facts_gate = facts_gate;

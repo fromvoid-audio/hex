@@ -134,7 +134,7 @@ impl EditorView {
         let editor = cx.entity();
         cx.spawn(async move |_, cx| {
             let discard = answer.await.ok() == Some(1);
-            if let Err(error) = cx.update_window(handle, |_, window, cx| {
+            if let Err(error) = cx.update_window(handle, move |_, window, cx| {
                 editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
@@ -148,6 +148,9 @@ impl EditorView {
                         cx.notify();
                     }
                 });
+                // Release the prompt's extra handle inside this app update,
+                // so removing the last window also flushes editor/Service drops.
+                drop(editor);
                 if discard {
                     window.remove_window();
                     if quit {
