@@ -6,6 +6,7 @@ pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
     configuration: Configuration,
     storage: NativeEffectStorage,
+    source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
     #[allow(clippy::result_large_err)] // Refusal retains the entire original pair, without an error-path allocation.
@@ -25,6 +26,7 @@ impl NativeEffect {
             configuration: self.callback.configuration.clone(),
             worker: self.worker,
             storage,
+            source_metadata: self.source_metadata,
         };
         Ok((control, self.callback))
     }
@@ -77,6 +79,7 @@ impl NativeEffectControl {
         Ok(NativeEffect {
             worker: self.worker,
             callback,
+            source_metadata: self.source_metadata,
         })
     }
 }
@@ -86,6 +89,12 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    pub(crate) fn source_metadata(&self) -> &EffectSourceMetadata {
+        match self {
+            Self::Unsplit(effect) => &effect.source_metadata,
+            Self::Loaned(control) => &control.source_metadata,
+        }
+    }
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn completed_blocks_on_control(&self) -> u64 {
         match self {

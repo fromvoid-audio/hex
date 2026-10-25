@@ -327,6 +327,19 @@ impl PublicationControl {
     pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {
         self.candidate_root.native_source_prepared_state(binding)
     }
+    /// Copy bounded original source metadata on control. This borrows the exact
+    /// constructed worker owner even while its endpoint is loaned; no native
+    /// resource, state capture or permission is returned. New preparation still
+    /// revalidates files and constructs an independent source through this Root.
+    pub fn native_source_metadata(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_effects::EffectSourceMetadata, String> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native source control is closing".into());
+        }
+        self.candidate_root.native_source_metadata(binding)
+    }
     pub fn native_source_preparation_progress(
         &self,
         binding: Binding,

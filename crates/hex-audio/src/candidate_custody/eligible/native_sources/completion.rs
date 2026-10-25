@@ -4,6 +4,33 @@ use super::*;
 use hex_plugin_host::protocol::PresentationLatency;
 
 impl Custody {
+    pub(in crate::candidate_custody) fn native_source_metadata(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_effects::EffectSourceMetadata, String> {
+        let work = self
+            .work
+            .try_lock()
+            .map_err(|_| "native preparation is busy")?;
+        let bank = self.bank.try_lock().map_err(|_| "native source is busy")?;
+        let index = bank.sources.index(binding).ok_or("native source differs")?;
+        let slot = &bank.sources.slots[index];
+        if bank.closing || slot.retiring || slot.starting || slot.phase != Phase::Accepted {
+            return Err("native source metadata is unavailable".into());
+        }
+        let source = match work.sources.cells[index].owner.as_ref() {
+            Some(Owner::Effect(owner)) => NativeEffectReference::Unsplit(owner),
+            Some(Owner::Loaned(owner)) => NativeEffectReference::Loaned(owner),
+            _ => return Err("native source is not constructed".into()),
+        };
+        if source.binding() != binding || slot.identity != Some(source.identity()) {
+            return Err("native source metadata binding differs".into());
+        }
+        source
+            .source_metadata()
+            .try_copy_on_control()
+            .map_err(|error| error.to_string())
+    }
     pub(in crate::candidate_custody) fn complete_native_source(
         &self,
         binding: Binding,
@@ -124,6 +151,14 @@ impl Custody {
 }
 
 impl CandidateRoot {
+    pub(crate) fn native_source_metadata(
+        &self,
+        binding: Binding,
+    ) -> Result<crate::plugin_effects::EffectSourceMetadata, String> {
+        self.require_native_source_control_open()
+            .map_err(str::to_owned)?;
+        self.0.eligible.native_source_metadata(binding)
+    }
     pub(crate) fn complete_native_source_preparation(
         &self,
         binding: Binding,
