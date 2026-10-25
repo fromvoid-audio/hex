@@ -557,3 +557,74 @@ fn measured_soft_clip_and_true_peak_families_keep_the_reference_operating_shape(
         );
     }
 }
+
+#[test]
+fn release_regression_recovers_toward_a_changed_still_limiting_target() {
+    let rate = 48000;
+    let f = factory(
+        rate,
+        &[
+            (CEILING, ParameterValue::Float(-6.0)),
+            (RELEASE, ParameterValue::Float(100.0)),
+        ],
+    );
+    let latency = f.algorithmic_latency_frames().unwrap() as usize;
+    let warm = 4800;
+    let elapsed = rate as usize / 20;
+    let mut input = vec![[1.0; 2]; warm];
+    input.resize(warm + latency + elapsed + 65, [0.8; 2]);
+    let mut whole = f.create_runtime().unwrap();
+    let mut segmented = f.create_runtime().unwrap();
+    let output = render(whole.as_mut(), &input, &[input.len()]);
+    assert_eq!(
+        output,
+        render(segmented.as_mut(), &input, &[1, 17, 64, 257])
+    );
+    let ceiling = 10.0_f64.powf(-6.0 / 20.0);
+    let target = ceiling / 0.8;
+    let expected =
+        0.8 * (target + (ceiling - target) * (-(0.05 + 1.0 / f64::from(rate)) / 0.1).exp());
+    let actual = f64::from(output[warm + latency + elapsed][0]);
+    assert!(
+        (actual - expected).abs() < 1e-5,
+        "actual={actual} expected={expected}"
+    );
+    assert!(
+        actual < ceiling - 0.04,
+        "recovery is gradual while still limiting"
+    );
+}
+
+#[test]
+fn release_regression_mid_side_physical_guard_has_independent_recovery() {
+    let rate = 48000;
+    let f = factory(
+        rate,
+        &[
+            (GAIN, ParameterValue::Float(12.0)),
+            (CEILING, ParameterValue::Float(-6.0)),
+            (RELEASE, ParameterValue::Float(100.0)),
+            (ROUTING, ParameterValue::Choice(1)),
+        ],
+    );
+    let latency = f.algorithmic_latency_frames().unwrap() as usize;
+    let warm = 4800;
+    let elapsed = rate as usize / 20;
+    let mut input = vec![[1.0, 0.0]; warm];
+    input.resize(warm + latency + elapsed + 65, [1.0; 2]);
+    let mut whole = f.create_runtime().unwrap();
+    let mut segmented = f.create_runtime().unwrap();
+    let output = render(whole.as_mut(), &input, &[input.len()]);
+    assert_eq!(
+        output,
+        render(segmented.as_mut(), &input, &[1, 17, 64, 257])
+    );
+    let ceiling = 10.0_f64.powf(-6.0 / 20.0);
+    let expected = ceiling * (1.0 - 0.5 * (-0.05_f64 / 0.22).exp());
+    let actual = output[warm + latency + elapsed];
+    assert!(
+        (f64::from(actual[0]) - expected).abs() < 0.003,
+        "actual={actual:?} expected={expected}"
+    );
+    assert_eq!(actual[0], actual[1]);
+}

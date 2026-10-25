@@ -25,7 +25,11 @@
 //!
 //! M/s uses one independently linked encoded stage followed by a fully linked
 //! l/r safety stage after decoding, so arbitrary stereo signals respect the
-//! physical output ceiling. Its two stages' delays are both declared. No final
+//! physical output ceiling. The final guard has an independent fixed 220 ms
+//! recovery; authored manual/auto release belongs to the encoded stage. This
+//! bounded original law fits the measured asymmetrical-to-mono reference
+//! recovery and is not a claim about unpublished implementation identity.
+//! Both stages' delays are declared. No final
 //! hard clamp is used. Histories, queues and telemetry commit atomically; buffer
 //! copies are bounded by the prepared rate/lookahead, not callback duration.
 use super::state::{Settings, parameter::*};
@@ -142,7 +146,13 @@ impl Stage {
         s.len[lane] += 1;
         queue[s.head[lane]].value
     }
-    fn process(&mut self, mut sample: Sample, config: &Config, link: f64) -> Sample {
+    fn process(
+        &mut self,
+        mut sample: Sample,
+        config: &Config,
+        link: f64,
+        physical_guard: bool,
+    ) -> Sample {
         let s = &mut self.scalar;
         s.input[s.input_next] = sample.signal;
         s.input_next = (s.input_next + 1) % TAPS;
@@ -201,7 +211,9 @@ impl Stage {
             } else if s.gain[lane] >= 0.999999 {
                 s.program[lane] = 0.0;
             }
-            let coefficient = if config.auto_release {
+            let coefficient = if physical_guard {
+                config.guard_release_coefficient
+            } else if config.auto_release {
                 let seconds = 0.05 + 0.22 * s.program[lane];
                 1.0 - (-1.0 / (seconds * f64::from(config.rate))).exp()
             } else {
@@ -215,7 +227,7 @@ impl Stage {
             let mut gain = if config.true_peak && target < s.gain[lane] {
                 s.gain[lane] + config.attack_coefficient * (target - s.gain[lane])
             } else {
-                target.min(s.gain[lane] + coefficient * (1.0 - s.gain[lane]))
+                target.min(s.gain[lane] + coefficient * (target - s.gain[lane]))
             };
             let immediate_peak = immediate[lane] + link * (immediate_worst - immediate[lane]);
             if immediate_peak > config.ceiling {
@@ -246,6 +258,7 @@ struct Config {
     gain: f64,
     output: f64,
     release_coefficient: f64,
+    guard_release_coefficient: f64,
     attack_coefficient: f64,
     antimodulation_coefficient: f64,
     program_coefficient: f64,
@@ -313,6 +326,7 @@ impl Config {
             antimodulation_coefficient: 1.0 - (-1.0 / (0.001 * f64::from(rate))).exp(),
             attack_coefficient: 1.0
                 - (-8.0 / (delay - if true_peak { TAPS - 1 } else { 0 }) as f64).exp(),
+            guard_release_coefficient: 1.0 - (-1.0 / (0.22 * f64::from(rate))).exp(),
             release_coefficient: 1.0
                 - (-1000.0 / (f64::from(settings.value(RELEASE)) * f64::from(rate))).exp(),
             program_coefficient: 1.0 - (-1.0 / (0.01 * f64::from(rate))).exp(),
@@ -465,13 +479,14 @@ impl OwnedProcessorRuntime for Runtime {
                 },
                 config,
                 config.link,
+                false,
             );
             if let Some(final_stage) = &mut history.final_stage {
                 sample.signal = [
                     sample.signal[0] + sample.signal[1],
                     sample.signal[0] - sample.signal[1],
                 ];
-                sample = final_stage.process(sample, config, 1.0);
+                sample = final_stage.process(sample, config, 1.0, true);
             }
             if config.soft_clip {
                 let ratios = sample.signal.map(|v| {

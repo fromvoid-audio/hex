@@ -594,6 +594,7 @@
   "study_set_final_state": "standard l/r, auto release enabled, gain12db ceiling-3db, preceding template rack disabled; earlier named exports have their stated mode settings",
   "inferences": [
     "manual release recovery following the 5second amplitude drop is close to a 100ms exponential in linear gain; auto release in this workload is close to 220ms",
-    "soft clip steady 997hz output versus the normalized Standard waveform closely fits sign(x)*sqrt(tanh(x*x)) with limiter-stage peak approximately1.15 times the authored ceiling; this is a measured fit, not evidence of proprietary implementation identity"
+    "soft clip steady 997hz output versus the normalized Standard waveform closely fits sign(x)*sqrt(tanh(x*x)) with limiter-stage peak approximately1.15 times the authored ceiling; this is a measured fit, not evidence of proprietary implementation identity",
+    "recovery between two still-limiting levels follows the current detector target rather than unity; a separate approximately220ms linked m/s physical-output recovery fits the asymmetric-to-mono transition while the authored encoded-stage release remains100ms; these are finite measured fits, not proprietary source identity"
   ]
 }

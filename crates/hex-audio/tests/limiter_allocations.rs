@@ -40,6 +40,22 @@ fn parameter(
     .expect("validated Limiter test parameter")
 }
 
+/// Control-side allocation measurement verifies the endpoint's full requested
+/// Arc layout independently of the callback's zero-allocation measurements.
+#[test]
+fn retained_meter_backing_charge_includes_the_actual_arc_padding() {
+    let allocation = measure(|| {
+        let meter = Arc::new(hex_lattice::DeviceMeter::default());
+        std::hint::black_box(&meter);
+    });
+    assert_eq!(allocation.count_total, 1);
+    assert_eq!(
+        allocation.bytes_total,
+        (std::mem::size_of::<hex_lattice::DeviceMeter>() + 2 * std::mem::size_of::<usize>()) as u64
+    );
+    assert_eq!((allocation.count_current, allocation.bytes_current), (0, 0));
+}
+
 #[test]
 fn limiter_standard_soft_clip_true_peak_and_ms_callbacks_allocate_nothing() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
