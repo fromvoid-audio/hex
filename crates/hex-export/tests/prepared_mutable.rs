@@ -52,10 +52,14 @@ impl Drop for TestDir {
 
 struct FixtureDefinition;
 struct FixturePrepared {
+    noise_floor: bool,
+    echo_frame: Option<u64>,
     stuck: bool,
     release_frames: u32,
 }
 struct FixtureFactory {
+    noise_floor: bool,
+    echo_frame: Option<u64>,
     stuck: bool,
     release_frames: u32,
 }
@@ -69,6 +73,9 @@ struct Voice {
 }
 
 struct Runtime {
+    rendered_frames: u64,
+    noise_floor: bool,
+    echo_frame: Option<u64>,
     stuck: bool,
     release_frames: u32,
     voices: [Voice; 64],
@@ -96,7 +103,7 @@ impl NativeDeviceMetadata for FixtureDefinition {
     ) -> Result<NativeDeviceState, DeviceContractError> {
         if state.type_id() == FIXTURE_TYPE
             && state.state_version() == 1
-            && matches!(state.payload(), [1] | [2] | [3])
+            && matches!(state.payload(), [1] | [2] | [3] | [4] | [5])
         {
             Ok(state.clone())
         } else {
@@ -134,6 +141,8 @@ impl NativeInstrumentDefinition for FixtureDefinition {
             return Err(DeviceContractError::MalformedState);
         }
         Ok(Box::new(FixturePrepared {
+            noise_floor: matches!(state.payload(), [4] | [5]),
+            echo_frame: (state.payload() == [5]).then_some(u64::from(sample_rate) * 12),
             stuck: state.payload() == [2],
             release_frames: if state.payload() == [3] {
                 sample_rate * 12
@@ -155,6 +164,8 @@ impl PreparedNativeInstrument for FixturePrepared {
         &self,
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
         Ok(Some(Box::new(FixtureFactory {
+            noise_floor: self.noise_floor,
+            echo_frame: self.echo_frame,
             stuck: self.stuck,
             release_frames: self.release_frames,
         })))
@@ -182,6 +193,9 @@ impl PreparedMutableInstrumentRuntime for FixtureFactory {
     }
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
         Box::new(Runtime {
+            rendered_frames: 0,
+            noise_floor: self.noise_floor,
+            echo_frame: self.echo_frame,
             stuck: self.stuck,
             release_frames: self.release_frames,
             voices: [Voice::default(); 64],
@@ -272,15 +286,29 @@ impl MutableInstrumentRuntime for Runtime {
                 }
                 sum + level
             });
-            frame[0] += signal;
-            frame[1] += signal;
+            let noise = if self.noise_floor {
+                if self.rendered_frames % 2 == 0 {
+                    1e-5
+                } else {
+                    -1e-5
+                }
+            } else {
+                0.0
+            };
+            frame[0] += signal + noise;
+            frame[1] += signal - noise;
+            if self.echo_frame == Some(self.rendered_frames) {
+                frame[1] += 0.00022;
+            }
+            self.rendered_frames += 1;
         }
     }
     fn reset(&mut self) {
+        self.rendered_frames = 0;
         self.voices.fill(Voice::default());
     }
     fn is_quiescent(&self) -> bool {
-        self.voices.iter().all(|voice| !voice.active)
+        !self.noise_floor && self.voices.iter().all(|voice| !voice.active)
     }
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
         previous
@@ -291,6 +319,7 @@ impl MutableInstrumentRuntime for Runtime {
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             self.voices = previous.voices;
+            self.rendered_frames = previous.rendered_frames;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -836,5 +865,96 @@ fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
         &bytes[bytes.len() - 8..],
         &[0; 8],
         "natural release reaches silence before publication"
+    );
+}
+
+#[test]
+fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
+    let dir = TestDir::new();
+    let (revision, _) = prepared_hybrid_with_state(
+        false,
+        false,
+        false,
+        NativeDeviceState::new(FIXTURE_TYPE, 1, vec![4]).unwrap(),
+    );
+    let path = dir.0.join("quiet-tail.wav");
+    let report = hex_export::render_arrangement_bounce_new(
+        &path,
+        Arc::clone(&revision),
+        None,
+        0,
+        1024,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        report.frames, 1024,
+        "quiet background must not extend the selected span"
+    );
+    let exact_path = dir.0.join("exact.wav");
+    let exact = hex_export::render_arrangement_bounce_new(
+        &exact_path,
+        revision,
+        None,
+        0,
+        1024,
+        false,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    assert_eq!(exact.frames, 1024);
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(
+        &bytes[44..],
+        &fs::read(exact_path).unwrap()[44..],
+        "retained PCM is unchanged"
+    );
+    assert!(
+        bytes[bytes.len() - 8..]
+            .chunks_exact(4)
+            .all(|v| f32::from_le_bytes(v.try_into().unwrap()).abs() > 0.0),
+        "the retained source noise is not zeroed or gated"
+    );
+}
+
+#[test]
+fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
+    let dir = TestDir::new();
+    let (revision, _) = prepared_hybrid_with_state(
+        false,
+        false,
+        false,
+        NativeDeviceState::new(FIXTURE_TYPE, 1, vec![5]).unwrap(),
+    );
+    let path = dir.0.join("late-echo.wav");
+    let report = hex_export::render_arrangement_bounce_new(
+        &path,
+        revision,
+        None,
+        0,
+        1024,
+        true,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+    let echo_frame = u64::from(RATE) * 12;
+    assert_eq!(
+        report.frames,
+        echo_frame + 1 + u64::from(RATE) / 20,
+        "retain fifty milliseconds after the late echo"
+    );
+    let bytes = fs::read(path).unwrap();
+    let sample_offset = 44 + echo_frame as usize * 8;
+    let left = f32::from_le_bytes(bytes[sample_offset..sample_offset + 4].try_into().unwrap());
+    let right = f32::from_le_bytes(
+        bytes[sample_offset + 4..sample_offset + 8]
+            .try_into()
+            .unwrap(),
+    );
+    assert!(left.abs() < 0.0001);
+    assert!(
+        right.abs() > 0.0001,
+        "late right-channel echo survives the long quiet gap"
     );
 }
