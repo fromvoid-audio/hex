@@ -21,7 +21,7 @@ impl NativeEffectEntry {
             staged: false,
         }
     }
-    #[cfg(all(test, feature = "allocation-probe"))]
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn committed_frames_for_test(&self) -> u64 {
         self.callback.transport.committed_position_for_test()
     }

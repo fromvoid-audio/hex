@@ -14,12 +14,60 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Nondefault deterministic fixture control: original worker's observed
+    /// completion prefix. Neither queueing, readiness nor custody authority.
+    #[cfg(feature = "allocation-probe")]
+    pub fn native_source_completed_blocks(&self, binding: Binding) -> Option<u64> {
+        self.candidate_root.native_source_completed_blocks(binding)
+    }
+    /// Nonblocking actual source-pair observation: (endpoint loan outstanding,
+    /// transport live). A queued loan stays outstanding until actual control
+    /// ingestion; a returned/revoked pair is not made live by querying it.
+    /// None includes contention/stale/retiring/closed sources. This is not
+    /// endpoint installation, graph admission, or callback readiness authority.
+    pub fn native_source_endpoint_status(&self, binding: Binding) -> Option<(bool, bool)> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.native_source_endpoint_status(binding)
+    }
+    /// Nonblocking observation of this original endpoint's actual callback
+    /// installation, independent of queue admission. None includes a stale,
+    /// retiring/closed source or control contention. True grants neither graph
+    /// application nor transport readiness: normal publication still validates
+    /// the actual source/pair, including any later Stop or refusal.
+    pub fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .native_source_endpoint_installed(binding)
+    }
     /// Exclude transport/publication while the callback acknowledges the exact
     /// current native runtime after the admitted command prefix. This witness
     /// grants no source ownership and does not acknowledge graph/endpoint return.
     pub fn request_native_epoch_fence(
         &self,
         expected: AppliedAudioSource,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_native_epoch_source_fence(expected, false)
+    }
+    /// Fence the exact current ordinary graph while renewing original loaded
+    /// sources, including sources removed by Undo whose tail has already ended.
+    /// Stop may remove the last foreign runtime before acknowledgement; the
+    /// actual ordinary graph/source must still match. Constructor/sampler and
+    /// verified-streaming paths retain their existing fences. Readiness grants
+    /// no return or renewal: original graph and endpoint ingestion remain required.
+    pub fn request_ordinary_native_epoch_fence(
+        &self,
+        expected: AppliedAudioSource,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.request_native_epoch_source_fence(expected, true)
+    }
+    fn request_native_epoch_source_fence(
+        &self,
+        expected: AppliedAudioSource,
+        ordinary: bool,
     ) -> Result<StoppedEditFence, &'static str> {
         self.status.retire_stopped_edit_on_control();
         // Compensated stream windows currently reject the native bridge's
@@ -32,20 +80,34 @@ impl PublicationControl {
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
             || self.status.publication_pending.recording_active()
-            || self.status.native_effect_source() != Some(expected)
+            || if ordinary {
+                self.status.applied_audio_source().is_some()
+                    || !self.candidate_root.ordinary_streams_configured()
+                    || self.status.recording_source() != Some(expected)
+            } else {
+                self.status.native_effect_source() != Some(expected)
+            }
         {
             return Err("native epoch output is not current or publication is pending");
         }
         if !self.status.publication_pending.reserve_native_epoch() {
             return Err("native epoch publication or recording is pending");
         }
-        match self.status.sampler_edit.begin_source(
-            expected,
-            self.status.admitted_ticket.load(Acquire),
-            false,
-            false,
-            true,
-        ) {
+        let result = if ordinary {
+            self.status.sampler_edit.begin_ordinary_native_epoch_source(
+                expected,
+                self.status.admitted_ticket.load(Acquire),
+            )
+        } else {
+            self.status.sampler_edit.begin_source(
+                expected,
+                self.status.admitted_ticket.load(Acquire),
+                false,
+                false,
+                true,
+            )
+        };
+        match result {
             Ok(token) => Ok(token),
             Err(reason) => {
                 self.status.publication_pending.release_native_epoch();
@@ -107,7 +169,11 @@ impl PublicationControl {
             || !self.candidate_root.ordinary_streams_configured()
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)
-            || (self.status.native_effect_source() != Some(source) && !vacant)
+            || (self.status.native_effect_source() != Some(source)
+                && !(self.status.sampler_edit.ordinary_native_epoch_active()
+                    && self.status.applied_audio_source().is_none()
+                    && self.status.recording_source() == Some(source))
+                && !vacant)
             || source.output_identity != self.candidate_root.root_id()
             || self.status.sampler_edit.native_epoch_context(fence) != Some(source.context)
         {
@@ -281,6 +347,16 @@ impl PublicationControl {
     pub fn native_source_preparation_error(&self, binding: Binding) -> Option<String> {
         self.candidate_root.native_source_preparation_error(binding)
     }
+    /// Observe the same original diagnostic without confusing control contention
+    /// with a successfully observed absence of error. Busy is nondestructive;
+    /// stale bindings refuse. This read grants no source/terminal custody.
+    pub fn try_native_source_preparation_error(
+        &self,
+        binding: Binding,
+    ) -> Result<Option<String>, &'static str> {
+        self.candidate_root
+            .try_native_source_preparation_error(binding)
+    }
     pub fn recover_native_source_preparation(
         &mut self,
         binding: Binding,
@@ -308,6 +384,30 @@ impl PublicationControl {
     }
 }
 impl Callback {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_root_for_control_fixture(
+        &self,
+    ) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
+    }
+    /// Read-only headless control query, outside rendering/allocation probes.
+    /// This grants no readiness, endpoint loan, graph admission or native ACK.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn native_workers_idle_on_control(&self) -> Option<bool> {
+        self.native_sources
+            .workers_idle_on_control(&self.candidate_root)
+    }
+    pub(super) fn current_native_epoch_fence_source(&self) -> Option<AppliedAudioSource> {
+        if !self.status.sampler_edit.ordinary_native_epoch_active() {
+            return self.current_native_epoch_source();
+        }
+        let active = self.active.as_ref().and_then(ActivePublication::legacy)?;
+        active.source_context.map(|context| AppliedAudioSource {
+            context,
+            audio_revision: active.revision,
+            output_identity: self.candidate_root.root_id(),
+        })
+    }
     pub(super) fn current_native_epoch_source(&self) -> Option<AppliedAudioSource> {
         match self.active.as_ref()? {
             ActivePublication::Eligible(active) => active.applied_audio_source(),
@@ -394,7 +494,7 @@ impl Callback {
             }
             return;
         }
-        if self.current_native_epoch_source() != Some(source)
+        if self.current_native_epoch_fence_source() != Some(source)
             || self
                 .active
                 .as_ref()

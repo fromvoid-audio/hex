@@ -12,6 +12,44 @@ pub use native_sampler::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
 };
 
+/// Synchronous read-only identities in the exact candidate project. Native
+/// state validation stays in the borrowed compiler; consumers receive neither
+/// project editing access nor a registry or native owner.
+pub struct ResidentEffectPreparation<'a> {
+    pub(in crate::service) project: &'a Project,
+}
+impl ResidentEffectPreparation<'_> {
+    pub fn visit_plugin_effects(
+        &self,
+        mut visit: impl FnMut(hex_engine::ProcessorChainOwner, u64) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut chain = |owner, devices: &[hex_project::Device]| {
+            for device in devices.iter().filter(|d| {
+                d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+            }) {
+                visit(owner, device.id().value())?;
+            }
+            Ok(())
+        };
+        for track in self.project.tracks() {
+            chain(
+                hex_engine::ProcessorChainOwner::Track(track.id().value()),
+                track.devices(),
+            )?;
+        }
+        for bus in self.project.return_tracks() {
+            chain(
+                hex_engine::ProcessorChainOwner::Return(bus.id().value()),
+                bus.devices(),
+            )?;
+        }
+        chain(
+            hex_engine::ProcessorChainOwner::Main,
+            self.project.main_devices(),
+        )
+    }
+}
+
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
 /// nor a requested freshness fence grants source custody or acknowledges callback application.
 #[derive(Clone, Copy, Debug)]
@@ -118,6 +156,54 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Renew stopped native sources through their original output owner. None
+    /// keeps the ordinary restore path; Some(false) retains the operation until
+    /// its exact callback returns and fresh endpoint ACKs, Some(true) requests
+    /// recompilation of the unchanged canonical project before publication.
+    fn prepare_stopped_playback_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<Option<bool>, String> {
+        Ok(None)
+    }
+    fn stopped_playback_restore_ready(&self) -> bool {
+        false
+    }
+    /// Refusal before publication releases only the matching held operation.
+    /// Accepted publication retains its gate until actual callback installation.
+    fn cancel_stopped_playback_restore(&mut self) {}
+    /// Start/poll this exact explicit source request on the canonical worker.
+    /// The implementation retains actual native preparation under its Root;
+    /// Session receives captured state only after real native and endpoint ACKs.
+    fn prepare_plugin_effect(
+        &mut self,
+        _input: PluginEffectPreparation<'_>,
+    ) -> Result<PluginEffectPreparationState, String> {
+        Err("vst3 hosting unavailable for this output".into())
+    }
+    fn plugin_effect_ready(&self) -> bool {
+        false
+    }
+    /// Match the exact request control; never cancel an unrelated later source.
+    /// Exact canonical terminal. Rejected requests retire only their matching native preparation;
+    /// acceptance transfers display/request custody, never the native source's lifetime.
+    fn finish_plugin_effect(&mut self, _control: &Arc<PluginEffectControl>, _accepted: bool) {}
+    /// Borrow the actual host's effect facts for one synchronous registered
+    /// compiler invocation on the canonical worker. None means no host facts
+    /// were supplied, so builtin-only preparation remains unchanged. The
+    /// callback must run at most once and must not publish or call back into
+    /// the sink: native source custody/Work can remain borrowed throughout it.
+    /// A returned revision is compilation only, never native admission or ACK.
+    fn prepare_resident_effects(
+        &mut self,
+        _input: ResidentEffectPreparation<'_>,
+        _prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        Ok(None)
+    }
     /// Ordinary source-planning defaults, independent of the document mode.
     /// A host opts in only with bounded file preparation/publication consumers.
     fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
@@ -498,6 +584,9 @@ impl WorkerEvents {
         &mut self,
         requests: &Receiver<Request>,
         bounded: bool,
+        plugin_effect: Option<&PluginEffectInsertion>,
+        stopped_restore: Option<hex_engine::AudioSourceContext>,
+        context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> Option<Request> {
         control_poll(
@@ -537,6 +626,25 @@ impl WorkerEvents {
                 .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
                 return Some(Request::ContinueSamplerEdit);
+            }
+            if plugin_effect.is_some_and(|insertion| {
+                insertion.context != context
+                    || insertion.control.is_cancelled()
+                    || self
+                        .audio
+                        .as_ref()
+                        .is_some_and(|audio| audio.plugin_effect_ready())
+            }) {
+                return Some(Request::ContinuePluginEffect);
+            }
+            if stopped_restore.is_some_and(|captured| {
+                captured != context
+                    || self
+                        .audio
+                        .as_ref()
+                        .is_some_and(|audio| audio.stopped_playback_restore_ready())
+            }) {
+                return Some(Request::ContinueStoppedPlaybackRestore);
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {

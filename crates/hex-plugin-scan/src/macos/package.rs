@@ -7,6 +7,8 @@ use super::{
 };
 use crate::{MAX_BINARY, hash};
 use std::path::{Path, PathBuf};
+mod instance;
+pub use instance::InstancePackage;
 
 const ROOT: &str = "Contents/Helpers";
 const SCANNER: &str = "Contents/Helpers/hex-vst3-scan-macos";

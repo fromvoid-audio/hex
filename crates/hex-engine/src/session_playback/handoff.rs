@@ -38,7 +38,7 @@ fn validate_foreign_tail_sources(
                     if current.binding() == Some(binding))
             })
         {
-            return Err(SessionPlaybackError::DeviceRuntime);
+            return Err(SessionPlaybackError::ForeignTailSourceBusy);
         }
     }
     Ok(())

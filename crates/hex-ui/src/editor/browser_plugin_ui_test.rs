@@ -96,7 +96,117 @@ fn browser_vst3_reload_marks_missing_source_without_rewriting_last_good_or_scann
 }
 
 #[gpui::test]
-fn browser_vst3_restores_searchable_typed_rows_and_enter_never_queues_native_insertion(
+fn browser_vst3_effect_enter_reaches_worker_and_unavailable_terminal_retires_pending(
+    cx: &mut TestAppContext,
+) {
+    unavailable_effect_activation(cx, false);
+}
+
+#[gpui::test]
+fn browser_vst3_effect_double_click_reaches_worker_and_unavailable_terminal_retires_pending(
+    cx: &mut TestAppContext,
+) {
+    unavailable_effect_activation(cx, true);
+}
+
+fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (handle, editor, track, directory, _) = browser_drag_fixture(cx);
+    let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+    let mut catalog = original_plugin_catalog(module);
+    let class = &mut catalog.entries[0]
+        .last_good
+        .as_mut()
+        .unwrap()
+        .discovery
+        .as_mut()
+        .unwrap()
+        .classes[0];
+    class.class_flags = Some(0);
+    class.subcategories = Some("Fx".into());
+    class.class_vendor = Some("Original Vendor".into());
+    class.class_version = Some("1".into());
+    class.class_sdk_version = Some("3.8".into());
+    catalog
+        .select_effect(&catalog.entries[0].path, [1; 16])
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.selected_track = Some(track);
+        view.select_browser_source(BrowserSection::Plugins, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        visual.run_until_parked();
+        if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "startup catalog load");
+        std::thread::yield_now();
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.apply_plugin_catalog(catalog, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let row = visual
+        .debug_bounds("browser-vst3-row-0")
+        .expect("painted effect");
+    if pointer {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: row.center(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    } else {
+        visual.simulate_click(row.center(), Modifiers::default());
+        visual.simulate_keystrokes("enter");
+    }
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.pending_plugin_effect.is_some(),
+            "effect activation must reach the canonical worker: error={:?} status={} selected={:?} state={:?}",
+            view.error, view.status, view.selected_track, view.state.as_ref().map(|s| (s.revision, s.project.tracks().len()))
+        );
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(16));
+        visual.run_until_parked();
+        if editor.read_with(&visual, |view, _| view.pending_plugin_effect.is_none()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual unavailable-output terminal"
+        );
+        std::thread::yield_now();
+    }
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|e| e.contains("vst3 hosting unavailable for this output")),
+            "{:?}",
+            view.error
+        );
+        let state = view.state.as_ref().unwrap();
+        assert!(!state.can_undo && !state.can_redo && !state.unsaved);
+        assert!(
+            state.project.tracks().is_empty(),
+            "refusal restores the actual worker snapshot"
+        );
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+}
+
+#[gpui::test]
+fn browser_vst3_restores_searchable_typed_rows_and_enter_refuses_unavailable_inventory(
     cx: &mut TestAppContext,
 ) {
     cx.update(crate::editor::bind_editor_keys);
@@ -142,7 +252,10 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_never_queues_native_ins
     editor.read_with(&visual, |view, _| {
         assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
         assert!(view.last_enqueued_edit.is_none());
-        assert!(view.status.contains("hosting and insertion unavailable"));
+        assert!(
+            view.error.is_some(),
+            "unavailable inventory must refuse explicitly"
+        );
     });
     editor.update(&mut visual, |view, cx| {
         view.browser
