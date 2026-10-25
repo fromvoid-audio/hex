@@ -99,19 +99,13 @@ impl<'a> Transfer<'a> {
         let view = actual_chain.storage_view();
         let mut bytes = view.entry_capacity_bytes().ok_or(invalid)?;
         for entry in view.entries() {
-            match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
-                (Some(a), Some(b))
-                    if entry
-                        .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>(
-                        ) =>
-                {
-                    bytes = bytes
-                        .checked_add(a)
-                        .and_then(|n| n.checked_add(b))
-                        .ok_or(invalid)?;
-                }
-                (None, None) => {}
-                _ => return Err(invalid),
+            if let Some((a, b)) =
+                crate::native_effect_storage::pair_bytes(&entry).map_err(|_| invalid)?
+            {
+                bytes = bytes
+                    .checked_add(a)
+                    .and_then(|n| n.checked_add(b))
+                    .ok_or(invalid)?;
             }
         }
         let next_bytes = self

@@ -32,6 +32,7 @@ mod operator_preview_navigation_tests;
 mod operator_tab_tests;
 mod overdrive_ui_tests;
 mod parameter_rows_tests;
+mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
 

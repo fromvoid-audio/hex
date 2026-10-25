@@ -423,6 +423,23 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
+use predelay to separate the room from the source; size, decay, diffusion and
+scale shape its space. spin moves the early reflections, while chorus modulates
+the late network. low/high controls shape frequency-dependent decay. reflect and
+diffuse set the two wet components; stereo sets their width. dry/wet blends the
+room with the original. on a return, start at 100 percent wet and use the send.
+
+freeze holds the network. flat removes its decay shaping and cut blocks new
+excitation. stop and seek clear the room; loop wraps continue it. bypass passes
+dry while history advances privately. removing a device drains its old history;
+a removed frozen tail persists until stop. retained tails use bounded host banks;
+a full bank refuses another edit rather than discarding an existing tail. smooth
+sets none, fast or slow parameter transitions; density selects scattering depth.
+all controls use undo/redo and survive save/reopen. device-parameter automation
+lanes are not currently offered. the functional control set does not establish
+sound parity with another application's reverb.
+
 the delay effect has independent left and right timing. **sync** selects a
 multiple of a sixteenth note; **time** selects 1–5000 ms. sync is bounded to
 16 seconds, including offsets and modulation. **link** shares timing, mode and

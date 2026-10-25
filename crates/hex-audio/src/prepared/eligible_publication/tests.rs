@@ -12,6 +12,8 @@ mod pages;
 #[cfg(feature = "allocation-probe")]
 mod readiness;
 #[cfg(feature = "allocation-probe")]
+mod reverb;
+#[cfg(feature = "allocation-probe")]
 pub(in crate::prepared) mod stream_fixture;
 #[cfg(feature = "allocation-probe")]
 mod utility_fixture;
