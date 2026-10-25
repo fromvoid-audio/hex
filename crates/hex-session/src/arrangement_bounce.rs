@@ -154,7 +154,9 @@ impl Session {
                 let tails = matches!(target, BounceTarget::Clips(_));
                 let maximum = (item.end - item.start)
                     .checked_add(if tails {
-                        u64::from(self.project().sample_rate()) * 10
+                        u64::from(self.project().sample_rate())
+                            .checked_mul(hex_export::MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS)
+                            .ok_or("bounce tail budget overflows")?
                     } else {
                         0
                     })
