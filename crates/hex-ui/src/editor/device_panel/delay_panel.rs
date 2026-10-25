@@ -1,6 +1,7 @@
 //! Native Live-style delay composition. Only graph entity and disclosure are
 //! view-local; every sound control uses the shared binding/Session contracts.
 use super::*;
+use crate::device_composition::plot;
 use hex_engine::delay::*;
 use hex_session::device_gesture::{GestureKey, ParameterPairValue};
 use hex_widgets::{
@@ -421,7 +422,7 @@ pub(super) fn render_body(
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(crate::device_composition::plot(graph).min_h(px(60.0)))
+        .child(plot(graph).min_h(px(60.0)))
         .child(filter_row)
         .child(modulation);
     if expanded {
