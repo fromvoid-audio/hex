@@ -11681,6 +11681,213 @@ fn arrangement_preroll_refuses_storage_preflight_before_runtime_factory() {
 }
 
 #[test]
+fn linear_audio_only_export_omits_unused_banks_preserves_pcm_and_refuses_console() {
+    let source: Vec<Frame> = (0..32)
+        .map(|i| [i as f32 / 64.0, -(i as f32) / 128.0])
+        .collect();
+    let audio = crate::Audio::new(48_000, source.clone()).unwrap();
+    let mut snapshot = audio_project(0, 32, 4).snapshot();
+    snapshot.next_id = 8;
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        active: true,
+        name: "arrangement".into(),
+        flavor: hex_project::ClipFlavor::default(),
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
+        id: 7,
+        asset: 4,
+        start: 0,
+        duration: 32,
+        source_offset: 0,
+        source_length: 32,
+        looping: false,
+        source_phase: 0,
+        fade: ClipFade::neutral(32).unwrap(),
+    }]);
+    let project = Project::from_snapshot(snapshot).unwrap();
+    // Unlinked authoring retains its MIDI metadata wrapper, with no compiled
+    // note spans or generator. It must not spend interactive release storage.
+    let mut editor = Editor::new(project, 8).unwrap();
+    let Created::Track(unbound) = editor
+        .execute(Command::AddMidiTrack {
+            name: "unbound".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: unbound,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let project = editor.project();
+    let media = audio_media(project, &audio, &audio);
+    let revision = Arc::new(
+        PreparedRevision::prepare(project, &media, Arc::new(crate::SineTable::new()), None)
+            .unwrap(),
+    );
+    let interactive_quote =
+        super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    let quote = SessionPlayback::linear_export_runtime_allowance(&revision).unwrap();
+    let omitted = 2
+        * SESSION_RELEASE_CAPACITY
+        * (std::mem::size_of::<ReleaseEntry>() + std::mem::size_of::<MidiOccurrenceSuppression>());
+    assert_eq!(interactive_quote - quote, omitted);
+    let mut interactive = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert_eq!(
+        interactive.release_storage_capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
+    let mut export = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+    assert_eq!(export.release_storage_capacity(), 0);
+    assert_eq!(export.releases.capacity(), 0);
+    assert_eq!(export.release_scratch.capacity(), 0);
+    assert_eq!(export.suppressions.capacity(), 0);
+    assert_eq!(export.suppression_scratch.capacity(), 0);
+    assert_eq!(
+        export.accounted_runtime_storage_bytes().unwrap() + super::preroll::PREROLL_SCRATCH_BYTES,
+        quote
+    );
+    assert!(export.try_inherit_state_from(&mut interactive).is_err());
+    assert!(
+        export
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: export.revision.session().audio_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .is_err()
+    );
+    export.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 40];
+    export.render(&mut output).unwrap();
+    assert_eq!(output[..32], source);
+    assert_eq!(output[32..], [[0.0; 2]; 8]);
+
+    let prepare = |budget| {
+        SessionPlayback::prepare_arrangement_preroll_from_revision_checked(
+            Arc::clone(&interactive.revision),
+            4,
+            4,
+            true,
+            budget,
+            || false,
+        )
+    };
+    assert_eq!(
+        prepare(quote - 1).unwrap_err(),
+        ArrangementPrerollError::StorageBudgetExceeded
+    );
+    let mut replay = prepare(quote).unwrap();
+    let mut next = [[0.0; 2]; 4];
+    replay.render(&mut next).unwrap();
+    assert_eq!(next, source[4..8]);
+
+    let (midi, _) = mutable_checkpoint_fixture(8 << 32);
+    let midi_quote = super::preroll::arrangement_runtime_storage_preflight_bytes(&midi).unwrap();
+    assert_eq!(
+        SessionPlayback::linear_export_runtime_allowance(&midi).unwrap(),
+        midi_quote
+    );
+    let midi_export = SessionPlayback::new_linear_arrangement_export(midi).unwrap();
+    assert_eq!(
+        midi_export.release_storage_capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
+}
+
+#[test]
+fn linear_receiverless_bound_source_uses_audio_only_quote_and_renders_silence() {
+    let mut editor = Editor::new(project(1.0, 0, 1 << 32), 8).unwrap();
+    let receiver = editor.project().tracks()[0].id();
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(sender) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sender".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: sender,
+            source: Some(source),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    assert_eq!(editor.project().source_contributors(source).count(), 2);
+    assert!(
+        !editor.project().track(receiver).unwrap().midi_clips()[0]
+            .notes()
+            .is_empty()
+    );
+    let prepared = revision(editor.project(), Arc::new(crate::SineTable::new()));
+    assert!(
+        prepared
+            .arrangement()
+            .tracks()
+            .iter()
+            .all(|track| !track.receives_source_audio())
+    );
+    let quote = SessionPlayback::linear_export_runtime_allowance(&prepared).unwrap();
+    let mut export = SessionPlayback::new_linear_arrangement_export(prepared).unwrap();
+    assert_eq!(export.release_storage_capacity(), 0);
+    assert!(
+        export.accounted_runtime_storage_bytes().unwrap() + super::preroll::PREROLL_SCRATCH_BYTES
+            <= quote
+    );
+    export.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[1.0; 2]; 64];
+    export.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 64]);
+
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(receiver),
+        })
+        .unwrap();
+    let prepared = revision(editor.project(), Arc::new(crate::SineTable::new()));
+    let full = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
+    assert_eq!(
+        SessionPlayback::linear_export_runtime_allowance(&prepared).unwrap(),
+        full
+    );
+    assert_eq!(
+        SessionPlayback::new_linear_arrangement_export(prepared)
+            .unwrap()
+            .release_storage_capacity(),
+        SESSION_RELEASE_CAPACITY
+    );
+}
+
+#[test]
 fn arrangement_preroll_storage_preflight_covers_constructed_runtime() {
     let (prepared, _) = mutable_checkpoint_fixture(8 << 32);
     let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();

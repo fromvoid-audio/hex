@@ -342,8 +342,12 @@ impl SessionPlayback {
                 .arrangement()
                 .loop_region()
                 .is_some_and(|region| region.enabled() && destination_frame >= region.end());
-        let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
-            .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
+        let storage_preflight = if matches!(policy, PrerollRuntimePolicy::LinearExport) {
+            linear_export_runtime_storage_preflight_bytes(&revision)
+        } else {
+            arrangement_runtime_storage_preflight_bytes(&revision)
+        }
+        .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
@@ -601,6 +605,22 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+}
+
+pub(super) fn linear_export_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(
+        revision,
+        SessionPlayback::release_capacity_for(revision, true),
+    )
+}
+
+fn runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+    release_capacity: usize,
+) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
@@ -720,7 +740,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<ReleaseEntry>(),
         )?;
     }
@@ -746,7 +766,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<MidiOccurrenceSuppression>(),
         )?;
     }

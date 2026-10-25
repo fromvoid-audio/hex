@@ -14,7 +14,12 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
         .unwrap();
     assert!(event(service).error.is_none());
     let result = export_event(service);
-    assert!(result.result.is_ok(), "{:?}", result.result);
+    assert!(
+        result.result.is_ok(),
+        "{}: {:?}",
+        path.display(),
+        result.result
+    );
     fs::read(path).unwrap()[44..]
         .chunks_exact(4)
         .map(|f| {
@@ -653,6 +658,8 @@ fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_origina
         .unwrap();
     let definition = loaded.state.project.native_source(source).unwrap().clone();
     let device = definition.instrument().id();
+    let mut expected_definition = hex_project::NativeSourceSnapshot::from(&definition);
+    expected_definition.receiver = None;
     let expected = export_pcm(&service, files.source.with_file_name("before.wav"));
     assert!(expected.iter().any(|f| *f != [0; 2]));
     let unlinked = edit(
@@ -664,8 +671,12 @@ fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_origina
     );
     assert!(unlinked.error.is_none(), "{:?}", unlinked.error);
     assert_eq!(
-        unlinked.state.project.native_source(source),
-        Some(&definition)
+        unlinked
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
     );
     assert_eq!(
         export_pcm(&service, files.source.with_file_name("unlinked.wav")),
@@ -674,8 +685,12 @@ fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_origina
     let removed = edit(&service, Command::RemoveTrack(track));
     assert!(removed.error.is_none(), "{:?}", removed.error);
     assert_eq!(
-        removed.state.project.native_source(source),
-        Some(&definition)
+        removed
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
     );
     service.submit(Request::SaveNew(saved.clone())).unwrap();
     assert!(event(&service).error.is_none());
@@ -690,8 +705,12 @@ fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_origina
     let reopened = event(&service);
     assert!(reopened.error.is_none(), "{:?}", reopened.error);
     assert_eq!(
-        reopened.state.project.native_source(source),
-        Some(&definition)
+        reopened
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
     );
     let new_track = edit(
         &service,
@@ -710,6 +729,15 @@ fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_origina
         },
     );
     assert!(rebound.error.is_none(), "{:?}", rebound.error);
+    expected_definition.receiver = Some(new_track.value());
+    assert_eq!(
+        rebound
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition.clone())
+    );
     assert_eq!(
         rebound
             .state
@@ -766,7 +794,11 @@ fn retained_sampler_source_reopens_unassigned_and_rebinds_without_losing_origina
     let refused = event(&service);
     assert!(refused.error.is_some(), "bound source removal must refuse");
     assert_eq!(
-        refused.state.project.native_source(source),
-        Some(&definition)
+        refused
+            .state
+            .project
+            .native_source(source)
+            .map(hex_project::NativeSourceSnapshot::from),
+        Some(expected_definition)
     );
 }

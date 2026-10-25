@@ -148,6 +148,25 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
     );
     let mut playback =
         SessionPlayback::new_control_sampler_export(Arc::clone(&revision), &scope).unwrap();
+    let allowance =
+        SessionPlayback::control_sampler_export_runtime_allowance(&revision, &scope).unwrap();
+    let actual = playback.accounted_runtime_storage_bytes().unwrap();
+    assert_eq!(playback.release_storage_capacity(), 0);
+    assert!(actual <= allowance, "actual={actual}, quote={allowance}");
+    assert!(allowance < limits.max_retained_bytes);
+    assert!(playback.apply(SessionPlaybackCommand::Pause).is_err());
+    assert!(
+        playback
+            .apply(SessionPlaybackCommand::StopTrack {
+                track,
+                quantization: crate::LaunchQuantization::Immediate,
+            })
+            .is_err()
+    );
+    let mut other_export =
+        SessionPlayback::new_control_sampler_export(Arc::clone(&revision), &scope).unwrap();
+    assert!(other_export.try_inherit_state_from(&mut playback).is_err());
+    drop(other_export);
     let weak = Arc::downgrade(scope.data.configurations[0].source.owner.arc());
     drop(store);
     drop(editor);

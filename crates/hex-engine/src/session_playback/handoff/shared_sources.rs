@@ -378,10 +378,21 @@ pub(super) fn plan_release_audio_owner(
         .shared_contexts()
         .index_for_source(origin.source)
         .is_some_and(|index| analytic_owner_matches[usize::from(index)]);
+    // Inline tuning continuations already prove the same device/source owner
+    // and preserve its gate. A project tuning change alone must not detach that
+    // still-owned voice into an old receiver suffix and release it early.
+    let inline_tuning = release.inline_tuning_owned
+        && current_receiver.is_some_and(|receiver| {
+            inline_tuning_owner_matches(
+                &previous.revision.arrangement().tracks()[old_receiver],
+                &candidate.arrangement().tracks()[receiver],
+            )
+        });
     let follows = previous
         .revision
         .retained_source_configuration_matches(candidate, origin.source)
-        || continued_context;
+        || continued_context
+        || inline_tuning;
     if follows && let Some(receiver) = current_receiver {
         origin.receiver = candidate.arrangement().tracks()[receiver]
             .canonical_track_id()

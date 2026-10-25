@@ -1193,6 +1193,8 @@ impl SessionPlayback {
     /// does not affect this owner, and the authored Arrangement tempo map is
     /// used without transport-loop wrapping. Mutable Arrangement MIDI source loops
     /// and seek destinations that require note chase remain unsupported.
+    /// Graphs without compiled Arrangement instruments omit unused analytic
+    /// release/suppression banks; their immutable routing cannot create voices.
     pub fn new_linear_arrangement_export(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, SessionPlaybackError> {
@@ -1214,6 +1216,9 @@ impl SessionPlayback {
 
     /// Private-control export capability: the graph contains only scalar sampler
     /// coefficients. Every block must borrow this exact sealed source sidecar.
+    /// This closed owner accepts only Play, Stop and frame-zero Seek, never
+    /// interactive publication or Console routing. It therefore omits analytic
+    /// release and occurrence-suppression banks; ordinary playback retains them.
     pub fn new_control_sampler_export(
         revision: Arc<PreparedRevision>,
         sources: &crate::native_device_resources::ControlSamplerSources,
@@ -1249,12 +1254,35 @@ impl SessionPlayback {
     pub fn linear_export_runtime_allowance(
         revision: &PreparedRevision,
     ) -> Result<usize, SessionPlaybackError> {
-        let bytes = preroll::arrangement_runtime_storage_preflight_bytes(revision)
+        let bytes = preroll::linear_export_runtime_storage_preflight_bytes(revision)
             .filter(|n| *n <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
             .ok_or(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "sampler export runtime exceeds its independent runtime limit",
             ))?;
         Ok(bytes)
+    }
+    /// Linear owners cannot admit Console commands or predecessor history.
+    /// Private CURRENT contains only mutable samplers; an Arrangement without
+    /// any compiled generator also cannot create analytic release obligations.
+    /// Nonreceivers cannot generate source audio. An unbound authoring bank
+    /// is harmless only when its compiled spans are empty.
+    /// Keep quote and allocation on the same rule. Interactive and other MIDI
+    /// render classes retain their full release and suppression banks.
+    fn release_capacity_for(revision: &PreparedRevision, linear_export: bool) -> usize {
+        if linear_export
+            && (revision.requires_control_sampler_sources()
+                || revision.arrangement().tracks().iter().all(|track| {
+                    !track.receives_source_audio()
+                        || (!track.has_mutable_instrument()
+                            && track.instrument.as_ref().is_none_or(|bank| {
+                                !track.instrument_slot_enabled() && bank.spans.is_empty()
+                            }))
+                }))
+        {
+            0
+        } else {
+            SESSION_RELEASE_CAPACITY
+        }
     }
     fn new_with_policy(
         revision: Arc<PreparedRevision>,
@@ -1535,7 +1563,7 @@ impl SessionPlayback {
             }
         }
 
-        let release_capacity = SESSION_RELEASE_CAPACITY;
+        let release_capacity = Self::release_capacity_for(&revision, linear_arrangement_export);
         let mut routes = Vec::new();
         routes
             .try_reserve_exact(arrangement_tracks.len())

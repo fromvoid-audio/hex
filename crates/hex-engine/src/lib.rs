@@ -2904,6 +2904,33 @@ impl RendererRuntime {
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_device_chain();
             let ordered = track.requires_ordered_processing();
+            let render_direct_stateless_track = !stateful
+                && !ordered
+                && !track.has_mutable_instrument()
+                && !track.has_gain_automation()
+                && !track.source_id().is_some_and(|source| {
+                    project
+                        .tracks
+                        .iter()
+                        .filter(|candidate| candidate.source_id() == Some(source))
+                        .take(2)
+                        .count()
+                        > 1
+                });
+            if render_direct_stateless_track {
+                // Keep clip/note contributions in the destination mix order;
+                // grouping a track into zeroed scratch changes exact PCM sums.
+                track.render_additive_with_suppressions_and_pages(
+                    block_start,
+                    block_start,
+                    output,
+                    &[],
+                    pages.as_deref_mut(),
+                    &[],
+                    volume_timing,
+                )?;
+                continue;
+            }
             let mut scratch = [[0.0; 2]; 256];
             for offset in (0..output.len()).step_by(scratch.len()) {
                 let count = (output.len() - offset).min(scratch.len());
