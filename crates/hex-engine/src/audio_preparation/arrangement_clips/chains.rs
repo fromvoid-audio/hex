@@ -1,4 +1,4 @@
-//! Closed Utility/foreign chain metadata. No registry/provider owner
+//! Closed Utility/reverb/foreign chain metadata. No registry/provider owner
 //! is adopted and no owning Arc escapes this private preparation path.
 use crate::{
     AudioStorageError,
@@ -13,6 +13,23 @@ use hex_lattice::{
 use hex_lattice_contract::NativeDeviceMetadata;
 use std::sync::Arc;
 
+enum ConcreteProcessor {
+    Utility(hex_devices::utility::PreparedUtilityFilterRuntime),
+    Reverb(hex_devices::reverb::PreparedReverb),
+}
+impl ConcreteProcessor {
+    fn into_parts(
+        self,
+    ) -> (
+        Arc<dyn hex_lattice::PreparedNativeProcessor>,
+        SharedDeclaration,
+    ) {
+        match self {
+            Self::Utility(value) => OwnedShared::new_owned(value).into_processor_parts_on_control(),
+            Self::Reverb(value) => OwnedShared::new_owned(value).into_processor_parts_on_control(),
+        }
+    }
+}
 struct Entry {
     device_id: u64,
     owner: ProcessorChainOwner,
@@ -66,10 +83,30 @@ impl ChainCustody {
                     hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?
                         .is_some();
-                (migrated.payload().len(), processor)
+                let bytes = processor
+                    .then(|| {
+                        parts(OwnedShared::<
+                            hex_devices::utility::PreparedUtilityFilterRuntime,
+                        >::declared_parts())
+                    })
+                    .transpose()?;
+                (migrated.payload().len(), bytes)
+            } else if state.type_id() == hex_devices::reverb::REVERB_TYPE_ID {
+                let migrated = hex_devices::reverb::REVERB_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                let _ = hex_devices::reverb::ReverbDefinition::prepare_owned_room(&migrated, rate)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::reverb::PreparedReverb>::declared_parts(),
+                    )?),
+                )
             } else {
                 largest_copy = largest_copy.max(state.payload().len());
-                (state.payload().len(), false)
+                (state.payload().len(), None)
             };
             for bytes in [
                 parts(OwnedShared::<hex_lattice_contract::NativeDeviceState>::declared_parts())?,
@@ -80,11 +117,9 @@ impl ChainCustody {
                     .checked_add(bytes)
                     .ok_or(AudioStorageError::Overflow)?;
             }
-            if processor {
+            if let Some(bytes) = processor {
                 retained = retained
-                    .checked_add(parts(OwnedShared::<
-                        hex_devices::utility::PreparedUtilityFilterRuntime,
-                    >::declared_parts())?)
+                    .checked_add(bytes)
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
@@ -135,7 +170,13 @@ impl ChainCustody {
                     devices
                         .iter()
                         .filter(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                        .map(|d| d.state().payload().len())
+                        .map(|d| {
+                            if d.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID {
+                                hex_devices::reverb::PARAMETER_COUNT * 4
+                            } else {
+                                d.state().payload().len()
+                            }
+                        })
                         .max()
                         .unwrap_or(0),
                 )
@@ -151,11 +192,13 @@ impl ChainCustody {
                 .require_asset_free_processing()
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             let utility = device.state().type_id() == hex_devices::utility::UTILITY_TYPE_ID;
+            let reverb = device.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID;
+            let native = utility || reverb;
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
             // Never adopt a provider's state/processor owner. The Utility
-            // constructor is closed; foreign factories may return scalar facts
+            // and reverb constructors are closed; foreign factories may return scalar facts
             // only, matched later to the audio owner's original source.
-            let foreign_definition = if utility {
+            let foreign_definition = if native {
                 None
             } else {
                 Some(
@@ -169,10 +212,15 @@ impl ChainCustody {
                     .migrate_state(device.state())
                     .and_then(|s| s.with_host_metadata_from(device.state()))
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if reverb {
+                hex_devices::reverb::REVERB_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|s| s.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
             } else {
                 copy_state(device.state())?
             };
-            let foreign = if utility {
+            let foreign = if native {
                 None
             } else {
                 let definition = foreign_definition.ok_or(AudioStorageError::UnsupportedGraph)?;
@@ -196,8 +244,12 @@ impl ChainCustody {
                     _ => return Err(AudioStorageError::UnsupportedGraph),
                 }
             };
-            let matrix = if device.bypassed() || !utility {
+            let matrix = if device.bypassed() || !native {
                 StereoMatrix::identity()
+            } else if reverb {
+                hex_devices::reverb::REVERB_DEFINITION
+                    .prepare_effect_matrix(&migrated)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
             } else {
                 definition
                     .prepare_effect_matrix(&migrated)
@@ -217,6 +269,12 @@ impl ChainCustody {
             let processor = if utility {
                 hex_devices::utility::UtilityDefinition::prepare_owned_filter(&migrated, rate)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                    .map(ConcreteProcessor::Utility)
+            } else if reverb {
+                Some(ConcreteProcessor::Reverb(
+                    hex_devices::reverb::ReverbDefinition::prepare_owned_room(&migrated, rate)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                ))
             } else {
                 None
             };
@@ -231,9 +289,10 @@ impl ChainCustody {
             state.parts().ok_or(AudioStorageError::UnknownStorage)?;
             let (configuration, state) = state.into_paired_parts_on_control();
             let (processor, processor_declaration) = if let Some(value) = processor {
-                let value = OwnedShared::new_owned(value);
-                value.parts().ok_or(AudioStorageError::UnknownStorage)?;
-                let (owner, declaration) = value.into_processor_parts_on_control();
+                let (owner, declaration) = value.into_parts();
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
                 (Some(owner), Some(declaration))
             } else {
                 (None, None)

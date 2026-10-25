@@ -49,7 +49,7 @@ pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
 /// graph or one retained-tail bank. Variable-size instrument requirements draw
-/// from this pool; the separate 64 KiB effect-twin limit is not an instrument cap.
+/// from this pool; the separate 256 KiB effect-twin limit is not an instrument cap.
 /// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
 /// Retarget proof storage is independent of effect runtime payload size.
@@ -1103,7 +1103,7 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances. Effects retain their separate 64 KiB
+/// admits at most 256 stateful instances. Effects retain their separate 256 KiB
 /// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,

@@ -243,3 +243,76 @@ fn reverb_removal_uses_host_track_and_return_tail_retirement() {
         assert_eq!(render(&mut next, 127), vec![[0.0; 2]; 127]);
     }
 }
+#[test]
+fn frozen_track_and_return_removal_retains_bounded_history_until_stop() {
+    for on_return in [false, true] {
+        let (mut editor, asset, device) = fixture(on_return);
+        let mut initial = playback(editor.project(), asset);
+        initial.apply(PlaybackCommand::Play);
+        render(&mut initial, 4000);
+        let frozen = REVERB_DEFINITION
+            .patch_parameter(
+                editor.project().device(device).unwrap().state(),
+                parameter::FREEZE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: frozen,
+            })
+            .unwrap();
+        let mut held = playback(editor.project(), asset);
+        held.try_inherit_runtime_from(&mut initial).unwrap();
+        render(&mut held, 4000);
+        editor.execute(Command::RemoveDevice(device)).unwrap();
+        let mut removed = playback(editor.project(), asset);
+        removed.try_inherit_runtime_from(&mut held).unwrap();
+        let out = render(&mut removed, 48000);
+        assert!(out.iter().flatten().any(|v| v.abs() > 1e-6));
+        removed.apply(PlaybackCommand::Stop);
+        assert_eq!(energy_for_stop(&render(&mut removed, 127)), 0.0);
+    }
+}
+fn energy_for_stop(frames: &[[f32; 2]]) -> f64 {
+    frames.iter().flatten().map(|v| f64::from(*v).powi(2)).sum()
+}
+#[test]
+fn serial_long_rooms_can_be_removed_within_the_shared_finite_tail_budget() {
+    for on_return in [false, true] {
+        let (mut editor, asset, device) = fixture(on_return);
+        let state = REVERB_DEFINITION
+            .patch_parameter(
+                editor.project().device(device).unwrap().state(),
+                parameter::DECAY,
+                ParameterValue::Float(60.0),
+            )
+            .unwrap();
+        let command = if on_return {
+            Command::InsertReturnDevice {
+                return_track: editor.project().return_tracks()[0].id(),
+                before: None,
+                state,
+            }
+        } else {
+            Command::InsertDevice {
+                track: editor.project().tracks()[0].id(),
+                before: None,
+                state,
+            }
+        };
+        editor.execute(command).unwrap();
+        let mut old = playback(editor.project(), asset);
+        old.apply(PlaybackCommand::Play);
+        render(&mut old, 5000);
+        editor.execute(Command::RemoveDevice(device)).unwrap();
+        let mut next = playback(editor.project(), asset);
+        next.try_inherit_runtime_from(&mut old)
+            .expect("serial finite room tails fit the shared horizon");
+        let output = render(&mut next, 4000);
+        assert!(output.iter().flatten().all(|v| v.is_finite()));
+        next.apply(PlaybackCommand::Stop);
+        assert_eq!(energy_for_stop(&render(&mut next, 127)), 0.0);
+    }
+}

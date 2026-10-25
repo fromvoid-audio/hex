@@ -531,7 +531,7 @@ mod tests {
             .iter()
             .find(|entry| entry.name == "reverb")
             .expect("registered reverb in browser catalog");
-        assert_eq!(reverb.parameters.len(), 2);
+        assert_eq!(reverb.parameters.len(), 33);
         let state = crate::default_native_device_state(reverb.type_id).unwrap();
         assert_eq!(native_device_view(&state).unwrap().name, "reverb");
         let auto_pan = catalog

@@ -1,106 +1,47 @@
-//! Original stereo Schroeder room: four parallel combs and two serial allpasses.
+//! Original functional room reverb: filtered early reflections and an eight-line
+//! feedback diffusion network. Native controls follow the reference workflow;
+//! this is not an assertion of proprietary DSP or sound parity.
 //!
-//! Decay is nominal comb RT60 (0.1–2.5 seconds); fixed diffusion adds a short
-//! onset/decay spread. Dry/wet is a linear amplitude crossfade. No freeze, modes,
-//! modulation or reference-device parity is implied. Version 1 stores exactly
-//! two little-endian f32 values: decay seconds, then wet percent.
+//! The wet network runs at sample_rate / ceil(sample_rate / 48000), with input
+//! averaging and output interpolation; dry stays at host rate. Preparation owns
+//! every allocation. Fixed maximum ring capacities allow all authored parameter
+//! edits to retain history and ramp without callback allocation. Signal values
+//! are bounded to +/-16, recursive storage to +/-32, with a 1e-20 numerical floor.
 //!
-//! The tank runs at sample_rate / ceil(sample_rate / 24000). Box averaging on
-//! input and linear interpolation on output deliberately limit wet bandwidth;
-//! dry audio stays at host rate. Separate L/R delay lengths decorrelate mono
-//! input without discarding stereo. No fixed host buffering latency is added;
-//! acoustic delay is part of the effect. All allocations are control-side.
-//!
-//! History is copied only at the same rate. Authored edits ramp feedback and mix
-//! for 20 ms, preserving in-flight ramps when targets are unchanged. Bypass uses
-//! the host's dry passthrough/private advancement contract. Reset clears history
-//! and installs targets. Host Stop/seek reset the tank; loop wrap continues it.
-//! Removed track/return effects drain under zero input through the host tail
-//! groups; final destruction remains control-side.
-//! Zero input for eight seconds clears the bounded tank, even at maximum decay
-//! (over three nominal RT60s). This deadline includes interpolation and partial
-//! decimation input. Recursive values below 1e-20 are flushed to silence to avoid
-//! denormal processing cost. Host finite-tail and aggregate memory budgets apply.
-use hex_lattice::{
-    NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
-    StereoFrame, StereoMatrix,
-};
+//! Fast/slow/none smoothing means 20 ms/100 ms/one sample. Stop, seek and rate
+//! changes reset; loop wraps continue. Bypass advances private history. Freeze
+//! ramps feedback to unity; flat neutralizes decay shaping, cut suppresses new
+//! excitation. Frozen rooms declare Unbounded tails under the existing host
+//! policy: removed frozen tails persist until Stop, using bounded tail banks
+//! and explicit admission backpressure. Unfrozen rooms hard-clear at their
+//! declared zero-input deadline (including up to 100 ms of copied smoothing). No device-specific host lifecycle is introduced.
+mod runtime;
+mod state;
+use hex_lattice::{NativeDeviceDefinition, StereoMatrix};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
-    ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
+    ParameterDescriptor, ParameterId, ParameterKind, ParameterValue,
 };
-use std::any::Any;
+pub use runtime::{PreparedReverb, RUNTIME_HEAP_ALLOCATIONS, ReverbRuntime, ReverbRuntimeStorage};
+use state::{DESCRIPTORS, Settings, decode, encode, index, value};
+pub use state::{PARAMETER_COUNT, parameter};
 
 pub const REVERB_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.reverb");
-pub const REVERB_STATE_VERSION: u32 = 1;
-pub mod parameter {
-    use hex_lattice_contract::ParameterId;
-    pub const DECAY: ParameterId = ParameterId::from_static(1);
-    pub const DRY_WET: ParameterId = ParameterId::from_static(2);
-}
-const DESCRIPTORS: &[ParameterDescriptor] = &[
-    ParameterDescriptor {
-        id: parameter::DECAY,
-        label: "decay",
-        kind: ParameterKind::Float {
-            min: 0.1,
-            max: 2.5,
-            unit: Some("s"),
-        },
-        default: ParameterValue::Float(1.2),
-        presentation: ParameterPresentation::Logarithmic,
-    },
-    ParameterDescriptor {
-        id: parameter::DRY_WET,
-        label: "dry/wet",
-        kind: ParameterKind::Float {
-            min: 0.0,
-            max: 100.0,
-            unit: Some("%"),
-        },
-        default: ParameterValue::Float(25.0),
-        presentation: ParameterPresentation::Linear,
-    },
-];
-
-fn decode(state: &NativeDeviceState) -> Result<[f32; 2], DeviceContractError> {
-    if state.type_id() != REVERB_TYPE_ID {
-        return Err(DeviceContractError::WrongDeviceType);
-    }
-    if state.state_version() != REVERB_STATE_VERSION {
-        return Err(DeviceContractError::UnsupportedStateVersion);
-    }
-    if state.payload().len() != 8 {
-        return Err(DeviceContractError::MalformedState);
-    }
-    let mut values = [0.0; 2];
-    for (i, value) in values.iter_mut().enumerate() {
-        *value = f32::from_le_bytes(
-            state.payload()[4 * i..4 * i + 4]
-                .try_into()
-                .map_err(|_| DeviceContractError::MalformedState)?,
-        );
-        DESCRIPTORS[i].validate(ParameterValue::Float(*value))?;
-    }
-    Ok(values)
-}
-fn encode(values: [f32; 2]) -> Result<NativeDeviceState, DeviceContractError> {
-    let mut bytes = Vec::with_capacity(8);
-    for (descriptor, value) in DESCRIPTORS.iter().zip(values) {
-        descriptor.validate(ParameterValue::Float(value))?;
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    NativeDeviceState::new(REVERB_TYPE_ID, REVERB_STATE_VERSION, bytes)
-}
-fn index(id: ParameterId) -> Result<usize, DeviceContractError> {
-    DESCRIPTORS
-        .iter()
-        .position(|d| d.id == id)
-        .ok_or(DeviceContractError::UnknownParameter)
-}
-
+pub const REVERB_STATE_VERSION: u32 = 3;
 pub struct ReverbDefinition;
 pub static REVERB_DEFINITION: ReverbDefinition = ReverbDefinition;
+impl ReverbDefinition {
+    /// Concrete original control constructor for native custody. Private fixed
+    /// preparation fields contain no retained asset/provider/host owners.
+    pub fn prepare_owned_room(
+        state: &NativeDeviceState,
+        rate: u32,
+    ) -> Result<PreparedReverb, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        let state = state::migrate(state)?;
+        runtime::PreparedReverb::new(rate, decode(&state)?)
+    }
+}
 impl NativeDeviceMetadata for ReverbDefinition {
     fn type_id(&self) -> DeviceTypeId {
         REVERB_TYPE_ID
@@ -112,38 +53,53 @@ impl NativeDeviceMetadata for ReverbDefinition {
         REVERB_STATE_VERSION
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
-        DESCRIPTORS
+        &DESCRIPTORS
     }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
-        encode([1.2, 25.0])
+        encode(Settings::default_values())
     }
     fn migrate_state(
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        encode(decode(state)?)
+        state::migrate(state)
     }
     fn read_parameter(
         &self,
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        Ok(ParameterValue::Float(decode(state)?[index(id)?]))
+        Ok(value(decode(state)?, index(id)?))
     }
     fn patch_parameter(
         &self,
         state: &NativeDeviceState,
         id: ParameterId,
-        value: ParameterValue,
+        v: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut values = decode(state)?;
+        let mut settings = decode(state)?;
         let i = index(id)?;
-        DESCRIPTORS[i].validate(value)?;
-        let ParameterValue::Float(value) = value else {
-            return Err(DeviceContractError::InvalidParameterValue);
+        DESCRIPTORS[i].validate(v)?;
+        settings.0[i] = state::scalar(v);
+        encode(settings)
+    }
+    fn parameter_enabled(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        let settings = decode(state)?;
+        index(id)?;
+        let gate = match id {
+            parameter::LO_FREQ | parameter::LO_Q => Some(parameter::LO_CUT),
+            parameter::HI_FREQ | parameter::HI_Q => Some(parameter::HI_CUT),
+            parameter::SPIN_AMOUNT | parameter::SPIN_RATE => Some(parameter::SPIN),
+            parameter::HIGH_FREQ | parameter::HIGH_RATIO => Some(parameter::HIGH),
+            parameter::LOW_FREQ | parameter::LOW_RATIO => Some(parameter::LOW),
+            parameter::CHORUS_AMOUNT | parameter::CHORUS_RATE => Some(parameter::CHORUS),
+            _ => None,
         };
-        values[i] = value;
-        encode(values)
+        Ok(gate.is_none_or(|gate| settings.on(gate)))
     }
     fn parameter_semantics_for_state(
         &self,
@@ -156,15 +112,25 @@ impl NativeDeviceMetadata for ReverbDefinition {
             ParameterSmoothing as S, ParameterStepping as T,
         };
         decode(state)?;
-        index(id)?;
+        let i = index(id)?;
+        let (normalization, stepping) = match DESCRIPTORS[i].kind {
+            ParameterKind::Bool => (N::Discrete, T::Boolean),
+            ParameterKind::Choice { .. } => (N::Discrete, T::Choice),
+            ParameterKind::Float { .. } => (
+                if DESCRIPTORS[i].presentation
+                    == hex_lattice_contract::ParameterPresentation::Logarithmic
+                {
+                    N::PositiveLogarithmic
+                } else {
+                    N::Linear
+                },
+                T::Continuous,
+            ),
+        };
         Ok(Some(ParameterSemantics {
             access: A::ReadWrite,
-            normalization: if id == parameter::DECAY {
-                N::PositiveLogarithmic
-            } else {
-                N::Linear
-            },
-            stepping: T::Continuous,
+            normalization,
+            stepping,
             automation: E::Unsupported,
             modulation: M::Unsupported,
             smoothing: S::DeviceManaged,
@@ -191,291 +157,88 @@ impl NativeDeviceDefinition for ReverbDefinition {
         &self,
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
-    ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        if !(8_000..=192_000).contains(&context.sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        let values = decode(state)?;
-        let factor = context.sample_rate.div_ceil(24_000);
-        let rate = f64::from(context.sample_rate) / f64::from(factor);
-        let lengths = std::array::from_fn(|channel| {
-            std::array::from_fn(|i| {
-                let seconds =
-                    [0.0297, 0.0371, 0.0411, 0.0437, 0.005, 0.0017][i] + channel as f64 * 0.00073;
-                (seconds * rate).round().max(1.0) as usize
-            })
-        });
-        let feedback = std::array::from_fn(|channel| {
-            std::array::from_fn(|i| {
-                10.0_f64.powf(-3.0 * lengths[channel][i] as f64 / (rate * f64::from(values[0])))
-                    as f32
-            })
-        });
-        Ok(Some(Box::new(PreparedReverb {
-            sample_rate: context.sample_rate,
-            factor,
-            lengths,
-            feedback,
-            wet: values[1] / 100.0,
-        })))
-    }
-}
-struct PreparedReverb {
-    sample_rate: u32,
-    factor: u32,
-    lengths: [[usize; 6]; 2],
-    feedback: [[f32; 4]; 2],
-    wet: f32,
-}
-impl PreparedNativeProcessor for PreparedReverb {
-    fn runtime_version(&self) -> u32 {
-        1
-    }
-    fn declared_runtime_bytes(&self) -> usize {
-        std::mem::size_of::<ReverbRuntime>()
-            + self.lengths.iter().flatten().sum::<usize>() * std::mem::size_of::<f32>()
-    }
-    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(ReverbRuntime {
-            sample_rate: self.sample_rate,
-            factor: self.factor,
-            lines: std::array::from_fn(|c| {
-                std::array::from_fn(|i| Line {
-                    samples: vec![0.0; self.lengths[c][i]].into_boxed_slice(),
-                    cursor: 0,
-                })
-            }),
-            feedback: self.feedback.map(|row| row.map(Ramp::steady)),
-            wet: Ramp::steady(self.wet),
-            phase: 0,
-            sum: [0.0; 2],
-            previous: [0.0; 2],
-            next: [0.0; 2],
-            silent_frames: 0,
-            active: false,
-        })
-    }
-    fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
-    }
-    fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite {
-            max_tail_frames: u64::from(self.sample_rate) * 8,
-        }
-    }
-}
-struct Line {
-    samples: Box<[f32]>,
-    cursor: usize,
-}
-impl Line {
-    fn tick(&mut self, input: f32, feedback: f32, allpass: bool) -> f32 {
-        let delayed = self.samples[self.cursor];
-        let output = if allpass {
-            delayed - input * feedback
-        } else {
-            delayed
-        };
-        let stored = if allpass {
-            input + output * feedback
-        } else {
-            input + delayed * feedback
-        };
-        self.samples[self.cursor] = if stored.abs() < 1e-20 { 0.0 } else { stored };
-        self.cursor += 1;
-        if self.cursor == self.samples.len() {
-            self.cursor = 0;
-        }
-        output
-    }
-    fn clear(&mut self) {
-        self.samples.fill(0.0);
-        self.cursor = 0;
-    }
-    fn copy(&mut self, source: &Self) {
-        self.samples.copy_from_slice(&source.samples);
-        self.cursor = source.cursor;
-    }
-}
-#[derive(Clone, Copy)]
-struct Ramp {
-    value: f32,
-    target: f32,
-    step: f32,
-    remaining: u32,
-}
-impl Ramp {
-    fn steady(value: f32) -> Self {
-        Self {
-            value,
-            target: value,
-            step: 0.0,
-            remaining: 0,
-        }
-    }
-    fn retarget(&mut self, target: f32, frames: u32) {
-        self.target = target;
-        self.step = (target - self.value) / frames as f32;
-        self.remaining = frames;
-    }
-    fn advance(&mut self) -> f32 {
-        if self.remaining > 0 {
-            self.remaining -= 1;
-            self.value = if self.remaining == 0 {
-                self.target
-            } else {
-                self.value + self.step
-            };
-        }
-        self.value
-    }
-}
-struct ReverbRuntime {
-    sample_rate: u32,
-    factor: u32,
-    lines: [[Line; 6]; 2],
-    feedback: [[Ramp; 4]; 2],
-    wet: Ramp,
-    phase: u32,
-    sum: StereoFrame,
-    previous: StereoFrame,
-    next: StereoFrame,
-    silent_frames: u64,
-    active: bool,
-}
-impl ReverbRuntime {
-    fn clear(&mut self) {
-        for line in self.lines.iter_mut().flatten() {
-            line.clear();
-        }
-        self.phase = 0;
-        self.sum = [0.0; 2];
-        self.previous = [0.0; 2];
-        self.next = [0.0; 2];
-        self.silent_frames = 0;
-        self.active = false;
-    }
-    fn frame(&mut self, frame: &mut StereoFrame) {
-        // Nonfinite audio is silence; extreme finite input is bounded before feedback.
-        let input = frame.map(|v| {
-            if v.is_finite() {
-                v.clamp(-16.0, 16.0)
-            } else {
-                0.0
-            }
-        });
-        let mix = self.wet.advance();
-        if input != [0.0; 2] {
-            self.silent_frames = 0;
-            self.active = true;
-        } else if self.active {
-            self.silent_frames += 1;
-            if self.silent_frames >= u64::from(self.sample_rate) * 8 {
-                self.clear();
-            }
-        }
-        for gain in self.feedback.iter_mut().flatten() {
-            gain.advance();
-        }
-        if self.active {
-            for (sum, value) in self.sum.iter_mut().zip(input) {
-                *sum += value;
-            }
-            self.phase += 1;
-            if self.phase == self.factor {
-                self.phase = 0;
-                self.previous = self.next;
-                for c in 0..2 {
-                    let excitation = self.sum[c] / self.factor as f32;
-                    let mut wet = 0.0;
-                    for i in 0..4 {
-                        wet += self.lines[c][i].tick(excitation, self.feedback[c][i].value, false)
-                            * 0.25;
-                    }
-                    for i in 4..6 {
-                        wet = self.lines[c][i].tick(wet, 0.5, true);
-                    }
-                    self.next[c] = wet;
-                }
-                self.sum = [0.0; 2];
-            }
-        }
-        let fraction = (self.phase + 1) as f32 / self.factor as f32;
-        for c in 0..2 {
-            let wet = self.previous[c] + fraction * (self.next[c] - self.previous[c]);
-            frame[c] = ((1.0 - mix) * input[c] + mix * wet).clamp(-16.0, 16.0);
-        }
-    }
-}
-impl NativeProcessorRuntime for ReverbRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
-        for frame in frames {
-            self.frame(frame);
-        }
-    }
-    fn reset(&mut self) {
-        self.clear();
-        self.wet = Ramp::steady(self.wet.target);
-        for gain in self.feedback.iter_mut().flatten() {
-            *gain = Ramp::steady(gain.target);
-        }
-    }
-    fn is_quiescent(&self) -> bool {
-        !self.active
-    }
-    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|p| p.sample_rate == self.sample_rate)
-    }
-    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        self.can_copy_history_from(previous)
-    }
-    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
-        let Some(p) = previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .filter(|p| p.sample_rate == self.sample_rate)
-        else {
-            return;
-        };
-        for (line, source) in self
-            .lines
-            .iter_mut()
-            .flatten()
-            .zip(p.lines.iter().flatten())
-        {
-            line.copy(source);
-        }
-        let frames = (self.sample_rate / 50).max(1);
-        for (gain, source) in self
-            .feedback
-            .iter_mut()
-            .flatten()
-            .zip(p.feedback.iter().flatten())
-        {
-            let target = gain.target;
-            *gain = *source;
-            if target != source.target {
-                gain.retarget(target, frames);
-            }
-        }
-        let target = self.wet.target;
-        self.wet = p.wet;
-        if target != p.wet.target {
-            self.wet.retarget(target, frames);
-        }
-        self.phase = p.phase;
-        self.sum = p.sum;
-        self.previous = p.previous;
-        self.next = p.next;
-        self.silent_frames = p.silent_frames;
-        self.active = p.active;
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedNativeProcessor>>, DeviceContractError> {
+        Ok(Some(Box::new(runtime::PreparedReverb::new(
+            context.sample_rate,
+            decode(state)?,
+        )?)))
     }
 }
 #[cfg(test)]
 mod tests;
+
+/// Control-side static input response and nominal decay contour, not live audio.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReverbPreview {
+    pub input: [[f32; 2]; 65],
+    pub decay: [[f32; 2]; 65],
+}
+/// The input graph follows the provider's resonant TPT filter laws at the supplied
+/// host rate. The decay graph shows authored low/mid/high RT60 ratios, not a
+/// frequency response or an instantaneous spectrum of the recursive network.
+pub fn preview(
+    state: &NativeDeviceState,
+    sample_rate: u32,
+) -> Result<ReverbPreview, DeviceContractError> {
+    if !(8000..=192000).contains(&sample_rate) {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    let settings = decode(state)?;
+    let rate = sample_rate as f32 / sample_rate.div_ceil(48000) as f32;
+    // Bilinear transform of the same second-order low/high-pass used by the
+    // runtime, evaluated without processing audio or constructing DSP history.
+    let response = |hz: f32, cutoff: f32, q: f32, high: bool| {
+        let g = (std::f32::consts::PI * cutoff.min(rate * 0.45) / rate).tan();
+        let w = (std::f32::consts::PI * hz.min(rate * 0.49) / rate).tan() / g;
+        let denominator = ((1.0 - w * w).powi(2) + (w / q).powi(2)).sqrt();
+        (if high { w * w } else { 1.0 }) / denominator.max(1e-12)
+    };
+    let input = std::array::from_fn(|i| {
+        let x = i as f32 / 64.0;
+        let hz = 20.0 * 1000.0_f32.powf(x);
+        let mut gain = 1.0;
+        if settings.on(parameter::LO_CUT) {
+            gain *= response(
+                hz,
+                settings.get(parameter::LO_FREQ),
+                settings.get(parameter::LO_Q),
+                true,
+            );
+        }
+        if settings.on(parameter::HI_CUT) {
+            gain *= response(
+                hz,
+                settings.get(parameter::HI_FREQ),
+                settings.get(parameter::HI_Q),
+                false,
+            );
+        }
+        [
+            x,
+            ((48.0 + 20.0 * gain.max(1e-6).log10()) / 72.0).clamp(0.0, 1.0),
+        ]
+    });
+    let decay = std::array::from_fn(|i| {
+        let x = i as f32 / 64.0;
+        let hz = 20.0 * 1000.0_f32.powf(x);
+        let low = if settings.on(parameter::LOW) {
+            settings.get(parameter::LOW_RATIO)
+        } else {
+            1.0
+        };
+        let high = if settings.on(parameter::HIGH) {
+            settings.get(parameter::HIGH_RATIO)
+        } else {
+            1.0
+        };
+        let lo = 1.0 / (1.0 + (hz / settings.get(parameter::LOW_FREQ)).powi(2));
+        let hi = 1.0 / (1.0 + (settings.get(parameter::HIGH_FREQ) / hz).powi(2));
+        let ratio = if settings.on(parameter::FREEZE) && settings.on(parameter::FLAT) {
+            1.0
+        } else {
+            low * lo + (1.0 - lo) * ((1.0 - hi) + high * hi)
+        };
+        [x, (ratio / 2.0).clamp(0.0, 1.0)]
+    });
+    Ok(ReverbPreview { input, decay })
+}

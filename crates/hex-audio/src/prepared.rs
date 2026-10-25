@@ -4343,16 +4343,12 @@ mod tests {
                 balance: 0.0,
                 muted: false,
                 soloed: false,
-                devices: state
-                    .as_ref()
-                    .map(|state| DeviceSnapshot {
-                        comparison: None,
-                        id: TRACK_DEVICE_ID,
-                        bypassed: false,
-                        state: state.clone(),
-                    })
-                    .into_iter()
-                    .collect(),
+                devices: vec![DeviceSnapshot {
+                    comparison: None,
+                    id: TRACK_DEVICE_ID,
+                    bypassed: false,
+                    state: make_state(),
+                }],
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
@@ -4381,16 +4377,12 @@ mod tests {
                 name: "saturator return fixture".into(),
                 gain: 0.75,
                 muted: false,
-                devices: state
-                    .as_ref()
-                    .map(|state| DeviceSnapshot {
-                        comparison: None,
-                        id: RETURN_DEVICE_ID,
-                        bypassed: false,
-                        state: state.clone(),
-                    })
-                    .into_iter()
-                    .collect(),
+                devices: vec![DeviceSnapshot {
+                    comparison: None,
+                    id: RETURN_DEVICE_ID,
+                    bypassed: false,
+                    state: make_state(),
+                }],
             }],
             session: SessionSnapshot::default(),
             loop_region: None,
@@ -4628,12 +4620,16 @@ mod tests {
                 balance: 0.0,
                 muted: false,
                 soloed: false,
-                devices: vec![DeviceSnapshot {
-                    comparison: None,
-                    id: TRACK_DEVICE_ID,
-                    bypassed: false,
-                    state: make_state(),
-                }],
+                devices: state
+                    .as_ref()
+                    .map(|state| DeviceSnapshot {
+                        comparison: None,
+                        id: TRACK_DEVICE_ID,
+                        bypassed: false,
+                        state: state.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
@@ -4662,12 +4658,16 @@ mod tests {
                 name: "gate return fixture".into(),
                 gain: 0.75,
                 muted: false,
-                devices: vec![DeviceSnapshot {
-                    comparison: None,
-                    id: RETURN_DEVICE_ID,
-                    bypassed: false,
-                    state: make_state(),
-                }],
+                devices: state
+                    .as_ref()
+                    .map(|state| DeviceSnapshot {
+                        comparison: None,
+                        id: RETURN_DEVICE_ID,
+                        bypassed: false,
+                        state: state.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
             }],
             session: SessionSnapshot::default(),
             loop_region: None,
@@ -5244,9 +5244,15 @@ mod tests {
             ParameterValue::Float(2.5),
         )
         .unwrap();
+        let frozen = hex_engine::patch_native_device_parameter(
+            &changed,
+            ParameterId::from_static(26),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
         let (mut control, mut callback) = channel(48_000).unwrap();
         let mut block = [[0.0; 2]; 127];
-        for state in [state, changed] {
+        for state in [state, changed, frozen] {
             control
                 .publish(native_track_and_return_graph(Some(state)))
                 .unwrap();

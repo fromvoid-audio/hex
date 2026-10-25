@@ -423,14 +423,22 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
-reverb adds a stereo room decay. **decay** sets its nominal decay time from
-0.1 to 2.5 seconds; **dry/wet** blends the original signal with the room from
-0 to 100 percent. on a return, start with dry/wet at 100 percent and adjust the
-track's send level. edits support undo/redo and settings survive save/reopen.
-bypass passes the dry signal while the room keeps running privately. loop wraps
-keep the room continuous; stop and seek clear it. removing a device lets its
-existing tail drain through the host. device-parameter automation lanes are not
-currently offered.
+reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
+use predelay to separate the room from the source; size, decay, diffusion and
+scale shape its space. spin moves the early reflections, while chorus modulates
+the late network. low/high controls shape frequency-dependent decay. reflect and
+diffuse set the two wet components; stereo sets their width. dry/wet blends the
+room with the original. on a return, start at 100 percent wet and use the send.
+
+freeze holds the network. flat removes its decay shaping and cut blocks new
+excitation. stop and seek clear the room; loop wraps continue it. bypass passes
+dry while history advances privately. removing a device drains its old history;
+a removed frozen tail persists until stop. retained tails use bounded host banks;
+a full bank refuses another edit rather than discarding an existing tail. smooth
+sets none, fast or slow parameter transitions; density selects scattering depth.
+all controls use undo/redo and survive save/reopen. device-parameter automation
+lanes are not currently offered. the functional control set does not establish
+sound parity with another application's reverb.
 
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
