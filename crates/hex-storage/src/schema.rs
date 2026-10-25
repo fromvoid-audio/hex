@@ -26,6 +26,7 @@ pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod session_audio_loops;
 pub(crate) mod track_groups;
 pub(crate) mod tuning;
 use crate::StorageError;
@@ -1854,6 +1855,7 @@ impl DocumentV12 {
                         SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
                             hex_project::SessionAudioClipSnapshot {
+                                loop_range: None,
                                 active: true,
                                 flavor: hex_project::ClipFlavor::default(),
                                 gain: hex_project::ClipGain::UNITY,
@@ -2727,6 +2729,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                     SessionContentDtoV12::Audio { clip } => {
                         SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                            loop_range: None,
                             active: true,
                             flavor: hex_project::ClipFlavor::default(),
                             gain: hex_project::ClipGain::UNITY,
