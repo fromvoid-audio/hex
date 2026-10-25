@@ -166,19 +166,15 @@ fn fixture_with_quantum(profile: &str, location: usize, quantum: u16) -> Ordinar
 fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let result = f.control.with_native_effect_definition(
+        let result = crate::plugin_effects::Hosting::prepare_on_control(
+            &f.control,
             if with_native {
                 std::slice::from_ref(&f.binding)
             } else {
                 &[]
             },
-            |definition| {
-                let builtins = hex_devices::native_registry().unwrap();
-                let mut definitions = builtins.definitions().to_vec();
-                definitions.push(definition);
-                let effects = NativeDeviceRegistry::new(&definitions).unwrap();
-                let revision =
-                hex_engine::PreparedRevision::prepare_with_device_resources_and_effect_registry(
+            &mut |effects| {
+                effects.prepare_registered_revision(
                     f.editor.project(),
                     &f.media,
                     Arc::new(hex_engine::SineTable::new()),
@@ -187,16 +183,13 @@ fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
                     &f.resources,
                     1_000_000,
                     &AtomicBool::new(false),
-                    &effects,
                 )
-                .unwrap();
-                Ok(Playback::try_from_prepared_with_device_resources(
-                    Arc::new(revision),
-                    &f.resources,
-                )
-                .unwrap())
             },
-        );
+        )
+        .map(|revision| {
+            Playback::try_from_prepared_with_device_resources(Arc::new(revision), &f.resources)
+                .unwrap()
+        });
         match result {
             Ok(playback) => return playback,
             Err(reason)
