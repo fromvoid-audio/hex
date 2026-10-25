@@ -22,7 +22,10 @@ pub(crate) type DrawOrder = u32;
 
 #[derive(Default)]
 pub(crate) struct Scene {
-    pub(crate) paint_operations: Vec<PaintOperation>,
+    // Only this owner records operations, so finalized entry metadata cannot
+    // survive an append or clear. No external mutable operation access.
+    paint_operations: Vec<PaintOperation>,
+    replay_entry_is_top_level: Vec<bool>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
     pub(crate) shadows: Vec<Shadow>,
@@ -37,6 +40,7 @@ pub(crate) struct Scene {
 impl Scene {
     pub fn clear(&mut self) {
         self.paint_operations.clear();
+        self.replay_entry_is_top_level.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
         self.paths.clear();
@@ -55,13 +59,12 @@ impl Scene {
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
         self.layer_stack.push(order);
-        self.paint_operations
-            .push(PaintOperation::StartLayer(bounds));
+        self.record_operation(PaintOperation::StartLayer(bounds));
     }
 
     pub fn pop_layer(&mut self) {
         self.layer_stack.pop();
-        self.paint_operations.push(PaintOperation::EndLayer);
+        self.record_operation(PaintOperation::EndLayer);
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
@@ -114,8 +117,7 @@ impl Scene {
                 self.surfaces.push(surface.clone());
             }
         }
-        self.paint_operations
-            .push(PaintOperation::Primitive(primitive));
+        self.record_operation(PaintOperation::Primitive(primitive));
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
@@ -136,27 +138,10 @@ impl Scene {
         let Some(operations) = prev_scene.paint_operations.get(range.clone()) else {
             return false;
         };
-        let mut depth = 0_usize;
-        for operation in &prev_scene.paint_operations[..range.start] {
-            match operation {
-                PaintOperation::StartLayer(_) => {
-                    let Some(next) = depth.checked_add(1) else {
-                        return false;
-                    };
-                    depth = next;
-                }
-                PaintOperation::EndLayer => {
-                    let Some(next) = depth.checked_sub(1) else {
-                        return false;
-                    };
-                    depth = next;
-                }
-                PaintOperation::Primitive(_) => {}
-            }
-        }
-        if depth != 0 {
+        if !prev_scene.replay_entry_is_top_level(range.start) {
             return false;
         }
+        let mut depth = 0_usize;
         let mut union = None::<Bounds<ScaledPixels>>;
         let mut min_order = u32::MAX;
         let mut max_order = 0_u32;
@@ -230,10 +215,9 @@ impl Scene {
                         );
                     }
                 }
-                PaintOperation::StartLayer(bounds) => self
-                    .paint_operations
-                    .push(PaintOperation::StartLayer(*bounds)),
-                PaintOperation::EndLayer => self.paint_operations.push(PaintOperation::EndLayer),
+                PaintOperation::StartLayer(bounds) =>
+                    self.record_operation(PaintOperation::StartLayer(*bounds)),
+                PaintOperation::EndLayer => self.record_operation(PaintOperation::EndLayer),
             }
         }
         true
@@ -249,7 +233,51 @@ impl Scene {
         }
     }
 
+    fn record_operation(&mut self, operation: PaintOperation) {
+        self.replay_entry_is_top_level.clear();
+        self.paint_operations.push(operation);
+    }
+
+    fn replay_entry_is_top_level(&self, end: usize) -> bool {
+        if let Some(&top_level) = self.replay_entry_is_top_level.get(end) {
+            return top_level;
+        }
+        // Unfinished scenes retain the original checked prefix scan.
+        let mut depth = 0_usize;
+        for operation in &self.paint_operations[..end] {
+            match operation {
+                PaintOperation::StartLayer(_) => {
+                    let Some(next) = depth.checked_add(1) else {
+                        return false;
+                    };
+                    depth = next;
+                }
+                PaintOperation::EndLayer => {
+                    let Some(next) = depth.checked_sub(1) else {
+                        return false;
+                    };
+                    depth = next;
+                }
+                PaintOperation::Primitive(_) => {}
+            }
+        }
+        depth == 0
+    }
+
     pub fn finish(&mut self) {
+        // One byte per operation boundary, rebuilt once per finalized scene.
+        // Invalid prefixes remain ineligible even if later layers rebalance.
+        self.replay_entry_is_top_level.clear();
+        let mut depth = Some(0_usize);
+        for operation in &self.paint_operations {
+            self.replay_entry_is_top_level.push(depth == Some(0));
+            depth = match operation {
+                PaintOperation::StartLayer(_) => depth.and_then(|value| value.checked_add(1)),
+                PaintOperation::EndLayer => depth.and_then(|value| value.checked_sub(1)),
+                PaintOperation::Primitive(_) => depth,
+            };
+        }
+        self.replay_entry_is_top_level.push(depth == Some(0));
         self.shadows.sort_by_key(|shadow| shadow.order);
         self.quads.sort_by_key(|quad| quad.order);
         self.paths.sort_by_key(|path| path.order);
@@ -1326,7 +1354,105 @@ mod replay_verification {
         (scene, start..end)
     }
 
+    fn verify_entry_prefix_cache() -> Result<(), String> {
+        let area = bounds(0.0, 0.0, 40.0, 40.0, 1.0);
+        let operation = |kind, tag| PaintOperation::Primitive(primitive(kind, tag, area, area));
+        for stream in [
+            vec![],
+            vec![operation(1, 1), operation(2, 2)],
+            vec![
+                PaintOperation::StartLayer(area),
+                operation(1, 1),
+                PaintOperation::StartLayer(area),
+                operation(2, 2),
+                PaintOperation::EndLayer,
+                operation(3, 3),
+                PaintOperation::EndLayer,
+                operation(4, 4),
+            ],
+            vec![
+                PaintOperation::EndLayer,
+                operation(1, 1),
+                PaintOperation::StartLayer(area),
+                PaintOperation::EndLayer,
+            ],
+            vec![PaintOperation::StartLayer(area), operation(1, 1)],
+        ] {
+            let mut unfinished = Scene::default();
+            let mut finished = Scene::default();
+            let duplicate = |operation: &PaintOperation| match operation {
+                PaintOperation::Primitive(value) => PaintOperation::Primitive(value.clone()),
+                PaintOperation::StartLayer(bounds) => PaintOperation::StartLayer(*bounds),
+                PaintOperation::EndLayer => PaintOperation::EndLayer,
+            };
+            for operation in &stream {
+                unfinished.record_operation(duplicate(operation));
+                finished.record_operation(duplicate(operation));
+            }
+            finished.finish();
+            require(
+                finished.replay_entry_is_top_level.len() == stream.len() + 1,
+                "finished entry metadata is incomplete",
+            )?;
+            for start in 0..=stream.len() {
+                require(
+                    finished.replay_entry_is_top_level(start)
+                        == unfinished.replay_entry_is_top_level(start),
+                    "finished entry differs from legacy checked prefix",
+                )?;
+                for end in start..=stream.len() {
+                    let mut fast = Scene::default();
+                    let mut reference = Scene::default();
+                    let actual = fast.try_bulk_replay(start..end, &finished);
+                    let expected = reference.try_bulk_replay(start..end, &unfinished);
+                    require(actual == expected, "finished range admission changed")?;
+                    require(
+                        fingerprint(&fast) == fingerprint(&reference),
+                        "finished range changed replay or refusal state",
+                    )?;
+                    if actual {
+                        equivalent(&mut fast, &mut reference)?;
+                    }
+                }
+            }
+            // Repeated finish, then each public operation recording route must
+            // revoke the old metadata before its source scene can be replayed.
+            finished.finish();
+            finished.push_layer(area);
+            require(
+                finished.replay_entry_is_top_level.is_empty(),
+                "layer append kept stale entry metadata",
+            )?;
+            finished.finish();
+            finished.pop_layer();
+            require(
+                finished.replay_entry_is_top_level.is_empty(),
+                "layer pop kept stale entry metadata",
+            )?;
+            finished.finish();
+            finished.insert_primitive(primitive(1, 9, area, area));
+            require(
+                finished.replay_entry_is_top_level.is_empty(),
+                "primitive append kept stale entry metadata",
+            )?;
+            finished.finish();
+            finished.clear();
+            require(
+                finished.replay_entry_is_top_level.is_empty(),
+                "scene clear kept stale entry metadata",
+            )?;
+            finished.push_layer(area);
+            finished.finish();
+            require(
+                finished.replay_entry_is_top_level(0) && !finished.replay_entry_is_top_level(1),
+                "scene reuse retained old layer eligibility",
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn verify() -> Result<(), String> {
+        verify_entry_prefix_cache()?;
         for scale in [1.0, 2.0] {
             for seed in 1..=12 {
                 let (previous, range) = source(scale, seed);

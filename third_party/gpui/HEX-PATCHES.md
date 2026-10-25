@@ -271,3 +271,20 @@ archive/file hashes and unrelated patch blocks are retained; changed hashes and
 the cumulative patch are regenerated from the verified original archive. Native
 hover selection is checked headlessly; actual cursor appearance remains a user
 interaction acceptance item on the optimized macOS app.
+
+25 October scene replay entry eligibility: a finalized scene records one bool per
+paint-operation boundary proving that the preceding layer stream is valid and
+top-level. Cached subtree reuse reads that immutable entry instead of rescanning
+the entire earlier stream; unfinished scenes retain the checked legacy scan.
+Operation recording is private to Scene and invalidates metadata on every append
+and clear, including bulk layer replay. Finish rebuilds it with checked depth;
+an invalid prefix never becomes eligible again merely through later balancing.
+Contained layers, finite/clipped bounds, painter ties, mixed alpha order, fresh
+path identities and reservation overflow/refusal remain under the original
+checks. No interior mutability, native/unsafe/public API or dependency change.
+The existing root-locked legacy replay oracle also compares finalized versus
+unfinished entry/range admission and checks append/clear/reuse invalidation.
+One byte per boundary plus reusable Vec capacity is additional scene metadata;
+whole navigation timings and peak process RSS, not native presentation, qualify
+performance. Original archive hashes/license and unrelated patch blocks remain;
+only scene source hash/diff change, reapplied to verified originals for review.
