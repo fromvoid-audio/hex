@@ -96,7 +96,11 @@ track and press **g** to group them. select only audio clips or only midi clips.
 hex keeps gaps and refuses a group that would cover unselected material. midi
 clips become one finite midi clip with their played notes and volume curves.
 audio clips become events inside one clip; original files and source processing
-remain retained. grouped audio keeps its source timing at the grouping tempo.
+remain retained. when an existing group has repeats or outer processing, hex
+renders its audible span to one ordinary audio clip. this includes partial repeats
+and gaps, keeps original media, and leaves track effects and routing live.
+rendered grouping supports one track at a time; press escape to cancel preparation.
+grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 

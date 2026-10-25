@@ -594,3 +594,6 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
         }
     }
 }
+
+#[path = "tests/grouping.rs"]
+mod grouping;
