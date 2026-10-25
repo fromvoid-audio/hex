@@ -4,10 +4,10 @@ use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 
 const LIMITER: DeviceTypeId = DeviceTypeId::from_static("hex.limiter");
-const LINK: ParameterId = hex_devices::limiter::parameter::LINK;
-const LOOKAHEAD: ParameterId = hex_devices::limiter::parameter::LOOKAHEAD;
-const ROUTING: ParameterId = hex_devices::limiter::parameter::ROUTING;
-const LINK_MID_SIDE: ParameterId = hex_devices::limiter::parameter::LINK_MID_SIDE;
+const LINK: ParameterId = ParameterId::from_static(5);
+const LOOKAHEAD: ParameterId = ParameterId::from_static(6);
+const ROUTING: ParameterId = ParameterId::from_static(7);
+const LINK_MID_SIDE: ParameterId = ParameterId::from_static(12);
 
 fn run(service: &Service, request: Request) -> Event {
     service.submit(request).expect("submit Limiter request");
@@ -18,7 +18,8 @@ fn insert_bus(service: &Service, state: &ViewState, destination: EffectBusDestin
     run(
         service,
         Request::InsertEffectBusDevice {
-            project_generation: state.project_generation,
+            // This fixture inserts buses before any project replacement.
+            project_generation: 0,
             revision: state.revision,
             destination,
             class: NativeDeviceClass::Effect,

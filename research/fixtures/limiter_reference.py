@@ -44,7 +44,8 @@ def generate(path):
 
 
 def measure(path):
-    raw = path.read_bytes()
+    with path.open('rb') as source:
+        raw = source.read(16 * 1024 * 1024 + 1)
     if len(raw) > 16 * 1024 * 1024 or raw[:4] != b'RIFF' or raw[8:12] != b'WAVE':
         raise ValueError('expected bounded riff wav')
     offset, fmt, pcm = 12, None, None
