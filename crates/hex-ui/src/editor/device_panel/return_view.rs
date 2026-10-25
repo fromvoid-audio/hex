@@ -272,6 +272,8 @@ pub(super) fn render_return_effect(
                 super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.reverb") {
+                super::reverb_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.delay") {
                 super::delay_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
@@ -375,6 +377,7 @@ pub(super) fn render_return_effect(
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
+        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
         Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
         Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,

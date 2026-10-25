@@ -72,6 +72,15 @@ impl AudioCandidateReservationQuote {
             counts.add(Kind::Device, track.devices().len())?;
             counts.add(Kind::Point, track.gain_envelope().len())?;
         }
+        let reverb_count = project
+            .tracks()
+            .iter()
+            .flat_map(|t| t.devices())
+            .chain(project.return_tracks().iter().flat_map(|r| r.devices()))
+            .chain(project.main_devices())
+            .filter(|d| d.state().type_id() == hex_devices::reverb::REVERB_TYPE_ID)
+            .count();
+        counts.add(Kind::ReverbRings, reverb_count)?;
         counts.add(Kind::Device, project.main_devices().len())?;
         for bus in project.return_tracks() {
             counts.add(Kind::Device, bus.devices().len())?;
@@ -191,6 +200,7 @@ impl AudioCandidateReservationQuote {
             (Kind::Return, hex_project::MAX_RETURN_TRACKS),
             (Kind::Clip, hex_project::MAX_CLIPS),
             (Kind::Device, hex_project::MAX_DEVICES),
+            (Kind::ReverbRings, hex_lattice::MAX_STATEFUL_PROCESSORS),
             (Kind::Sampler, hex_project::MAX_TRACKS),
             (Kind::MidiNote, hex_project::MAX_NOTES),
             (Kind::Cell, hex_project::MAX_SESSION_CELLS),
@@ -301,6 +311,7 @@ enum Kind {
     Track,
     Clip,
     Device,
+    ReverbRings,
     Sampler,
     MidiNote,
 }
@@ -338,6 +349,7 @@ impl Counts {
             Kind::Point => (4, 2),
             Kind::Track => (64, 32),
             Kind::Device => (32, 32),
+            Kind::ReverbRings => (2 * hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS, 0),
             Kind::Sampler => (32, 8),
             Kind::MidiNote => (0, 0),
         };

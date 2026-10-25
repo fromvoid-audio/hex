@@ -432,6 +432,69 @@ mod tests {
     }
 
     #[test]
+    fn reverb_track_and_return_identity_routing_and_settings_save_reopen() {
+        use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+        use hex_project::{Command, Created, Editor};
+        let dir = TestDir::new();
+        let path = dir.0.join("reverb.hex");
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "room".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "room return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        let payload = [2.1_f32, 73.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let state =
+            NativeDeviceState::new(DeviceTypeId::from_static("hex.reverb"), 1, payload).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetReturnSend {
+                track,
+                return_track: bus,
+                gain: 0.7,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        save_new(&path, editor.project()).unwrap();
+        assert_eq!(load(&path).unwrap(), *editor.project());
+    }
+
+    #[test]
     fn opaque_auto_pan_state_survives_project_save_and_load() {
         use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
         use hex_project::{Command, Created, DeviceSnapshot, Editor};
