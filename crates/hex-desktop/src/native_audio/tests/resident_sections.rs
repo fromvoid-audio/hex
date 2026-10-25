@@ -516,6 +516,16 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             before: chorus,
         },
         Command::DuplicateArrangementSection(intro),
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: chorus,
+            after: true,
+        },
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: chorus,
+            after: false,
+        },
     ] {
         let before = event.state.project.snapshot();
         let revision = event.state.revision;
@@ -546,6 +556,30 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             )
             .unwrap(),
         );
+        if matches!(command, Command::DuplicateArrangementSectionAt { .. }) {
+            let Some(Created::ArrangementSection(copy)) = event.created else {
+                panic!("destination copy identity");
+            };
+            let marker = event.state.project.arrangement_section(copy).unwrap();
+            let start = event
+                .state
+                .project
+                .tempo_map()
+                .beat_to_frame(marker.start())
+                .unwrap();
+            let mut copied = hex_engine::playback::Playback::try_from_prepared_with_session(
+                Arc::clone(&prepared),
+            )
+            .unwrap();
+            copied.apply(PlaybackCommand::Seek(start));
+            copied.apply(PlaybackCommand::Play);
+            let mut literal = [[0.0; 2]; 64];
+            copied.render(&mut literal).unwrap();
+            assert_eq!(
+                literal, [[0.25; 2]; 64],
+                "copy must read the original intro's PCM, not destination music"
+            );
+        }
         let mut oracle =
             hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
         oracle.apply(PlaybackCommand::Seek(cursor));
@@ -593,7 +627,11 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             &mut h,
             section_request(
                 event.state.revision,
-                Command::DuplicateArrangementSection(intro),
+                if matches!(command, Command::DuplicateArrangementSectionAt { .. }) {
+                    command.clone()
+                } else {
+                    Command::DuplicateArrangementSection(intro)
+                },
             ),
         );
         assert!(refused.error.is_some());

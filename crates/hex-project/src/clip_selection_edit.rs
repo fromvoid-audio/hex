@@ -524,6 +524,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::DuplicateArrangementSectionAt { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
