@@ -4,6 +4,8 @@
 //! media paths to profile its actual rate/state instead of generated fixtures.
 //! The probe never saves or edits that document; omit the override to retain the
 //! original generated workload and its density assertions.
+//! HEX_NAVIGATION_SUPPRESS_WAVEFORMS=1 performs diagnostic arranger waveform
+//! ablation with the same layout/input; it is not a shipped display mode.
 use super::*;
 use crate::editor::navigation_metrics;
 use gpui::{ScrollDelta, ScrollWheelEvent, size};
@@ -216,6 +218,7 @@ struct Observation {
     midi_clips: usize,
     waveform_paints: usize,
     geometry_entries: usize,
+    envelope_points: usize,
 }
 
 fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observation {
@@ -265,6 +268,11 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
         let cache = view.waveform_geometry_cache.borrow();
         result.waveform_paints = cache.painted_waveforms().len();
         result.geometry_entries = cache.entry_count();
+        result.envelope_points = cache
+            .painted_waveforms()
+            .iter()
+            .map(|sample| sample.envelope_points)
+            .sum();
         result
     })
 }
@@ -272,6 +280,15 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
 #[gpui::test]
 #[ignore = "manual optimized pan/zoom framework profile; requires generated fixtures or a project copy"]
 fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
+    let suppression = std::env::var_os("HEX_NAVIGATION_SUPPRESS_WAVEFORMS");
+    assert!(
+        suppression
+            .as_ref()
+            .is_none_or(|value| value == "0" || value == "1"),
+        "waveform ablation must be explicitly 0 or 1"
+    );
+    let suppressed = suppression.is_some_and(|value| value == "1");
+    let _suppression = navigation_metrics::suppress_waveforms(suppressed);
     let smoke = std::env::var_os("HEX_NAVIGATION_PROFILE_SMOKE").is_some_and(|value| value == "1");
     assert!(
         !cfg!(debug_assertions) || smoke,
@@ -282,10 +299,13 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
     let stage_timing =
         std::env::var_os("HEX_NAVIGATION_STAGE_TIMING").is_some_and(|value| value == "1");
     println!(
-        "\nNAV_META,headless_cpu_only=true,noop_text_system=true,native_gpu_present_audio=false,size=1240x760,scale=2,debug_smoke={smoke},stage_timing={stage_timing},warmup={warmup},rounds={rounds},paint_observations_capped=512"
+        "\nNAV_META,headless_cpu_only=true,noop_text_system=true,native_gpu_present_audio=false,size=1240x760,scale=2,debug_smoke={smoke},stage_timing={stage_timing},warmup={warmup},rounds={rounds},paint_observations_capped=512,waveforms_suppressed={suppressed}"
     );
     println!(
         "NAV_CSV,content,tracks,row_mode,density,action,iteration,warmup,event_us,draw_us,arena_clear_us,cpu_total_us,warm_cpu_total_us,viewport_start,viewport_length,visible_tracks,audio_clips,midi_clips,child_builds,waveform_paints,geometry_entries"
+    );
+    println!(
+        "NAV_WAVEFORM_CSV,content,tracks,row_mode,density,action,iteration,warmup,projected_envelope_points"
     );
     if stage_timing {
         println!(
@@ -416,6 +436,21 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         let stages = navigation_metrics::snapshot();
                         navigation_metrics::reset(false);
                         let observation = observe(&editor, &visual);
+                        if suppressed {
+                            assert_eq!(
+                                observation.waveform_paints, 0,
+                                "ablation painted waveforms"
+                            );
+                            assert_eq!(
+                                observation.geometry_entries, 0,
+                                "ablation prepared waveforms"
+                            );
+                        } else if observation.audio_clips > 0 {
+                            assert!(
+                                observation.waveform_paints > 0,
+                                "normal display lost waveforms"
+                            );
+                        }
                         let after = editor.read_with(cx, |view, _| {
                             view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
                         });
@@ -469,6 +504,16 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         warm_stages,
                     ) in rows
                     {
+                        println!(
+                            "NAV_WAVEFORM_CSV,{content},{tracks},{},{density},{action},{iteration},{},{}",
+                            if single_row {
+                                "single_visible"
+                            } else {
+                                "normal"
+                            },
+                            iteration < warmup,
+                            observation.envelope_points,
+                        );
                         println!(
                             "NAV_CSV,{content},{tracks},{},{density},{action},{iteration},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}",
                             if single_row {

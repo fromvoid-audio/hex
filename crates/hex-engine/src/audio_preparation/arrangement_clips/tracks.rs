@@ -404,7 +404,7 @@ impl TrackAssembly {
             r.meter_disposal = Disposal::Unstarted;
             r.chain_disposal = Disposal::Unstarted;
             r.mix = Some(
-                PreparedTrackMix::new(t.gain(), t.balance(), t.muted() || (solo && !t.soloed()))
+                PreparedTrackMix::new(t.gain(), t.balance(), crate::effective_track_mute(t, solo))
                     .map_err(invalid)?,
             );
             r.source_mix = r.mix;
@@ -412,7 +412,7 @@ impl TrackAssembly {
             reserve(&mut r.pairs, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.sends, t.sends().len(), &mut self.growth)?;
             let neutral =
-                PreparedTrackMix::new(1.0, t.balance(), t.muted() || (solo && !t.soloed()))
+                PreparedTrackMix::new(1.0, t.balance(), crate::effective_track_mute(t, solo))
                     .map_err(invalid)?;
             r.gain
                 .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())

@@ -601,6 +601,7 @@ impl Command {
             | Self::BalanceBy { .. }
             | Self::MasterGainBy { .. }
             | Self::ToggleMute(..)
+            | Self::ToggleTracksMute(..)
             | Self::AddMidiTrack { .. }
             | Self::AddScene { .. }
             | Self::InsertScene { .. }

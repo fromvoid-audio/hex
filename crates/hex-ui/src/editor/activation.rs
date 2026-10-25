@@ -15,8 +15,8 @@ pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
 
 impl EditorView {
     /// Device adapters consume their exact-focus keys before this ancestor.
-    /// Header focus wins over retained ranges; otherwise only the current
-    /// workspace's explicit selection is eligible. Nested text/plot/piano focus
+    /// Header focus targets the explicit track selection before retained ranges;
+    /// otherwise only the current workspace's explicit selection is eligible. Nested text/plot/piano focus
     /// and the capture-phase musical keyboard retain their existing authority.
     pub(super) fn activation_key(
         &mut self,
@@ -80,13 +80,16 @@ impl EditorView {
         if let Some(target) = self.focused_header_target(window) {
             return match target {
                 Target::Track(track) => {
+                    let tracks = self.selected_track_ids();
                     if self.selected_track != Some(track)
                         || self.focused_return.is_some()
-                        || state.project.track(track).is_none()
+                        || !tracks.contains(&track)
                     {
                         Err("focused track selection changed".into())
                     } else {
-                        Ok(Some(Command::ToggleMute(track)))
+                        let tracks = hex_project::TrackSelectionIds::new(&tracks)
+                            .map_err(|error| error.to_string())?;
+                        Ok(Some(Command::ToggleTracksMute(tracks)))
                     }
                 }
                 Target::Return(return_track) => state

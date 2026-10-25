@@ -599,7 +599,8 @@ impl AudioPreparationCustody {
             })),
         }
     }
-    /// Build only the closed audio/Utility prepared class. The caller reserves a
+    /// Build only the closed audio/Utility prepared class; registered effects
+    /// use the explicit effect-aware constructor companion. The caller reserves a
     /// persistent bank destination before invoking this route; it remains there
     /// throughout fallible reservation. The final move into this custodian is
     /// nonfallible, followed by the existing persistent caught construction.

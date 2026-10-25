@@ -388,7 +388,11 @@ enum RenderConstruction {
     LinearExport,
     FiniteBounce,
 }
-pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
+/// Finite serial-effect drain admission horizon. Ten minutes admits useful
+/// chains of long-decay rooms without weakening processor-count or byte bounds.
+/// It is a reclamation deadline, not additional per-block work or a transport
+/// delay; quiescence permits earlier release and Stop clears retained histories.
+pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 600;
 
 /// Bounded result for targets canceled because their stable track or clip was
 /// removed by the candidate revision.

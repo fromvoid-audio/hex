@@ -636,14 +636,14 @@ fn compile_project_inner<'a>(
             .into_iter()
             .flatten()
             .collect();
-        let input_muted = track.muted() || (any_soloed && !track.soloed());
+        let input_muted = crate::effective_track_mute(track, any_soloed);
         let shared_source = track
             .source_id()
             .filter(|source| snapshot.source_contributors(*source).count() > 1);
         let muted = if track.receives_source_audio()
             && let Some(source) = shared_source
         {
-            track.muted()
+            (track.muted() && !track.soloed())
                 || (any_soloed
                     && !snapshot
                         .source_contributors(source)

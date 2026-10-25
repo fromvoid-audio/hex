@@ -194,34 +194,56 @@ fn chain_storage<'a>(
             Some(hex_lattice::PreparedProcessorFactory::Foreign(facts)) => Some(*facts),
             _ => None,
         };
-        if (foreign.is_none() && prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID)
+        if (foreign.is_none()
+            && !crate::native_effect_storage::is_closed_type(prepared.device_type))
             || entry.foreign_processor() != foreign
             || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
-        let (primary, scratch) = (entry.primary_payload_bytes(), entry.scratch_payload_bytes());
-        match (primary, scratch, prepared.definition.is_some()) {
-            (None, None, true) if foreign.is_some() => {}
-            (Some(primary), Some(scratch), true) if foreign.is_none() => {
-                if !entry
-                    .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>()
-                {
-                    return Err(AudioStorageError::UnsupportedGraph);
+        if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::reverb::ReverbRuntime>()
+        {
+            for (runtime, object_tag, ring_tag) in [
+                (primary, "runtime-primary", "reverb-primary-ring"),
+                (scratch, "runtime-scratch", "reverb-scratch-ring"),
+            ] {
+                let storage = runtime
+                    .control_storage()
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                l.bytes(
+                    Owner::exclusive(chain),
+                    Location(object_tag, index),
+                    storage.inline_bytes,
+                )?;
+                for (ring, bytes) in storage.heap_bytes.into_iter().enumerate() {
+                    let key = index
+                        .checked_mul(hex_devices::reverb::RUNTIME_HEAP_ALLOCATIONS)
+                        .and_then(|n| n.checked_add(ring))
+                        .ok_or(AudioStorageError::Overflow)?;
+                    l.bytes(Owner::exclusive(chain), Location(ring_tag, key), bytes)?;
                 }
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location("runtime-primary", index),
-                    primary,
-                )?;
-                l.bytes(
-                    Owner::exclusive(chain),
-                    Location("runtime-scratch", index),
-                    scratch,
-                )?;
             }
-            (None, None, false) => {}
-            _ => return Err(AudioStorageError::UnknownStorage),
+        } else {
+            match (
+                crate::native_effect_storage::pair_bytes(&entry)?,
+                prepared.definition.is_some(),
+            ) {
+                (None, true) if foreign.is_some() => {}
+                (Some((primary, scratch)), true) if foreign.is_none() => {
+                    l.bytes(
+                        Owner::exclusive(chain),
+                        Location("runtime-primary", index),
+                        primary,
+                    )?;
+                    l.bytes(
+                        Owner::exclusive(chain),
+                        Location("runtime-scratch", index),
+                        scratch,
+                    )?;
+                }
+                (None, false) => {}
+                _ => return Err(AudioStorageError::UnknownStorage),
+            }
         }
         l.existing_shared(
             &prepared.meter,

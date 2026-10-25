@@ -756,6 +756,9 @@ pub enum Command {
         amount: f32,
     },
     ToggleMute(TrackId),
+    /// Mute every explicit member if any is unmuted; otherwise unmute all.
+    /// Reject stale membership before mutation; one command is one undo step.
+    ToggleTracksMute(crate::TrackSelectionIds),
     AddMidiTrack {
         name: String,
     },
@@ -2065,6 +2068,21 @@ impl Project {
                 }
                 let gain = (self.master_gain + amount).clamp(0.0, 2.0);
                 self.apply(Command::MasterGain { gain })
+            }
+            Command::ToggleTracksMute(tracks) => {
+                let mut muted = false;
+                for id in tracks.ids() {
+                    muted |= !self
+                        .track(*id)
+                        .ok_or(Invalid("track selection no longer exists"))?
+                        .muted;
+                }
+                for track in &mut self.tracks {
+                    if tracks.ids().contains(&track.id()) {
+                        track.muted = muted;
+                    }
+                }
+                Ok(Created::None)
             }
             Command::ToggleMute(track) => {
                 let muted = !self
