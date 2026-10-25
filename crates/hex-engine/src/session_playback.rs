@@ -707,7 +707,7 @@ impl SessionPlayback {
                     .ok_or(Error::Overflow)?,
             )
             .ok_or(Error::Overflow)?;
-        let allowance = Self::linear_export_runtime_allowance(revision)
+        let allowance = Self::interactive_runtime_allowance(revision)
             .map_err(|_| Error::ReservationExceeded)?
             .checked_add(keyboard_bytes)
             .and_then(|n| {
@@ -1251,15 +1251,43 @@ impl SessionPlayback {
         }
         Self::linear_export_runtime_allowance(revision)
     }
+    /// Base runtime/scratch allowance for interactive playback and ordinary
+    /// preroll. Includes full release/handoff banks even when linear export of
+    /// this revision can omit them. Input owners and CURRENT's keyboard pool
+    /// add their separately checked storage to this base.
+    pub fn interactive_runtime_allowance(
+        revision: &PreparedRevision,
+    ) -> Result<usize, SessionPlaybackError> {
+        Self::runtime_allowance_for(revision, RenderConstruction::Interactive)
+    }
+    /// Runtime/scratch allowance only for a fresh linear or finite-bounce owner.
+    /// It cannot fund interactive construction, Console routing or inheritance.
     pub fn linear_export_runtime_allowance(
         revision: &PreparedRevision,
     ) -> Result<usize, SessionPlaybackError> {
-        let bytes = preroll::linear_export_runtime_storage_preflight_bytes(revision)
+        Self::runtime_allowance_for(revision, RenderConstruction::LinearExport)
+    }
+    fn runtime_allowance_for(
+        revision: &PreparedRevision,
+        policy: RenderConstruction,
+    ) -> Result<usize, SessionPlaybackError> {
+        let bytes = match policy {
+            RenderConstruction::Interactive => {
+                preroll::arrangement_runtime_storage_preflight_bytes(revision)
+            }
+            RenderConstruction::LinearExport | RenderConstruction::FiniteBounce => {
+                preroll::linear_export_runtime_storage_preflight_bytes(revision)
+            }
+        };
+        bytes
             .filter(|n| *n <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
             .ok_or(SessionPlaybackError::MutableInstrumentDiagnostic(
-                "sampler export runtime exceeds its independent runtime limit",
-            ))?;
-        Ok(bytes)
+                if policy == RenderConstruction::Interactive {
+                    "interactive runtime exceeds its independent runtime limit"
+                } else {
+                    "sampler export runtime exceeds its independent runtime limit"
+                },
+            ))
     }
     /// Linear owners cannot admit Console commands or predecessor history.
     /// Private CURRENT contains only mutable samplers; an Arrangement without

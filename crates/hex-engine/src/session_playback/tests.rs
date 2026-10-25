@@ -11744,6 +11744,10 @@ fn linear_audio_only_export_omits_unused_banks_preserves_pcm_and_refuses_console
     );
     let interactive_quote =
         super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    assert_eq!(
+        SessionPlayback::interactive_runtime_allowance(&revision).unwrap(),
+        interactive_quote
+    );
     let quote = SessionPlayback::linear_export_runtime_allowance(&revision).unwrap();
     let omitted = 2
         * SESSION_RELEASE_CAPACITY

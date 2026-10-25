@@ -225,8 +225,7 @@ fn resident_sampler_clip_conversion_keeps_main_live_and_refusal_is_atomic() {
         created
     }
     let files = sampler_export::tests::Files::new(false);
-    let (mut session, snapshot) = sampler_export::tests::direct_sampler(&files);
-    drop(snapshot);
+    let mut session = interactive_sampler_session(&files);
     let track = session.project().tracks()[0].id();
     let observed = Arc::new(Observed::default());
     let mut sink = OfflineSink {

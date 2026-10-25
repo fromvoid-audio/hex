@@ -535,7 +535,7 @@ impl Inputs<'_> {
 }
 
 fn runtime_allowance(prepared: &PreparedRevision, extra: usize) -> Result<usize, SessionError> {
-    hex_engine::SessionPlayback::linear_export_runtime_allowance(prepared)
+    hex_engine::SessionPlayback::interactive_runtime_allowance(prepared)
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?
         .checked_add(extra)
         .map(|quote| quote.min(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
@@ -1923,6 +1923,22 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;
+
+    // The private-export fixture's 20M budget intentionally excludes full
+    // interactive release/handoff banks. Resident callers use the same finite
+    // runtime reservation as the other interactive service fixtures.
+    fn interactive_sampler_session(files: &sampler_export::tests::Files) -> Session {
+        let (mut session, export) = sampler_export::tests::direct_sampler(files);
+        drop(export);
+        let storage = &mut session.native_reservation.as_mut().unwrap().storage;
+        storage.max_retained_bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(2)
+            .unwrap();
+        storage.max_construction_peak_bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(3)
+            .unwrap();
+        session
+    }
 
     #[derive(Default)]
     struct Observed {
