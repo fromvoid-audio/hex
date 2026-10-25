@@ -178,7 +178,7 @@ impl NativeWorker {
         mut instance: Prepared,
         spawn: impl FnOnce(
             crate::native_callback_owner::Guard<State>,
-            Arc<AtomicU64>,
+            Arc<Signal>,
         ) -> std::io::Result<SpawnedTransport>,
     ) -> Result<(Self, Callback), NativeWorkerStartFailure> {
         if let Err(cause) = instance.validate_worker_transfer_on_control() {
