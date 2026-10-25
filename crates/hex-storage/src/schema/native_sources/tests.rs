@@ -106,9 +106,16 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        46
+        47
     );
     assert_eq!(decode(&bytes).unwrap(), project);
+    let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    schema46["version"] = 46.into();
+    assert_eq!(
+        decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
+        project,
+        "schema46 retains its in-memory migration path"
+    );
     assert_eq!(project.tracks()[0].devices().len(), 2);
     assert_eq!(project.tracks()[0].instrument_position(), Some(1));
     assert!(
@@ -116,6 +123,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
         "explicit older encoding must not discard sources"
     );
 }
+
 #[test]
 fn schema44_promotes_legacy_instrument_and_preserves_original_bytes() {
     // Frozen output of the preserved schema44 encoder from baseline3a2ff464,

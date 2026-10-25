@@ -1,4 +1,6 @@
 //! Schema45 adds mandatory retained native source definitions to strict schema44.
+//! Schema47 permits retained processing projections on outer musical views and
+//! skips inaudible partial first cycles while retaining their authored cursor.
 //! Schema46 adds an ordered source-binding row for every track and removes inline
 //! instrument copies from its core. Older schemas still migrate through their
 //! frozen codecs; decoding is in-memory only. Private stripped cores compose those
@@ -236,7 +238,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
             .and_then(serde_json::Value::as_u64)
             .is_none_or(|device| !bound_devices.contains(&device))
     });
-    object.insert("version".into(), 46.into());
+    object.insert("version".into(), 47.into());
     object.insert(
         "track_source_bindings".into(),
         serde_json::to_value(bindings)?,
@@ -281,7 +283,19 @@ fn encode45(project: &Project) -> Result<serde_json::Value, StorageError> {
     object.insert("native_sources".into(), serde_json::to_value(sources)?);
     Ok(value)
 }
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+/// Decode the schema46 native-source envelope. The outer storage dispatcher
+/// applies frozen historical-model restrictions after canonical decoding.
+pub(crate) fn decode46(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 46)
+}
+
+/// Schema47 changes only the validity contract; all encoded fields retain their
+/// established strict layout and limits.
+pub(crate) fn decode47(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 47)
+}
+
+fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
     let next_id = value
@@ -291,7 +305,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value.as_object_mut().ok_or(StorageError::Invalid(
         "invalid native source binding envelope",
     ))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(46) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
         return Err(StorageError::Invalid(
             "invalid native source binding schema",
         ));

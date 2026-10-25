@@ -839,22 +839,50 @@ fn invalid_clock_phase_zero_span_and_overflow_refuse_without_altering_original()
         .unwrap()
         .outer_length = AudioDomainClock::Beats(beat(u64::MAX));
     assert!(Project::from_snapshot(invalid).is_err());
-    let mut invalid = e.project().snapshot();
-    let placement = invalid.tracks[0].audio_clips_mut().unwrap()[0]
-        .edit
-        .as_mut()
-        .unwrap()
-        .placement
-        .as_mut()
-        .unwrap();
-    placement.cycle_phase = 2 * Q - 1;
-    assert!(
-        Project::from_snapshot(invalid).is_err(),
-        "positive beat span that quantizes to no first frame must refuse"
-    );
     assert_eq!(
         Project::from_snapshot(original.clone()).unwrap().snapshot(),
         original
+    );
+}
+
+#[test]
+fn musical_repeat_skips_a_subframe_intro_without_changing_its_authored_cursor() {
+    let (e, id) = beat_fixture();
+    let mut snapshot = e.project().snapshot();
+    let clip = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    let placement = clip.edit.as_mut().unwrap().placement.as_mut().unwrap();
+    placement.cycle_phase = 2 * Q - 1;
+
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let canonical = project.clip(id).unwrap();
+    let projection = AudioViewProjection::new(canonical, project.tempo_map()).unwrap();
+    let start = canonical
+        .audio_edit()
+        .unwrap()
+        .live_musical_start()
+        .unwrap();
+    assert_eq!(projection.placement_reference(), i128::from(start.raw()));
+    assert!(projection.has_subframe_intro());
+    assert_eq!(
+        canonical
+            .audio_edit()
+            .unwrap()
+            .placement
+            .unwrap()
+            .cycle_phase,
+        2 * Q - 1
+    );
+    assert!(projection.occurrence_count() > 0);
+    let ranges = projection
+        .root_ranges_for_frames(canonical.start()..canonical.start() + 1)
+        .unwrap();
+    assert_eq!(
+        ranges[0].as_ref().unwrap().start,
+        canonical.audio_edit().unwrap().view_start
+    );
+    assert!(
+        ranges[1].is_none(),
+        "an inaudible intro must not select the previous cycle's tail"
     );
 }
 
