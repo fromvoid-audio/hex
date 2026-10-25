@@ -183,7 +183,12 @@ refuses if that would change unselected material or a tail would overlap it; use
 **command+b** instead. routed inputs, verified streaming and nonzero-latency device
 paths currently refuse. clip bounces keep up to 30 seconds of release after the
 selected span. if the tail is still sounding then, hex cuts it at that limit and
-finishes the bounce. shorter tails finish when silent. source files remain unchanged.
+finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
+counts as silence for tail length. hex retains up to 50 ms after the last louder
+tail sample, without trimming the selected span or changing retained audio. it checks
+the bounded tail for later echoes before trimming, so a quiet gap does not hide a
+repeat. persistent noise can still require rendering the full 30 seconds. source
+files remain unchanged.
 while editing text, numeric values or midi notes, or using the computer midi keyboard,
 these arrange bounce shortcuts do not run.
 
