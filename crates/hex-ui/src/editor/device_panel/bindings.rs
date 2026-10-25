@@ -554,7 +554,7 @@ fn create_parameter_control(
     match (descriptor.kind, value) {
         (ParameterKind::Float { min, max, unit }, ParameterValue::Float(value)) if min < max => {
             let default = match descriptor.default {
-                ParameterValue::Float(default) => f64::from(default),
+                ParameterValue::Float(default) => default,
                 _ => return None,
             };
             let scale = match descriptor.presentation {
@@ -565,9 +565,9 @@ fn create_parameter_control(
                 ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
                 ParameterPresentation::Linear => NumericScale::Linear,
             };
-            let mut spec = NumericSpec::new(
-                f64::from(min),
-                f64::from(max),
+            let mut spec = NumericSpec::new_f32(
+                min,
+                max,
                 default,
                 scale,
                 2,

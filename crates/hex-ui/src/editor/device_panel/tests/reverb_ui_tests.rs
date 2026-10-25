@@ -108,10 +108,7 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
         }
         // Measure formatted glyphs, not only wrappers: fractional high-frequency
         // values and their units must remain readable without horizontal clipping.
-        for (parameter, values) in [
-            (6, [20.0, 17_321.25, 20_000.0]),
-            (33, [f64::from(0.1_f32), 9.99, 10.0]),
-        ] {
+        for (parameter, values) in [(6, [20.0, 17_321.25, 20_000.0]), (33, [0.1, 9.99, 10.0])] {
             let field = visual
                 .debug_bounds(Box::leak(
                     format!("device-{}-parameter-{parameter}-value", device.value())
@@ -211,6 +208,7 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             (2, "70", 70.0),
             (6, "17321.25", 17321.25),
             (33, "9.99", 9.99),
+            (33, "0.1", 0.1),
         ] {
             visual.run_until_parked();
             let parameter = hex_lattice_contract::ParameterId::from_static(parameter);
