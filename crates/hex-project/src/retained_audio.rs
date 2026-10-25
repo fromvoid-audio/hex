@@ -24,7 +24,7 @@ impl Clip {
     pub fn retained_snapshot(&self) -> ClipSnapshot {
         ClipSnapshot {
             active: self.active,
-            name: self.name.clone(),
+            name: self.name.to_string(),
             flavor: self.flavor,
             id: self.id.0,
             asset: self.asset.0,
@@ -54,7 +54,7 @@ impl Project {
             tempo,
             clip: Clip {
                 active: snapshot.active,
-                name: snapshot.name,
+                name: snapshot.name.into(),
                 flavor: snapshot.flavor,
                 id: crate::ClipId(snapshot.id),
                 asset: AssetId(snapshot.asset),

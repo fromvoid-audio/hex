@@ -116,6 +116,44 @@ fn command(f: &Fixture, anchor: ClipId, track: TrackId, position: ClipGroupPosit
     }
 }
 #[test]
+fn audio_name_candidates_preserve_source_history_and_owned_snapshots() {
+    let mut f = fixture();
+    let original = f.editor.project().clone();
+    let original_snapshot = original.snapshot();
+    let rename = |name: &str| Command::RenameClip {
+        clip: f.audio,
+        name: name.into(),
+    };
+    let changed = "Lead Äudio 01";
+    f.editor.execute(rename(changed)).unwrap();
+    assert_eq!(f.editor.project().clip_name(f.audio), Some(changed));
+    assert_eq!(original.clip_name(f.audio), Some("kept audio"));
+    assert_eq!(original.snapshot(), original_snapshot);
+    let renamed = f.editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(renamed.clone()).unwrap(),
+        *f.editor.project()
+    );
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    // A new allocation containing the same label is still a semantic no-op.
+    f.editor.execute(rename("kept audio")).unwrap();
+    assert!(f.editor.can_redo());
+    let refused: Result<(Created, ()), Invalid> =
+        f.editor
+            .execute_prepared_transition(rename("refused label"), |source, candidate| {
+                assert_eq!(source.clip_name(f.audio), Some("kept audio"));
+                assert_eq!(candidate.clip_name(f.audio), Some("refused label"));
+                Err(Invalid("test preparation refusal"))
+            });
+    assert!(refused.is_err());
+    assert_eq!(f.editor.project().snapshot(), original_snapshot);
+    assert!(f.editor.can_redo());
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), renamed);
+    assert_eq!(original.snapshot(), original_snapshot);
+}
+#[test]
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {
     for midi_anchor in [false, true] {
         let mut f = fixture();

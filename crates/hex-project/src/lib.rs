@@ -354,7 +354,9 @@ impl ClipGain {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
     pub(crate) active: bool,
-    pub(crate) name: String,
+    // Immutable authored label shared by private candidates/history. Rename
+    // replaces this value; public snapshots retain their owned String contract.
+    pub(crate) name: Arc<str>,
     pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) asset: AssetId,
