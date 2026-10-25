@@ -1,6 +1,6 @@
 //! Complete selection projection and canonical atomic history; no media/backend fixture.
 use super::*;
-use crate::{ClipFlavor, Command, Editor, MAX_NOTES, NoteId};
+use crate::{ClipFlavor, Command, Editor, MAX_NAME_BYTES, MAX_NOTES, NoteId};
 
 struct Fixture {
     editor: Editor,
