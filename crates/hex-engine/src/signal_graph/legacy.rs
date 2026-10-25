@@ -31,9 +31,6 @@ impl RendererRuntime {
                 let frame = start
                     .checked_add(offset as u64)
                     .ok_or(Invalid("render range overflow"))?;
-                let end = frame
-                    .checked_add(1)
-                    .ok_or(Invalid("render range overflow"))?;
                 let beat = project
                     .tempo_map
                     .as_ref()
@@ -66,16 +63,13 @@ impl RendererRuntime {
                             let track = &project.tracks[index];
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
-                            if let Some(pages) = pages.as_deref_mut() {
-                                track.render_audio_range_with_pages(frame, end, &mut audio, pages);
-                            } else {
-                                track.render_audio_range(frame, end, &mut audio);
-                            }
-                            track.render_instrument_range(
+                            track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
+                            track.render_raw_instrument(
                                 frame,
-                                end,
+                                frame,
                                 &mut generator,
-                                None,
+                                &[],
+                                &[],
                                 volume_timing,
                             )?;
                             let processed = compensation.process_track(
