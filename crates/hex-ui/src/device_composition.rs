@@ -14,6 +14,7 @@ pub(crate) const SATURATOR_FRAME_WIDTH: f32 = 230.0;
 pub(crate) const EQ8_FRAME_WIDTH: f32 = 600.0;
 pub(crate) const DELAY_FRAME_WIDTH: f32 = 500.0;
 pub(crate) const COMPRESSOR_FRAME_WIDTH: f32 = 326.0;
+pub(crate) const OVERDRIVE_FRAME_WIDTH: f32 = 174.0;
 pub(crate) const GATE_FRAME_WIDTH: f32 = 142.0;
 pub(crate) const AUTO_PAN_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const VECTOR_SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;

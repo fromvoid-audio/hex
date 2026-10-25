@@ -19,6 +19,7 @@ pub mod gate;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
+pub mod overdrive;
 pub mod sampler;
 pub mod saturator;
 pub mod tuning_audition;
@@ -49,6 +50,7 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 8] = [
     &compressor::COMPRESSOR_DEFINITION,
     &gate::GATE_DEFINITION,
     &auto_pan::AUTO_PAN_DEFINITION,
+    &overdrive::OVERDRIVE_DEFINITION,
     &delay::DEFINITION,
 ];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [

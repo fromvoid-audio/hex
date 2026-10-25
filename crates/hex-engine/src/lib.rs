@@ -23,6 +23,9 @@ pub use hex_devices::delay;
 pub use hex_devices::eq;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
+pub use hex_devices::overdrive::{
+    OverdriveFilterResponse, filter_response as native_overdrive_filter_response,
+};
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };
