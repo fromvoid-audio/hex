@@ -3021,6 +3021,43 @@ impl Window {
             .insert_primitive(path.scale(scale_factor));
     }
 
+    /// Paint a retained path without copying its unscaled vertex storage.
+    ///
+    /// The borrow ends with this call. A fresh scaled mesh is owned by the next
+    /// frame's scene, with the same current mask, opacity and ordering as
+    /// `paint_path`; no source storage is retained by native graphics.
+    /// This method should only be called during the paint phase.
+    pub fn paint_path_ref(&mut self, path: &Path<Pixels>, color: impl Into<Background>) {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask();
+        let opacity = self.element_opacity();
+        let color: Background = color.into();
+        self.next_frame
+            .scene
+            .insert_primitive(Self::prepare_path_for_paint(
+                path,
+                scale_factor,
+                content_mask,
+                color.opacity(opacity),
+            ));
+    }
+
+    // Value preparation stays separate from frame insertion so the root-locked
+    // scene oracle can compare it with the retained owning paint strategy.
+    pub(crate) fn prepare_path_for_paint(
+        path: &Path<Pixels>,
+        scale_factor: f32,
+        content_mask: ContentMask<Pixels>,
+        color: Background,
+    ) -> Path<ScaledPixels> {
+        let mut scaled = path.scale(scale_factor);
+        scaled.content_mask = content_mask.scale(scale_factor);
+        scaled.color = color;
+        scaled
+    }
+
     /// Paint an underline into the scene for the next frame at the current z-index.
     ///
     /// This method should only be called as part of the paint phase of element drawing.

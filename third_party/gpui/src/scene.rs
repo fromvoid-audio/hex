@@ -1430,6 +1430,90 @@ mod replay_verification {
                 "scaled path clone copied mesh storage",
             )?;
         }
+        // Retained DIP meshes may be owned or shared. Borrowed preparation
+        // must match the original clone/mutate/scale paint contract, including
+        // masks and translucent colors, without modifying retained source data.
+        for shared in [false, true] {
+            let mut source = retained.clone();
+            source.id = PathId(37);
+            source.order = 53;
+            source.content_mask = ContentMask {
+                bounds: Bounds::new(
+                    point(Pixels(-7.25), Pixels(-0.0)),
+                    crate::size(Pixels(19.5), Pixels(13.25)),
+                ),
+            };
+            source.color = rgba(0xdd7711a3).into();
+            if shared {
+                source.vertices = PathVertices::Shared(Arc::new(source.vertices.to_vec()));
+            }
+            let source_before = format!("{source:?}");
+            let vertices_before = bits(&source.vertices, |v| v.0);
+            let mut actual_scene = Scene::default();
+            let mut legacy_scene = Scene::default();
+            for factor in [0.5, 1.0, 1.25, 2.0, 3.0] {
+                for mask in [
+                    ContentMask {
+                        bounds: Bounds::new(
+                            point(Pixels(-0.0), Pixels(-8.5)),
+                            crate::size(Pixels(7.75), Pixels(21.25)),
+                        ),
+                    },
+                    ContentMask {
+                        bounds: Bounds::new(
+                            point(Pixels(2.125), Pixels(1.5)),
+                            crate::size(Pixels(3.25), Pixels(2.75)),
+                        ),
+                    },
+                ] {
+                    for opacity in [0.0, 0.37, 1.0] {
+                        let color: Background = rgba(0x3355aa83).into();
+                        // Independent retained implementation of owning paint:
+                        // overwrite DIP metadata, then scale the complete path.
+                        let mut legacy = source.clone();
+                        legacy.content_mask = mask.clone();
+                        legacy.color = color.opacity(opacity);
+                        let legacy = legacy.scale(factor);
+                        let actual = crate::Window::prepare_path_for_paint(
+                            &source,
+                            factor,
+                            mask.clone(),
+                            color.opacity(opacity),
+                        );
+                        require(
+                            bits(&actual.vertices, |v| v.0) == bits(&legacy.vertices, |v| v.0),
+                            "borrowed paint changed coordinate/ST/per-vertex mask bits",
+                        )?;
+                        require(
+                            format!("{actual:?}") == format!("{legacy:?}"),
+                            "borrowed paint changed path metadata or final mask/color",
+                        )?;
+                        require(
+                            !std::ptr::eq(
+                                source.vertices.as_ptr().cast::<()>(),
+                                actual.vertices.as_ptr().cast::<()>(),
+                            ),
+                            "borrowed paint retained source storage instead of a scaled scene mesh",
+                        )?;
+                        actual_scene.insert_primitive(actual);
+                        legacy_scene.insert_primitive(legacy);
+                    }
+                }
+            }
+            require(
+                source_before == format!("{source:?}")
+                    && bits(&source.vertices, |v| v.0) == vertices_before,
+                "borrowed paint modified the retained source",
+            )?;
+            equivalent(&mut actual_scene, &mut legacy_scene)?;
+            let mut replayed = Scene::default();
+            let mut reference = Scene::default();
+            for _ in 0..2 {
+                replayed.replay(0..actual_scene.len(), &actual_scene);
+                reference.replay_legacy(0..legacy_scene.len(), &legacy_scene);
+            }
+            equivalent(&mut replayed, &mut reference)?;
+        }
         Ok(())
     }
 

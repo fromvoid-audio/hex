@@ -3,7 +3,7 @@
 Published gpui 0.2.2, Apache-2.0; upstream files and LICENSE-APACHE retained.
 See `hex-provenance.json` for verified crates.io archive checksum and original
 file hashes; `hex-patches.diff` records the documented input, cursor, and
-titlebar-control, view-cache epoch, scene replay and explicit grid-literal deltas. Upstream's
+titlebar-control, view-cache epoch, scene replay, retained-path submission and explicit grid-literal deltas. Upstream's
 published VCS metadata includes dirty=true, so the archive checksum, not a
 claim of a clean git commit, identifies this baseline.
 
@@ -16,8 +16,8 @@ AppKit access stays inside GPUI's existing native boundary.
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-explicit grid-literal and bounded accessibility decisions.
-view-cache epoch, scene replay and explicit grid-literal decisions.
+view-cache epoch, scene replay, retained-path submission, explicit grid-literal
+and bounded accessibility decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -294,3 +294,18 @@ can improve the result. No new geometric predicate or placement-path pruning,
 topology, storage, allocation, reservation or painter-order change. The locked
 independent leaf-scan oracle includes higher-child misses, tied maxima and
 already-satisfied queries, retaining numeric union/clear/overflow coverage.
+
+25 October retained-path submission: `Window::paint_path_ref` borrows a DIP
+`Path<Pixels>` only for the call, avoiding the caller's deep unscaled mesh clone.
+It constructs the same fresh scaled Scene-owned mesh with current mask, opacity,
+color and ordering; native graphics never borrow the retained input storage.
+The owning `paint_path` stays unchanged as the reference contract. Shared Hex
+waveform painting uses the borrowed form for envelopes, guides and zero ranges;
+geometry, detail, cache identity and interaction state do not change.
+The narrow implementation lives in `src/window.rs`; the existing root-locked
+`src/scene.rs` verifier compares preparation against owning clone/mutate/scale,
+including coordinate/ST/mask bits, source immutability, Owned/Shared inputs,
+metadata/color/opacity, PathIDs and repeated Scene replay at fractional scales.
+No mutable-construction Arc cost, shader, native backend, unsafe code, resource
+custody or dependency is added. Headless value checks and timing do not establish
+native GPU/presentation or physical audio acceptance.

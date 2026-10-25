@@ -266,11 +266,11 @@ fn regions(emphasis: WaveformEmphasis, colors: WaveformColors) -> [(f64, f64, u3
 fn paint_channels(geometry: &WaveformGeometry, color: u32, centerline: u32, window: &mut Window) {
     for channel in geometry.channels() {
         if let Some(path) = &channel.centerline {
-            window.paint_path(path.clone(), rgb(centerline));
+            window.paint_path_ref(path, rgb(centerline));
         }
-        window.paint_path(channel.envelope.clone(), rgb(color));
+        window.paint_path_ref(&channel.envelope, rgb(color));
         if let Some(path) = &channel.zero_ranges {
-            window.paint_path(path.clone(), rgb(color));
+            window.paint_path_ref(path, rgb(color));
         }
     }
 }
