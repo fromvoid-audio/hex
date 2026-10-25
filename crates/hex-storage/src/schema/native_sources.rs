@@ -1,6 +1,6 @@
 //! Schema45 retains native source definitions; schema46 adds ordered per-track
 //! bindings. Schema47 preserves its frozen receiverless source layout alongside
-//! retained musical audio views. Schema48 adds an explicit nullable receiver to each source and allows
+//! retained musical audio views. Schema49 adds an explicit nullable receiver to each source and allows
 //! multiple tracks to share one instrument instance. Decoding is in-memory only.
 use crate::{Project, StorageError};
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
@@ -18,7 +18,7 @@ struct Source {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Source48 {
+struct Source49 {
     id: u64,
     name: String,
     instrument_index: usize,
@@ -101,7 +101,7 @@ struct Inventory45(#[serde(deserialize_with = "sources45")] Vec<Source>);
 #[derive(Deserialize)]
 struct Inventory46(#[serde(deserialize_with = "sources46")] Vec<Source>);
 #[derive(Deserialize)]
-struct Inventory48(#[serde(deserialize_with = "sources48")] Vec<Source48>);
+struct Inventory49(#[serde(deserialize_with = "sources49")] Vec<Source49>);
 
 fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
 where
@@ -137,7 +137,7 @@ fn sources45<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source>, D::E
 fn sources46<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source>, D::Error> {
     bounded(d, hex_project::MAX_NATIVE_SOURCES)
 }
-fn sources48<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source48>, D::Error> {
+fn sources49<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source49>, D::Error> {
     bounded(d, hex_project::MAX_NATIVE_SOURCES)
 }
 fn bindings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Binding>, D::Error> {
@@ -209,13 +209,14 @@ impl SourceDevice {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::session_audio_loops::refuse_legacy(project)?;
     let mut value = encode46(project)?;
     let snapshot = project.snapshot();
     let sources = snapshot
         .native_sources
         .iter()
         .map(|source| {
-            Ok(Source48 {
+            Ok(Source49 {
                 id: source.id,
                 name: source.name.clone(),
                 instrument_index: source.instrument_index,
@@ -231,7 +232,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     let object = value.as_object_mut().ok_or(StorageError::Invalid(
         "invalid native source binding envelope",
     ))?;
-    object.insert("version".into(), 48.into());
+    object.insert("version".into(), 49.into());
     object.insert("native_sources".into(), serde_json::to_value(sources)?);
     Ok(value)
 }
@@ -305,8 +306,8 @@ pub(crate) fn decode47(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 47)
 }
 
-pub(crate) fn decode48(bytes: &[u8]) -> Result<Project, StorageError> {
-    decode_version(bytes, 48)
+pub(crate) fn decode49(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 49)
 }
 
 pub(crate) fn decode46(bytes: &[u8]) -> Result<Project, StorageError> {
@@ -348,7 +349,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
         .get("native_sources")
         .cloned()
         .ok_or(StorageError::Invalid("native source inventory missing"))?;
-    let sources = if version < 48 {
+    let sources = if version < 49 {
         let Inventory46(sources) = serde_json::from_value(source_value)?;
         sources
             .into_iter()
@@ -363,7 +364,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
             })
             .collect::<Vec<_>>()
     } else {
-        let Inventory48(sources) = serde_json::from_value(source_value)?;
+        let Inventory49(sources) = serde_json::from_value(source_value)?;
         sources
             .into_iter()
             .map(|source| {
@@ -407,7 +408,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                     ));
                 }
                 let contributors = bound_tracks_by_source.entry(source_id).or_default();
-                if version < 48 && !contributors.is_empty() {
+                if version < 49 && !contributors.is_empty() {
                     return Err(StorageError::Invalid(
                         "historical source bindings cannot share native sources",
                     ));
@@ -433,7 +434,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let native_sources = sources
         .into_iter()
         .map(|(id, name, instrument_index, receiver, devices)| {
-            let receiver = if version < 48 {
+            let receiver = if version < 49 {
                 bound_tracks_by_source
                     .get(&id)
                     .and_then(|tracks| tracks.first().copied())

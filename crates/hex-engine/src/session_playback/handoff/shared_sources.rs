@@ -154,6 +154,40 @@ impl SharedSourceHandoff {
     }
 }
 
+/// An unrendered interactive start is an admitted future dispatch, not a DSP
+/// history proof. Carry it only for an unchanged Arrangement contributor.
+pub(super) fn pending_unchanged_source_start(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    track: TrackId,
+    owner: RouteOwner,
+) -> bool {
+    let old = previous.routes.iter().position(|route| route.id == track);
+    let new = candidate
+        .arrangement()
+        .tracks()
+        .iter()
+        .position(|candidate| candidate.canonical_track_id() == Some(track));
+    let same_binding = old.zip(new).is_some_and(|(old, new)| {
+        previous.revision.source_routing().source(old) == candidate.source_routing().source(new)
+    });
+    same_binding
+        && previous.playing
+        && previous.interactive_start_frame == Some(previous.performance_frame)
+        && matches!(owner, RouteOwner::Arrangement)
+        && previous
+            .routes
+            .iter()
+            .position(|route| route.id == track)
+            .and_then(|index| {
+                effective_midi_route(&previous.revision, &previous.routes, index).ok()
+            })
+            .is_some_and(|route| route.owner == owner && route.pending.is_none())
+        && previous
+            .revision
+            .mutable_arrangement_sources_match(candidate, track)
+}
+
 /// A quiescent source may have completed a one-shot while its authored gate
 /// still spans the cut. Exact canonical continuity can suppress that past
 /// occurrence without manufacturing a new DSP dispatch or retaining a voice.

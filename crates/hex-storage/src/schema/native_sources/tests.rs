@@ -106,7 +106,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        48
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -114,6 +114,16 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     for source in schema46["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
+    assert!(
+        schema46
+            .as_object_mut()
+            .unwrap()
+            .remove("session_audio_cycles")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
         project,
@@ -475,7 +485,7 @@ fn current_binding_inventory_is_mandatory_ordered_and_resolves_source_projection
 }
 
 #[test]
-fn schema48_shared_source_roundtrips_and_schema46_migration_is_single_binding_only() {
+fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_only() {
     let project = fixture();
     let mut snapshot = project.snapshot();
     let source_id = snapshot.tracks[0].instrument.as_ref().unwrap().id;
@@ -491,7 +501,7 @@ fn schema48_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
     assert_eq!(
         decode(&encode(&shared).unwrap()).unwrap(),
         shared,
-        "schema48 preserves one source shared by two contributors"
+        "schema49 preserves one source shared by two contributors"
     );
     let mut no_receiver_snapshot = shared.snapshot();
     let shared_source = shared.tracks()[0].source_id().unwrap().value();
@@ -506,6 +516,10 @@ fn schema48_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
 
     let mut old46: serde_json::Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
     old46["version"] = 46.into();
+    old46
+        .as_object_mut()
+        .unwrap()
+        .remove("session_audio_cycles");
     for source in old46["native_sources"].as_array_mut().unwrap() {
         source.as_object_mut().unwrap().remove("receiver");
     }
@@ -731,7 +745,7 @@ fn authentic_schema47_audio_and_source_migration_preserves_complete_state_and_by
         "schema47's frozen source DTO has no receiver field"
     );
     let current: serde_json::Value = serde_json::from_slice(&encode(&migrated).unwrap()).unwrap();
-    assert_eq!(current["version"], 48);
+    assert_eq!(current["version"], 49);
     assert_eq!(current["audio_clip_state"], wire["audio_clip_state"]);
     assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
     assert_eq!(bytes, original.as_slice());

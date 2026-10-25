@@ -130,8 +130,9 @@ impl SessionPlayback {
         )
     }
     /// Ordinary prepared playback retains its existing keyboard and compensated
-    /// render owners. Paused monitoring reads no clip pages; running compensated
-    /// playback uses the same one-frame source quantum as the actual renderer.
+    /// render owners. Paused monitoring reads no clip pages. Pre-Main latency
+    /// and typed routes use the renderer's one-frame source quantum; Main-only
+    /// latency and retained Main history keep upstream source work batched.
     /// Control consumers may inspect the same exact ordinary source quantum.
     /// This pure metadata visit establishes no native page/readiness authority.
     pub fn visit_ordinary_stream_chunk(
@@ -168,7 +169,17 @@ impl SessionPlayback {
             arrangement_frame,
             route_generation,
             frames: if playing {
-                maximum_frames.min(if self.compensation.is_some() { 1 } else { 256 })
+                maximum_frames.min(
+                    if self
+                        .compensation
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing())
+                    {
+                        1
+                    } else {
+                        256
+                    },
+                )
             } else {
                 0
             },
@@ -262,17 +273,31 @@ impl SessionPlayback {
                     }
                     if let PreparedAudioSource::Streamed(source) = clip.source() {
                         if let Some(elapsed) = performance_frame.checked_sub(launch_frame) {
-                            if let Some(start) = clip
-                                .source_start
-                                .checked_add(elapsed)
-                                .filter(|start| *start < clip.source_end)
-                            {
+                            if let Some(start) = clip.source_frame(elapsed) {
                                 let count = window.frames.min(
-                                    usize::try_from(clip.source_end - start).unwrap_or(usize::MAX),
+                                    usize::try_from(clip.playback_end() - start)
+                                        .unwrap_or(usize::MAX),
                                 );
                                 crate::stream_demand::visit_page_range(
                                     source, start, count, visit,
                                 )?;
+                                // Later complete cycles demand the same pages.
+                                // One suffix and one cycle prefix cover the union,
+                                // independent of block length or cycle density.
+                                if let Some(range) = clip.loop_range {
+                                    let rest = (window.frames - count).min(
+                                        usize::try_from(range.end() - range.start())
+                                            .unwrap_or(usize::MAX),
+                                    );
+                                    if rest > 0 {
+                                        crate::stream_demand::visit_page_range(
+                                            source,
+                                            range.start(),
+                                            rest,
+                                            visit,
+                                        )?;
+                                    }
+                                }
                             }
                         }
                     }

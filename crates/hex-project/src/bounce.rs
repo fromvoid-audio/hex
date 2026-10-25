@@ -1,20 +1,33 @@
 //! Arrangement bounce intent and atomic adoption. Render post-device/pre-mixer;
-//! mixer automation, sends, Returns and Main stay live. One output per source
-//! track spans selected clips (including gaps and release tails). Explicit ranges
+//! mixer automation, sends, Returns and Main stay live. One Arrangement output
+//! per source track spans selected clips (including gaps and release tails).
+//! Whole-track bakes additionally print each Console source independently. Explicit ranges
 //! have priority in the UI and adopt exactly their half-open frame interval.
 //! In-place baking removes the baked device chain only when no unselected
 //! Arrangement or Console material can be affected. Whole-track intent covers all
-//! active Arrangement clips on one ordinary root track, independent of selection;
-//! Console material, inactive clips, hierarchy and external routing refuse.
+//! active Arrangement clips and every Console cell on one ordinary root track,
+//! independent of selection. Inactive Arrangement clips, hierarchy and external
+//! routing refuse; Console activation is retained on independently rendered cells.
 //! Clip and whole-track bakes retain the bounded release-tail policy.
 use crate::{ClipId, Command, Created, Invalid, Project, SessionCellContent, TimeRange, TrackId};
 use std::{collections::BTreeSet, path::PathBuf};
 
 pub const MAX_ARRANGEMENT_BOUNCE_FRAMES: u64 = 8_000_000;
+mod console;
+/// Stable output identity; Console cycles refer to the rendered file's frames,
+/// not to the original source clock. Outputs are adopted in captured plan order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BounceSource {
+    Arrangement,
+    Console {
+        clip: ClipId,
+        loop_range: Option<crate::SessionAudioLoop>,
+    },
+}
 #[derive(Clone, Debug)]
 pub enum BounceTarget {
     Clips(Vec<ClipId>),
-    /// Complete Arrangement track bake. Requires in-place adoption; never
+    /// Complete Arrangement/Console track bake. Requires in-place adoption; never
     /// derives its extent from a current clip or time selection.
     Track(TrackId),
     Range(TimeRange),
@@ -40,6 +53,7 @@ impl BounceTarget {
 }
 #[derive(Clone, Debug)]
 pub struct BounceTrack {
+    pub source: BounceSource,
     pub track: TrackId,
     pub start: u64,
     pub end: u64,
@@ -47,6 +61,7 @@ pub struct BounceTrack {
 }
 #[derive(Clone, Debug)]
 pub struct BounceFile {
+    pub source: BounceSource,
     pub track: TrackId,
     pub start: u64,
     pub frames: u64,
@@ -87,12 +102,29 @@ impl Project {
                     "whole-track bounce requires an ordinary ungrouped track",
                 ));
             }
-            if self
-                .session_cells()
-                .iter()
-                .any(|c| c.track() == *id && !matches!(c.content(), SessionCellContent::Stop))
+            // Console cells are printed independently. A shared nonlinear source
+            // cannot isolate those cells from another contributor's authored MIDI.
+            let console = self.session_cells().iter().any(|cell| {
+                cell.track() == *id && !matches!(cell.content(), SessionCellContent::Stop)
+            });
+            if console
+                && track.source_id().is_some_and(|source| {
+                    self.native_source(source)
+                        .is_some_and(|definition| definition.receiver() == Some(*id))
+                        && self.tracks().iter().any(|peer| {
+                            peer.id() != *id
+                                && peer.source_id() == Some(source)
+                                && (!peer.midi_clips().is_empty()
+                                    || self.session_cells().iter().any(|cell| {
+                                        cell.track() == peer.id()
+                                            && matches!(cell.content(), SessionCellContent::Midi(_))
+                                    }))
+                        })
+                })
             {
-                return Err(Invalid("whole-track bounce does not support console clips"));
+                return Err(Invalid(
+                    "cannot independently bounce console cells while another shared-source contributor has midi",
+                ));
             }
             if track.clips().iter().any(|c| !c.active())
                 || track.midi_clips().iter().any(|c| !c.active())
@@ -194,24 +226,28 @@ impl Project {
                 let console = self.session_cells().iter().any(|c| {
                     c.track() == track.id() && !matches!(c.content(), SessionCellContent::Stop)
                 });
-                if unrelated || console {
+                if unrelated || (console && !matches!(target, BounceTarget::Track(_))) {
                     return Err(Invalid(
                         "in-place bounce would change unselected material through baked devices · use command-b",
                     ));
                 }
             }
             result.push(BounceTrack {
+                source: crate::BounceSource::Arrangement,
                 track: track.id(),
                 start,
                 end,
                 clips,
             });
         }
+        if let BounceTarget::Track(track) = target {
+            result.extend(console::plan(self, *track)?);
+        }
         if matches!(target, BounceTarget::Clips(_)) && found != selected.len() {
             return Err(Invalid("bounce clip no longer exists in arrangement"));
         }
         if result.is_empty() {
-            return Err(Invalid("select arrangement material to bounce"));
+            return Err(Invalid("select arrangement or console material to bounce"));
         }
         if !in_place
             && self
@@ -251,7 +287,8 @@ pub(crate) fn commit(
     let mut first = None;
     let mut last = None;
     for (item, file) in plan.into_iter().zip(files) {
-        if file.track != item.track
+        if file.source != item.source
+            || file.track != item.track
             || file.start != item.start
             || file.frames == 0
             || file.frames > MAX_ARRANGEMENT_BOUNCE_FRAMES
@@ -265,6 +302,17 @@ pub(crate) fn commit(
             }
         {
             return Err(Invalid("bounce output differs from captured interval"));
+        }
+        if matches!(item.source, BounceSource::Console { .. }) {
+            if !in_place || !matches!(target, BounceTarget::Track(id) if id == item.track) {
+                return Err(Invalid(
+                    "console bounce requires complete in-place track intent",
+                ));
+            }
+            let clip = console::adopt(project, &item, file)?;
+            first.get_or_insert(clip);
+            last = Some(clip);
+            continue;
         }
         let original = project
             .track(item.track)
@@ -312,20 +360,22 @@ pub(crate) fn commit(
                     return Err(Invalid("audio grouping plan was not resolved"));
                 }
             }
-            if project
-                .track(item.track)
-                .is_some_and(|owner| owner.instrument().is_some())
-            {
-                project.apply(Command::RemoveInstrument { track: item.track })?;
+            if !matches!(target, BounceTarget::Track(_)) {
+                if project
+                    .track(item.track)
+                    .is_some_and(|owner| owner.instrument().is_some())
+                {
+                    project.apply(Command::RemoveInstrument { track: item.track })?;
+                }
+                let owner = project
+                    .tracks
+                    .iter_mut()
+                    .find(|t| t.id == item.track)
+                    .ok_or(Invalid("bounce track changed"))?;
+                owner.devices.clear();
+                owner.instrument = None;
+                owner.instrument_position = None;
             }
-            let owner = project
-                .tracks
-                .iter_mut()
-                .find(|t| t.id == item.track)
-                .ok_or(Invalid("bounce track changed"))?;
-            owner.devices.clear();
-            owner.instrument = None;
-            owner.instrument_position = None;
             item.track
         } else {
             let index = project
@@ -371,6 +421,22 @@ pub(crate) fn commit(
         };
         first.get_or_insert(clip);
         last = Some(clip);
+    }
+    if let BounceTarget::Track(track) = target {
+        if project
+            .track(track)
+            .is_some_and(|owner| owner.instrument().is_some())
+        {
+            project.apply(Command::RemoveInstrument { track })?;
+        }
+        let owner = project
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == track)
+            .ok_or(Invalid("bounce track changed"))?;
+        owner.devices.clear();
+        owner.instrument = None;
+        owner.instrument_position = None;
     }
     match (first, last) {
         (Some(first), Some(last)) => Ok(Created::Clips { first, last }),
@@ -437,6 +503,7 @@ mod tests {
             target: BounceTarget::Clips(vec![clip]),
             in_place: true,
             files: vec![BounceFile {
+                source: BounceSource::Arrangement,
                 track,
                 start: item.start,
                 frames: item.end - item.start,
@@ -500,6 +567,7 @@ mod tests {
             .unwrap();
         let original = editor.project().clone();
         let output = |frames| BounceFile {
+            source: crate::BounceSource::Arrangement,
             track,
             start: 0,
             frames,
@@ -594,13 +662,13 @@ mod tests {
             })
             .unwrap();
         let before = editor.project().clone();
-        assert!(
+        assert_eq!(
             editor
                 .project()
                 .plan_arrangement_bounce(&target, true)
-                .unwrap_err()
-                .to_string()
-                .contains("console clips")
+                .unwrap()
+                .len(),
+            2
         );
         assert!(
             editor
@@ -608,11 +676,40 @@ mod tests {
                     target,
                     in_place: true,
                     files: vec![BounceFile {
+                        source: crate::BounceSource::Arrangement,
                         track,
                         start: 0,
                         frames: 100,
                         path: "bounce.wav".into()
                     }],
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        let plan = editor
+            .project()
+            .plan_arrangement_bounce(&BounceTarget::Track(track), true)
+            .unwrap();
+        let mut files: Vec<_> = plan
+            .iter()
+            .enumerate()
+            .map(|(i, item)| BounceFile {
+                source: item.source,
+                track: item.track,
+                start: item.start,
+                frames: item.end - item.start,
+                path: format!("bounce-{i}.wav").into(),
+            })
+            .collect();
+        // A second output from the same track must still identify its Console
+        // cell; failure after the first private replacement cannot leak edits.
+        files[1].source = BounceSource::Arrangement;
+        assert!(
+            editor
+                .execute(Command::CommitArrangementBounce {
+                    target: BounceTarget::Track(track),
+                    in_place: true,
+                    files
                 })
                 .is_err()
         );

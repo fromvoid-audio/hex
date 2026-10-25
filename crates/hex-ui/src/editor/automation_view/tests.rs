@@ -179,8 +179,10 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     click(&mut visual, audio, false);
     toggle_toolbar(&mut visual);
     visual.run_until_parked();
+    let background_selection =
+        editor.read_with(&visual, |v, _| (v.selected_track, v.selected_clip_ids()));
     let track = editor.read_with(&visual, |v, _| {
-        v.state.as_ref().unwrap().project.tracks()[0].id()
+        v.state.as_ref().unwrap().project.tracks()[1].id()
     });
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
@@ -199,6 +201,12 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
             v.active_clip_drag.is_none()
                 && v.active_trim_drag.is_none()
                 && v.time_selection_gesture.is_none()
+        );
+        assert_eq!(v.selected_track, background_selection.0);
+        assert_eq!(
+            v.selected_clip_ids(),
+            background_selection.1,
+            "foreground automation must retain background clip selection"
         );
         v.gain_lane.draft.unwrap().point
     });
@@ -235,6 +243,8 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
             &[authored]
         );
         assert_eq!(state.revision, revision);
+        assert_eq!(v.selected_track, background_selection.0);
+        assert_eq!(v.selected_clip_ids(), background_selection.1);
     });
     visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);
@@ -425,5 +435,112 @@ fn earlier_completion_cannot_retire_released_gain_preview_and_own_refusal_does(
         let track = v.state.as_ref().unwrap().project.track(track).unwrap();
         assert_eq!(track.name(), "renamed");
         assert!(track.gain_envelope().is_empty());
+    });
+}
+
+#[gpui::test]
+fn a_and_toolbar_share_global_layers_and_visible_mode_indicator(cx: &mut TestAppContext) {
+    let (handle, editor, audio, midi, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // One selected clip, one unselected track: the view belongs to the arranger.
+    click(&mut visual, audio, false);
+    let before = editor.read_with(&visual, |view, _| {
+        (
+            view.state.as_ref().unwrap().project.snapshot(),
+            view.selected_clip_ids(),
+        )
+    });
+    let fills = [audio, midi].map(|clip| {
+        visual
+            .rendered_background(selector("clip-name", clip.value()))
+            .unwrap()
+    });
+    let inactive = visual
+        .rendered_background("automation-view-toggle")
+        .unwrap();
+    visual.simulate_keystrokes("a");
+    visual.run_until_parked();
+    let active = visual
+        .rendered_background("automation-view-toggle")
+        .unwrap();
+    assert_ne!(
+        active, inactive,
+        "automation mode must have a latched surface indicator"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.enabled);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.0);
+        assert_eq!(view.selected_clip_ids(), before.1);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+    for (index, clip) in [audio, midi].into_iter().enumerate() {
+        assert_eq!(
+            visual.rendered_background(selector("clip-name", clip.value())),
+            Some(fills[index].opacity(0.22))
+        );
+    }
+    let tracks = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect::<Vec<_>>()
+    });
+    for track in &tracks {
+        assert!(
+            visual
+                .debug_bounds(selector("arrangement-automation-plot", track.value()))
+                .is_some()
+        );
+    }
+    // A toolbar change must immediately be the state A observes on the next key.
+    toggle_toolbar(&mut visual);
+    visual.simulate_event(gpui::MouseMoveEvent {
+        position: point(px(0.0), px(0.0)),
+        pressed_button: None,
+        modifiers: Modifiers::default(),
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("automation-view-toggle"),
+        Some(inactive)
+    );
+    for track in &tracks {
+        assert!(
+            visual
+                .debug_bounds(selector("arrangement-automation-plot", track.value()))
+                .is_none()
+        );
+    }
+    visual.simulate_keystrokes("a");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("automation-view-toggle"),
+        Some(active)
+    );
+    visual.simulate_keystrokes("a");
+    visual.run_until_parked();
+    for (index, clip) in [audio, midi].into_iter().enumerate() {
+        assert_eq!(
+            visual.rendered_background(selector("clip-name", clip.value())),
+            Some(fills[index])
+        );
+    }
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.automation_view.enabled);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.0);
+        assert_eq!(view.selected_clip_ids(), before.1);
+    });
+    visual.simulate_keystrokes("0");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.automation_view.enabled);
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.clip_active(audio), Some(false));
+        assert_eq!(project.clip_active(midi), Some(true));
     });
 }

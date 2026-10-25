@@ -147,6 +147,20 @@ fn mutable_prefix_shortening(
         .flatten()
 }
 
+/// Restoring an unchanged source beyond its retained prefix authorizes only
+/// suppression of an already-started candidate. Its old runtime keeps the
+/// admitted cutoff; an ended gate is never chased or given a new NoteOn.
+fn mutable_prefix_restoration(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    span: MutableCandidateSpan,
+) -> bool {
+    let (onset, gate, ..) = span.signature.details();
+    candidate
+        .retained_midi_prefix_end(&previous.revision, span.signature.key())
+        .is_some_and(|(prefix_end, _)| onset < prefix_end && gate > prefix_end)
+}
+
 impl SessionPlayback {
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
@@ -1268,6 +1282,11 @@ impl SessionPlayback {
                             != self.revision.source_routing().source(new_index)
                     })
             {
+                if previous.interactive_start_frame == Some(previous.performance_frame) {
+                    // A new binding is not part of the already admitted pending
+                    // cursor chase. Retry after its first render instead.
+                    return Err(SessionPlaybackError::MutableInstrumentChase);
+                }
                 continue;
             }
             let new_route = self
@@ -1377,6 +1396,17 @@ impl SessionPlayback {
                     candidate_owner,
                     RouteOwner::Arrangement | RouteOwner::Session { .. }
                 );
+            let pending_start = source_carried
+                && !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && shared_sources::pending_unchanged_source_start(
+                    previous,
+                    &self.revision,
+                    new_route.id,
+                    candidate_owner,
+                );
             let completed_source = source_carried
                 && shared_sources::completed_unchanged_source(
                     previous,
@@ -1416,6 +1446,13 @@ impl SessionPlayback {
                     )
                 })
                 .flatten();
+                let restoration = !timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && new_route.pending.is_none()
+                    && old_route.is_some_and(|route| route.pending.is_none())
+                    && matches!(candidate_owner, RouteOwner::Arrangement)
+                    && mutable_prefix_restoration(previous, &self.revision, candidate);
                 let same_key =
                     mutable_key_has_live_proof(previous, new_route.id, candidate.signature.key())
                         || previous.suppressions.iter().any(|entry| {
@@ -1433,8 +1470,10 @@ impl SessionPlayback {
                     && exact.is_none()
                     && !carried
                     && shortening.is_none()
+                    && !restoration
                     && !fresh_mutable_install[new_index]
                     && !completed_source
+                    && !pending_start
                     && !(newly_authored_notes[new_index]
                         && previous.revision.newly_authored_mutable_note(
                             &self.revision,
@@ -1444,7 +1483,7 @@ impl SessionPlayback {
                 {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                if same_key && exact.is_none() && !carried && shortening.is_none() {
+                if same_key && exact.is_none() && !carried && shortening.is_none() && !restoration {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
             }
@@ -2146,6 +2185,17 @@ impl SessionPlayback {
                 .get(new_index)
                 .copied()
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let pending_start = source_handoff.handles_new(receiver)
+                && !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && route.pending.is_none()
+                && shared_sources::pending_unchanged_source_start(
+                    previous,
+                    &self.revision,
+                    route.id,
+                    route.owner,
+                );
             let completed_source = source_handoff.handles_new(receiver)
                 && shared_sources::completed_unchanged_source(
                     previous,
@@ -2167,6 +2217,34 @@ impl SessionPlayback {
                 &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
+                if pending_start {
+                    // Preserve the pending collector decision: active gates
+                    // dispatch once; ended gates stay silent. No history exists
+                    // to suppress or manufacture.
+                    continue;
+                }
+                if !timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && route.pending.is_none()
+                    && previous
+                        .routes
+                        .iter()
+                        .any(|old| old.id == route.id && old.pending.is_none())
+                    && matches!(route.owner, RouteOwner::Arrangement)
+                    && candidate.source_frame < source_frame
+                    && mutable_prefix_restoration(previous, &self.revision, candidate)
+                {
+                    add_or_extend_suppression(
+                        &mut self.suppression_scratch,
+                        self.release_capacity,
+                        MidiOccurrenceSuppression::mutable(
+                            candidate.signature,
+                            candidate.end_frame,
+                        ),
+                    )?;
+                    continue;
+                }
                 let shortening = (!timing_changed
                     && old_loop == new_loop
                     && !midi_layout_changed
@@ -3691,6 +3769,7 @@ impl SessionPlayback {
         self.performance_frame = previous.performance_frame;
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
+        self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
         self.monitor_source_releases = previous.monitor_source_releases;
         self.capture_epoch = capture_epoch;

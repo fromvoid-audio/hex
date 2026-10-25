@@ -182,6 +182,7 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
         performance_frame,
         arrangement_frame,
         arrangement_loop_pass,
+        chase_at_start,
         loop_region,
         timing,
     } = context;
@@ -224,7 +225,14 @@ pub(super) fn render_mutable_source_chunk<T: crate::prepared_tempo::MidiTempoBre
                                     && span.start < region.start()
                                     && span.gate_end > region.start()
                             });
-                        let start = if chase { arrangement_frame } else { span.start };
+                        let start_chase = chase_at_start
+                            && span.start < arrangement_frame
+                            && span.gate_end > arrangement_frame;
+                        let start = if chase || start_chase {
+                            arrangement_frame
+                        } else {
+                            span.start
+                        };
                         if start < arrangement_frame {
                             return;
                         }

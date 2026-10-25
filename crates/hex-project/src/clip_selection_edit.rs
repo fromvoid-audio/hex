@@ -443,6 +443,7 @@ impl Command {
                 ClipCommandScope::FocusedSnapshot { clip: *clip }
             }
             Self::EditAudioEvents { clip, .. }
+            | Self::SetSessionAudioClipLoop { clip, .. }
             | Self::SetSessionAudioClipSource { clip, .. }
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }

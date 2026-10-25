@@ -398,10 +398,11 @@ impl Render for EditorView {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
         }
-        if let Some(state) = self.state.as_ref() {
-            if let Some(track) = self.selected_track {
-                self.gain_lane.change_owner(track, &state.project);
-            }
+        if !self.automation_view.enabled
+            && let Some(state) = self.state.as_ref()
+            && let Some(track) = self.selected_track
+        {
+            self.gain_lane.change_owner(track, &state.project);
         }
         self.clip_content_cache
             .reconcile(self.project_generation, self.state.as_ref(), cx);
@@ -839,6 +840,7 @@ impl Render for EditorView {
                 }
                 view.cancel_duplicate_chain();
                 if super::device_panel::cancel_sampler_boundary(view)
+                    | view.cancel_audio_loop_gesture()
                     | view.cancel_loop_rail_gesture()
                     | view.project_spectrum_splitter_event(
                         hex_widgets::SplitterEvent::Cancel(hex_widgets::SplitterCancel::Escape),

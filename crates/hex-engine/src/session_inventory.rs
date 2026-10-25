@@ -176,7 +176,7 @@ pub struct PreparedSessionMidiClip {
     pub work: SessionWorkEnvelope,
 }
 
-/// Prepared frame-anchored Session one-shot retaining resident PCM or a
+/// Prepared frame-anchored Session source retaining its validated cycle and a
 /// generation-validated streamed source binding.
 #[derive(Clone)]
 pub struct PreparedSessionAudioClip {
@@ -190,6 +190,7 @@ pub struct PreparedSessionAudioClip {
     pub asset: AssetId,
     pub source_start: u64,
     pub source_end: u64,
+    pub loop_range: Option<hex_project::SessionAudioLoop>,
     pub(crate) gain: f32,
     source: PreparedAudioSource,
 }
@@ -207,6 +208,21 @@ impl std::fmt::Debug for PreparedSessionAudioClip {
     }
 }
 impl PreparedSessionAudioClip {
+    /// Constant-work source mapping; loops reduce elapsed before addition so a
+    /// long-running cell cannot overflow or walk every intervening cycle.
+    pub(crate) fn source_frame(&self, elapsed: u64) -> Option<u64> {
+        match self.loop_range {
+            Some(range) => range.frame_at(self.source_start, elapsed),
+            None => self
+                .source_start
+                .checked_add(elapsed)
+                .filter(|frame| *frame < self.source_end),
+        }
+    }
+    pub(crate) fn playback_end(&self) -> u64 {
+        self.loop_range.map_or(self.source_end, |range| range.end())
+    }
+
     pub fn source(&self) -> &PreparedAudioSource {
         &self.source
     }
@@ -221,8 +237,8 @@ impl PreparedSessionAudioClip {
             other.active,
             other.track,
             other.asset,
-            other.source_start,
-            other.source_end,
+            other.source_start..other.source_end,
+            other.loop_range,
             &other.source,
         )
     }
@@ -232,15 +248,16 @@ impl PreparedSessionAudioClip {
         active: bool,
         track: TrackId,
         asset: AssetId,
-        source_start: u64,
-        source_end: u64,
+        source_window: std::ops::Range<u64>,
+        loop_range: Option<hex_project::SessionAudioLoop>,
         source: &PreparedAudioSource,
     ) -> bool {
         self.active == active
             && self.track == track
             && self.asset == asset
-            && self.source_start == source_start
-            && self.source_end == source_end
+            && self.source_start == source_window.start
+            && self.source_end == source_window.end
+            && self.loop_range == loop_range
             && match (&self.source, source) {
                 (PreparedAudioSource::Resident(old), PreparedAudioSource::Resident(new)) => {
                     old.shares_pcm_with(new)
@@ -1026,8 +1043,8 @@ impl PreparedSessionInventory {
                                 clip.active(),
                                 cell.track(),
                                 clip.asset(),
-                                clip.source_start(),
-                                clip.source_end(),
+                                clip.source_start()..clip.source_end(),
+                                clip.loop_range(),
                                 &source,
                             )
                         });
@@ -1042,6 +1059,7 @@ impl PreparedSessionInventory {
                         asset: clip.asset(),
                         source_start: clip.source_start(),
                         source_end: clip.source_end(),
+                        loop_range: clip.loop_range(),
                         gain: clip.gain().linear(),
                         source: retained_source,
                     };

@@ -26,6 +26,7 @@ impl SessionPlayback {
             midi_admission,
             periodic_tempo: _,
             anchor: _,
+            interactive_start_frame: _,
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
