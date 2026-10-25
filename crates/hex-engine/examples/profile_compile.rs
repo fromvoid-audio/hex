@@ -5,7 +5,7 @@
 //! audible Return mixing.
 use hex_engine::{Frame, Renderer, compile};
 use hex_project::{
-    AssetSnapshot, ClipSnapshot, Command, Editor, IDENTITY_CONVERSION, Project, Snapshot,
+    AssetSnapshot, ClipSnapshot, Command, Created, Editor, IDENTITY_CONVERSION, Project, Snapshot,
     TrackSnapshot,
 };
 use std::{collections::BTreeMap, error::Error, hint::black_box, path::PathBuf, time::Instant};
