@@ -1,7 +1,7 @@
 //! Recursive, bounded sample discovery. All calls belong on control workers.
 use crate::{
-    DirectoryListing, EntryKind, LibraryEntry, MAX_RETAINED_ENTRIES, compare_entries, is_hidden,
-    is_wav,
+    DirectoryListing, EntryKind, LibraryEntry, MAX_RETAINED_ENTRIES, is_hidden, is_wav,
+    sort_entries,
 };
 use std::{
     collections::BTreeSet,
@@ -86,9 +86,7 @@ impl SampleCatalog {
             };
             entries.extend(extra);
         }
-        entries.sort_by(|left, right| {
-            compare_entries(left, right).then_with(|| left.path.cmp(&right.path))
-        });
+        sort_entries(&mut entries, true);
         entries
     }
 
@@ -153,9 +151,7 @@ pub fn scan_samples(roots: &[PathBuf]) -> CatalogScan {
             &mut result,
         );
     }
-    result.catalog.entries.sort_by(|left, right| {
-        compare_entries(left, right).then_with(|| left.path.cmp(&right.path))
-    });
+    sort_entries(&mut result.catalog.entries, true);
     result
 }
 

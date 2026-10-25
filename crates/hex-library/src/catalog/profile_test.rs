@@ -69,3 +69,55 @@ fn profile_library_queries() {
     }
     println!("library query profile: all exact results checked");
 }
+
+#[test]
+fn cached_order_preserves_legacy_unicode_native_paths_and_stable_ties() {
+    let names = ["kick", "Kick", "ΣΟΣ", "ΣΟς", "İ", "i\u{307}", "", "same"];
+    let mut seed = 0x123456789_u64;
+    for count in [0, 1, 2, 3, 17, 256, 1024] {
+        let mut entries: Vec<_> = (0..count)
+            .map(|i| LibraryEntry {
+                name: names[i % names.len()].to_owned(),
+                path: PathBuf::from(format!("/original/{}/{}", i % 11, i % 19)),
+                kind: [
+                    EntryKind::Directory,
+                    EntryKind::WaveAudio,
+                    EntryKind::Project,
+                ][i % 3],
+            })
+            .collect();
+        #[cfg(unix)]
+        if let Some(e) = entries.first_mut() {
+            use std::os::unix::ffi::OsStringExt;
+            e.path = std::ffi::OsString::from_vec(b"/original/\xff.wav".to_vec()).into();
+        }
+        for _ in 0..16 {
+            for i in (1..count).rev() {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                entries.swap(i, (seed as usize) % (i + 1));
+            }
+            for with_path in [false, true] {
+                let mut expected = entries.clone();
+                expected.sort_by(|a, b| {
+                    let rank = |k| if k == EntryKind::Directory { 0 } else { 1 };
+                    rank(a.kind)
+                        .cmp(&rank(b.kind))
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                        .then_with(|| a.name.cmp(&b.name))
+                        .then_with(|| {
+                            if with_path {
+                                a.path.cmp(&b.path)
+                            } else {
+                                Ordering::Equal
+                            }
+                        })
+                });
+                let mut actual = entries.clone();
+                crate::sort_entries(&mut actual, with_path);
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+}
