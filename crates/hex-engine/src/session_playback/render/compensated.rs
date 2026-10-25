@@ -30,6 +30,7 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::DeviceRuntime)?
             .delays
             .push_transport_stamp(crate::compensation::TransportStamp {
+                tempo_micro_bpm: timing.micro_bpm_at_frame(performance_frame).ok(),
                 performance_frame,
                 transport_is_running: self.playing,
                 arrangement_frame,

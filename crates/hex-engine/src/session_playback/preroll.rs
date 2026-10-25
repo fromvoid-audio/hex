@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const MAX_ARRANGEMENT_PREROLL_FRAMES: u64 = 8_388_608;
 /// Maximum accounted owned runtime storage for the returned candidate.
 /// Shared immutable prepared graph data and allocator bookkeeping are excluded.
-pub const MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES: usize = 192 * 1024 * 1024;
 const PREROLL_BLOCK_FRAMES: usize = 256;
 pub(super) const PREROLL_SCRATCH_BYTES: usize =
     std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>();

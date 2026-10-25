@@ -138,6 +138,20 @@ impl RuntimeOwnership {
             _ => {}
         }
     }
+    pub(super) fn transfer_history_from(&mut self, old: &mut Self) {
+        if let (Self::Owned(new), Self::Owned(previous)) = (&mut *self, &mut *old) {
+            if new.can_inherit_from(previous.as_ref()) {
+                new.transfer_history_from(previous.as_mut());
+            }
+        } else {
+            self.inherit_from(old);
+        }
+    }
+    pub(super) fn begin_output_tail(&mut self) {
+        if let Self::Owned(runtime) = self {
+            runtime.begin_output_tail();
+        }
+    }
     pub(super) fn begin(&mut self) {
         match self {
             Self::Legacy { primary, scratch } => {

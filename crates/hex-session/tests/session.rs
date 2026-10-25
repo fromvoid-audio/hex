@@ -1143,3 +1143,89 @@ fn clip_loop_resize_midi_trimmed_window_reopens_and_exports_the_same_prepared_no
     assert!(session.redo());
     assert_eq!(session.project(), &resized);
 }
+
+#[test]
+fn retained_native_sources_survive_session_history_track_removal_and_media_reopen() {
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    let directory = TempDir::new();
+    let mut session = Session::new(48000, 8, 64).unwrap();
+    let Created::Imported { track, asset, .. } = session
+        .import(prepare(
+            &directory,
+            "retained.wav",
+            48000,
+            &[[8192, -4096]; 8],
+        ))
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let state = hex_project::default_instrument_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    let Created::NativeSource(source) = session
+        .command(Command::CreateNativeSource {
+            name: "retained".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    session.command(Command::RemoveTrack(track)).unwrap();
+    let retained = session.project().native_source(source).unwrap().clone();
+    assert!(session.command(Command::RemoveAsset(asset)).is_err());
+    let saved = directory.path().join("retained.hex");
+    hex_storage::save_new(&saved, session.project()).unwrap();
+    let loaded = hex_storage::load(&saved).unwrap();
+    let pcm =
+        decode_wav_file(directory.path().join("retained.wav"), Limits::new(4096, 64)).unwrap();
+    assert!(
+        Session::from_loaded(loaded.clone(), 8, 64, vec![]).is_err(),
+        "missing media refuses open"
+    );
+    let mut reopened = Session::from_loaded(loaded, 8, 64, vec![(asset, pcm)]).unwrap();
+    assert!(!reopened.can_undo());
+    assert_eq!(reopened.project().native_source(source), Some(&retained));
+    assert!(reopened.project().tracks().is_empty());
+    let graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&graph);
+    renderer.play();
+    let mut output = [[1.0; 2]; 8];
+    renderer.render(&mut output).unwrap();
+    assert_eq!(
+        output, [[0.0; 2]; 8],
+        "unassigned sources must not create implicit playback"
+    );
+    reopened
+        .command(Command::RenameNativeSource {
+            source,
+            name: "renamed".into(),
+        })
+        .unwrap();
+    assert!(reopened.undo());
+    assert_eq!(reopened.project().native_source(source), Some(&retained));
+    assert!(reopened.redo());
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().name(),
+        "renamed"
+    );
+    reopened
+        .command(Command::RemoveNativeSource(source))
+        .unwrap();
+    assert!(reopened.project().native_source(source).is_none());
+    assert!(reopened.undo());
+    assert!(reopened.project().native_source(source).is_some());
+    std::fs::remove_file(directory.path().join("retained.wav")).unwrap();
+    assert!(decode_wav_file(directory.path().join("retained.wav"), Limits::new(4096, 64)).is_err());
+    assert_eq!(
+        hex_storage::load(&saved).unwrap().native_source(source),
+        Some(&retained),
+        "missing files do not erase authored references"
+    );
+}

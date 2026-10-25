@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),

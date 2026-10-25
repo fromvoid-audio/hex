@@ -18,6 +18,8 @@ pub use hex_devices::auto_pan::{
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+/// Native delay metadata and control-side filter display queries.
+pub use hex_devices::delay;
 /// Control-side EQ node editing and its opaque versioned state contract.
 pub use hex_devices::eq;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;

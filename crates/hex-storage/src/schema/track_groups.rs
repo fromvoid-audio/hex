@@ -55,6 +55,11 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
     Ok(())
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    if !project.native_sources().is_empty() {
+        return Err(StorageError::Invalid(
+            "schema44 cannot save retained native sources",
+        ));
+    }
     Project::from_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();
     let mut rows = Vec::new();

@@ -25,6 +25,7 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
+mod delay_panel;
 mod overdrive_panel;
 pub(super) use bindings::effective_parameter_value;
 use bindings::{
@@ -143,6 +144,7 @@ pub(super) struct DevicePanelState {
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
+    delay_panels: HashMap<DeviceId, delay_panel::Panel>,
     eq_spectrum: eq_panel::SpectrumSelection,
     sampler_cursor: sampler_overview::CursorState,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
@@ -473,6 +475,7 @@ pub(super) fn view(
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq_panels.clear();
+        view.device_panel.delay_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -581,6 +584,7 @@ pub(super) fn view(
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq_panels.clear();
+        view.device_panel.delay_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -1138,6 +1142,9 @@ fn retire_transfer_previews(
     panel: &mut DevicePanelState,
     type_of: impl Fn(DeviceId) -> Option<hex_lattice_contract::DeviceTypeId>,
 ) {
+    panel.delay_panels.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.delay"))
+    });
     panel.saturator_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.saturator"))
     });
@@ -1169,6 +1176,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.reverb")) => reverb_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.delay")) => delay_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
@@ -1535,6 +1543,8 @@ fn render_effect(
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.reverb") {
                 reverb_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.delay") {
+                delay_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
                 overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
@@ -1637,6 +1647,7 @@ fn render_effect(
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
         Ok("hex.reverb") => reverb_panel::FRAME_WIDTH,
+        Ok("hex.delay") => delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => auto_pan_panel::FRAME_WIDTH,
         Ok("hex.overdrive") => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
@@ -2319,17 +2330,21 @@ fn render_add_menu(
     instruments: Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>,
 ) -> impl IntoElement {
     let mut menu = div()
-        .occlude()
         .id("device-add-menu")
         .debug_selector(|| "device-add-menu".into())
         .absolute()
         .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .left(px(4.0))
         .right(px(4.0))
-        .h(px(23.0))
+        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .overflow_y_scroll()
+        .occlude()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
+        .py(px(2.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     let mut any_entry = false;
     for (class, entries) in [
@@ -2357,6 +2372,8 @@ fn render_add_menu(
                             .id(ElementId::Name(action_id.clone().into()))
                             .debug_selector(move || action_id.clone())
                             .h(px(18.0))
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
                             .px(px(5.0))
                             .flex()
                             .items_center()
