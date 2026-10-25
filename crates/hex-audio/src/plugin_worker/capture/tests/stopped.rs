@@ -5,7 +5,18 @@ use super::*;
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_worker_quiescence_drains_held_live_capture_before_epoch_return() {
     const NAME: &str = "plugin_worker::capture::tests::stopped::actual_worker_quiescence_drains_held_live_capture_before_epoch_return";
-    if fixture_child(71, NAME) {
+    quiescence_capture_case(NAME, false);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_worker_consuming_quiescence_drains_held_capture_before_root_epoch_return() {
+    const NAME: &str = "plugin_worker::capture::tests::stopped::actual_worker_consuming_quiescence_drains_held_capture_before_root_epoch_return";
+    quiescence_capture_case(NAME, true);
+}
+
+fn quiescence_capture_case(name: &str, consume: bool) {
+    if fixture_child(71, name) {
         return;
     }
     let instance = original_instance();
@@ -18,14 +29,36 @@ fn actual_worker_quiescence_drains_held_live_capture_before_epoch_return() {
         owner.poll_state_capture_on_control(&old).unwrap(),
         NativeWorkerCaptureProgress::Failed
     ));
+    // The original transport must have returned while the actual SDK capture
+    // is still held. Releasing first could let the worker finish capture and
+    // hide an entry point that fails to drain before stopping the instance.
+    let until = Instant::now() + Duration::from_secs(3);
+    while owner
+        .reaper
+        .join
+        .as_ref()
+        .is_some_and(|join| !join.is_finished())
+    {
+        assert!(Instant::now() < until, "original transport terminal");
+        thread::sleep(Duration::from_millis(1));
+    }
     fs::write(
         PathBuf::from(std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap()),
         b"release",
     )
     .unwrap();
-    let quiescent = owner.quiesce_on_control().unwrap();
+    let quiescent = if consume {
+        owner
+            .into_quiescent_on_control(callback)
+            .unwrap_or_else(|failure| {
+                panic!("root epoch quiescence: {}", failure.finish_on_control())
+            })
+    } else {
+        let quiescent = owner.quiesce_on_control().unwrap();
+        assert!(owner.owns_callback(&callback));
+        quiescent
+    };
     assert_eq!(quiescent.child_id_on_control(), child);
-    assert!(owner.owns_callback(&callback));
     assert!(quiescent.retire_on_control().unwrap().status.success());
 }
 

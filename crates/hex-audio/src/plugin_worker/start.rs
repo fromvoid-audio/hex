@@ -116,6 +116,8 @@ impl NativeWorker {
     /// carrier returned. Success drops old queues on control and returns the
     /// same quiescent child. Failure keeps the actual old pair and native lease
     /// in the existing refusal packet until independently observed disposal.
+    /// An admitted live capture reaches its real terminal before SDK quiescence,
+    /// including when transport revocation has already refused its caller token.
     #[allow(clippy::result_large_err)]
     pub(crate) fn into_quiescent_on_control(
         mut self,
@@ -132,6 +134,12 @@ impl NativeWorker {
         };
         let mut native = None;
         if let Some(state) = self.reaper.worker.as_mut() {
+            if cause.is_none()
+                && state.native_error.is_none()
+                && let Err(error) = state.drain_capture_before_quiescence(&self.reaper.completed)
+            {
+                state.native_error = Some(error);
+            }
             // Preserve the actual native error ahead of the transport summary.
             if let Some(error) = state.native_error.take() {
                 cause = Some(error);
