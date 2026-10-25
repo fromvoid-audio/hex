@@ -3,6 +3,70 @@ use super::*;
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_stopped_unused_endpoint_returns_before_a_fresh_source_can_install() {
+    let _serial = serial();
+    let mut f = fixture("processing");
+    let original = f.binding;
+    // Preparation has installed its actual endpoint, but no canonical graph
+    // uses it yet. Stop/cancellation can win at this application handoff.
+    f.control.stop();
+    allocation_free(|| {
+        f.data
+            .owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block())
+    });
+    assert!(!f.control.status.playing.load(Acquire));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !f.control.retire_native_source_preparation(original) {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let old = loop {
+        allocation_free(|| {
+            f.data
+                .owner_mut()
+                .unwrap()
+                .run(|callback, _| callback.begin_block())
+        });
+        f.control.reclaim();
+        if let Some(returned) = f.control.recover_native_source_preparation(original) {
+            break returned;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "actual unused endpoint and source return"
+        );
+        std::thread::yield_now();
+    };
+    assert!(
+        matches!(old.disposal, native::PreparationDisposal::Reaped(retired) if retired.status.success())
+    );
+    f.binding = source_for_fixture(
+        &mut f.control,
+        ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 2).unwrap(),
+        "processing",
+    );
+    assert_ne!(f.binding, original);
+    f.control.publish_native_source_endpoint(f.binding).unwrap();
+    let mut installed = false;
+    allocation_free(|| {
+        f.data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            installed = callback.has_native_source_endpoints();
+        })
+    });
+    // Dispose real owners even on the pre-fix failure; do not strand the
+    // singleton native lifecycle lane or pretend a queued endpoint was ACKed.
+    dispose(f);
+    assert!(
+        installed,
+        "a returned unused revoked cohort permanently refused a fresh original source"
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_ordinary_native_graph_references_survive_full_returns_and_queued_shutdown() {
     let _serial = serial();
     let mut f = fixture("processing");

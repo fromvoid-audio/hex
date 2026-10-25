@@ -27,6 +27,9 @@ const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
 struct EndpointSignal {
     requested: AtomicBool,
+    // Written only by actual callback installation/return. Queue admission is
+    // not an endpoint ACK and this observation grants no graph admission.
+    installed: AtomicBool,
     // Published by the owning callback before a predecessor graph can return.
     // An ordinary successor can still own that source in an inherited tail.
     runtime_required: AtomicBool,
@@ -35,6 +38,7 @@ impl EndpointSignal {
     fn new() -> Self {
         Self {
             requested: AtomicBool::new(false),
+            installed: AtomicBool::new(false),
             runtime_required: AtomicBool::new(false),
         }
     }
@@ -832,6 +836,24 @@ impl CandidateRoot {
         binding: Binding,
     ) -> Option<NativeSourcePreparationProgress> {
         self.0.eligible.native_source_progress(binding)
+    }
+    pub(crate) fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
+        let bank = self.0.eligible.bank.try_lock().ok()?;
+        let slot = bank.sources.slots.get(bank.sources.index(binding)?)?;
+        if bank.closing
+            || slot.phase != Phase::Accepted
+            || slot.retiring
+            || slot.cancellation_requested
+        {
+            return None;
+        }
+        Some(
+            slot.endpoint_loaned
+                && slot
+                    .endpoint_return
+                    .as_ref()
+                    .is_some_and(|signal| signal.installed.load(Ordering::Acquire)),
+        )
     }
     pub(crate) fn retire_native_source_preparation(&self, binding: Binding) -> bool {
         let accepted = self.0.eligible.retire_native_source(binding);

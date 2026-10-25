@@ -31,8 +31,9 @@ pub(crate) struct NativeEndpointBank {
     routing: [usize; MAX_SOURCES],
     routing_len: usize,
     cycle: NativeEffectCycle,
-    // Set only by an exact stopped active-runtime return. Consumed by the
-    // first live constructor-paired endpoint after every old endpoint returned.
+    // An exact stopped-runtime return or the last actual requested endpoint
+    // return establishes the empty frontier. Consumed only by the first fresh
+    // live constructor-paired endpoint after every old endpoint has returned.
     epoch_returned: bool,
     ordinary_requirements: bool,
 }
@@ -173,6 +174,9 @@ impl NativeEndpointBank {
         }
         self.epoch_returned = false;
         self.entries[index] = Some(endpoint);
+        if let Some(endpoint) = self.entries[index].as_ref() {
+            endpoint.0.signal.installed.store(true, Ordering::Release);
+        }
         Ok(())
     }
     pub(crate) fn take_requested(&mut self, index: usize) -> Option<NativeEndpointEnvelope> {
@@ -190,7 +194,19 @@ impl NativeEndpointBank {
             self.routing
                 .copy_within(position + 1..self.routing_len, position);
             self.routing_len -= 1;
-            entry.take()
+            if let Some(endpoint) = entry.as_ref() {
+                endpoint.0.signal.installed.store(false, Ordering::Release);
+            }
+            let returned = entry.take();
+            if self.routing_len == 0 && self.cycle.revoked() {
+                // Stop can win after endpoint installation but before any
+                // graph uses the cohort. Requests come from the exact stopped
+                // runtime return or Root's unreferenced-source retirement.
+                // Their last unique callback return is the empty frontier;
+                // installation still requires a fresh live original pair.
+                self.epoch_returned = true;
+            }
+            returned
         } else {
             None
         }
@@ -225,6 +241,9 @@ impl NativeEndpointBank {
             self.reject_rendering();
         }
         for (source, target) in self.entries.iter_mut().zip(destination) {
+            if let Some(endpoint) = source.as_ref() {
+                endpoint.0.signal.installed.store(false, Ordering::Release);
+            }
             *target = source.take();
         }
         self.routing_len = 0;

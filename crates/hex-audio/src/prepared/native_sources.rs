@@ -14,6 +14,18 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
+    /// Nonblocking observation of this original endpoint's actual callback
+    /// installation, independent of queue admission. None includes a stale,
+    /// retiring/closed source or control contention. True grants neither graph
+    /// application nor transport readiness: normal publication still validates
+    /// the actual source/pair, including any later Stop or refusal.
+    pub fn native_source_endpoint_installed(&self, binding: Binding) -> Option<bool> {
+        if self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root
+            .native_source_endpoint_installed(binding)
+    }
     /// Exclude transport/publication while the callback acknowledges the exact
     /// current native runtime after the admitted command prefix. This witness
     /// grants no source ownership and does not acknowledge graph/endpoint return.

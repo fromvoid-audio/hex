@@ -600,12 +600,43 @@ impl PreparedRevision {
         max_scan_frames: u64,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+            project,
+            sources,
+            expected_generation,
+            sine_table,
+            previous_session,
+            transforms,
+            resources,
+            max_scan_frames,
+            cancel,
+            &effects,
+        )
+    }
+
+    /// Same mixed-file/resource compiler with host-borrowed effect facts.
+    /// Original file catalogs, sampler leases and all input validation remain
+    /// required. Registry facts confer no native source, page or publication
+    /// custody; the host must retain the actual matching native instances.
+    #[allow(clippy::too_many_arguments)] // Complete existing mixed inputs plus borrowed effect definitions.
+    pub fn prepare_with_prepared_audio_sources_device_resources_and_effect_registry(
+        project: &Project,
+        sources: &BTreeMap<AssetId, PreparedAudioSource>,
+        expected_generation: u64,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
         if expected_generation == 0 {
             return Err(Invalid("stream source generation must be positive"));
         }
         resources.validate_project(project)?;
-        let effects = hex_devices::native_registry()
-            .map_err(|_| Invalid("invalid built-in native device registry"))?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
         let preparation = crate::native_device_resources::CompilerDeviceResources::new(
@@ -618,7 +649,7 @@ impl PreparedRevision {
             crate::compile::SourceBank::Mixed(sources, expected_generation),
             sine_table,
             previous_session,
-            &effects,
+            effects,
             &instruments,
             transforms,
             Some(&preparation),

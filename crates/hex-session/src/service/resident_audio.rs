@@ -197,34 +197,47 @@ impl Inputs<'_> {
             Some(ResidentFileSet::capture(input, metadata)?)
         };
 
-        let prepared =
+        let prepare = |effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>| {
             crate::prepare_with_waveforms_using(project, media, transforms, waveforms, || {
-                if let Some(sources) = file_sources.as_ref() {
-                    media.prepare_with_device_resources_and_catalog(
-                        project,
-                        table,
-                        self.current.map(|s| s.prepared.session().as_ref()),
-                        transforms,
-                        &resources,
-                        work,
-                        self.shutdown,
-                        Some((
+                media.prepare_with_device_resources_and_catalog(
+                    project,
+                    Arc::clone(&table),
+                    self.current.map(|s| s.prepared.session().as_ref()),
+                    transforms,
+                    &resources,
+                    work,
+                    self.shutdown,
+                    file_sources.as_ref().map(|sources| {
+                        (
                             sources.metadata().catalog_generation(),
                             sources.metadata().sources(),
-                        )),
-                    )
-                } else {
-                    media.prepare_with_device_resources(
-                        project,
-                        table,
-                        self.current.map(|s| s.prepared.session().as_ref()),
-                        transforms,
-                        &resources,
-                        work,
-                        self.shutdown,
-                    )
+                        )
+                    }),
+                    effects,
+                )
+            })
+        };
+        let mut invoked = false;
+        let hosted = sink
+            .prepare_resident_effects(project, &mut |effects| {
+                if invoked {
+                    return Err(hex_engine::Invalid(
+                        "host effect compiler was invoked more than once",
+                    ));
                 }
-            })?;
+                invoked = true;
+                prepare(Some(effects))
+            })
+            .map_err(SessionError::NativeAudio)?;
+        let prepared = match (hosted, invoked) {
+            (Some(prepared), true) => prepared,
+            (None, false) => prepare(None)?,
+            _ => {
+                return Err(SessionError::Invalid(
+                    "host effect compiler result differs from its invocation",
+                ));
+            }
+        };
         let prepared = match gain_recording {
             Some(track) => prepared.arm_gain_recording(project, track)?,
             None => prepared,
@@ -1822,6 +1835,7 @@ mod tests {
         publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
         keyboard_peak: Mutex<f32>,
         keyboard_publications: AtomicUsize,
+        effect_compilations: AtomicUsize,
     }
     struct OfflineSink {
         observed: Arc<Observed>,
@@ -1832,6 +1846,23 @@ mod tests {
         )>,
     }
     impl WorkerAudioSink for OfflineSink {
+        fn prepare_resident_effects(
+            &mut self,
+            _project: &Project,
+            prepare: &mut dyn FnMut(
+                &hex_engine::AudioCandidateEffects<'_, '_>,
+            ) -> Result<PreparedRevision, hex_engine::Invalid>,
+        ) -> Result<Option<PreparedRevision>, String> {
+            // Real registered compiler/resource tests now traverse the same
+            // borrowed host-facts hook. This fixture supplies builtins only;
+            // native instance/endpoint admission remains a desktop test.
+            self.observed
+                .effect_compilations
+                .fetch_add(1, Ordering::Release);
+            hex_engine::AudioCandidateEffects::with_host_definitions(&[], prepare)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
         fn resident_publication_enabled(&self) -> bool {
             true
         }
@@ -2085,6 +2116,7 @@ mod tests {
             .unwrap();
         let added = receive();
         assert!(added.error.is_none(), "{:?}", added.error);
+        assert!(observed.effect_compilations.load(Ordering::Acquire) > 0);
         assert!(added.playback.is_none());
         let track = added.state.project.tracks()[0].id();
         let state = hex_engine::default_native_device_state_for_class(

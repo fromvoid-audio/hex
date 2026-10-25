@@ -188,7 +188,16 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
     let _serial = serial();
     let (mut control, mut data, errors, mut retirement, binding) = setup();
     let state = control.native_source_prepared_state(binding).unwrap();
+    assert_ne!(
+        control.native_source_endpoint_installed(binding),
+        Some(true)
+    );
     control.publish_native_source_endpoint(binding).unwrap();
+    assert_ne!(
+        control.native_source_endpoint_installed(binding),
+        Some(true),
+        "queueing an original endpoint is not callback installation"
+    );
     allocation_free(|| {
         assert_eq!(
             control.publish_native_source_endpoint(binding),
@@ -224,7 +233,23 @@ fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_dispo
             assert!(callback.has_native_source_endpoints());
         })
     });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while control.native_source_endpoint_installed(binding) != Some(true) {
+        assert!(Instant::now() < deadline, "actual original endpoint ACK");
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        control.native_source_endpoint_installed(Binding {
+            epoch: binding.epoch + 1,
+            ..binding
+        }),
+        None
+    );
     assert!(control.retire_native_source_preparation(binding));
+    assert_ne!(
+        control.native_source_endpoint_installed(binding),
+        Some(true)
+    );
     control.reclaim();
     // This query is nonblocking: the lifecycle worker can briefly hold Bank.
     // Observe a status before asserting retirement, without returning the

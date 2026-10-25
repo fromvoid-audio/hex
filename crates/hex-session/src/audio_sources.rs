@@ -252,6 +252,7 @@ impl MediaBank {
 
     /// Full ordinary resource preparation shares the same verified bindings as semantic
     /// compilation. This owns no reader/page endpoint and grants no native readiness.
+    #[cfg(test)] // Builtin-only fixture convenience; production supplies explicit catalog/effect context.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_with_device_resources(
         &self,
@@ -272,6 +273,7 @@ impl MediaBank {
             scan_frames,
             cancel,
             None,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -288,9 +290,22 @@ impl MediaBank {
             u64,
             &BTreeMap<AssetId, Arc<hex_engine::StreamedSourceMetadata>>,
         )>,
+        effects: Option<&hex_engine::AudioCandidateEffects<'_, '_>>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
         self.validate_clip_sources(project)?;
         if self.verified.is_empty() {
+            if let Some(effects) = effects {
+                return effects.prepare_registered_revision(
+                    project,
+                    &self.resident,
+                    table,
+                    previous,
+                    transforms,
+                    resources,
+                    scan_frames,
+                    cancel,
+                );
+            }
             return PreparedRevision::prepare_with_device_resources(
                 project,
                 &self.resident,
@@ -327,6 +342,19 @@ impl MediaBank {
         } else {
             (self.epoch, self.prepared_sources()?)
         };
+        if let Some(effects) = effects {
+            return effects.prepare_registered_source_revision(
+                project,
+                &sources,
+                generation,
+                table,
+                previous,
+                transforms,
+                resources,
+                scan_frames,
+                cancel,
+            );
+        }
         PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(
             project,
             &sources,

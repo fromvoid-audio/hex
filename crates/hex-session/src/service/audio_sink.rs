@@ -118,6 +118,22 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Borrow the actual host's effect facts for one synchronous registered
+    /// compiler invocation on the canonical worker. None means no host facts
+    /// were supplied, so builtin-only preparation remains unchanged. The
+    /// callback must run at most once and must not publish or call back into
+    /// the sink: native source custody/Work can remain borrowed throughout it.
+    /// A returned revision is compilation only, never native admission or ACK.
+    fn prepare_resident_effects(
+        &mut self,
+        _project: &Project,
+        _prepare: &mut dyn FnMut(
+            &hex_engine::AudioCandidateEffects<'_, '_>,
+        )
+            -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+    ) -> Result<Option<hex_engine::PreparedRevision>, String> {
+        Ok(None)
+    }
     /// Ordinary source-planning defaults, independent of the document mode.
     /// A host opts in only with bounded file preparation/publication consumers.
     fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {

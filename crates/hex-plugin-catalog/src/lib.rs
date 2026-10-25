@@ -308,6 +308,19 @@ pub struct Row {
     pub vendor: String,
     pub status: String,
 }
+/// Exact copied metadata for an explicit effect activation request. This is
+/// neither source admission nor permission to reuse a cached executable: the
+/// processing owner must inspect the selected module again, compare both
+/// digests/class and retain its actual native preparation through the terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectSelection {
+    pub module: PathBuf,
+    pub cid: [u8; 16],
+    pub class_name: String,
+    pub executable_relative_path: String,
+    pub executable_sha256: String,
+    pub info_sha256: String,
+}
 fn reported_kind(class: &hex_plugin_scan::Class) -> &'static str {
     let mut instrument = false;
     let mut effect = false;
@@ -326,6 +339,58 @@ fn reported_kind(class: &hex_plugin_scan::Class) -> &'static str {
 }
 
 impl Catalog {
+    /// Capture one explicit module/CID without filesystem work or code loading.
+    /// Duplicate CIDs in different modules never select a replacement. Unknown
+    /// type tokens, stale/error rows and dynamic inventories require a fresh
+    /// successful scan; original last-good records remain untouched.
+    pub fn select_effect(&self, module: &Path, cid: [u8; 16]) -> Result<EffectSelection, String> {
+        self.validate()?;
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.path == module)
+            .ok_or("selected vst3 module is no longer in the catalog")?;
+        if entry.failure.is_some() || self.source_errors.contains_key(module) {
+            return Err("selected vst3 source is unavailable; rescan before insertion".into());
+        }
+        let report = entry
+            .last_good
+            .as_ref()
+            .ok_or("selected vst3 module has no successful scan")?;
+        let discovery = report
+            .discovery
+            .as_ref()
+            .ok_or("selected vst3 classes are unavailable")?;
+        if !discovery.cacheable() {
+            return Err("selected vst3 inventory requires a rescan before insertion".into());
+        }
+        let class = discovery
+            .classes
+            .iter()
+            .find(|class| class.cid == cid)
+            .ok_or("selected vst3 class is no longer in the catalog")?;
+        if class.category != "Audio Module Class"
+            || !class
+                .subcategories
+                .as_ref()
+                .is_some_and(|categories| categories.split('|').any(|token| token == "Fx"))
+        {
+            return Err("selected vst3 class is not a reported effect".into());
+        }
+        let executable = report
+            .executable
+            .as_ref()
+            .ok_or("selected vst3 executable is unavailable")?;
+        Ok(EffectSelection {
+            module: entry.path.clone(),
+            cid,
+            class_name: class.name.clone(),
+            executable_relative_path: executable.relative_path.clone(),
+            executable_sha256: executable.sha256.clone(),
+            info_sha256: report.bundle.info_sha256.clone(),
+        })
+    }
+
     /// Background control only: inspect saved sources without executing code or
     /// changing persistent metadata. Uses the existing per-file byte/path bounds,
     /// sequentially for at most MAX_MODULES; no filesystem work occurs in `rows`.
@@ -520,6 +585,123 @@ mod tests {
             },
         }
     }
+    fn effect_report(path: PathBuf, categories: &str) -> Report {
+        let mut value = report(path);
+        let class = &mut value.discovery.as_mut().unwrap().classes[0];
+        class.class_flags = Some(0);
+        class.subcategories = Some(categories.into());
+        class.class_vendor = Some("Original Vendor".into());
+        class.class_version = Some("1".into());
+        class.class_sdk_version = Some("3.8".into());
+        value
+    }
+
+    #[test]
+    fn effect_selection_captures_only_the_explicit_module_and_class() {
+        let f = Fixture::new();
+        let first = f.module();
+        let second = f.0.join("Second.vst3");
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                first.clone(),
+                Ok((effect_report(first.clone(), "Fx|Delay"), "e".repeat(40))),
+            )
+            .unwrap();
+        let mut other = effect_report(second.clone(), "Fx");
+        other.executable.as_mut().unwrap().sha256 = "f".repeat(64);
+        catalog
+            .record(second.clone(), Ok((other, "e".repeat(40))))
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        let selected = catalog.select_effect(&second, [1; 16]).unwrap();
+        assert_eq!(selected.module, second);
+        assert_eq!(selected.cid, [1; 16]);
+        assert_eq!(selected.class_name, "Original Processor");
+        assert_eq!(selected.executable_relative_path, "Contents/MacOS/Original");
+        assert_eq!(selected.executable_sha256, "f".repeat(64));
+        assert_eq!(selected.info_sha256, "c".repeat(64));
+        assert_eq!(
+            catalog
+                .select_effect(&first, [1; 16])
+                .unwrap()
+                .executable_sha256,
+            "d".repeat(64)
+        );
+        assert!(catalog.select_effect(&first, [2; 16]).is_err());
+        assert!(
+            catalog
+                .select_effect(&f.0.join("Missing.vst3"), [1; 16])
+                .is_err()
+        );
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        // Invalid duplicate paths/classes cannot turn a selection into an
+        // arbitrary first-match lookup, even with manually supplied metadata.
+        catalog.entries.push(catalog.entries[0].clone());
+        assert!(catalog.select_effect(&first, [1; 16]).is_err());
+    }
+
+    #[test]
+    fn effect_selection_requires_exact_reported_effect_and_cacheable_inventory() {
+        let f = Fixture::new();
+        let path = f.module();
+        for (categories, accepted) in [
+            ("Fx", true),
+            ("Fx|Instrument", true),
+            ("Instrument|Synth", false),
+            ("MyFx", false),
+            ("fx", false),
+            ("", false),
+        ] {
+            let mut catalog = Catalog::default();
+            catalog
+                .record(
+                    path.clone(),
+                    Ok((effect_report(path.clone(), categories), "e".repeat(40))),
+                )
+                .unwrap();
+            assert_eq!(
+                catalog.select_effect(&path, [1; 16]).is_ok(),
+                accepted,
+                "{categories}"
+            );
+        }
+        let mut catalog = Catalog::default();
+        let mut dynamic = effect_report(path.clone(), "Fx");
+        dynamic.discovery.as_mut().unwrap().factory_flags = 1;
+        catalog
+            .record(path.clone(), Ok((dynamic, "e".repeat(40))))
+            .unwrap();
+        assert!(catalog.select_effect(&path, [1; 16]).is_err());
+    }
+
+    #[test]
+    fn effect_selection_refuses_unavailable_or_last_good_error_without_rewriting_it() {
+        let f = Fixture::new();
+        let path = f.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                path.clone(),
+                Ok((effect_report(path.clone(), "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        catalog
+            .source_errors
+            .insert(path.clone(), "changed executable".into());
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert!(catalog.select_effect(&path, [1; 16]).is_err());
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        catalog.source_errors.clear();
+        catalog
+            .record(path.clone(), Err("rescan failed".into()))
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert!(catalog.select_effect(&path, [1; 16]).is_err());
+        assert!(catalog.entries[0].last_good.is_some());
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+    }
+
     #[test]
     fn source_refresh_detects_changed_and_moved_duplicates_without_rewriting_last_good() {
         let f = Fixture::new();
