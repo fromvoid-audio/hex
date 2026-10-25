@@ -21,6 +21,7 @@ pub(super) struct Fence {
     serial: AtomicU64,
     resident: AtomicBool,
     native_epoch: AtomicBool,
+    ordinary_native_epoch: AtomicBool,
     allow_playing: AtomicBool,
     playing: AtomicBool,
     position: AtomicU64,
@@ -38,6 +39,11 @@ pub(super) struct Fence {
     keyboard_epoch: AtomicU64,
     abort: AtomicU64,
     retired: AtomicU64,
+}
+enum NativeEpoch {
+    None,
+    Current,
+    Ordinary,
 }
 pub(super) fn is_stop(action: PlaybackAction) -> bool {
     matches!(
@@ -63,6 +69,9 @@ impl Fence {
     }
     pub(super) fn native_epoch_active(&self) -> bool {
         self.active() && self.native_epoch.load(SeqCst)
+    }
+    pub(super) fn ordinary_native_epoch_active(&self) -> bool {
+        self.native_epoch_active() && self.ordinary_native_epoch.load(SeqCst)
     }
     pub(super) fn native_epoch_context(
         &self,
@@ -96,6 +105,33 @@ impl Fence {
         allow_playing: bool,
         native_epoch: bool,
     ) -> Result<StoppedEditFence, &'static str> {
+        self.begin_source_with_epoch(
+            source,
+            cut,
+            resident,
+            allow_playing,
+            if native_epoch {
+                NativeEpoch::Current
+            } else {
+                NativeEpoch::None
+            },
+        )
+    }
+    pub(super) fn begin_ordinary_native_epoch_source(
+        &self,
+        source: AppliedAudioSource,
+        cut: u64,
+    ) -> Result<StoppedEditFence, &'static str> {
+        self.begin_source_with_epoch(source, cut, false, false, NativeEpoch::Ordinary)
+    }
+    fn begin_source_with_epoch(
+        &self,
+        source: AppliedAudioSource,
+        cut: u64,
+        resident: bool,
+        allow_playing: bool,
+        native_epoch: NativeEpoch,
+    ) -> Result<StoppedEditFence, &'static str> {
         self.retire_abort_on_control();
         let prior = self.gate();
         let operation = prior
@@ -104,7 +140,10 @@ impl Fence {
             .ok_or("sampler edit is busy or its identity is exhausted")?;
         self.allow_playing.store(allow_playing, SeqCst);
         self.resident.store(resident, SeqCst);
-        self.native_epoch.store(native_epoch, SeqCst);
+        self.native_epoch
+            .store(!matches!(native_epoch, NativeEpoch::None), SeqCst);
+        self.ordinary_native_epoch
+            .store(matches!(native_epoch, NativeEpoch::Ordinary), SeqCst);
         self.output.store(source.output_identity, SeqCst);
         self.generation
             .store(source.context.project_generation, SeqCst);
@@ -341,7 +380,7 @@ impl Callback {
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.status.sampler_edit.native_epoch.load(Acquire) {
-            let source = self.current_native_epoch_source();
+            let source = self.current_native_epoch_fence_source();
             let playing = match self.active.as_ref() {
                 Some(ActivePublication::Eligible(active)) => active
                     .runtime()

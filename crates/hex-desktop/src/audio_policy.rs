@@ -6,6 +6,7 @@ use hex_session::SourcePlanReservation;
 
 #[derive(Clone, Copy)]
 pub(super) struct AudioPolicy {
+    pub(super) plugins: PluginPolicy,
     pub(super) stream: hex_stream::StreamConfig,
     pub(super) readiness: hex_stream::StreamReadinessReservation,
     pub(super) publication: AudioCandidatePublicationReservation,
@@ -16,6 +17,46 @@ pub(super) struct AudioPolicy {
     pub(super) ordinary_graph_metadata_bytes: usize,
     pub(super) ordinary_stream_metadata_bytes: usize,
     pub(super) ordinary_domains: hex_audio::AudioCandidateDomainReservation,
+}
+/// Finite native source/history custody, independent of PCM/ordinary graph caps.
+/// Actual Root construction validates this reserved pool before client exposure.
+#[derive(Clone, Copy)]
+pub(super) struct PluginPolicy {
+    pub capacity: usize,
+    pub source: hex_audio::NativeSourceDataReservation,
+    pub retained: usize,
+    pub peak: usize,
+}
+pub(super) const PLUGIN_CONTROL_DATA_BYTES: usize = 128 * 1024;
+impl PluginPolicy {
+    fn new() -> Result<Self, String> {
+        let capacity = 16;
+        let source = hex_audio::plugin_effects::Hosting::source_data_reservation()?;
+        let (retained, peak) = source
+            .pool_data_bytes(capacity)
+            .ok_or("native pool quote overflow")?;
+        Ok(Self {
+            capacity,
+            source,
+            retained,
+            peak,
+        })
+    }
+    pub fn domains(
+        self,
+        base: hex_audio::AudioCandidateDomainReservation,
+    ) -> Result<hex_audio::AudioCandidateDomainReservation, String> {
+        Ok(hex_audio::AudioCandidateDomainReservation {
+            max_retained_data_bytes: base
+                .max_retained_data_bytes
+                .checked_add(self.retained)
+                .ok_or("native pool DATA overflow")?,
+            max_construction_peak_data_bytes: base
+                .max_construction_peak_data_bytes
+                .checked_add(self.peak)
+                .ok_or("native pool peak overflow")?,
+        })
+    }
 }
 pub(super) const RUNTIME_CELLS: usize = 3;
 const MAX_SOURCE_FRAMES: u64 = 8_000_000;
@@ -47,6 +88,7 @@ impl AudioPolicy {
         }
     }
     pub(super) fn new() -> Result<Self, String> {
+        let plugins = PluginPolicy::new()?;
         let stream = hex_stream::StreamConfig::initial();
         let readiness = hex_stream::StreamReadinessReservation {
             extents_per_role: stream
@@ -242,11 +284,18 @@ impl AudioPolicy {
                     .checked_mul(immutable_roles)
                     .and_then(|n| n.checked_add(RUNTIME_CELLS))
                     .ok_or("native root rows overflow")?,
-                max_retained_bytes: native_retained,
-                max_construction_peak_bytes: native_peak,
+                max_retained_bytes: native_retained
+                    .checked_add(plugins.retained)
+                    .and_then(|n| n.checked_add(PLUGIN_CONTROL_DATA_BYTES))
+                    .ok_or("native pool retained overflow")?,
+                max_construction_peak_bytes: native_peak
+                    .checked_add(plugins.peak)
+                    .and_then(|n| n.checked_add(PLUGIN_CONTROL_DATA_BYTES))
+                    .ok_or("native pool peak overflow")?,
             },
         };
         Ok(Self {
+            plugins,
             stream,
             readiness,
             publication,

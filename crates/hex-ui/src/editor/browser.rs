@@ -1456,11 +1456,16 @@ impl EditorView {
 
     pub(super) fn browser_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.checkpoint_browser_history(cx);
-        if matches!(
-            self.browser_selected_item(cx),
-            Some(BrowserItemKey::Plugin(..))
-        ) {
-            self.status = "vst3 discovered · hosting and insertion unavailable".into();
+        if let Some(BrowserItemKey::Plugin(module, cid)) = self.browser_selected_item(cx) {
+            if !self
+                .browser
+                .search
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+            {
+                self.activate_browser_plugin(&module, cid);
+            }
             cx.notify();
             return;
         }
@@ -1525,6 +1530,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_plugin_effect();
         self.cancel_first_sampler_load(None);
         self.checkpoint_browser_history(cx);
         // Audio/device owners handle Escape first. A remaining browser folder

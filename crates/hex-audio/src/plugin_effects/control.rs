@@ -86,6 +86,19 @@ pub(crate) enum NativeEffectReference<'a> {
     Loaned(&'a NativeEffectControl),
 }
 impl NativeEffectReference<'_> {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn completed_blocks_on_control(&self) -> u64 {
+        match self {
+            Self::Unsplit(effect) => effect.worker.published_blocks_on_control(),
+            Self::Loaned(control) => control.worker.published_blocks_on_control(),
+        }
+    }
+    pub(crate) fn transport_is_live_on_control(&self) -> bool {
+        match self {
+            Self::Unsplit(effect) => !effect.callback.transport.is_revoked(),
+            Self::Loaned(control) => control.transport_is_live_on_control(),
+        }
+    }
     pub(crate) fn matches_prepared(&self, node: &hex_lattice::PreparedRuntimeInstance) -> bool {
         let config = self.configuration();
         node.owner == config.identity.owner()

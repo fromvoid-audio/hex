@@ -1998,6 +1998,7 @@ impl EditorView {
         self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
+        self.plugin_effect_complete(&event);
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         if self
@@ -2022,6 +2023,7 @@ impl EditorView {
         let duplicate_completion = self.take_duplicate_completion(&mut event);
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         if event.project_replaced {
+            self.pending_plugin_effect.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
@@ -3092,6 +3094,7 @@ impl EditorView {
             self.cancel_midi_stroke();
         }
         if request.is_project_open() {
+            self.cancel_plugin_effect();
             self.retire_sampler_parameter();
             self.cancel_first_sampler_load(None);
             if let Some(control) = &self.audio_batch {
@@ -3124,6 +3127,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::InsertPluginEffect(_)
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::CompareDevice { .. }

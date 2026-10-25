@@ -5,7 +5,8 @@
 //! results; skipped links and per-module failures remain visible. Startup restores
 //! metadata without executing plugin code. Source bytes remain unchanged; display
 //! passes through `theme::text`. Rows retain foreign UID/module identities and support
-//! search/history in vst3/all, but expose no device insertion or playable hosting.
+//! search/history in vst3/all. Explicit effect activation copies exact metadata
+//! into Session's insertion request; discovery itself never admits a source.
 //! Custom folders use the same explicit, bounded batch worker as standard folders;
 //! their results persist in the catalog, without automatic startup execution.
 //! Native interaction acceptance remains separate.
@@ -72,6 +73,20 @@ impl Plugins {
 }
 
 impl EditorView {
+    pub(super) fn activate_browser_plugin(
+        &mut self,
+        module: &std::path::Path,
+        cid: Option<[u8; 16]>,
+    ) {
+        let selected = cid
+            .ok_or_else(|| "select an available vst3 effect class".to_string())
+            .and_then(|cid| self.browser.plugins.catalog.select_effect(module, cid));
+        match selected {
+            Ok(selection) => self.insert_browser_plugin_effect(selection),
+            Err(error) => self.error = Some(error.into()),
+        }
+    }
+
     fn plugin_catalog_path(&self) -> PathBuf {
         self.browser
             .preferences_path
@@ -443,7 +458,7 @@ impl EditorView {
             )))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     let Some(current) = view.browser_history_index(&key, cx) else {
                         return;
                     };
@@ -452,6 +467,9 @@ impl EditorView {
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
+                    if event.click_count >= 2 {
+                        view.browser_activate(window, cx);
+                    }
                     cx.notify();
                 }),
             )

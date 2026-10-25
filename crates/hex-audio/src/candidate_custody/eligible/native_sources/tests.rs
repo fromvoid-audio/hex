@@ -534,7 +534,24 @@ fn actual_root_refused_native_request_retains_original_failure_through_cleanup()
             cell.cause(),
             Some(hex_plugin_host::Error::Protocol(_))
         ));
+        assert_eq!(
+            root.try_native_source_error(binding),
+            Err("native preparation is busy"),
+            "a contended diagnostic is not an observed absence of error"
+        );
     }
+    assert!(
+        root.try_native_source_error(binding)
+            .unwrap()
+            .is_some_and(|error| error.contains("configuration"))
+    );
+    assert_eq!(
+        root.try_native_source_error(Binding {
+            epoch: binding.epoch + 1,
+            ..binding
+        }),
+        Err("native source differs")
+    );
     dispose(&root, binding);
     let returned = root.recover_native_source(binding).unwrap();
     assert!(matches!(returned.disposal, PreparationDisposal::NoInstance));

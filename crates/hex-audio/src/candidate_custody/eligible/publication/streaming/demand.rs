@@ -132,17 +132,29 @@ impl StateView<'_> {
             if let Some(due) = due {
                 runtime.visit_pending_stream_chunk(due, request.frames, &mut visit)?
             } else if let Some(previous) = previous {
-                runtime
-                    .preview_stream_handoff(
-                        previous
-                            .runtime
-                            .as_mut()
-                            .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
-                        request.frames,
-                        request.pending_play.then_some(true),
-                        &mut visit,
-                    )
-                    .map_err(|_| hex_engine::Invalid("stream handoff demand refused"))?
+                match runtime.preview_stream_handoff(
+                    previous
+                        .runtime
+                        .as_mut()
+                        .ok_or(hex_engine::Invalid("stream predecessor unavailable"))?,
+                    request.frames,
+                    request.pending_play.then_some(true),
+                    &mut visit,
+                ) {
+                    Ok(window) => window,
+                    Err(hex_engine::PlaybackHandoffError::Session(
+                        hex_engine::SessionPlaybackError::ForeignTailSourceBusy,
+                    )) => {
+                        // The original endpoint remains with the real outgoing
+                        // tail. Retain this exact candidate through the existing
+                        // deferred-publication carrier, render the predecessor,
+                        // then replan at its actual next boundary. No page stamp
+                        // or graph/native acceptance is fabricated here.
+                        workspace.cancel_pending(refs, request.domains);
+                        return Ok(None);
+                    }
+                    Err(_) => return Err(hex_engine::Invalid("stream handoff demand refused")),
+                }
             } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
                 runtime.visit_prepared_stream_action(
                     &staged.prepared,
