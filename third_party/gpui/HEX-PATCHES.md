@@ -286,3 +286,11 @@ refusal/repeated replay coverage. Full navigation profiles include construction,
 sharing and metadata costs, and retain RSS/tails separately from native GPU
 acceptance. Published archive/license and unrelated cumulative blocks remain;
 changed scene bytes are reproduced by original-archive and offline full guards.
+
+25 October sibling query upper-bound reuse: BoundsTree's private draw-order
+query retains both child maxima already loaded for visitation order. After the
+first recursive result it visits the second child only if that child's maximum
+can improve the result. No new geometric predicate or placement-path pruning,
+topology, storage, allocation, reservation or painter-order change. The locked
+independent leaf-scan oracle includes higher-child misses, tied maxima and
+already-satisfied queries, retaining numeric union/clear/overflow coverage.
