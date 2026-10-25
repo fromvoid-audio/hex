@@ -146,3 +146,112 @@ fn folder_equal_names_keep_input_order_while_catalog_uses_native_paths() {
         vec![entries[1].clone(), entries[2].clone(), entries[0].clone()]
     );
 }
+
+#[test]
+fn query_normalization_matches_legacy_global_place_and_native_path_semantics() {
+    fn filtered(entries: &[LibraryEntry], query: &str, source: Option<&Path>) -> Vec<LibraryEntry> {
+        let query = query.to_lowercase();
+        let terms: Vec<_> = query.split_whitespace().collect();
+        entries
+            .iter()
+            .filter(|e| source.is_none_or(|s| e.path.starts_with(s)))
+            .filter(|e| {
+                let path = e.path.to_string_lossy().to_lowercase();
+                terms.iter().all(|t| path.contains(t))
+            })
+            .cloned()
+            .collect()
+    }
+    let make = |name: &str, path: &str, kind| LibraryEntry {
+        name: name.into(),
+        path: path.into(),
+        kind,
+    };
+    let mut entries = vec![
+        make("Kick.WAV", "/ROOT/Drums/Kick.WAV", EntryKind::WaveAudio),
+        make("ΣΟΣ.wav", "/ROOT/ΟΣ/ΣΟΣ.wav", EntryKind::WaveAudio),
+        make("İ.wav", "/ROOT/İ/i\u{307}.wav", EntryKind::WaveAudio),
+        make("kick", "/other/Drums/Kick.wav", EntryKind::WaveAudio),
+        make("upper", "/root/DRUMS/KICK.wav", EntryKind::WaveAudio),
+        make("a  b.wav", "/ROOT/a  b.wav", EntryKind::WaveAudio),
+    ];
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let mut e = make("invalid.wav", "/unused", EntryKind::WaveAudio);
+        e.path = std::ffi::OsString::from_vec(b"/ROOT/\xffKick.wav".to_vec()).into();
+        entries.push(e);
+    }
+    entries.sort_by(legacy_order);
+    let catalog = SampleCatalog { entries };
+    let listing = DirectoryListing {
+        directory: "/ROOT".into(),
+        entries: vec![
+            catalog.entries[0].clone(),
+            make(
+                "Kick Drums.hex",
+                "/ROOT/Drums/project.hex",
+                EntryKind::Project,
+            ),
+            make("Drums Kick", "/ROOT/more/Kick", EntryKind::Directory),
+            make("ΣΟΣ", "/ROOT/ΟΣ/listing", EntryKind::Directory),
+            make("Kick", "/ROOT-sibling/Kick", EntryKind::Directory),
+            make("İ", "/ROOT/İ", EntryKind::Directory),
+        ],
+        enumerated_entries: 6,
+        truncated: false,
+    };
+    for query in [
+        "",
+        " ",
+        "  \t",
+        "KICK",
+        "kick drums",
+        "Drums Kick",
+        "a  b",
+        "ΣΟΣ",
+        "ος",
+        "İ",
+        "i\u{307}",
+        "�kick",
+        "missing",
+    ] {
+        for source in [
+            None,
+            Some(Path::new("/ROOT")),
+            Some(Path::new("/root")),
+            Some(Path::new("/absent")),
+        ] {
+            assert_eq!(
+                catalog.filtered(query, source),
+                filtered(&catalog.entries, query, source)
+            );
+            for listing in [None, Some(&listing)] {
+                let mut expected = filtered(&catalog.entries, query, source);
+                if let Some(listing) = listing {
+                    let folded = query.to_lowercase();
+                    let mut seen: BTreeSet<_> = expected.iter().map(|e| e.path.clone()).collect();
+                    for e in listing.entries.iter().take(MAX_RETAINED_ENTRIES) {
+                        if !source.is_none_or(|s| e.path.starts_with(s)) {
+                            continue;
+                        }
+                        let matches = if source.is_some() {
+                            !filtered(std::slice::from_ref(e), query, source).is_empty()
+                        } else {
+                            e.name.to_lowercase().contains(&folded)
+                        };
+                        if matches && seen.insert(e.path.clone()) {
+                            expected.push(e.clone());
+                        }
+                    }
+                }
+                expected.sort_by(legacy_order);
+                assert_eq!(
+                    catalog.search_with_listing_in(query, source, listing),
+                    expected,
+                    "query={query:?} source={source:?}"
+                );
+            }
+        }
+    }
+}
