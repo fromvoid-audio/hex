@@ -233,3 +233,16 @@ fn parameter_transition_starts_at_next_sample_and_reaches_exact_target() {
     }
     assert_eq!(output[959], [0.0; 2]);
 }
+
+#[test]
+fn recursive_floor_prevents_denormal_feedback_history() {
+    let mut line = Line {
+        samples: vec![0.0; 5].into_boxed_slice(),
+        cursor: 0,
+    };
+    assert_eq!(line.tick(1e-25, 0.9, false), 0.0);
+    assert!(line.samples.iter().all(|v| *v == 0.0));
+    for _ in 0..20 {
+        assert_eq!(line.tick(0.0, 0.9, false), 0.0);
+    }
+}

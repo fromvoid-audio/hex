@@ -19,7 +19,8 @@
 //! groups; final destruction remains control-side.
 //! Zero input for eight seconds clears the bounded tank, even at maximum decay
 //! (over three nominal RT60s). This deadline includes interpolation and partial
-//! decimation input. Host finite-tail and aggregate memory budgets still apply.
+//! decimation input. Recursive values below 1e-20 are flushed to silence to avoid
+//! denormal processing cost. Host finite-tail and aggregate memory budgets apply.
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
     StereoFrame, StereoMatrix,
@@ -275,11 +276,12 @@ impl Line {
         } else {
             delayed
         };
-        self.samples[self.cursor] = if allpass {
+        let stored = if allpass {
             input + output * feedback
         } else {
             input + delayed * feedback
         };
+        self.samples[self.cursor] = if stored.abs() < 1e-20 { 0.0 } else { stored };
         self.cursor += 1;
         if self.cursor == self.samples.len() {
             self.cursor = 0;
