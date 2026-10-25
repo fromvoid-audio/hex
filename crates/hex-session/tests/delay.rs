@@ -77,6 +77,31 @@ fn delay_canonical_track_return_edit_bypass_reorder_history_and_save_reopen() {
             assert!(session.redo());
             assert_eq!(session.project(), &after);
         }
+        // Exercise every new saved control through canonical history, including
+        // linked timing side effects and the independently stored offsets.
+        for descriptor in hex_engine::native_device_view(&state).unwrap().parameters {
+            use hex_lattice_contract::ParameterKind;
+            let value = match descriptor.descriptor.kind {
+                ParameterKind::Float { min, max, .. } => {
+                    ParameterValue::Float(min + (max - min) * 0.37)
+                }
+                ParameterKind::Bool => ParameterValue::Bool(false),
+                ParameterKind::Choice { labels } => {
+                    ParameterValue::Choice((labels.len() - 1) as u32)
+                }
+            };
+            let before = session.project().clone();
+            session
+                .commit_device_parameter(device, descriptor.descriptor.id, value, None)
+                .unwrap();
+            let after = session.project().clone();
+            if before != after {
+                assert!(session.undo());
+                assert_eq!(session.project(), &before);
+                assert!(session.redo());
+                assert_eq!(session.project(), &after);
+            }
+        }
         session
             .command(Command::SetDeviceBypass {
                 device,
@@ -118,8 +143,8 @@ fn delay_canonical_track_return_edit_bypass_reorder_history_and_save_reopen() {
     )
     .unwrap();
     assert_eq!(view.name, "delay");
-    assert_eq!(view.parameters.len(), 3);
-    for value in [f32::NAN, f32::INFINITY, -1.0, 1001.0] {
+    assert_eq!(view.parameters.len(), 27);
+    for value in [f32::NAN, f32::INFINITY, -1.0, 5001.0] {
         assert!(
             patch_native_device_parameter(
                 &state,

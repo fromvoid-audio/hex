@@ -1,7 +1,9 @@
+use super::state::DESCRIPTORS;
 use super::*;
 use hex_lattice::{DevicePreparationContext, EMPTY_DEVICE_RESOURCES, TuningTable};
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, ParameterValue};
 fn factory(rate: u32, values: [f32; 3]) -> Arc<dyn PreparedOwnedProcessorRuntime> {
-    let state = encode(Settings(values)).unwrap();
+    let state = super::state::encode(Settings::from_legacy(values)).unwrap();
     let Some(PreparedProcessorFactory::Owned(factory)) = DEFINITION
         .prepare_runtime_factory(
             &state,
@@ -59,7 +61,7 @@ fn exact_impulse_repeats_stereo_and_partition_oracles_at_supported_rates() {
             assert_eq!(*frame, expected, "rate={rate} index={index}");
         }
         assert!(!a.committed_is_quiescent(), "dormant samples still matter");
-        let silence = vec![[0.0; 2]; rate as usize * 8];
+        let silence = vec![[0.0; 2]; rate as usize * 22];
         render(a.as_mut(), &silence, &[257]);
         assert!(a.committed_is_quiescent());
     }
@@ -123,11 +125,8 @@ fn retarget_glide_is_partition_independent_preserves_history_and_rollback() {
         output.iter().any(|f| f[0] != 0.0),
         "old impulse is retained"
     );
-    let a = a.as_any().downcast_ref::<Runtime>().unwrap();
-    assert_eq!(a.primary.current, a.target);
-    assert_eq!(a.primary.remaining, 0);
     let wrong_rate = factory(48000, [110.0, 0.3, 0.5]).create_runtime().unwrap();
-    assert!(!wrong_rate.can_inherit_from(a));
+    assert!(!wrong_rate.can_inherit_from(a.as_ref()));
 }
 #[test]
 fn bypass_is_exact_dry_but_warm_reset_clears_and_dry_endpoint_is_exact() {
@@ -152,25 +151,65 @@ fn bypass_is_exact_dry_but_warm_reset_clears_and_dry_endpoint_is_exact() {
     assert_eq!(render(dry_only.as_mut(), &original, &[17]), original);
 }
 #[test]
-fn codec_and_preparation_refuse_malformed_values_and_memory_is_fully_declared() {
+fn codec_versions_link_laws_validation_and_fully_charged_storage() {
+    use hex_lattice_contract::ParameterKind;
     let state = DEFINITION.default_state().unwrap();
     assert_eq!(state, DEFINITION.migrate_state(&state).unwrap());
     for (index, descriptor) in DESCRIPTORS.iter().enumerate() {
-        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 1001.0] {
-            assert!(
-                DEFINITION
-                    .patch_parameter(&state, descriptor.id, ParameterValue::Float(bad))
-                    .is_err()
-            );
+        let bads = match descriptor.kind {
+            ParameterKind::Float { min, max, .. } => {
+                vec![min - 1.0, max + 1.0, f32::NAN, f32::INFINITY]
+            }
+            ParameterKind::Bool => vec![-1.0, 2.0, f32::NAN, f32::INFINITY],
+            ParameterKind::Choice { labels } => vec![-1.0, labels.len() as f32, 0.5, f32::NAN],
+        };
+        for bad in bads {
             let mut bytes = state.payload().to_vec();
             bytes[index * 4..index * 4 + 4].copy_from_slice(&bad.to_le_bytes());
-            assert!(decode(&NativeDeviceState::new(TYPE_ID, 1, bytes).unwrap()).is_err());
+            assert!(
+                decode(&NativeDeviceState::new(TYPE_ID, STATE_VERSION, bytes).unwrap()).is_err()
+            );
         }
     }
+    let old = NativeDeviceState::new(
+        TYPE_ID,
+        1,
+        [250.0_f32, 0.75, 0.4]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect(),
+    )
+    .unwrap();
+    let migrated = DEFINITION.migrate_state(&old).unwrap();
+    let settings = decode(&migrated).unwrap();
+    assert_eq!(settings.value(TIME), 250.0);
+    assert_eq!(settings.value(RIGHT_TIME), 250.0);
+    assert!(!settings.flag(LEFT_SYNC));
+    assert!(!settings.flag(FILTER));
+    assert_eq!(settings.value(FEEDBACK), 0.75);
+    let linked = DEFINITION
+        .patch_parameter(&state, RIGHT_DIVISION, ParameterValue::Choice(7))
+        .unwrap();
+    assert_eq!(
+        DEFINITION.read_parameter(&linked, LEFT_DIVISION).unwrap(),
+        ParameterValue::Choice(7)
+    );
+    let offset = DEFINITION
+        .patch_parameter(&linked, RIGHT_OFFSET, ParameterValue::Float(12.5))
+        .unwrap();
+    assert_eq!(
+        DEFINITION.read_parameter(&offset, LEFT_OFFSET).unwrap(),
+        ParameterValue::Float(0.0)
+    );
     for value in [
-        NativeDeviceState::new(TYPE_ID, 2, vec![0; 12]).unwrap(),
-        NativeDeviceState::new(TYPE_ID, 1, vec![0; 11]).unwrap(),
-        NativeDeviceState::new(DeviceTypeId::from_static("hex.wrong"), 1, vec![0; 12]).unwrap(),
+        NativeDeviceState::new(TYPE_ID, 3, vec![0; 12]).unwrap(),
+        NativeDeviceState::new(TYPE_ID, STATE_VERSION, vec![0; 11]).unwrap(),
+        NativeDeviceState::new(
+            DeviceTypeId::from_static("hex.wrong"),
+            STATE_VERSION,
+            vec![0; 12],
+        )
+        .unwrap(),
     ] {
         assert!(decode(&value).is_err());
     }
@@ -188,13 +227,13 @@ fn codec_and_preparation_refuse_malformed_values_and_memory_is_fully_declared() 
                 .is_err()
         );
     }
-    let factory = factory(192000, [1000.0, 0.85, 1.0]);
-    let mut runtime = factory.create_runtime().unwrap();
+    let f = factory(192000, [1000.0, 0.85, 1.0]);
+    let mut runtime = f.create_runtime().unwrap();
     assert_eq!(
         runtime.fixed_storage_pair_bytes(),
-        Some(factory.declared_pair_bytes())
+        Some(f.declared_pair_bytes())
     );
-    assert!(factory.declared_pair_bytes() < hex_lattice::MAX_OWNED_PROCESSOR_PAIR_BYTES);
+    assert!(f.declared_pair_bytes() < hex_lattice::MAX_OWNED_PROCESSOR_PAIR_BYTES);
     let output = render(
         runtime.as_mut(),
         &[[f32::NAN, f32::INFINITY], [f32::MAX, -f32::MAX]],
@@ -202,3 +241,5 @@ fn codec_and_preparation_refuse_malformed_values_and_memory_is_fully_declared() 
     );
     assert!(output.iter().flatten().all(|v| v.is_finite()));
 }
+
+mod expanded;

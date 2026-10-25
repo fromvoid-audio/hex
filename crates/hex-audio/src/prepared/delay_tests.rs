@@ -64,9 +64,15 @@ fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocat
         })
         .unwrap();
     let d = &hex_devices::delay::DEFINITION;
+    let mut initial = d.default_state().unwrap();
+    for id in [hex_devices::delay::LEFT_SYNC, hex_devices::delay::FILTER] {
+        initial = d
+            .patch_parameter(&initial, id, ParameterValue::Bool(false))
+            .unwrap();
+    }
     let state = d
         .patch_parameter(
-            &d.default_state().unwrap(),
+            &initial,
             hex_devices::delay::TIME,
             ParameterValue::Float(10.0),
         )
@@ -114,6 +120,22 @@ fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocat
     control.publish(graph(editor.project())).unwrap();
     block(&mut callback, &mut output); // actual full-history handoff is measured too
     assert!(output.iter().flatten().all(|v| v.is_finite()));
+    control.reclaim();
+    let frozen = d
+        .patch_parameter(
+            editor.project().device(device).unwrap().state(),
+            hex_devices::delay::FREEZE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: frozen,
+        })
+        .unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    block(&mut callback, &mut output);
     control.reclaim();
     editor.execute(Command::RemoveDevice(device)).unwrap();
     control.publish(graph(editor.project())).unwrap();

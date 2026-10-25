@@ -9,6 +9,12 @@ use std::{any::Any, fmt};
 /// No device owns this clock or constructs a project tempo map on the callback.
 pub trait NativeInstrumentClock {
     fn beat_at_offset(&self, offset: usize) -> Option<u64>;
+    /// Exact local tempo at the content origin, in integer micro-BPM. This
+    /// optional scalar is borrowed from the host map, including through latency
+    /// compensation; devices must define an explicit unavailable-clock law.
+    fn tempo_micro_bpm_at_offset(&self, _offset: usize) -> Option<u32> {
+        None
+    }
     /// Explicit Arrangement position in Q32.32 quarter-note beats, including
     /// loop normalization. Performance beats may continue across a loop and
     /// are not a substitute. Unknown/warmup timing remains explicit None.

@@ -4,6 +4,15 @@ use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 fn delay_state() -> hex_lattice_contract::NativeDeviceState {
     let mut state = DEFINITION.default_state().unwrap();
+    for id in [
+        hex_devices::delay::LEFT_SYNC,
+        hex_devices::delay::FILTER,
+        hex_devices::delay::HIGH_QUALITY,
+    ] {
+        state = DEFINITION
+            .patch_parameter(&state, id, ParameterValue::Bool(false))
+            .unwrap();
+    }
     for (id, value) in [(TIME, 10.0), (FEEDBACK, 0.5), (DRY_WET, 1.0)] {
         state = DEFINITION
             .patch_parameter(&state, id, ParameterValue::Float(value))
@@ -164,4 +173,120 @@ fn maximum_rate_delay_is_admitted_and_charged_by_real_candidate_accounting() {
             .flatten()
             .all(|v| v.is_finite())
     );
+}
+
+#[test]
+fn removing_frozen_delay_releases_retained_track_return_and_main_history() {
+    for location in 0..3 {
+        let mut source = delayed(location == 1, false).snapshot();
+        if location == 2 {
+            source.main_devices = std::mem::take(&mut source.tracks[0].devices);
+        }
+        let source = Project::from_snapshot(source).unwrap();
+        let mut old = playback(&source);
+        render(&mut old, 1200);
+        let mut frozen = source.snapshot();
+        let devices = match location {
+            0 => &mut frozen.tracks[0].devices,
+            1 => &mut frozen.return_tracks[0].devices,
+            _ => &mut frozen.main_devices,
+        };
+        devices[0].state = DEFINITION
+            .patch_parameter(
+                &devices[0].state,
+                hex_devices::delay::FREEZE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        let frozen = Project::from_snapshot(frozen).unwrap();
+        let mut candidate =
+            SessionPlayback::new(revision(&frozen, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        assert!(
+            render(&mut candidate, 1000)
+                .iter()
+                .flatten()
+                .any(|v| v.abs() > 1e-6)
+        );
+        let mut removed = frozen.snapshot();
+        match location {
+            0 => removed.tracks[0].devices.clear(),
+            1 => removed.return_tracks[0].devices.clear(),
+            _ => removed.main_devices.clear(),
+        }
+        let removed = Project::from_snapshot(removed).unwrap();
+        let mut next =
+            SessionPlayback::new(revision(&removed, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        next.try_inherit_state_from(&mut candidate).unwrap();
+        assert!(
+            next.tail_groups.iter().any(Option::is_some)
+                || next.return_effect_tails.slots().iter().any(Option::is_some)
+        );
+        // Even with the removed authored freeze still enabled, the host's
+        // residual owner must decay and retire without requiring Stop.
+        let decay = render(&mut next, 48000 * 18);
+        assert!(
+            decay[decay.len() - 1000..].iter().all(|f| *f == [0.0; 2]),
+            "location {location}"
+        );
+        assert!(
+            next.tail_groups
+                .iter()
+                .flatten()
+                .all(|chain| chain.committed_range_is_quiescent(0..chain.len()))
+        );
+        assert!(
+            next.return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .all(|tail| tail.chain.committed_range_is_quiescent(0..tail.chain.len()))
+        );
+        // Quiescent resources stay owned until a control-side retirement; no
+        // final buffer destruction is allowed in the render callback.
+        let mut clean =
+            SessionPlayback::new(revision(&removed, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        clean.try_inherit_state_from(&mut next).unwrap();
+        assert!(clean.tail_groups.iter().all(Option::is_none));
+        assert!(
+            clean
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+}
+
+#[test]
+fn sync_delay_uses_host_tempo_instead_of_default_120_bpm() {
+    let mut snapshot = delayed(false, false).snapshot();
+    snapshot.tempo_points = vec![hex_project::TempoPoint::new(
+        BeatTime::ZERO,
+        Tempo::new(60_000_000).unwrap(),
+    )];
+    for (id, value) in [
+        (hex_devices::delay::LEFT_SYNC, ParameterValue::Bool(true)),
+        (hex_devices::delay::LEFT_DIVISION, ParameterValue::Choice(0)),
+        (hex_devices::delay::SMOOTHING, ParameterValue::Choice(2)),
+        (FEEDBACK, ParameterValue::Float(0.0)),
+    ] {
+        snapshot.tracks[0].devices[0].state = DEFINITION
+            .patch_parameter(&snapshot.tracks[0].devices[0].state, id, value)
+            .unwrap();
+    }
+    let source = Project::from_snapshot(snapshot).unwrap();
+    let actual = render(&mut playback(&source), 13000);
+    let mut dry = source.snapshot();
+    dry.tracks[0].devices.clear();
+    let dry = render(&mut playback(&Project::from_snapshot(dry).unwrap()), 1000);
+    assert!(actual[..12000].iter().all(|f| *f == [0.0; 2]));
+    for (a, b) in actual[12000..].iter().zip(dry) {
+        for lane in 0..2 {
+            assert!((a[lane] - b[lane]).abs() < 2e-6);
+        }
+    }
 }

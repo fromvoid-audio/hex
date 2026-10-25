@@ -423,12 +423,26 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
-the delay effect provides independent stereo repeats. **time** selects 1–1000 ms;
-**feedback** selects 0–0.85 and **dry/wet** selects 0–1. changing time glides the
-pitch briefly. bypass keeps the delay history warm while passing dry audio.
-removing a playing delay lets its existing repeats decay; stop and seek clear
-that history. tempo sync, ping-pong, freeze and automation lanes are not currently
-available for delay. settings use the ordinary device undo and save workflow.
+the delay effect has independent left and right timing. **sync** selects a
+multiple of a sixteenth note; **time** selects 1–5000 ms. sync is bounded to
+16 seconds, including offsets and modulation. **link** shares timing, mode and
+division changes; the two percentage offsets remain independent. **feedback**
+sets repeat gain from 0–95%, and **dry/wet** blends the original and delayed sound.
+
+**repitch** glides to new times, **fade** crossfades taps and **jump** changes
+them immediately. **ping pong** alternates repeats between channels. **freeze**
+ignores new input and cycles the existing history; turn it off to let repeats
+decay. the filter graph edits frequency horizontally and octave width vertically.
+expand **lfo** for timing modes, waveform, morph, delay/filter modulation,
+**hi quality** interpolation and **eq loudness** mix law.
+
+bypass keeps delay history warm while passing dry audio. removing a playing delay
+releases freeze and lets its existing repeats decay; stop and seek clear history.
+loop wraps preserve repeats. changing sample rate prepares empty history at the
+new rate. settings use ordinary device undo and save/reopen; runtime audio history
+is transient. automation lanes are currently unsupported. the control set follows
+the reference device, while the filter, interpolation and modulation algorithms
+are original hex implementations.
 
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;

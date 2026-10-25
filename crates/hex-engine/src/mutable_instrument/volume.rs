@@ -163,6 +163,11 @@ struct OffsetClock<'a> {
     offset: usize,
 }
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        self.clock
+            .tempo_micro_bpm_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock.beat_at_offset(self.offset.checked_add(offset)?)
     }

@@ -51,7 +51,7 @@ pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// the combined graph/tail pool below charges all providers and owned buffers.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
 /// Complete declared DSP pair pool, including owned time-effect rings. Host
-/// ledgers/checkpoints and the existing 32 MiB candidate cap remain independent.
+/// ledgers/checkpoints and the existing complete candidate cap remain independent.
 pub(crate) const MAX_GRAPH_RUNTIME_PAIR_BYTES: usize =
     2 * hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES;
 /// Retarget proof storage is independent of effect runtime payload size.

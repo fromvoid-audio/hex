@@ -73,7 +73,7 @@ fn instances(
 #[test]
 fn exact_per_twin_and_aggregate_caps_preserve_count_and_twin_accounting() {
     assert_eq!(MAX_PROCESSOR_RUNTIME_BYTES, 65_536);
-    assert_eq!(MAX_PROCESSOR_BANK_RUNTIME_BYTES, 8 * 1024 * 1024);
+    assert_eq!(MAX_PROCESSOR_BANK_RUNTIME_BYTES, 64 * 1024 * 1024);
     let factories = Arc::new(AtomicUsize::new(0));
     let accepted =
         NativeRuntimeChain::new(instances(1, MAX_PROCESSOR_RUNTIME_BYTES, &factories)).unwrap();
@@ -96,12 +96,12 @@ fn exact_per_twin_and_aggregate_caps_preserve_count_and_twin_accounting() {
         Err(DeviceContractError::RuntimeBudgetExceeded)
     ));
     assert_eq!(factories.load(Ordering::Relaxed), 0);
-    let count = MAX_PROCESSOR_BANK_RUNTIME_BYTES / MAX_PROCESSOR_RUNTIME_BYTES;
+    let count = MAX_STATEFUL_PROCESSORS;
     let full =
         NativeRuntimeChain::new(instances(count, MAX_PROCESSOR_RUNTIME_BYTES, &factories)).unwrap();
     assert_eq!(
         full.declared_pair_bytes(),
-        2 * MAX_PROCESSOR_BANK_RUNTIME_BYTES
+        2 * count * MAX_PROCESSOR_RUNTIME_BYTES
     );
     assert!(matches!(
         NativeRuntimeChain::new(instances(
@@ -194,14 +194,14 @@ fn owned_pair_cap_is_distinct_from_legacy_and_aggregate_rejects_before_extra_fac
         Err(DeviceContractError::RuntimeBudgetExceeded)
     ));
     assert_eq!(count.load(Ordering::Relaxed), 0);
-    assert!(NativeRuntimeChain::new_prepared(instances(4, MAX_OWNED_PROCESSOR_PAIR_BYTES)).is_ok());
+    assert!(NativeRuntimeChain::new_prepared(instances(2, MAX_OWNED_PROCESSOR_PAIR_BYTES)).is_ok());
     assert!(matches!(
-        NativeRuntimeChain::new_prepared(instances(5, MAX_OWNED_PROCESSOR_PAIR_BYTES)),
+        NativeRuntimeChain::new_prepared(instances(3, MAX_OWNED_PROCESSOR_PAIR_BYTES)),
         Err(DeviceContractError::RuntimeBudgetExceeded)
     ));
     assert_eq!(
         count.load(Ordering::Relaxed),
-        8,
-        "fifth over-budget owner is never constructed"
+        4,
+        "third over-budget owner is never constructed"
     );
 }

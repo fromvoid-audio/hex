@@ -294,12 +294,13 @@ pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
 /// Maximum TOTAL owned transaction storage (both histories and all capacities).
 /// Owned providers synchronize written intervals, unlike full-copy legacy twins.
-/// One second of stereo history at 192 kHz fits below this four-MiB limit.
-pub const MAX_OWNED_PROCESSOR_PAIR_BYTES: usize = 4 * 1024 * 1024;
+/// Sixteen seconds of stereo history at 192 kHz fits below this 64-MiB limit.
+/// Production large providers transfer banks on a retiring-donor handoff.
+pub const MAX_OWNED_PROCESSOR_PAIR_BYTES: usize = 64 * 1024 * 1024;
 /// Aggregate declared bytes in one runtime bank, counting one twin per instance.
-/// The actual paired runtime storage doubles this bound (16 MiB). Engine candidate
+/// The actual paired runtime storage doubles this bound (128 MiB). Engine candidate
 /// and retained-owner budgets still account the entire declared allocation.
-pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Borrowed signal boundary around an entire native effect entry.
 /// Input precedes host input trim; Output follows effect, routing and output trim.
@@ -428,6 +429,11 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn tempo_micro_bpm_at_offset(&self, offset: usize) -> Option<u32> {
+        self.clock
+            .tempo_micro_bpm_at_offset(self.offset.checked_add(offset)?)
+    }
+
     fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock
             .arrangement_beat_at_offset(self.offset.checked_add(offset)?)
@@ -1168,6 +1174,51 @@ impl NativeRuntimeChain {
             {
                 entry.runtime.inherit_from(&old.runtime);
             }
+        }
+    }
+
+    /// Commit-phase history transfer from an exclusively borrowed retiring
+    /// chain, after the same identity/history preflight as ordinary inheritance.
+    /// Owned providers may exchange their preallocated banks in constant time;
+    /// legacy and foreign entries retain their existing copy laws. Neither
+    /// chain nor any resource is destroyed; the host still retires the donor.
+    pub fn transfer_history_from(&mut self, previous: &mut Self) {
+        self.transfer_history_excluding_unchecked(previous, 0..0);
+    }
+
+    /// Transfer only histories not retained by the donor's old output suffix.
+    pub fn transfer_history_excluding_old_range(
+        &mut self,
+        previous: &mut Self,
+        excluded: std::ops::Range<usize>,
+    ) -> Result<(), DeviceContractError> {
+        if excluded.start > excluded.end || excluded.end > previous.entries.len() {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        self.transfer_history_excluding_unchecked(previous, excluded);
+        Ok(())
+    }
+    fn transfer_history_excluding_unchecked(
+        &mut self,
+        previous: &mut Self,
+        excluded: std::ops::Range<usize>,
+    ) {
+        for entry in &mut self.entries {
+            if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
+                Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+            }) && !excluded.contains(&index)
+            {
+                entry.runtime.transfer_history_from(&mut old.runtime);
+            }
+        }
+    }
+
+    /// Enter a residual-output owner after complete admission preflight. Owned
+    /// sustain/freeze providers can release their held input-independent cycle;
+    /// history and all storage stay with this chain until control retirement.
+    pub fn begin_output_tail(&mut self) {
+        for entry in &mut self.entries {
+            entry.runtime.begin_output_tail();
         }
     }
 

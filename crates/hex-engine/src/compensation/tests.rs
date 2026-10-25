@@ -257,6 +257,7 @@ fn silence_advances_pending_impulse_and_epoch_reset_removes_old_content() {
 
 fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
+        tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
         transport_is_running: index % 3 != 0,
         arrangement_frame: (index % 4) as u64,
@@ -444,6 +445,7 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
         source.begin();
         for frame in 0..count {
             source.push(Some(TransportStamp {
+                tempo_micro_bpm: Some(123_000_000),
                 performance_frame: 900 + frame,
                 transport_is_running: frame % 2 == 0,
                 arrangement_frame: frame % 3,
@@ -457,6 +459,7 @@ fn bounded_history_copy_keeps_wrapped_full_origins_and_transaction_rollback() {
         target.begin();
         for _ in 0..7 {
             target.push(Some(TransportStamp {
+                tempo_micro_bpm: Some(123_000_000),
                 performance_frame: 1,
                 transport_is_running: false,
                 arrangement_frame: 1,

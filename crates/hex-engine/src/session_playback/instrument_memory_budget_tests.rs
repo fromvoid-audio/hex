@@ -73,7 +73,7 @@ fn instrument_memory_budget_preserves_combined_count_bytes_and_overflow_checks()
     // Count and byte limits remain independent: 256 equal shares reach
     // the combined pool, while a 257th owner still refuses.
     let effect_pair = (hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES / 256) * 2;
-    assert_eq!(cap, 16 * 1024 * 1024);
+    assert_eq!(cap, 128 * 1024 * 1024);
     assert!(validate_mutable_graph_budget(255, 255 * effect_pair, 1, effect_pair).is_ok());
     assert!(validate_mutable_graph_budget(1, effect_pair, 1, cap - effect_pair).is_ok());
     for (effects, effect_bytes, instruments, instrument_bytes) in [
@@ -115,35 +115,35 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
     // per donor and is specifically testing the aggregate byte boundary.
     let _voices = VoiceGuard(MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|slot| slot.replace(Some(1))));
     for extra in [0, 1] {
-        // The independent complete candidate cap includes ~20 MiB of host
-        // ledgers. Eight one-MiB payloads fit; sixteen exceed that complete
-        // cap even though they meet the declared DSP-only pool exactly.
-        let tails = if extra == 0 { 8 } else { 16 };
-        let _guard = DeclaredBytesGuard::new(MAX_STATEFUL_RUNTIME_PAIR_BYTES / 4);
+        // 128 one-MiB pairs reach the declared pool. One additional byte
+        // per history refuses before moving any live owner; the larger complete
+        // storage cap separately includes host ledgers and checkpoints.
+        let tails = 128;
+        let _guard = DeclaredBytesGuard::new(MAX_STATEFUL_RUNTIME_PAIR_BYTES / 4 + extra);
         let (revision, track) = mutable_checkpoint_fixture(8 << 32);
         let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        donor.apply(SessionPlaybackCommand::Play).unwrap();
+        render_checkpoint_prefix(&mut donor, 1);
+        let factory = MutableFeedbackFactory {
+            level: 0.2,
+            release_frames: 8,
+        };
         for slot in 0..tails {
-            let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-            donor.apply(SessionPlaybackCommand::Play).unwrap();
-            render_checkpoint_prefix(&mut donor, 1);
+            let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+            runtime
+                .inherit_from(donor.mutable_instruments[0].as_ref().unwrap())
+                .unwrap();
             previous.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
             previous.tail_suffix_starts[slot] = 0;
             previous.tail_mutable_instruments[slot] =
                 Some(crate::mutable_instrument::MutableInstrumentTail {
                     track_id: track,
-                    runtime: donor.mutable_instruments[0].take().unwrap(),
+                    runtime,
                 });
             previous.tail_mixes[slot] = crate::PreparedTrackMix::identity();
         }
-        let complete = candidate.accounted_runtime_storage_bytes().unwrap()
-            + previous
-                .tail_mutable_instruments
-                .iter()
-                .flatten()
-                .map(|tail| tail.runtime.accounted_storage_bytes().unwrap())
-                .sum::<usize>();
-        assert_eq!(complete > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, extra != 0);
         let result = candidate.try_inherit_state_from(&mut previous);
         if extra == 0 {
             result.unwrap();
