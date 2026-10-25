@@ -291,12 +291,10 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     f.visual.run_until_parked();
     assert_no_bodies(&mut f);
     f.editor.read_with(&f.visual, |view, _| {
-        assert!(
-            !view.pointer_hits_fade_control(
-                f32::from(audio.center().x),
-                f32::from(audio.center().y)
-            )
-        );
+        assert!(!view.pointer_hits_priority_clip_control(
+            f32::from(audio.center().x),
+            f32::from(audio.center().y)
+        ));
         assert_eq!(view.selected_clip_ids(), f.clips);
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(!view.track_resize_active());
