@@ -2038,10 +2038,11 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
         ),
         expected
     );
-    // The retained old suffix also preserves its captured mix.
+    // Mix-only edits keep the same filter history under the new gain. They
+    // must not capture an independently audible old-mix suffix.
     assert_eq!(
-        transition_output(old_revision, prepare(&changed_mix_project), true),
-        expected
+        transition_output(old_revision, prepare(&changed_mix_project), false),
+        expected.map(|frame| [frame[0] * 0.25, frame[1] * 0.25])
     );
 }
 

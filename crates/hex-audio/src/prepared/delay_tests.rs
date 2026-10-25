@@ -29,8 +29,7 @@ fn block(callback: &mut Callback, output: &mut [Frame]) {
         (0, 0, 0, 0)
     );
 }
-#[test]
-fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocate_nothing() {
+fn editor_with_delay() -> (Editor, hex_project::TrackId, hex_project::DeviceId) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
@@ -94,6 +93,13 @@ fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocat
     else {
         panic!("delay")
     };
+    (editor, track, device)
+}
+#[test]
+fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocate_nothing() {
+    let (mut editor, _, device) = editor_with_delay();
+    let d = &hex_devices::delay::DEFINITION;
+    let state = editor.project().device(device).unwrap().state().clone();
     let (mut control, mut callback) = channel(48000).unwrap();
     control.publish(graph(editor.project())).unwrap();
     control.command(PlaybackCommand::Play).unwrap();
@@ -151,4 +157,123 @@ fn delay_prepared_publication_parameter_handoff_tail_retirement_and_stop_allocat
     control.request_shutdown();
     block(&mut callback, &mut output);
     control.reclaim();
+}
+
+#[test]
+fn repeated_solo_toggles_with_live_delay_apply_without_retaining_mix_only_tails() {
+    for session in [false, true] {
+        solo_toggles(session);
+    }
+}
+fn solo_toggles(session: bool) {
+    let (mut editor, track, _) = editor_with_delay();
+    let launch = session.then(|| {
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let source = editor.project().track(track).unwrap().midi_clips()[0].id();
+        editor
+            .execute(Command::CopyArrangementMidiToSession { source, scene })
+            .unwrap();
+        scene
+    });
+    let Created::Track(solo_track) = editor
+        .execute(Command::AddTrack {
+            name: "solo".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let (mut control, mut callback) = channel(48000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    if let Some(scene) = launch {
+        control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: hex_engine::LaunchQuantization::Immediate,
+            })
+            .unwrap();
+    } else {
+        control.command(PlaybackCommand::Play).unwrap();
+    }
+    let mut output = [[0.0; 2]; 127];
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+    }
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    for iteration in 0..130 {
+        editor
+            .execute(Command::ToggleSolo {
+                track: solo_track,
+                exclusive: true,
+            })
+            .unwrap();
+        let revision = control.publish(graph(editor.project())).unwrap();
+        block(&mut callback, &mut output);
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            revision,
+            "solo toggle {iteration} did not apply"
+        );
+        assert!(control.status.rejected_revision().is_none());
+        if iteration % 2 == 0 {
+            assert_eq!(
+                output, [[0.0; 2]; 127],
+                "solo must mute the existing delay output"
+            );
+        }
+        control.reclaim();
+    }
+    control.stop();
+    block(&mut callback, &mut output);
+    assert_eq!(output, [[0.0; 2]; 127]);
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
+
+#[test]
+fn track_mix_edits_preserve_delay_history_under_new_gain_and_balance() {
+    let (mut editor, track, _) = editor_with_delay();
+    let (mut control, mut callback) = channel(48000).unwrap();
+    let (mut reference_control, mut reference) = channel(48000).unwrap();
+    control.publish(graph(editor.project())).unwrap();
+    reference_control.publish(graph(editor.project())).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    reference_control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    let mut expected = output;
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+        block(&mut reference, &mut expected);
+    }
+    assert_eq!(output, expected);
+    for (gain, balance) in [(0.5, 0.0), (0.25, -1.0), (0.75, 1.0), (1.0, 0.0)] {
+        editor.execute(Command::Gain { track, gain }).unwrap();
+        editor.execute(Command::Balance { track, balance }).unwrap();
+        let revision = control.publish(graph(editor.project())).unwrap();
+        block(&mut callback, &mut output);
+        block(&mut reference, &mut expected);
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        let left = gain * if balance > 0.0 { 1.0 - balance } else { 1.0 };
+        let right = gain * if balance < 0.0 { 1.0 + balance } else { 1.0 };
+        for (actual, source) in output.iter().zip(&expected) {
+            assert_eq!(*actual, [source[0] * left, source[1] * right]);
+        }
+        control.reclaim();
+    }
+    for (control, callback) in [
+        (&mut control, &mut callback),
+        (&mut reference_control, &mut reference),
+    ] {
+        control.request_shutdown();
+        block(callback, &mut output);
+        control.reclaim();
+    }
 }
