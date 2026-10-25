@@ -57,6 +57,10 @@ fn state_v3_migrates_v1_and_v2_strictly_and_every_control_is_typed_bounded_and_r
         ParameterValue::Float(73.0)
     );
     assert_eq!(migrated.state_version(), 3);
+    assert_eq!(
+        preview(&legacy, 48000).unwrap(),
+        preview(&migrated, 48000).unwrap()
+    );
     let old =
         NativeDeviceState::new(REVERB_TYPE_ID, 2, original.payload()[..31 * 4].to_vec()).unwrap();
     let restored = d.migrate_state(&old).unwrap();

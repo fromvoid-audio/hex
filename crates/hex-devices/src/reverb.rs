@@ -14,7 +14,8 @@
 //! excitation. Frozen rooms declare Unbounded tails under the existing host
 //! policy: removed frozen tails persist until Stop, using bounded tail banks
 //! and explicit admission backpressure. Unfrozen rooms hard-clear at their
-//! declared zero-input deadline (including up to 100 ms of copied smoothing). No device-specific host lifecycle is introduced.
+//! declared zero-input deadline (including up to 100 ms of copied smoothing).
+//! No device-specific host lifecycle is introduced.
 mod runtime;
 mod state;
 use hex_lattice::{NativeDeviceDefinition, StereoMatrix};
@@ -183,7 +184,7 @@ pub fn preview(
     if !(8000..=192000).contains(&sample_rate) {
         return Err(DeviceContractError::InvalidParameterValue);
     }
-    let settings = decode(state)?;
+    let settings = decode(&state::migrate(state)?)?;
     let rate = sample_rate as f32 / sample_rate.div_ceil(48000) as f32;
     // Bilinear transform of the same second-order low/high-pass used by the
     // runtime, evaluated without processing audio or constructing DSP history.

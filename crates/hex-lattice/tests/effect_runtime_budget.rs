@@ -73,7 +73,7 @@ fn instances(
 #[test]
 fn exact_per_twin_and_aggregate_caps_preserve_count_and_twin_accounting() {
     assert_eq!(MAX_PROCESSOR_RUNTIME_BYTES, 256 * 1024);
-    assert_eq!(MAX_PROCESSOR_BANK_RUNTIME_BYTES, 16 * 1024 * 1024);
+    assert_eq!(MAX_PROCESSOR_BANK_RUNTIME_BYTES, 1024 * 1024);
     let factories = Arc::new(AtomicUsize::new(0));
     let accepted =
         NativeRuntimeChain::new(instances(1, MAX_PROCESSOR_RUNTIME_BYTES, &factories)).unwrap();

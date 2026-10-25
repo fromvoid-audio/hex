@@ -293,8 +293,8 @@ pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 /// instrument limits are supplied separately by the engine's aggregate policy.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 262_144;
 /// Aggregate declared bytes in one runtime bank, counting one twin per instance.
-/// The actual paired runtime storage doubles this bound (32 MiB).
-pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 16_777_216;
+/// The actual paired runtime storage doubles this bound (2 MiB).
+pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 1_048_576;
 
 /// Borrowed signal boundary around an entire native effect entry.
 /// Input precedes host input trim; Output follows effect, routing and output trim.
