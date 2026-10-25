@@ -18,7 +18,10 @@ impl Drop for Folder {
     }
 }
 fn fixture() -> (Session, TrackId, ClipId) {
-    let mut session = Session::new(48_000, 32, 2_000_000).unwrap();
+    fixture_at_rate(48_000)
+}
+fn fixture_at_rate(rate: u32) -> (Session, TrackId, ClipId) {
+    let mut session = Session::new(rate, 32, 2_000_000).unwrap();
     let Created::Track(track) = session
         .command(Command::InsertTrackWithDevice {
             name: "source".into(),
@@ -65,7 +68,7 @@ fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_en
 }
 #[test]
 fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_processing() {
-    for inplace in [false, true] {
+    for (inplace, whole_track) in [(false, false), (true, false), (true, true)] {
         let folder = Folder::new();
         let (mut session, track, clip) = fixture();
         session.command(Command::Gain { track, gain: 0.7 }).unwrap();
@@ -106,12 +109,48 @@ fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_
                     .unwrap(),
             })
             .unwrap();
+        let total_frames = if whole_track { 180_000 } else { 80_000 };
+        if whole_track {
+            let Created::Clip(second) = session
+                .command(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::from_raw(3 << 32),
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("second midi clip")
+            };
+            session
+                .command(Command::AddMidiNote {
+                    clip: second,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch: 67,
+                    channel: 0,
+                    velocity: 91,
+                })
+                .unwrap();
+            let path = folder.0.join("original.wav");
+            grouping::write_fixture(&path, 48_000, &[[0.2, -0.1]; 64]);
+            let prepared = PreparedImport::new(
+                hex_media::decode_wav_file(&path, hex_media::Limits::new(10_000, 1000)).unwrap(),
+            )
+            .unwrap();
+            session
+                .import_prepared_audio_clip_revision(prepared, track, 144_000, None)
+                .unwrap();
+        }
         let original = session.project().clone();
         let revision = session.compile_prepared_revision(None).unwrap();
-        let expected = pcm(revision.clone(), 80_000);
+        let expected = pcm(revision.clone(), total_frames);
         let (_, bounced) = session
             .bounce_arrangement(
-                BounceTarget::Clips(vec![clip]),
+                if whole_track {
+                    BounceTarget::Track(track)
+                } else {
+                    BounceTarget::Clips(vec![clip])
+                },
                 inplace,
                 &folder.0,
                 &hex_export::ExportControl::default(),
@@ -137,6 +176,26 @@ fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_
             samples[24_000..].iter().flatten().any(|s| s.abs() > 1e-6),
             "tail contains actual audio"
         );
+        if whole_track {
+            assert_eq!(audio.start(), 24_000);
+            assert!(
+                audio.start() + audio.duration() >= 144_064,
+                "all material and gaps are covered"
+            );
+            assert!(
+                session
+                    .project()
+                    .track(track)
+                    .unwrap()
+                    .midi_clips()
+                    .is_empty()
+            );
+            assert!(session.project().track(track).unwrap().devices().is_empty());
+            assert_eq!(
+                fs::read(folder.0.join("original.wav")).unwrap().len(),
+                44 + 64 * 8
+            );
+        }
         if inplace {
             assert!(
                 session
@@ -146,14 +205,33 @@ fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_
                     .instrument()
                     .is_none()
             );
-            let actual = pcm(bounced, 80_000);
-            let max = actual
+            let actual = pcm(bounced, total_frames);
+            let retained_end = usize::try_from(audio.start() + audio.duration()).unwrap();
+            assert!(
+                retained_end < expected.len(),
+                "fixture exercises trimmed residuals"
+            );
+            let max = actual[..retained_end]
                 .iter()
                 .flatten()
-                .zip(expected.iter().flatten())
+                .zip(expected[..retained_end].iter().flatten())
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0_f32, f32::max);
             assert!(max < 1e-5, "baked device host gains apply once: {max}");
+            assert!(
+                actual[retained_end..]
+                    .iter()
+                    .flatten()
+                    .all(|sample| *sample == 0.0)
+            );
+            // The original track's 0.7 mixer gain remains live. Only residuals
+            // at/below the bounce's -80 dBFS pre-mixer threshold may disappear.
+            assert!(
+                expected[retained_end..]
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= 0.7 * 0.0001)
+            );
         } else {
             assert!(session.project().midi_clip(clip).is_some());
         }
@@ -176,8 +254,14 @@ fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_
             .collect();
         let reopened = Session::from_loaded(loaded, 32, 2_000_000, decoded).unwrap();
         assert_eq!(
-            pcm(reopened.compile_prepared_revision(None).unwrap(), 80_000),
-            pcm(session.compile_prepared_revision(None).unwrap(), 80_000)
+            pcm(
+                reopened.compile_prepared_revision(None).unwrap(),
+                total_frames
+            ),
+            pcm(
+                session.compile_prepared_revision(None).unwrap(),
+                total_frames
+            )
         );
         assert_eq!(
             session.editor.next_history_requires_stopped_bounce(false),
@@ -241,21 +325,26 @@ fn exact_range_retains_prerange_instrument_state_and_stops_without_tail() {
 }
 #[test]
 fn failures_cancellation_and_second_output_preserve_model_history_media_and_original_files() {
+    for whole_track in [false, true] {
+        bounce_failure_case(whole_track);
+    }
+}
+
+fn bounce_failure_case(whole_track: bool) {
     let folder = Folder::new();
-    let (mut session, _, clip) = fixture();
+    let (mut session, track, clip) = fixture();
+    let target = if whole_track {
+        BounceTarget::Track(track)
+    } else {
+        BounceTarget::Clips(vec![clip])
+    };
     let original = session.project().clone();
     let resident = session.resident_frames;
     let control = hex_export::ExportControl::default();
     assert!(control.cancel());
     assert!(
         session
-            .bounce_arrangement(
-                BounceTarget::Clips(vec![clip]),
-                true,
-                &folder.0,
-                &control,
-                None
-            )
+            .bounce_arrangement(target.clone(), true, &folder.0, &control, None)
             .is_err()
     );
     assert_eq!(session.project(), &original);
@@ -264,7 +353,7 @@ fn failures_cancellation_and_second_output_preserve_model_history_media_and_orig
     assert!(
         session
             .bounce_arrangement(
-                BounceTarget::Clips(vec![clip]),
+                target.clone(),
                 true,
                 &occupied,
                 &hex_export::ExportControl::default(),
@@ -273,10 +362,10 @@ fn failures_cancellation_and_second_output_preserve_model_history_media_and_orig
             .is_err()
     );
     assert_eq!(fs::read(&occupied).unwrap(), b"original file");
-    let target = BounceTarget::Clips(vec![clip]);
+
     let mut files_seen = Vec::new();
     let result: Result<(), String> = session.bounce_arrangement_using(
-        target,
+        target.clone(),
         true,
         &folder.0,
         &hex_export::ExportControl::default(),
@@ -294,7 +383,7 @@ fn failures_cancellation_and_second_output_preserve_model_history_media_and_orig
     assert_eq!(session.resident_frames, resident);
     let item = session
         .project()
-        .plan_arrangement_bounce(&BounceTarget::Clips(vec![clip]), true)
+        .plan_arrangement_bounce(&target, true)
         .unwrap()
         .remove(0);
     let path = folder.0.join("prepared.wav");
@@ -306,7 +395,7 @@ fn failures_cancellation_and_second_output_preserve_model_history_media_and_orig
     )
     .unwrap();
     let result = session.adopt_arrangement_bounce_using(
-        BounceTarget::Clips(vec![clip]),
+        target.clone(),
         true,
         vec![BounceFile {
             track: item.track,
@@ -593,4 +682,78 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
             assert!(error < 1e-5, "directed source survives bounce: {error}");
         }
     }
+}
+
+#[path = "tests/grouping.rs"]
+mod grouping;
+
+#[test]
+fn clipped_thirty_second_delay_tail_adopts_media_and_undo_redo_as_one_edit() {
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+    let folder = Folder::new();
+    let rate = 8_000;
+    let (mut session, track, _clip) = fixture_at_rate(rate);
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let mut state = hex_engine::default_native_device_state_for_class(
+        class,
+        DeviceTypeId::from_static("hex.delay"),
+    )
+    .unwrap();
+    for (id, value) in [
+        (1, ParameterValue::Float(1000.0)),
+        (2, ParameterValue::Float(0.95)),
+        (3, ParameterValue::Float(0.5)),
+        (5, ParameterValue::Bool(false)),
+        (6, ParameterValue::Bool(false)),
+        (15, ParameterValue::Bool(false)),
+    ] {
+        state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            &state,
+            ParameterId::from_static(id),
+            value,
+        )
+        .unwrap();
+    }
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    let original = session.project().snapshot();
+    let revision = session.compile_prepared_revision(None).unwrap();
+    session
+        .bounce_arrangement(
+            BounceTarget::Track(track),
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            Some(&revision),
+        )
+        .unwrap();
+    let bounced = session.project().snapshot();
+    let audio = &session.project().track(track).unwrap().clips()[0];
+    let expected_frames = u64::from(rate) / 2 + u64::from(rate) * 30;
+    assert_eq!(audio.duration(), expected_frames);
+    let samples = session.audio(audio.asset()).unwrap().frames();
+    assert_eq!(samples.len() as u64, expected_frames);
+    assert!(
+        samples[samples.len() - 256..]
+            .iter()
+            .flatten()
+            .any(|s| s.abs() > 1e-6),
+        "delay is still sounding at the cutoff"
+    );
+    let project_path = folder.0.join("capped.hex");
+    hex_storage::save_new(&project_path, session.project()).unwrap();
+    assert_eq!(
+        hex_storage::load(&project_path).unwrap().snapshot(),
+        bounced
+    );
+    assert!(session.undo());
+    assert_eq!(session.project().snapshot().tracks, original.tracks);
+    assert!(session.redo());
+    assert_eq!(session.project().snapshot().tracks, bounced.tracks);
 }

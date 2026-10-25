@@ -21,7 +21,7 @@ const BED_TRACK: u64 = 5;
 const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
-    Project::from_snapshot(Snapshot {
+    Project::from_legacy_snapshot(Snapshot {
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
@@ -125,6 +125,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 track: SESSION_TRACK,
                 scene: SCENE,
                 content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
@@ -1440,4 +1441,80 @@ fn inactive_audio_retains_inventory_but_never_reads_pages_or_requests_demand() {
     assert!(pages.requests.is_empty());
     let expected = (0..12).map(|i| sample(i + 2)).collect::<Vec<_>>();
     assert_eq!(output.as_slice(), expected.as_slice());
+}
+
+#[test]
+fn console_audio_streamed_cycles_match_resident_and_demand_every_wrapped_page() {
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand};
+    let mut snapshot = project(4094, 4110).snapshot();
+    let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
+        panic!("audio")
+    };
+    clip.loop_range = Some(hex_project::SessionAudioLoop::new(4095, 4099).unwrap());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let source_key = StreamSourceKey::new(71, project.assets().next().unwrap().id());
+    let revision = prepared(&project, 71, [3; 32]);
+    let mut resident_sources = sources(&project, metadata(&project, 71, [3; 32]));
+    resident_sources.insert(
+        project.assets().next().unwrap().id(),
+        PreparedAudioSource::Resident(Audio::new(RATE, (0..8192).map(sample).collect()).unwrap()),
+    );
+    let resident = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            &project,
+            &resident_sources,
+            71,
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let clip = revision.session().audio_clips()[0].id;
+    for block in [1, 3, 17, 64] {
+        let mut streamed = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let mut reference =
+            Playback::try_from_prepared_with_session(Arc::clone(&resident)).unwrap();
+        launch_and_play(&mut streamed);
+        launch_and_play(&mut reference);
+        let mut pages = MemoryPages::with_source(source_key);
+        let mut actual = vec![[0.0; 2]; 97];
+        let mut expected = actual.clone();
+        for chunk in actual.chunks_mut(block) {
+            streamed.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        for chunk in expected.chunks_mut(block) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block {block}");
+        for (i, frame) in actual.iter().enumerate() {
+            let pos = if i < 5 { 4094 + i } else { 4095 + (i - 5) % 4 };
+            let mut expected = sample(pos as u64);
+            if i < 12 {
+                let bed = sample(i as u64 + 2);
+                expected[0] += bed[0];
+                expected[1] += bed[1];
+            }
+            assert_eq!(*frame, expected);
+        }
+    }
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut extents = Vec::new();
+    playback
+        .visit_next_stream_chunk(17, Some(true), &mut |e| {
+            extents.push(e);
+            Ok(())
+        })
+        .unwrap();
+    // Intro suffix and one complete cycle cover all repeatedly touched pages.
+    assert_eq!(extents.iter().map(|e| e.end - e.start).sum::<usize>(), 9);
+    assert_eq!(
+        extents.iter().map(|e| e.page_index).collect::<Vec<_>>(),
+        vec![0, 1, 0, 1]
+    );
 }

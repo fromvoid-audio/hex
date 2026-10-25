@@ -451,3 +451,313 @@ fn accepted_preview_root_keeps_hidden_pcm_and_exhausted_once_source_under_the_tr
         );
     }
 }
+
+#[test]
+fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_cuts() {
+    for variant in 0..6 {
+        let musical = variant != 0;
+        for mode in [AudioViewMode::Once, AudioViewMode::Repeat] {
+            let (mut seed, clip, media) = if musical {
+                musical_placement(WarpMode::RePitch)
+            } else {
+                placed(mode, 500)
+            };
+            if musical {
+                let mut snapshot = seed.project().snapshot();
+                snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+                    .edit
+                    .as_mut()
+                    .unwrap()
+                    .placement
+                    .as_mut()
+                    .unwrap()
+                    .mode = mode;
+                seed = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+            }
+            if variant >= 2 {
+                for (beat, bpm) in [
+                    (0, 123_456_789),
+                    (8, 97_333_331),
+                    (16, 177_777_779),
+                    (20, 83_123_457),
+                ] {
+                    seed.execute(Command::SetTempoPoint {
+                        beat: BeatTime::from_ratio(beat, 16).unwrap(),
+                        tempo: Tempo::new(bpm).unwrap(),
+                    })
+                    .unwrap();
+                }
+            }
+            if variant == 3 || variant == 5 {
+                seed.execute(Command::ReverseClips(vec![clip])).unwrap();
+            }
+            if variant == 4 {
+                seed.execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: None,
+                })
+                .unwrap();
+                let mut snapshot = seed.project().snapshot();
+                let edit = snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+                    .edit
+                    .as_mut()
+                    .unwrap();
+                edit.timing = AudioClipTiming::Frozen {
+                    reference_start_raw: edit.reference_start_raw().unwrap(),
+                    tempo: Arc::new(seed.project().tempo_map().clone()),
+                };
+                seed = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+            }
+            if variant == 5 {
+                let frame = seed
+                    .project()
+                    .tempo_map()
+                    .beat_to_frame(BeatTime::from_ratio(21, 16).unwrap())
+                    .unwrap();
+                seed.execute(Command::TrimClipEdge {
+                    clip,
+                    edge: hex_project::TrimEdge::Right,
+                    frame,
+                })
+                .unwrap();
+            }
+            let mut add = |start, end| {
+                let Created::ArrangementSection(id) = seed
+                    .execute(Command::AddArrangementSection {
+                        name: "part".into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start: BeatTime::from_ratio(start, 16).unwrap(),
+                        end: BeatTime::from_ratio(end, 16).unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("section")
+                };
+                id
+            };
+            // Cuts cross both a partial cycle and a later repeat (or Once silence).
+            let section = add(5, 15);
+            let target = add(17, 23);
+            let old = seed.project().tempo_map();
+            let s = old
+                .beat_to_frame(BeatTime::from_ratio(5, 16).unwrap())
+                .unwrap() as usize;
+            let e = old
+                .beat_to_frame(BeatTime::from_ratio(15, 16).unwrap())
+                .unwrap() as usize;
+            let t = old
+                .beat_to_frame(BeatTime::from_ratio(23, 16).unwrap())
+                .unwrap() as usize;
+            let n = t + 12_000;
+            let context = AudioTransformPreparation::default();
+            let source = render(&prepare(&seed, &media, &context), 0, n, 113);
+            for operation in 0..8 {
+                let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
+                let before = editor.project().snapshot();
+                let mut expected = source.clone();
+                let command = match operation {
+                    0 => {
+                        expected.splice(e..e, source[s..e].iter().copied());
+                        Command::DuplicateArrangementSection(section)
+                    }
+                    1 => {
+                        expected.drain(s..e);
+                        Command::DeleteArrangementSection(section)
+                    }
+                    2 => {
+                        expected.splice(e..e, vec![[0.0; 2]; e - s]);
+                        Command::ResizeArrangementSection {
+                            section,
+                            edge: hex_project::TrimEdge::Right,
+                            length: BeatTime::from_ratio(20, 16).unwrap(),
+                        }
+                    }
+                    3 => {
+                        let removed = old
+                            .beat_to_frame(BeatTime::from_ratio(10, 16).unwrap())
+                            .unwrap() as usize;
+                        expected.drain(removed..e);
+                        Command::ResizeArrangementSection {
+                            section,
+                            edge: hex_project::TrimEdge::Right,
+                            length: BeatTime::from_ratio(5, 16).unwrap(),
+                        }
+                    }
+                    4 => {
+                        expected.drain(s..e);
+                        expected.splice(t - (e - s)..t - (e - s), source[s..e].iter().copied());
+                        Command::ReorderSectionAfter {
+                            section,
+                            after: target,
+                        }
+                    }
+                    5 => {
+                        let begin = old
+                            .beat_to_frame(BeatTime::from_ratio(17, 16).unwrap())
+                            .unwrap() as usize;
+                        expected.drain(begin..t);
+                        expected.splice(s..s, source[begin..t].iter().copied());
+                        Command::ReorderSectionBefore {
+                            section: target,
+                            before: section,
+                        }
+                    }
+                    6 => {
+                        let boundary = BeatTime::from_ratio(10, 16).unwrap();
+                        let frame = old.beat_to_frame(boundary).unwrap() as usize;
+                        expected[frame..e].fill([0.0; 2]);
+                        Command::ResizeArrangementSectionEdge {
+                            section,
+                            edge: hex_project::TrimEdge::Right,
+                            boundary,
+                        }
+                    }
+                    _ => {
+                        let boundary = BeatTime::from_ratio(8, 16).unwrap();
+                        let frame = old.beat_to_frame(boundary).unwrap() as usize;
+                        expected[s..frame].fill([0.0; 2]);
+                        Command::ResizeArrangementSectionEdge {
+                            section,
+                            edge: hex_project::TrimEdge::Left,
+                            boundary,
+                        }
+                    }
+                };
+                editor.execute(command).unwrap_or_else(|error| {
+                    panic!("variant={variant} mode={mode:?} operation={operation}: {error}")
+                });
+                if operation == 2 {
+                    let marker = editor.project().arrangement_section(section).unwrap();
+                    let end = editor
+                        .project()
+                        .tempo_map()
+                        .beat_to_frame(marker.end())
+                        .unwrap() as usize;
+                    expected = source.clone();
+                    expected.splice(e..e, vec![[0.0; 2]; end - e]);
+                }
+                for block in [31, 257] {
+                    let actual = render(
+                        &prepare(&editor, &media, &context),
+                        0,
+                        expected.len(),
+                        block,
+                    );
+                    assert!(
+                        actual == expected,
+                        "variant={variant} mode={mode:?} operation={operation} first mismatch={:?}, max difference={}",
+                        actual.iter().zip(&expected).position(|(a, b)| a != b),
+                        actual
+                            .iter()
+                            .zip(&expected)
+                            .flat_map(|(a, b)| [(a[0] - b[0]).abs(), (a[1] - b[1]).abs()])
+                            .fold(0.0_f32, f32::max)
+                    );
+                }
+                let after = editor.project().snapshot();
+                assert_eq!(
+                    Project::from_snapshot(after.clone()).unwrap().snapshot(),
+                    after
+                );
+                assert!(editor.undo());
+                let mut undone = editor.project().snapshot();
+                undone.next_id = before.next_id;
+                assert_eq!(undone, before);
+                assert!(editor.redo());
+                assert_eq!(editor.project().snapshot(), after);
+                // A second cut must retain the first edit's saved processing origin.
+                let marker = editor.project().arrangement_section(target).unwrap();
+                let clock = editor.project().tempo_map();
+                let a = clock.beat_to_frame(marker.start()).unwrap() as usize;
+                let b = clock.beat_to_frame(marker.end()).unwrap() as usize;
+                let mut twice = expected.clone();
+                twice.splice(b..b, expected[a..b].iter().copied());
+                editor
+                    .execute(Command::DuplicateArrangementSection(target))
+                    .unwrap();
+                let actual = render(&prepare(&editor, &media, &context), 0, twice.len(), 127);
+                assert!(
+                    actual == twice,
+                    "second edit variant={variant} mode={mode:?} operation={operation} mismatch={:?}",
+                    actual.iter().zip(&twice).position(|(a, b)| a != b)
+                );
+                Project::from_snapshot(editor.project().snapshot()).unwrap();
+                if musical {
+                    editor
+                        .execute(Command::SetProjectTempo {
+                            tempo: Tempo::new(101_111_113).unwrap(),
+                        })
+                        .unwrap();
+                    prepare(&editor, &media, &context);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn section_repeat_seam_keeps_global_tempo_editable_and_undo_restores_exact_pcm() {
+    let (mut editor, _, media) = musical_placement(WarpMode::RePitch);
+    let mut add = |start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: "part".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: BeatTime::from_ratio(start, 16).unwrap(),
+                end: BeatTime::from_ratio(end, 16).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    // The first repeat seam is 5/8 beats; its nearest frame inverses just before
+    // that authored seam. Preserve the sub-frame cursor across relocation/BPM.
+    let section = add(10, 15);
+    let target = add(17, 23);
+    let clock = editor.project().tempo_map();
+    let s = clock
+        .beat_to_frame(BeatTime::from_ratio(10, 16).unwrap())
+        .unwrap() as usize;
+    let e = clock
+        .beat_to_frame(BeatTime::from_ratio(15, 16).unwrap())
+        .unwrap() as usize;
+    let t = clock
+        .beat_to_frame(BeatTime::from_ratio(23, 16).unwrap())
+        .unwrap() as usize;
+    let context = AudioTransformPreparation::default();
+    let original = render(&prepare(&editor, &media, &context), 0, t + 12_000, 113);
+    let mut expected = original.clone();
+    expected.drain(s..e);
+    expected.splice(t - (e - s)..t - (e - s), original[s..e].iter().copied());
+    editor
+        .execute(Command::ReorderSectionAfter {
+            section,
+            after: target,
+        })
+        .unwrap();
+    assert!(
+        editor.project().tracks()[0].clips().iter().any(|clip| {
+            hex_project::AudioViewProjection::new(clip, editor.project().tempo_map())
+                .unwrap()
+                .has_subframe_intro()
+        }),
+        "fixture must retain a zero-frame partial first occurrence"
+    );
+    assert!(render(&prepare(&editor, &media, &context), 0, expected.len(), 127) == expected);
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::DEFAULT,
+        })
+        .unwrap();
+    let changed = render(&prepare(&editor, &media, &context), 0, expected.len(), 257);
+    assert!(changed.iter().any(|frame| *frame != [0.0; 2]));
+    assert!(editor.undo());
+    assert!(render(&prepare(&editor, &media, &context), 0, expected.len(), 31) == expected);
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, changed.len(), 31),
+        changed
+    );
+}

@@ -1,8 +1,10 @@
 //! Schema45 adds mandatory retained native source definitions to strict schema44.
-//! Schemas1–44 migrate to an empty inventory, keeping existing track instruments
-//! unchanged; adoption into source bindings is a later model change. Decoding is
-//! in-memory only. The privately stripped schema44 core composes the existing
-//! codec, not a public downgrade that may discard retained source state.
+//! Schema47 permits retained processing projections on outer musical views and
+//! skips inaudible partial first cycles while retaining their authored cursor.
+//! Schema46 adds an ordered source-binding row for every track and removes inline
+//! instrument copies from its core. Older schemas still migrate through their
+//! frozen codecs; decoding is in-memory only. Private stripped cores compose those
+//! codecs and are never public lossy downgrades.
 use crate::{Project, StorageError};
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
 use hex_project::{DeviceSnapshot, NativeSourceSnapshot};
@@ -17,6 +19,17 @@ struct Source {
     #[serde(deserialize_with = "devices")]
     devices: Vec<SourceDevice>,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Binding {
+    track: u64,
+    #[serde(deserialize_with = "required_source")]
+    source: Option<u64>,
+    #[serde(deserialize_with = "required_position")]
+    instrument_position: Option<usize>,
+}
+#[derive(Deserialize)]
+struct Bindings(#[serde(deserialize_with = "bindings")] Vec<Binding>);
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceDevice {
@@ -76,7 +89,9 @@ struct Reference {
     asset: u64,
 }
 #[derive(Deserialize)]
-struct Inventory(#[serde(deserialize_with = "sources")] Vec<Source>);
+struct Inventory45(#[serde(deserialize_with = "sources45")] Vec<Source>);
+#[derive(Deserialize)]
+struct Inventory46(#[serde(deserialize_with = "sources46")] Vec<Source>);
 
 fn bounded<'de, D, T>(d: D, limit: usize) -> Result<Vec<T>, D::Error>
 where
@@ -104,8 +119,22 @@ where
     }
     d.deserialize_seq(Items(limit, std::marker::PhantomData))
 }
-fn sources<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source>, D::Error> {
+fn sources45<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source>, D::Error> {
+    // Schema45 was written when the source limit equaled MAX_TRACKS (256).
+    // Keep its wire bound frozen even though schema46 can hold promoted sources.
+    bounded(d, 256)
+}
+fn sources46<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Source>, D::Error> {
     bounded(d, hex_project::MAX_NATIVE_SOURCES)
+}
+fn bindings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Binding>, D::Error> {
+    bounded(d, hex_project::MAX_TRACKS)
+}
+fn required_source<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Option::deserialize(d)
+}
+fn required_position<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    Option::deserialize(d)
 }
 fn devices<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<SourceDevice>, D::Error> {
     bounded(d, hex_project::MAX_SOURCE_DEVICES)
@@ -164,14 +193,70 @@ impl SourceDevice {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let mut snapshot = project.snapshot();
+    super::session_audio_loops::refuse_legacy(project)?;
+    let mut value = encode45(project)?;
+    let snapshot = project.snapshot();
+    let mut bindings = Vec::with_capacity(snapshot.tracks.len());
+    let bound_devices = snapshot
+        .tracks
+        .iter()
+        .filter_map(|track| track.instrument.as_ref().map(|device| device.id))
+        .collect::<std::collections::BTreeSet<_>>();
+    for (track, live_track) in snapshot.tracks.iter().zip(project.tracks()) {
+        bindings.push(Binding {
+            track: track.id,
+            source: live_track.source_id().map(|source| source.value()),
+            instrument_position: track.instrument_position,
+        });
+    }
+    let object = value.as_object_mut().ok_or(StorageError::Invalid(
+        "invalid native source binding envelope",
+    ))?;
+    let track_rows = object
+        .get_mut("tracks")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(StorageError::Invalid("track records missing"))?;
+    if track_rows.len() != snapshot.tracks.len() {
+        return Err(StorageError::Invalid(
+            "track records differ from binding inventory",
+        ));
+    }
+    for (row, track) in track_rows.iter_mut().zip(&snapshot.tracks) {
+        if row.get("id").and_then(serde_json::Value::as_u64) != Some(track.id) {
+            return Err(StorageError::Invalid(
+                "track records differ from binding order",
+            ));
+        }
+        row["instrument"] = serde_json::Value::Null;
+        row["instrument_position"] = serde_json::Value::Null;
+    }
+    let asset_rows = object
+        .get_mut("device_assets")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(StorageError::Invalid("device asset manifest missing"))?;
+    asset_rows.retain(|row| {
+        row.get("device")
+            .and_then(serde_json::Value::as_u64)
+            .is_none_or(|device| !bound_devices.contains(&device))
+    });
+    object.insert("version".into(), 47.into());
+    object.insert(
+        "track_source_bindings".into(),
+        serde_json::to_value(bindings)?,
+    );
+    Ok(value)
+}
+
+fn encode45(project: &Project) -> Result<serde_json::Value, StorageError> {
+    let snapshot = project.snapshot();
     Project::from_snapshot(snapshot.clone()).map_err(invalid)?;
-    let sources = std::mem::take(&mut snapshot.native_sources)
-        .into_iter()
+    let sources = snapshot
+        .native_sources
+        .iter()
         .map(|s| {
             Ok(Source {
                 id: s.id,
-                name: s.name,
+                name: s.name.clone(),
                 instrument_index: s.instrument_index,
                 devices: s
                     .devices
@@ -181,7 +266,16 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
             })
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
-    let core = Project::from_snapshot(snapshot).map_err(invalid)?;
+    let mut core_snapshot = snapshot;
+    let bound_sources = project
+        .tracks()
+        .iter()
+        .filter_map(|track| track.source_id().map(|source| source.value()))
+        .collect::<std::collections::BTreeSet<_>>();
+    core_snapshot
+        .native_sources
+        .retain(|source| bound_sources.contains(&source.id));
+    let core = Project::from_snapshot(core_snapshot).map_err(invalid)?;
     let mut value = super::track_groups::encode(&core)?;
     let object = value
         .as_object_mut()
@@ -190,7 +284,146 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     object.insert("native_sources".into(), serde_json::to_value(sources)?);
     Ok(value)
 }
-pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+/// Decode the schema46 native-source envelope. The outer storage dispatcher
+/// applies frozen historical-model restrictions after canonical decoding.
+pub(crate) fn decode46(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 46)
+}
+
+/// Schema47 changes only the validity contract; all encoded fields retain their
+/// established strict layout and limits.
+pub(crate) fn decode47(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 47)
+}
+
+fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
+    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let next_id = value
+        .get("next_id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(StorageError::Invalid("project next identity missing"))?;
+    let object = value.as_object_mut().ok_or(StorageError::Invalid(
+        "invalid native source binding envelope",
+    ))?;
+    if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
+        return Err(StorageError::Invalid(
+            "invalid native source binding schema",
+        ));
+    }
+    let tracks = object
+        .get("tracks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(StorageError::Invalid("track records missing"))?;
+    if tracks.iter().any(|track| {
+        track.get("instrument") != Some(&serde_json::Value::Null)
+            || track.get("instrument_position") != Some(&serde_json::Value::Null)
+    }) {
+        return Err(StorageError::Invalid(
+            "current track records cannot contain inline instrument projections",
+        ));
+    }
+    let Bindings(bindings) =
+        serde_json::from_value(object.remove("track_source_bindings").ok_or(
+            StorageError::Invalid("track source binding inventory missing"),
+        )?)?;
+    let source_value = object
+        .get("native_sources")
+        .cloned()
+        .ok_or(StorageError::Invalid("native source inventory missing"))?;
+    let Inventory46(sources) = serde_json::from_value(source_value)?;
+    let midi_routes = super::playable_routing::decode_midi_routes(
+        object
+            .remove("midi_routes")
+            .ok_or(StorageError::Invalid("midi route inventory missing"))?,
+    )?;
+    let track_rows = object
+        .get("tracks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(StorageError::Invalid("track records missing"))?;
+    if bindings.len() != track_rows.len() {
+        return Err(StorageError::Invalid(
+            "track source binding inventory is incomplete",
+        ));
+    }
+    for (track, binding) in track_rows.iter().zip(&bindings) {
+        if track.get("id").and_then(serde_json::Value::as_u64) != Some(binding.track) {
+            return Err(StorageError::Invalid(
+                "track source bindings differ from track order",
+            ));
+        }
+        match (binding.source, binding.instrument_position) {
+            (None, None) => {}
+            (Some(source_id), Some(_)) => {
+                if !sources.iter().any(|source| source.id == source_id) {
+                    return Err(StorageError::Invalid(
+                        "track binding references a missing source",
+                    ));
+                }
+            }
+            _ => return Err(StorageError::Invalid("invalid track source binding")),
+        }
+    }
+    object.remove("native_sources");
+    // Legacy readers validate MIDI destinations against inline instruments. Keep
+    // the strict rows for the final hydrated model, but skip that lower-layer
+    // check while decoding the core: bindings supply destination instruments.
+    object.insert("midi_routes".into(), serde_json::Value::Array(Vec::new()));
+    object.insert("version".into(), 44.into());
+    let legacy = super::track_groups::decode(&serde_json::to_vec(&value)?)?;
+    let mut snapshot = legacy.snapshot();
+    if bindings.len() != snapshot.tracks.len() {
+        return Err(StorageError::Invalid(
+            "track source binding inventory is incomplete",
+        ));
+    }
+    let native_sources = sources
+        .into_iter()
+        .map(|source| {
+            Ok(NativeSourceSnapshot {
+                id: source.id,
+                name: source.name,
+                instrument_index: source.instrument_index,
+                devices: source
+                    .devices
+                    .into_iter()
+                    .map(SourceDevice::into_device)
+                    .collect::<Result<_, _>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    for (track, binding) in snapshot.tracks.iter_mut().zip(&bindings) {
+        if binding.track != track.id {
+            return Err(StorageError::Invalid(
+                "track source bindings differ from track order",
+            ));
+        }
+        match (binding.source, binding.instrument_position) {
+            (None, None) => {}
+            (Some(source_id), Some(position)) => {
+                let source = native_sources
+                    .iter()
+                    .find(|source| source.id == source_id)
+                    .ok_or(StorageError::Invalid(
+                        "track binding references a missing source",
+                    ))?;
+                let expected = source
+                    .devices
+                    .get(source.instrument_index)
+                    .ok_or(StorageError::Invalid("source instrument is missing"))?;
+                track.instrument = Some(expected.clone());
+                track.instrument_position = Some(position);
+            }
+            _ => return Err(StorageError::Invalid("invalid track source binding")),
+        }
+    }
+    snapshot.native_sources = native_sources;
+    snapshot.midi_routes = midi_routes;
+    snapshot.next_id = next_id;
+    Project::from_snapshot(snapshot).map_err(invalid)
+}
+
+pub(crate) fn decode45(bytes: &[u8]) -> Result<Project, StorageError> {
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
     let object = value
@@ -199,14 +432,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if object.get("version").and_then(|v| v.as_u64()) != Some(45) {
         return Err(StorageError::Invalid("invalid native source schema"));
     }
-    let Inventory(sources) = serde_json::from_value(
-        object
-            .remove("native_sources")
-            .ok_or(StorageError::Invalid("native source inventory missing"))?,
-    )?;
+    let wire_sources = object
+        .remove("native_sources")
+        .ok_or(StorageError::Invalid("native source inventory missing"))?;
+    let Inventory45(sources) = serde_json::from_value(wire_sources)?;
     object.insert("version".into(), 44.into());
     let mut snapshot = super::track_groups::decode(&serde_json::to_vec(&value)?)?.snapshot();
-    snapshot.native_sources = sources
+    let mut merged = sources
         .into_iter()
         .map(|s| {
             Ok(NativeSourceSnapshot {
@@ -220,8 +452,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                     .collect::<Result<_, _>>()?,
             })
         })
-        .collect::<Result<_, StorageError>>()?;
-    Project::from_snapshot(snapshot).map_err(invalid)
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    merged.extend(snapshot.native_sources);
+    snapshot.native_sources = merged;
+    Project::from_legacy_snapshot(snapshot).map_err(invalid)
 }
 
 #[cfg(test)]

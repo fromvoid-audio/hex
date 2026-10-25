@@ -2,15 +2,19 @@
 //!
 //! This inventory owns authored chains and their media references, not live DSP.
 //! Entries are ordered by creation, have globally unique source/device identities,
-//! and survive track removal and bounded history expiry. Only explicit removal
-//! deletes one (Undo of creation deliberately restores its prior state). Binding
-//! and shared-runtime admission are separate increments: every entry here is
-//! unassigned and cannot acquire references through this API. When bindings are
-//! introduced, removal must refuse referenced entries until explicitly unlinked.
-//! Source device state/bypass/comparison edits use the existing DeviceId commands.
+//! and survive track removal and bounded history expiry. Immutable track binding
+//! handles refer to the same registry definition, not a copy or runtime. Only explicit removal
+//! deletes one (Undo of creation deliberately restores its prior state). Source
+//! mutations replace the registry and binding views together. Admission currently
+//! permits one track per singleton source; multi-device/unassigned chains retain
+//! state but cannot be bound yet. Concurrent sharing requires a separate event/
+//! receiver contract and is refused, never implemented through instance copies.
 use crate::{Command, Created, Device, DeviceId, DeviceSnapshot, Invalid, Project, SourceId};
+use std::{ops::Deref, sync::Arc};
 
-pub const MAX_NATIVE_SOURCES: usize = crate::MAX_TRACKS;
+// The preceding format allowed256 retained sources PLUS256 track instruments.
+// Migration retains both; the existing global device budget is unchanged.
+pub const MAX_NATIVE_SOURCES: usize = crate::MAX_TRACKS * 2;
 pub const MAX_SOURCE_DEVICES: usize = crate::MAX_DEVICES_PER_TRACK + 1;
 
 /// An ordered chain with one designated instrument and source-owned processing.
@@ -18,23 +22,86 @@ pub const MAX_SOURCE_DEVICES: usize = crate::MAX_DEVICES_PER_TRACK + 1;
 /// DSP; native provider class/admission remains the session/engine's boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeSource {
-    pub(crate) id: SourceId,
-    pub(crate) name: String,
-    pub(crate) devices: Vec<Device>,
-    pub(crate) instrument_index: usize,
+    definition: Arc<SourceDefinition>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceDefinition {
+    id: SourceId,
+    name: String,
+    instrument: Device,
+    effects: Vec<Device>,
+    instrument_index: usize,
+}
+/// Immutable control-side binding view of a retained definition. This is not a
+/// DSP instance or resource lease. Only the registry can replace authored state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceBinding(NativeSource);
+impl Deref for SourceBinding {
+    type Target = Device;
+    fn deref(&self) -> &Device {
+        self.0.instrument()
+    }
+}
+impl SourceBinding {
+    pub(crate) fn source_id(&self) -> SourceId {
+        self.0.id()
+    }
 }
 impl NativeSource {
     pub fn id(&self) -> SourceId {
-        self.id
+        self.definition.id
     }
     pub fn name(&self) -> &str {
-        &self.name
+        &self.definition.name
     }
-    pub fn devices(&self) -> &[Device] {
-        &self.devices
+    pub fn instrument(&self) -> &Device {
+        &self.definition.instrument
     }
     pub fn instrument_index(&self) -> usize {
-        self.instrument_index
+        self.definition.instrument_index
+    }
+    pub fn devices(&self) -> impl Iterator<Item = &Device> {
+        let index = self.instrument_index();
+        self.definition
+            .effects
+            .iter()
+            .take(index)
+            .chain(std::iter::once(self.instrument()))
+            .chain(self.definition.effects.iter().skip(index))
+    }
+    pub(crate) fn from_parts(
+        id: SourceId,
+        name: String,
+        devices: Vec<Device>,
+        instrument_index: usize,
+    ) -> Result<Self, Invalid> {
+        validate_chain(&name, devices.len(), instrument_index)?;
+        let mut devices = devices.into_iter();
+        let mut effects: Vec<_> = devices.by_ref().take(instrument_index).collect();
+        let instrument = devices
+            .next()
+            .ok_or(Invalid("native source instrument is missing"))?;
+        effects.extend(devices);
+        Ok(Self {
+            definition: Arc::new(SourceDefinition {
+                id,
+                name,
+                instrument,
+                effects,
+                instrument_index,
+            }),
+        })
+    }
+    pub(crate) fn binding(&self) -> Result<SourceBinding, Invalid> {
+        if !self.is_singleton() {
+            return Err(Invalid(
+                "binding multi-device source chains is not supported yet",
+            ));
+        }
+        Ok(SourceBinding(self.clone()))
+    }
+    pub(crate) fn is_singleton(&self) -> bool {
+        self.definition.effects.is_empty()
     }
 }
 
@@ -49,12 +116,11 @@ pub struct NativeSourceSnapshot {
 impl From<&NativeSource> for NativeSourceSnapshot {
     fn from(source: &NativeSource) -> Self {
         Self {
-            id: source.id.value(),
-            name: source.name.clone(),
-            instrument_index: source.instrument_index,
+            id: source.id().value(),
+            name: source.name().to_owned(),
+            instrument_index: source.instrument_index(),
             devices: source
-                .devices
-                .iter()
+                .devices()
                 .map(|d| DeviceSnapshot {
                     id: d.id().value(),
                     state: d.state().clone(),
@@ -80,7 +146,131 @@ impl Project {
         &self.native_sources
     }
     pub fn native_source(&self, source: SourceId) -> Option<&NativeSource> {
-        self.native_sources.iter().find(|s| s.id == source)
+        self.native_sources.iter().find(|s| s.id() == source)
+    }
+}
+
+impl Project {
+    fn edit_native_source(
+        &mut self,
+        id: SourceId,
+        edit: impl FnOnce(&mut SourceDefinition) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        let index = self
+            .native_sources
+            .iter()
+            .position(|s| s.id() == id)
+            .ok_or(Invalid("native source no longer exists"))?;
+        let mut definition = (*self.native_sources[index].definition).clone();
+        edit(&mut definition)?;
+        let updated = NativeSource {
+            definition: Arc::new(definition),
+        };
+        self.native_sources[index] = updated.clone();
+        for track in &mut self.tracks {
+            if track.source_id() == Some(id) {
+                track.instrument = Some(SourceBinding(updated.clone()));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn register_instrument(
+        &mut self,
+        name: String,
+        device: Device,
+    ) -> Result<SourceBinding, Invalid> {
+        if self.native_sources.len() >= MAX_NATIVE_SOURCES {
+            return Err(Invalid("native source limit reached"));
+        }
+        let id = SourceId(self.allocate_id()?);
+        let source = NativeSource::from_parts(id, name, vec![device], 0)?;
+        self.native_sources.push(source.clone());
+        Ok(SourceBinding(source))
+    }
+    pub(crate) fn copy_source_binding(
+        &mut self,
+        binding: &SourceBinding,
+    ) -> Result<SourceBinding, Invalid> {
+        let mut device = Device::clone(binding);
+        device.id = DeviceId(self.allocate_id()?);
+        self.register_instrument(binding.0.name().to_owned(), device)
+    }
+    pub(crate) fn bind_track_source(
+        &mut self,
+        track: crate::TrackId,
+        source: Option<SourceId>,
+    ) -> Result<(), Invalid> {
+        let target = self.track(track).ok_or(Invalid("track no longer exists"))?;
+        if target.is_group() {
+            return Err(Invalid("group tracks cannot have an instrument source"));
+        }
+        if target.source_id() == source {
+            return Ok(());
+        }
+        let position = target.instrument_position.unwrap_or(0);
+        let binding = if let Some(id) = source {
+            let source = self
+                .native_source(id)
+                .ok_or(Invalid("native source no longer exists"))?;
+            if !source.is_singleton() {
+                return Err(Invalid(
+                    "binding multi-device source chains is not supported yet",
+                ));
+            }
+            if self.tracks().iter().any(|t| t.source_id() == Some(id)) {
+                return Err(Invalid(
+                    "simultaneous shared source playback is not supported yet",
+                ));
+            }
+            Some(SourceBinding(source.clone()))
+        } else {
+            None
+        };
+        let target = self.track_mut(track)?;
+        target.instrument = binding;
+        target.instrument_position = target.instrument.as_ref().map(|_| position);
+        Ok(())
+    }
+    pub(crate) fn validate_source_bindings(&self) -> Result<(), Invalid> {
+        let mut bound = std::collections::BTreeSet::new();
+        for track in self.tracks() {
+            if let Some(binding) = &track.instrument {
+                let source = self
+                    .native_source(binding.source_id())
+                    .ok_or(Invalid("track source is missing"))?;
+                if !source.is_singleton() || !Arc::ptr_eq(&source.definition, &binding.0.definition)
+                {
+                    return Err(Invalid(
+                        "track source binding does not match retained definition",
+                    ));
+                }
+                if !bound.insert(source.id()) {
+                    return Err(Invalid(
+                        "simultaneous shared source playback is not supported yet",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn edit_source_device(
+        &mut self,
+        source: SourceId,
+        device: DeviceId,
+        edit: impl FnOnce(&mut Device) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        self.edit_native_source(source, |definition| {
+            let target = if definition.instrument.id == device {
+                &mut definition.instrument
+            } else {
+                definition
+                    .effects
+                    .iter_mut()
+                    .find(|d| d.id == device)
+                    .ok_or(Invalid("source device no longer exists"))?
+            };
+            edit(target)
+        })
     }
 }
 
@@ -120,29 +310,40 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     }
                 })
                 .collect();
-            project.native_sources.push(NativeSource {
+            project.native_sources.push(NativeSource::from_parts(
                 id,
                 name,
                 devices,
                 instrument_index,
-            });
+            )?);
             Ok(Created::NativeSource(id))
         }
         Command::RenameNativeSource { source, name } => {
             crate::edit::name_valid(&name)?;
-            project
-                .native_sources
-                .iter_mut()
-                .find(|s| s.id == source)
-                .ok_or(Invalid("native source no longer exists"))?
-                .name = name;
+            project.edit_native_source(source, |definition| {
+                definition.name = name;
+                Ok(())
+            })?;
+            Ok(Created::None)
+        }
+        Command::BindTrackSource { track, source } => {
+            project.bind_track_source(track, source)?;
             Ok(Created::None)
         }
         Command::RemoveNativeSource(source) => {
+            if project
+                .tracks()
+                .iter()
+                .any(|t| t.source_id() == Some(source))
+            {
+                return Err(Invalid(
+                    "native source is still assigned to a track · unlink it first",
+                ));
+            }
             let index = project
                 .native_sources
                 .iter()
-                .position(|s| s.id == source)
+                .position(|s| s.id() == source)
                 .ok_or(Invalid("native source no longer exists"))?;
             project.native_sources.remove(index);
             Ok(Created::None)
@@ -151,5 +352,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
     }
 }
 
+#[cfg(test)]
+mod binding_tests;
 #[cfg(test)]
 mod tests;

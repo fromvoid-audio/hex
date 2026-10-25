@@ -1,8 +1,9 @@
 //! # Purpose
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
-//! transactional history. Unassigned native source definitions retain complete
-//! authored device chains and media references independently of track/history lifetime;
-//! they do not create live playback or track bindings. Main-lane song sections are stable named/color/range
+//! transactional history. Native source definitions retain complete authored
+//! device chains and media references independently of track/history lifetime.
+//! Tracks bind immutable singleton source views; engine admission still owns DSP.
+//! Concurrent source bindings are not admitted yet. Main-lane song sections are stable named/color/range
 //! objects, separate from DSP clips. Structural reorder permutes complete
 //! supported song content atomically through retained source/history contracts.
 //! Clip-local MIDI volume has independent immutable identity
@@ -147,8 +148,8 @@ mod session;
 mod snapshot;
 mod split_tracks;
 pub use session::{
-    Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
-    SessionSceneTarget,
+    Scene, SessionAudioClip, SessionAudioLoop, SessionCell, SessionCellContent, SessionGrid,
+    SessionMidiClip, SessionSceneTarget,
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
@@ -488,7 +489,7 @@ pub struct Track {
     pub(crate) muted: bool,
     pub(crate) soloed: bool,
     pub(crate) devices: Vec<Device>,
-    pub(crate) instrument: Option<Device>,
+    pub(crate) instrument: Option<native_sources::SourceBinding>,
     /// Number of serial effects that precede the optional instrument.
     /// `None` exactly when `instrument` is absent.
     pub(crate) instrument_position: Option<usize>,
@@ -539,9 +540,15 @@ impl Track {
     /// Optional instrument in the track's ordered device chain. `None` means
     /// MIDI on this track is silent.
     pub fn instrument(&self) -> Option<&Device> {
-        self.instrument.as_ref()
+        self.instrument.as_deref()
     }
-    /// Number of serial effects before the instrument, if one is present.
+    /// Stable retained definition; deleting/unlinking this track never removes it.
+    pub fn source_id(&self) -> Option<SourceId> {
+        self.instrument
+            .as_ref()
+            .map(native_sources::SourceBinding::source_id)
+    }
+    /// Number of track-local effects before the source/audio merge, if present.
     pub fn instrument_position(&self) -> Option<usize> {
         self.instrument_position
     }
@@ -551,7 +558,7 @@ impl Track {
     pub fn ordered_device_chain(&self) -> OrderedDeviceChain<'_> {
         OrderedDeviceChain {
             effects: &self.devices,
-            instrument: self.instrument.as_ref(),
+            instrument: self.instrument.as_deref(),
             instrument_position: self.instrument_position,
             effect_index: 0,
             instrument_yielded: false,
@@ -720,22 +727,33 @@ impl Project {
         {
             return Err(Invalid("project device limit reached"));
         }
+        if self
+            .native_sources
+            .len()
+            .checked_add(missing)
+            .is_none_or(|n| n > MAX_NATIVE_SOURCES)
+            || missing
+                .checked_mul(2)
+                .and_then(|n| u64::try_from(n).ok())
+                .and_then(|n| self.next_id.checked_add(n))
+                .is_none()
+        {
+            return Err(Invalid(
+                "legacy instrument source identities exceed project limits",
+            ));
+        }
         let state = default_instrument_state()?;
-        let (first_id, _) = self.allocate_id_range(missing)?;
-        let mut id = first_id;
-        for track in &mut self.tracks {
-            if track.instrument.is_none() {
-                track.instrument = Some(Device {
-                    comparison: None,
-                    id: DeviceId(id),
-                    state: state.clone(),
-                    bypassed: false,
-                });
-                track.instrument_position = Some(0);
-                id = id
-                    .checked_add(1)
-                    .ok_or(Invalid("project id space exhausted"))?;
-            }
+        let targets: Vec<_> = self
+            .tracks
+            .iter()
+            .filter(|t| t.instrument.is_none())
+            .map(|t| t.id)
+            .collect();
+        for track in targets {
+            self.apply(Command::InsertInstrument {
+                track,
+                state: state.clone(),
+            })?;
         }
         Ok(())
     }
@@ -884,39 +902,36 @@ impl Project {
     pub fn device(&self, id: DeviceId) -> Option<&Device> {
         self.tracks
             .iter()
-            .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
-            .chain(self.returns.iter().flat_map(|track| track.devices.iter()))
-            .chain(self.main_devices.iter())
-            .chain(
-                self.native_sources
-                    .iter()
-                    .flat_map(|source| source.devices.iter()),
-            )
-            .find(|device| device.id() == id)
+            .flat_map(|t| t.devices())
+            .chain(self.returns.iter().flat_map(|t| t.devices()))
+            .chain(self.main_devices())
+            .chain(self.native_sources.iter().flat_map(|s| s.devices()))
+            .find(|d| d.id() == id)
     }
-    pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
-        self.tracks
+    /// Mutate authored device state at its canonical owner; a retained source
+    /// update replaces every immutable binding only after the edit succeeds.
+    pub(crate) fn edit_device(
+        &mut self,
+        id: DeviceId,
+        edit: impl FnOnce(&mut Device) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        if let Some(source) = self
+            .native_sources
+            .iter()
+            .find(|s| s.devices().any(|d| d.id() == id))
+            .map(NativeSource::id)
+        {
+            return self.edit_source_device(source, id, edit);
+        }
+        let device = self
+            .tracks
             .iter_mut()
-            .find_map(|track| {
-                track
-                    .devices
-                    .iter_mut()
-                    .find(|device| device.id == id)
-                    .or_else(|| track.instrument.as_mut().filter(|device| device.id == id))
-            })
-            .or_else(|| {
-                self.returns
-                    .iter_mut()
-                    .find_map(|track| track.devices.iter_mut().find(|device| device.id == id))
-            })
-            .or_else(|| self.main_devices.iter_mut().find(|device| device.id == id))
-            .or_else(|| {
-                self.native_sources
-                    .iter_mut()
-                    .flat_map(|source| source.devices.iter_mut())
-                    .find(|device| device.id == id)
-            })
-            .ok_or(Invalid("device no longer exists"))
+            .flat_map(|t| t.devices.iter_mut())
+            .chain(self.returns.iter_mut().flat_map(|t| t.devices.iter_mut()))
+            .chain(self.main_devices.iter_mut())
+            .find(|d| d.id == id)
+            .ok_or(Invalid("device no longer exists"))?;
+        edit(device)
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {
         self.tracks

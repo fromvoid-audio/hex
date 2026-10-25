@@ -813,10 +813,6 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 name: "metadata".into(),
             },
             Command::DuplicateArrangementSection(intro),
-            Command::ReorderSectionAfter {
-                section: intro,
-                after: chorus,
-            },
         ] {
             let before = event.state.project.snapshot();
             let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
@@ -915,13 +911,77 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                     "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
                 );
             }
+            // A new loop pass dispatches the shortened prefix signature. Undo
+            // must work after this boundary, independently of worker timing.
+            if unchanged_prefix && event.state.project.arrangement_sections().len() > 2 {
+                for _ in 0..loop_frames.div_ceil(64) + 1 {
+                    h.render();
+                }
+            }
             event = run_callback(&mut h, Request::Undo);
             assert!(event.error.is_none(), "{:?}", event.error);
             (applied, _) = h.applied(applied);
             let mut restored = event.state.project.snapshot();
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
+            if unchanged_prefix {
+                let start = h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire);
+                assert_eq!(
+                    h.render(),
+                    expected_from_start(start),
+                    "Undo must preserve the original sampler phase without a second NoteOn"
+                );
+            }
         }
+        let original = event.state.project.snapshot();
+        let flags = (event.state.can_undo, event.state.can_redo);
+        let refused = run_callback(
+            &mut h,
+            section_request(
+                event.state.revision,
+                Command::ReorderSectionAfter {
+                    section: intro,
+                    after: chorus,
+                },
+            ),
+        );
+        assert!(
+            refused
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("stop playback")),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(refused.state.revision, event.state.revision);
+        assert_eq!(refused.state.project.snapshot(), original);
+        assert_eq!((refused.state.can_undo, refused.state.can_redo), flags);
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .rejected_revision()
+                .is_none()
+        );
         for _ in 0..800 {
             h.render();
         }
@@ -943,6 +1003,100 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .command(PlaybackCommand::Stop)
             .unwrap();
         assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+        let moved = run_callback(
+            &mut h,
+            section_request(
+                refused.state.revision,
+                Command::ReorderSectionAfter {
+                    section: intro,
+                    after: chorus,
+                },
+            ),
+        );
+        assert!(moved.error.is_none(), "{:?}", moved.error);
+        (applied, _) = h.applied(applied);
+        // Transport admission resumes only after control and callback retire
+        // the acknowledged stopped-edit fence, not merely its graph revision.
+        let until = Instant::now() + Duration::from_secs(2);
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stopped_edit_pending()
+        {
+            h.pump();
+            h.render();
+            assert!(Instant::now() < until, "installed gate did not retire");
+            std::thread::yield_now();
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        for _ in 0..loop_frames.div_ceil(64) + 1 {
+            h.render();
+        }
+        let refused_undo = run_callback(&mut h, Request::Undo);
+        assert!(
+            refused_undo
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("stop playback")),
+            "{:?}",
+            refused_undo.error
+        );
+        assert_eq!(refused_undo.state.revision, moved.state.revision);
+        assert_eq!(
+            refused_undo.state.project.snapshot(),
+            moved.state.project.snapshot()
+        );
+        assert_eq!(
+            (refused_undo.state.can_undo, refused_undo.state.can_redo),
+            (moved.state.can_undo, moved.state.can_redo)
+        );
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire),
+            applied
+        );
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .rejected_revision()
+                .is_none()
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Stop)
+            .unwrap();
+        h.render();
+        let undone = run_callback(&mut h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        (applied, _) = h.applied(applied);
+        let mut restored = undone.state.project.snapshot();
+        restored.next_id = original.next_id;
+        assert_eq!(restored, original);
+        let redone = run_callback(&mut h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        h.applied(applied);
+        assert_eq!(
+            redone.state.project.snapshot(),
+            moved.state.project.snapshot()
+        );
     }
 }
 

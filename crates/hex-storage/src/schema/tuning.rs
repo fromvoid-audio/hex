@@ -236,7 +236,7 @@ pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, Stor
     if let Some(volumes) = volumes {
         volumes.apply(&mut snapshot)?;
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 /// The private staging DTOs also serve old-shaped internal envelopes and default

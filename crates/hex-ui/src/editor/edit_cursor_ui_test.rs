@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
-fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAppContext) {
+fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -88,13 +88,15 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
             < 0.002
     );
     visual.simulate_keystrokes("cmd-e");
+    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }
 
 #[gpui::test]
-fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext) {
+fn command_click_is_free_and_e_routes_midi_split(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, _, clip) = midi_project();
     let (_, preview) =
@@ -142,16 +144,14 @@ fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext
             .frame_to_beat(frame)
             .expect("beat")
     });
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitMidiClip { clip: id, beat: position }) if id == clip && position == beat));
     });
 }
 
 #[gpui::test]
-fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
-    cx: &mut TestAppContext,
-) {
+fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_e(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (base, audio_track, midi_track, _) = audio_project();
     let mut project_editor = Editor::new(base, 8).expect("project editor");
@@ -228,7 +228,7 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     visual.simulate_mouse_up(header, MouseButton::Left, unsnapped);
     visual.run_until_parked();
     assert!(visual.debug_bounds("section-edit-cursor").is_some());
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(
             view.last_enqueued_edit.is_none(),
@@ -250,7 +250,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
     let lane = visual
         .debug_bounds(Box::leak(
@@ -264,7 +264,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.edit_cursor.expect("cursor on empty track").track,
@@ -1639,6 +1639,50 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
             view.last_transport_command.is_none(),
             "midi focus keeps Space"
         );
+    });
+}
+
+#[gpui::test]
+fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            window.focus(&view.focus);
+            // Native resident metadata deliberately carries no graph handle.
+            // Its stateful flag formerly forced Space through the seek worker.
+            view.audible_playback = Some(super::PlaybackCandidate {
+                worker_requires_preroll: Some(true),
+                observation: None,
+                audio_revision: 1,
+                project_generation: view.project_generation,
+                state: Arc::clone(view.state.as_ref().unwrap()),
+                prepared_revision: None,
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            view.time_selection = None;
+            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track: source,
+                frame: 48_000_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+                pulse_started: Instant::now(),
+            });
+        });
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(48_000_000))
+        );
+        assert!(view.prepared_seek.is_none());
+        assert!(view.latched_seek_intent.is_none());
     });
 }
 

@@ -10,6 +10,7 @@
 //! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
 //! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
+mod native_effect_storage;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -26,6 +27,7 @@ pub use hex_devices::operator_waveform::builtin_waveform_preview as native_opera
 pub use hex_devices::overdrive::{
     OverdriveFilterResponse, filter_response as native_overdrive_filter_response,
 };
+pub use hex_devices::reverb::{ReverbPreview, preview as native_reverb_preview};
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };
@@ -143,7 +145,7 @@ impl PostNodeIdentity {
     }
 }
 
-pub use hex_lattice::DeviceMeter;
+pub use hex_lattice::{DeviceMeter, DynamicsMeter};
 pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
 
 /// Borrowed stereo Main after master gain from a successful engine render.
@@ -834,6 +836,14 @@ pub(crate) struct ReturnBus {
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
     pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+}
+
+/// Resolve playback audibility without changing authored activation/mute state.
+/// Solo wins over that track's mute; otherwise any solo suppresses this track.
+/// Shared by resident compilation and prepared/streamed Arrangement tracks;
+/// Session routes borrow those same effective mixes.
+pub(crate) fn effective_track_mute(track: &hex_project::Track, any_soloed: bool) -> bool {
+    !track.soloed() && (track.muted() || any_soloed)
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.

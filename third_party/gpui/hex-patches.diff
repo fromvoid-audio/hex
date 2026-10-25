@@ -4462,12 +4462,36 @@ diff --git a/src/view.rs b/src/view.rs
 diff --git a/src/window.rs b/src/window.rs
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -667,0 +668 @@
+@@ -656,7 +656,7 @@
+     current_view: EntityId,
+     priority: usize,
+     parent_node: DispatchNodeId,
+-    element_id_stack: SmallVec<[ElementId; 32]>,
++    element_id_stack: SmallVec<[ElementId; 8]>,
+     text_style_stack: Vec<TextStyleRefinement>,
+     element: Option<AnyElement>,
+     absolute_offset: Point<Pixels>,
+@@ -665,6 +665,7 @@
+ }
+
+ pub(crate) struct Frame {
 +    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -682 +683 @@
+     pub(crate) focus: Option<FocusId>,
+     pub(crate) window_active: bool,
+     pub(crate) element_states: FxHashMap<(GlobalElementId, TypeId), ElementStateBox>,
+@@ -679,7 +680,7 @@
+     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
+     #[cfg(any(test, feature = "test-support"))]
 -    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
 +    pub(crate) debug_bounds: DebugBounds,
-@@ -689,0 +691,33 @@
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+@@ -687,8 +688,42 @@
+     pub(crate) tab_stops: TabStopMap,
+ }
+
 +// Test selectors follow paint ordering, including cached and nested view replay.
 +// Retaining only the final map loses each cached view's insertion range and can
 +// incorrectly restore another view's later overwrite of the same selector.
@@ -4501,23 +4525,58 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -691,0 +726 @@
+ #[derive(Clone, Default)]
+ pub(crate) struct PrepaintStateIndex {
 +    accessibility_index: usize,
-@@ -708,0 +744,2 @@
+     hitboxes_index: usize,
+     tooltips_index: usize,
+     deferred_draws_index: usize,
+@@ -706,11 +741,14 @@
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
 +    #[cfg(any(test, feature = "test-support"))]
 +    debug_bounds_index: usize,
-@@ -713,0 +751 @@
+ }
+
+ impl Frame {
+     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
+         Frame {
 +            accessibility: Default::default(),
-@@ -729 +767 @@
+             focus: None,
+             window_active: false,
+             element_states: FxHashMap::default(),
+@@ -726,7 +764,7 @@
+             cursor_styles: Vec::new(),
+
+             #[cfg(any(test, feature = "test-support"))]
 -            debug_bounds: FxHashMap::default(),
 +            debug_bounds: DebugBounds::default(),
-@@ -740,0 +779 @@
+
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             next_inspector_instance_ids: FxHashMap::default(),
+@@ -738,6 +776,7 @@
+     }
+
+     pub(crate) fn clear(&mut self) {
 +        self.accessibility = Default::default();
-@@ -753,0 +793,3 @@
+         self.element_states.clear();
+         self.accessed_element_states.clear();
+         self.mouse_listeners.clear();
+@@ -751,6 +790,9 @@
+         self.deferred_draws.clear();
+         self.tab_stops.clear();
+         self.focus = None;
 +
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-@@ -817,0 +860,9 @@
+
+         #[cfg(any(feature = "inspector", debug_assertions))]
+         {
+@@ -815,11 +857,21 @@
+     }
+ }
+
 +// A frame-owned cursor override must restore even when its window is destroyed.
 +struct HiddenCursorRestore(Rc<dyn crate::Platform>);
 +
@@ -4527,13 +4586,38 @@ diff --git a/src/window.rs b/src/window.rs
 +    }
 +}
 +
-@@ -822,0 +874 @@
+ /// Holds the state for a specific window.
+ pub struct Window {
+     pub(crate) handle: AnyWindowHandle,
+     pub(crate) invalidator: WindowInvalidator,
+     pub(crate) removed: bool,
 +    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -1097,0 +1150,3 @@
+     pub(crate) platform_window: Box<dyn PlatformWindow>,
+     display_id: Option<DisplayId>,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
+@@ -833,7 +885,7 @@
+     pub(crate) viewport_size: Size<Pixels>,
+     layout_engine: Option<TaffyLayoutEngine>,
+     pub(crate) root: Option<AnyView>,
+-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
++    pub(crate) element_id_stack: SmallVec<[ElementId; 8]>,
+     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+     pub(crate) rendered_entity_stack: Vec<EntityId>,
+     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
+@@ -1095,6 +1147,9 @@
+                 handle
+                     .update(&mut cx, |_, window, cx| {
+                         window.active.set(active);
 +                        if !active {
 +                            window.hidden_cursor_restore.take();
 +                        }
-@@ -1123,0 +1179,10 @@
+                         window.modifiers = window.platform_window.modifiers();
+                         window.capslock = window.platform_window.capslock();
+                         window
+@@ -1121,6 +1176,16 @@
+                     .log_err();
+             }
+         }));
 +        platform_window.on_accessibility_action({
 +            let mut cx = cx.to_async();
 +            Box::new(move |request: crate::AccessibilityRequest| {
@@ -4544,9 +4628,21 @@ diff --git a/src/window.rs b/src/window.rs
 +                    .unwrap_or(false)
 +            })
 +        });
-@@ -1210,0 +1276 @@
+         platform_window.on_input({
+             let mut cx = cx.to_async();
+             Box::new(move |event| {
+@@ -1208,6 +1273,7 @@
+             handle,
+             invalidator,
+             removed: false,
 +            hidden_cursor_restore: None,
-@@ -1373,0 +1440,7 @@
+             platform_window,
+             display_id,
+             sprite_atlas,
+@@ -1371,8 +1437,17 @@
+         }
+     }
+
 +    /// Whether this window currently owns an invisible cursor override.
 +    /// Test support only: this does not establish physical cursor appearance.
 +    #[cfg(any(test, feature = "test-support"))]
@@ -4554,10 +4650,17 @@ diff --git a/src/window.rs b/src/window.rs
 +        self.hidden_cursor_restore.is_some()
 +    }
 +
-@@ -1375,0 +1449,2 @@
+     /// Close this window.
+     pub fn remove_window(&mut self) {
 +        self.platform_window.revoke_accessibility();
 +        self.hidden_cursor_restore.take();
-@@ -1910,0 +1986,55 @@
+         self.removed = true;
+     }
+
+@@ -1908,6 +1983,61 @@
+         self.platform_window.completed_frame();
+     }
+
 +    /// Current bounded, actually mounted semantic nodes in rendered order.
 +    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
 +        self.rendered_frame
@@ -4613,14 +4716,32 @@ diff --git a/src/window.rs b/src/window.rs
 +        })
 +    }
 +
-@@ -1943,0 +2074,4 @@
+     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
+     /// the contents of the new [`Scene`], use [`Self::present`].
+     #[profiling::function]
+@@ -1941,6 +2071,10 @@
+         let previous_window_active = self.rendered_frame.window_active;
+         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+         self.next_frame.clear();
 +        self.platform_window.publish_accessibility(
 +            self.accessibility_nodes().cloned().collect(),
 +            self.rendered_frame.accessibility.invalid,
 +        );
-@@ -2222,0 +2357 @@
+         let current_focus_path = self.rendered_frame.focus_path();
+         let current_window_active = self.rendered_frame.window_active;
+
+@@ -2220,6 +2354,7 @@
+
+     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
+         PrepaintStateIndex {
 +            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2368,8 @@
+             hitboxes_index: self.next_frame.hitboxes.len(),
+             tooltips_index: self.next_frame.tooltip_requests.len(),
+             deferred_draws_index: self.next_frame.deferred_draws.len(),
+@@ -2230,6 +2365,14 @@
+     }
+
+     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
 +        for (node, callback) in &self.rendered_frame.accessibility.nodes
 +            [range.start.accessibility_index..range.end.accessibility_index]
 +        {
@@ -4629,16 +4750,31 @@ diff --git a/src/window.rs b/src/window.rs
 +                .insert(node.clone(), callback.clone());
 +        }
 +        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -2289,0 +2433,2 @@
+         self.next_frame.hitboxes.extend(
+             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+                 .iter()
+@@ -2287,10 +2430,17 @@
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+             line_layout_index: self.text_system.layout_index(),
 +            #[cfg(any(test, feature = "test-support"))]
 +            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
-@@ -2293,0 +2439,5 @@
+         }
+     }
+
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.next_frame.debug_bounds.replay(
 +            &self.rendered_frame.debug_bounds.insertion_history
 +                [range.start.debug_bounds_index..range.end.debug_bounds_index],
 +        );
-@@ -3527,7 +3677,11 @@
+         self.next_frame.cursor_styles.extend(
+             self.rendered_frame.cursor_styles
+                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
+@@ -3524,14 +3674,28 @@
+         subscription
+     }
+
 -    fn reset_cursor_style(&self, cx: &mut App) {
 -        // Set the cursor only if we're the active window.
 -        if self.is_window_hovered() {
@@ -4657,7 +4793,7 @@ diff --git a/src/window.rs b/src/window.rs
 +            if self.hidden_cursor_restore.is_none() {
 +                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
 +            }
-@@ -3534,0 +3689,10 @@
+             cx.platform.set_cursor_style(style);
 +        } else {
 +            self.hidden_cursor_restore.take();
 +            if self.is_window_hovered() {
@@ -4668,10 +4804,37 @@ diff --git a/src/window.rs b/src/window.rs
 +                        style
 +                    });
 +            }
-@@ -3576,0 +3741,6 @@
+         }
+     }
+
+@@ -3574,6 +3738,12 @@
+                     .join(" ")
+             })
+             .unwrap_or_else(|| action.name().to_string())
 +    }
 +
 +    /// Dispatch input through this window's existing event path, without exposing
 +    /// private propagation metadata or generating operating-system input events.
 +    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
 +        self.dispatch_event(event, cx);
+     }
+
+     /// Dispatch a mouse or keyboard event on the window.
+diff --git a/src/element.rs b/src/element.rs
+--- a/src/element.rs
++++ b/src/element.rs
+@@ -272,8 +272,13 @@
+ }
+
+ /// A globally unique identifier for an element, used to track state across frames.
++///
++/// Keep short paths inline without carrying 32 entries through every draw phase
++/// and state-map operation. Longer paths spill into SmallVec's existing dynamic
++/// storage: this is not a depth limit. Equality, hashing and display retain the
++/// entire ordered path. Window's active and deferred stacks use the same capacity.
+ #[derive(Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
+-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
++pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 8]>);
+
+ impl Display for GlobalElementId {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

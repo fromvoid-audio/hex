@@ -23,6 +23,11 @@ pub enum Command {
         devices: Vec<hex_lattice_contract::NativeDeviceState>,
         instrument_index: usize,
     },
+    /// Assign an existing singleton source, or unlink without deleting it.
+    BindTrackSource {
+        track: TrackId,
+        source: Option<crate::SourceId>,
+    },
     RenameNativeSource {
         source: crate::SourceId,
         name: String,
@@ -744,6 +749,9 @@ pub enum Command {
         amount: f32,
     },
     ToggleMute(TrackId),
+    /// Mute every explicit member if any is unmuted; otherwise unmute all.
+    /// Reject stale membership before mutation; one command is one undo step.
+    ToggleTracksMute(crate::TrackSelectionIds),
     AddMidiTrack {
         name: String,
     },
@@ -816,6 +824,11 @@ pub enum Command {
         track: TrackId,
         from_scene: crate::SceneId,
         to_scene: crate::SceneId,
+    },
+    /// Change a Console audio cycle without replacing its retained PCM.
+    SetSessionAudioClipLoop {
+        clip: ClipId,
+        loop_range: Option<crate::SessionAudioLoop>,
     },
     SetSessionAudioClipSource {
         clip: ClipId,
@@ -1648,6 +1661,7 @@ impl Project {
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
             source_command @ (Command::CreateNativeSource { .. }
+            | Command::BindTrackSource { .. }
             | Command::RenameNativeSource { .. }
             | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {
@@ -1902,6 +1916,7 @@ impl Project {
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
+            | Command::SetSessionAudioClipLoop { .. }
             | Command::SetSessionAudioClipSource { .. }
             | Command::ClearSessionCell { .. }
             | Command::SetSessionStopCell { .. }
@@ -2051,6 +2066,21 @@ impl Project {
                 }
                 let gain = (self.master_gain + amount).clamp(0.0, 2.0);
                 self.apply(Command::MasterGain { gain })
+            }
+            Command::ToggleTracksMute(tracks) => {
+                let mut muted = false;
+                for id in tracks.ids() {
+                    muted |= !self
+                        .track(*id)
+                        .ok_or(Invalid("track selection no longer exists"))?
+                        .muted;
+                }
+                for track in &mut self.tracks {
+                    if tracks.ids().contains(&track.id()) {
+                        track.muted = muted;
+                    }
+                }
+                Ok(Created::None)
             }
             Command::ToggleMute(track) => {
                 let muted = !self

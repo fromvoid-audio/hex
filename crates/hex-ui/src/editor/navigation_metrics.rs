@@ -38,10 +38,29 @@ struct State {
 }
 
 thread_local! {
+    // Diagnostic ablation in the ignored headless probe only. This is separate
+    // from timer resets and is never compiled into the shipped renderer.
+    static WAVEFORMS_SUPPRESSED: Cell<bool> = const { Cell::new(false) };
     static STATE: Cell<State> = const { Cell::new(State {
         enabled: false,
         measurements: Measurements { ns: [0; STAGE_COUNT], calls: [0; STAGE_COUNT] },
     }) };
+}
+
+pub(super) struct WaveformSuppression(bool);
+
+pub(super) fn suppress_waveforms(suppress: bool) -> WaveformSuppression {
+    WaveformSuppression(WAVEFORMS_SUPPRESSED.with(|state| state.replace(suppress)))
+}
+
+pub(super) fn waveforms_suppressed() -> bool {
+    WAVEFORMS_SUPPRESSED.with(Cell::get)
+}
+
+impl Drop for WaveformSuppression {
+    fn drop(&mut self) {
+        WAVEFORMS_SUPPRESSED.with(|state| state.set(self.0));
+    }
 }
 
 pub(super) fn reset(enabled: bool) {
@@ -147,5 +166,27 @@ impl Element for PhaseProbe {
     ) {
         let _timer = Timer::start(Stage::Paint);
         self.child.paint(window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waveform_ablation_restores_scope_and_survives_timer_resets() {
+        assert!(!waveforms_suppressed());
+        {
+            let _outer = suppress_waveforms(true);
+            reset(true);
+            assert!(waveforms_suppressed());
+            {
+                let _inner = suppress_waveforms(false);
+                assert!(!waveforms_suppressed());
+            }
+            assert!(waveforms_suppressed());
+        }
+        assert!(!waveforms_suppressed());
+        reset(false);
     }
 }

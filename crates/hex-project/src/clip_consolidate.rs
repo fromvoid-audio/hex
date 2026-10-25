@@ -7,6 +7,7 @@ use crate::{
     MidiClipVolume, MidiClipVolumePoint, MidiSource, NoteId, Project,
 };
 use std::{collections::BTreeSet, sync::Arc};
+pub(crate) mod render;
 
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
     group(project, ids, None)

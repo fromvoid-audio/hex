@@ -268,10 +268,14 @@ pub(super) fn render_return_effect(
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.limiter") {
+                super::limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
                 super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.reverb") {
+                super::reverb_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.delay") {
                 super::delay_panel::render_body(view, cx, id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
@@ -373,8 +377,10 @@ pub(super) fn render_return_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
+        Ok("hex.limiter") => super::limiter_panel::FRAME_WIDTH,
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,
+        Ok("hex.reverb") => super::reverb_panel::FRAME_WIDTH,
         Ok("hex.delay") => super::delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => super::auto_pan_panel::FRAME_WIDTH,
         Ok("hex.overdrive") => super::overdrive_panel::FRAME_WIDTH,

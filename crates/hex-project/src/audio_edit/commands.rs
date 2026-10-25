@@ -67,6 +67,67 @@ pub(crate) fn move_clip(clip: &mut Clip, start: u64, tempo: &TempoMap) -> Result
     clip.start = start;
     project_clip(clip, tempo)
 }
+/// Trim in the immutable source placement clock, then restore live destination
+/// timing. The temporary Frozen carrier never escapes or enters validation/DSP;
+/// its complete source coordinates retain repeats and directed windows alike.
+fn trim_retained_outer(
+    clip: &Clip,
+    edge: TrimEdge,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<Clip, Invalid> {
+    let old = clip.audio_edit().ok_or(Invalid("audio domain missing"))?;
+    let projection = old
+        .processing_projection
+        .as_ref()
+        .ok_or(Invalid("retained audio clock missing"))?;
+    let mut source = clip.clone();
+    let edit = source
+        .audio_edit_mut()
+        .ok_or(Invalid("audio domain missing"))?;
+    edit.timing = AudioClipTiming::Frozen {
+        reference_start_raw: old.reference_for_processing_origin(projection.origin_beat_raw)?,
+        tempo: Arc::clone(&projection.tempo),
+    };
+    edit.processing_projection = None;
+    edit.placement_start_offset = 0;
+    edit.placement_end_offset = 0;
+    let mut result = trim_view(&source, edge, frame, &projection.tempo)?;
+    let start = if edge == TrimEdge::Left {
+        frame
+    } else {
+        clip.start
+    };
+    let end = if edge == TrimEdge::Right {
+        frame
+    } else {
+        clip.start
+            .checked_add(clip.duration)
+            .ok_or(Invalid("audio trim end overflow"))?
+    };
+    let edit = result
+        .audio_edit_mut()
+        .ok_or(Invalid("audio domain missing"))?;
+    let origin = edit.projection_origin()?;
+    edit.timing = AudioClipTiming::Musical(if edge == TrimEdge::Left {
+        tempo.frame_to_beat(start)?
+    } else {
+        old.live_musical_start()
+            .ok_or(Invalid("retained audio needs musical placement"))?
+    });
+    edit.processing_projection = Some(Arc::new(AudioProcessingProjection {
+        tempo: Arc::clone(&projection.tempo),
+        origin_beat_raw: origin,
+    }));
+    edit.retain_frame_bounds(start, end, tempo)?;
+    result.start = start;
+    project_clip(&mut result, tempo)?;
+    if result.start != start || result.duration != end - start {
+        return Err(Invalid("retained audio trim changed sample bounds"));
+    }
+    Ok(result)
+}
+
 pub(crate) fn trim_view(
     clip: &Clip,
     edge: TrimEdge,
@@ -77,6 +138,9 @@ pub(crate) fn trim_view(
         .edit
         .as_ref()
         .ok_or(Invalid("audio crop has no domain"))?;
+    if edit.placement.is_some() && edit.processing_projection.is_some() {
+        return trim_retained_outer(clip, edge, frame, tempo);
+    }
     if edit.content_view.is_some() {
         return super::content::trim_content(clip, edge, frame, tempo);
     }
@@ -446,10 +510,51 @@ pub(crate) fn source_policy(
     looping: Option<bool>,
     phase: Option<u64>,
 ) -> Result<crate::Created, Invalid> {
+    let direct = looping.is_some()
+        && project
+            .clip(id)
+            .and_then(|c| c.audio_edit())
+            .is_some_and(|e| e.placement.is_some());
+    let clip = preview_source_policy(project, id, looping, phase)?;
+    if direct {
+        *project.clip_mut(id)? = clip;
+        Ok(crate::Created::None)
+    } else {
+        crate::clip_group::replace_audio(project, clip)
+    }
+}
+impl crate::Project {
+    /// Metadata-only preview of SetClipLooping, including legacy source loops
+    /// and retained Once/Repeat views. Uses the canonical edit law without I/O
+    /// or project/history mutation; controls cannot publish this replacement.
+    pub fn preview_audio_clip_looping(
+        &self,
+        clip: crate::ClipId,
+        looping: bool,
+    ) -> Result<Clip, Invalid> {
+        preview_source_policy(self, clip, Some(looping), None)
+    }
+}
+fn preview_source_policy(
+    project: &crate::Project,
+    id: crate::ClipId,
+    looping: Option<bool>,
+    phase: Option<u64>,
+) -> Result<Clip, Invalid> {
     let mut clip = project
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
+    if clip.edit.is_none() {
+        if let Some(looping) = looping {
+            clip.looping = looping;
+            if !looping {
+                clip.source_phase = 0;
+            }
+        }
+        validate_clip(project, &clip)?;
+        return Ok(clip);
+    }
     let mut owned_edit = clip
         .edit
         .clone()
@@ -468,8 +573,7 @@ pub(crate) fn source_policy(
         // Turning the view off must not reveal another portion of that root.
         clip.edit = Some(owned_edit);
         validate_clip(project, &clip)?;
-        *project.clip_mut(id)? = clip;
-        return Ok(crate::Created::None);
+        return Ok(clip);
     }
     let domain = Arc::make_mut(&mut edit.domain);
     if let Some(looping) = looping {
@@ -490,5 +594,5 @@ pub(crate) fn source_policy(
     clip.source_phase = domain.source_phase;
     clip.edit = Some(owned_edit);
     validate_clip(project, &clip)?;
-    crate::clip_group::replace_audio(project, clip)
+    Ok(clip)
 }

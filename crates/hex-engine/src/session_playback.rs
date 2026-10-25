@@ -348,7 +348,11 @@ enum RenderConstruction {
     LinearExport,
     FiniteBounce,
 }
-pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
+/// Finite serial-effect drain admission horizon. Ten minutes admits useful
+/// chains of long-decay rooms without weakening processor-count or byte bounds.
+/// It is a reclamation deadline, not additional per-block work or a transport
+/// delay; quiescence permits earlier release and Stop clears retained histories.
+pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 600;
 
 /// Bounded result for targets canceled because their stable track or clip was
 /// removed by the candidate revision.
@@ -393,6 +397,8 @@ pub struct SessionPlayback {
     pub(crate) midi_admission: Option<crate::session_inventory::PreparedSessionMidiAdmission>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
+    /// Reset-and-chase frontier, retained until a successful nonempty render.
+    interactive_start_frame: Option<u64>,
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     routes: Vec<TrackRoute>,
@@ -761,6 +767,7 @@ impl SessionPlayback {
             midi_admission: _,
             periodic_tempo: _,
             anchor: _,
+            interactive_start_frame: _,
             historical_floor: _,
             route_historical_floors: _,
             routes: _,
@@ -1659,6 +1666,7 @@ impl SessionPlayback {
             midi_admission,
             periodic_tempo,
             anchor: None,
+            interactive_start_frame: None,
             historical_floor: None,
             route_historical_floors: [None; MAX_TRACKS],
             routes,

@@ -746,9 +746,15 @@ impl super::Custody {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let native_refs = bank.sources.graph_references(owner, source_work)?;
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        // Original closed native graph/history allocations are already sealed
+        // by the constructor ledger on every supported layout. Only external
+        // foreign nodes need the platform endpoint/source witness; native
+        // Return/Main routing alone cannot manufacture such an obligation.
         if owner
-            .requires_effect_graph_custody_on_control()
+            .foreign_nodes_on_control()
             .map_err(|_| "foreign constructor query refused")?
+            .next()
+            .is_some()
         {
             return Err("effect graph source and runtime witness is not sealed");
         }

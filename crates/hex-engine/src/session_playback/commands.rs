@@ -78,6 +78,7 @@ impl SessionPlayback {
         self.arrangement_frame = 0;
         self.arrangement_loop_pass = 0;
         self.anchor = None;
+        self.interactive_start_frame = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.analytic_continuations.fill(None);
@@ -162,6 +163,51 @@ impl SessionPlayback {
 
     fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
         let beat = self.seek_coordinates(frame)?;
+        self.install_seek(frame, beat);
+        Ok(())
+    }
+
+    /// Interactive discontinuity: reset old voices/effect tails, retrigger gate-active
+    /// Arrangement notes at the destination, and retain their authored note-offs.
+    /// No song-prefix replay, runtime construction or allocation occurs here.
+    /// Strict Seek and control-side exact-history preroll retain their own laws.
+    pub(crate) fn play_from(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        if self.linear_arrangement_export || self.revision.requires_control_sampler_sources() {
+            // Keep the independently admitted offline/private source policy.
+            self.apply(SessionPlaybackCommand::Seek(frame))?;
+            return self.apply(SessionPlaybackCommand::Play);
+        }
+        let beat = self.play_from_coordinates(frame)?;
+        let generation = self.route_state_generation;
+        self.install_seek(frame, beat);
+        if self.route_state_generation == generation {
+            self.advance_route_state_generation();
+        }
+        self.interactive_start_frame = Some(frame);
+        self.clear_gain_recording_override();
+        self.candidate_admission_open = false;
+        self.playing = true;
+        Ok(())
+    }
+
+    pub(super) fn play_from_coordinates(
+        &self,
+        frame: u64,
+    ) -> Result<BeatTime, SessionPlaybackError> {
+        // Private offline/CURRENT-only source owners keep their capability
+        // fences. Ordinary resource-backed samplers use the mutable event path.
+        if self.current_sampler_console || self.revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        frame
+            .checked_add(1)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0))
+            .frame_to_beat(frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)
+    }
+
+    fn install_seek(&mut self, frame: u64, beat: BeatTime) {
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
             changed |= route.pending.is_some();
@@ -176,6 +222,7 @@ impl SessionPlayback {
         self.arrangement_frame = frame;
         self.arrangement_loop_pass = 0;
         self.anchor = None;
+        self.interactive_start_frame = None;
         self.analytic_continuations.fill(None);
         self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
@@ -223,7 +270,6 @@ impl SessionPlayback {
         if changed {
             self.advance_route_state_generation();
         }
-        Ok(())
     }
 
     pub(super) fn mutable_destination_has_active_occurrence(

@@ -170,6 +170,9 @@ pub struct AudioProcessingProjection {
 /// A section override is legal only with `AudioClipTiming::Musical`; the
 /// `Frozen` variant owns its complete processing clock without an override or
 /// residuals. Frame destination displacement never changes source coordinates.
+/// With an outer placement, the retained projection also owns its full repeat/
+/// directed read clock. Live musical endpoints plus residuals remain validated
+/// independently; translating a saved frame clock never re-quantizes its seams.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipEdit {
     /// Directed finite outer read law; source processing and editable settings stay live.
@@ -618,7 +621,6 @@ impl AudioClipEdit {
         let domain = &self.domain;
         if let Some(projection) = &self.processing_projection
             && (self.live_musical_start().is_none()
-                || self.placement.is_some()
                 || !(-1..=1).contains(&self.placement_start_offset)
                 || !(-1..=1).contains(&self.placement_end_offset)
                 || projection.tempo.sample_rate() != tempo.sample_rate()
@@ -750,6 +752,33 @@ impl AudioClipEdit {
             return Err(Invalid(
                 "audio source cache differs from its canonical domain",
             ));
+        }
+        if self.processing_projection.is_some() && self.placement.is_some() {
+            let start = self
+                .live_musical_start()
+                .ok_or(Invalid("retained outer audio needs musical placement"))?;
+            let length = self
+                .placement
+                .ok_or(Invalid("audio placement missing"))?
+                .outer_length
+                .length();
+            let end = start
+                .raw()
+                .checked_add(length)
+                .ok_or(Invalid("audio outer end overflow"))?;
+            if offset_frame(tempo.beat_to_frame(start)?, self.placement_start_offset)? != clip.start
+                || offset_frame(
+                    tempo.beat_to_frame(BeatTime::from_raw(end))?,
+                    self.placement_end_offset,
+                )? != clip
+                    .start
+                    .checked_add(clip.duration)
+                    .ok_or(Invalid("audio outer end overflow"))?
+            {
+                return Err(Invalid(
+                    "retained outer frame cache differs from musical endpoints",
+                ));
+            }
         }
         if self.content_view.is_some()
             || self.placement.is_some()

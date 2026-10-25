@@ -65,6 +65,7 @@ pub struct SessionAudioClipSnapshot {
     pub asset: u64,
     pub source_start: u64,
     pub source_end: u64,
+    pub loop_range: Option<crate::SessionAudioLoop>,
     pub gain: crate::ClipGain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,9 @@ pub struct TrackSnapshot {
     pub muted: bool,
     pub soloed: bool,
     pub devices: Vec<DeviceSnapshot>,
+    /// Resolved read projection of the bound source instrument. Strict snapshots
+    /// require an identical registry device; this is never a second state owner.
+    /// Historical inline projections use the explicit legacy adapter.
     pub instrument: Option<DeviceSnapshot>,
     /// Number of effects before `instrument`; required exactly when present.
     pub instrument_position: Option<usize>,
@@ -467,6 +471,7 @@ impl Project {
                                     asset: clip.asset().value(),
                                     source_start: clip.source_start(),
                                     source_end: clip.source_end(),
+                                    loop_range: clip.loop_range(),
                                     gain: clip.gain(),
                                 })
                             }
@@ -492,6 +497,122 @@ impl Project {
     }
 
     /// Validate untrusted snapshot metadata before constructing a live model.
+    /// Explicit in-memory adapter for historical inline-instrument snapshots.
+    /// Frozen codec layers may edit their resolved instrument projection before
+    /// the next layer validates it. Only this adapter treats that legacy field as
+    /// authoritative. Current-format callers use strict `from_snapshot` instead.
+    /// Original DeviceIds and source membership/order survive; fresh SourceIds
+    /// are reserved after the old identity cursor, without writing any file.
+    pub fn from_legacy_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        let mut max_id = 0;
+        let mut note_id = |id: u64| {
+            max_id = max_id.max(id);
+        };
+        for section in &snapshot.arrangement_sections {
+            note_id(section.id);
+        }
+        for asset in &snapshot.assets {
+            note_id(asset.id);
+        }
+        for source in &snapshot.native_sources {
+            note_id(source.id);
+            for d in &source.devices {
+                note_id(d.id);
+            }
+        }
+        for d in &snapshot.main_devices {
+            note_id(d.id);
+        }
+        for t in &snapshot.return_tracks {
+            note_id(t.id);
+            for d in &t.devices {
+                note_id(d.id);
+            }
+        }
+        for t in &snapshot.tracks {
+            note_id(t.id);
+            for d in t.devices.iter().chain(t.instrument.iter()) {
+                note_id(d.id);
+            }
+            let (audio, midi): (&[_], &[_]) = match &t.content {
+                TrackContentSnapshot::Audio(a) => (a, &[]),
+                TrackContentSnapshot::Instrument(m) => (&[], m),
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                } => (audio_clips, midi_clips),
+            };
+            for c in audio {
+                note_id(c.id);
+            }
+            for c in midi {
+                note_id(c.id);
+                for n in &c.notes {
+                    note_id(n.id);
+                }
+            }
+        }
+        for scene in &snapshot.session.scenes {
+            note_id(scene.id);
+        }
+        for cell in &snapshot.session.cells {
+            match &cell.content {
+                SessionCellContentSnapshot::Audio(c) => note_id(c.id),
+                SessionCellContentSnapshot::Midi(c) => {
+                    note_id(c.id);
+                    for n in &c.source.notes {
+                        note_id(n.id);
+                    }
+                }
+                SessionCellContentSnapshot::Stop => {}
+            }
+        }
+        for feed in &snapshot.return_feeds {
+            note_id(feed.id);
+        }
+        for feed in &snapshot.audio_feeds {
+            note_id(feed.id);
+        }
+        for route in &snapshot.midi_routes {
+            note_id(route.id);
+        }
+        if snapshot.next_id <= max_id {
+            return Err(Invalid("next project id must exceed all existing ids"));
+        }
+        for track in &snapshot.tracks {
+            let Some(instrument) = &track.instrument else {
+                continue;
+            };
+            if let Some(source) = snapshot
+                .native_sources
+                .iter_mut()
+                .find(|s| s.devices.iter().any(|d| d.id == instrument.id))
+            {
+                if source.devices.len() != 1 || source.instrument_index != 0 {
+                    return Err(Invalid(
+                        "legacy instrument does not identify a singleton source",
+                    ));
+                }
+                source.devices[0] = instrument.clone();
+            } else {
+                if snapshot.native_sources.len() >= crate::MAX_NATIVE_SOURCES {
+                    return Err(Invalid("native source limit reached"));
+                }
+                let id = snapshot.next_id;
+                snapshot.next_id = id
+                    .checked_add(1)
+                    .ok_or(Invalid("project id space exhausted"))?;
+                snapshot.native_sources.push(crate::NativeSourceSnapshot {
+                    id,
+                    name: track.name.clone(),
+                    devices: vec![instrument.clone()],
+                    instrument_index: 0,
+                });
+            }
+        }
+        Self::from_snapshot(snapshot)
+    }
+
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
         if snapshot.audio_feeds.len() > crate::MAX_AUDIO_FEEDS
             || snapshot.midi_routes.len() > crate::MAX_MIDI_ROUTES
@@ -613,12 +734,12 @@ impl Project {
                     comparison: device.comparison,
                 });
             }
-            project.native_sources.push(crate::NativeSource {
-                id: crate::SourceId(source.id),
-                name: source.name,
+            project.native_sources.push(crate::NativeSource::from_parts(
+                crate::SourceId(source.id),
+                source.name,
                 devices,
-                instrument_index: source.instrument_index,
-            });
+                source.instrument_index,
+            )?);
         }
         let mut total_notes = 0_usize;
         let mut return_ids = BTreeSet::new();
@@ -700,19 +821,21 @@ impl Project {
                 });
             }
             let instrument = if let Some(instrument) = track.instrument {
-                total_devices = total_devices
-                    .checked_add(1)
-                    .ok_or(Invalid("device count overflow"))?;
-                if total_devices > MAX_DEVICES {
-                    return Err(Invalid("project device limit reached"));
+                let source = project
+                    .native_sources
+                    .iter()
+                    .find(|source| source.instrument().id().value() == instrument.id)
+                    .ok_or(Invalid("track instrument has no retained source"))?;
+                let expected = source.instrument();
+                if expected.state() != &instrument.state
+                    || expected.bypassed() != instrument.bypassed
+                    || expected.comparison() != instrument.comparison.as_ref()
+                {
+                    return Err(Invalid(
+                        "track instrument projection differs from retained source",
+                    ));
                 }
-                insert_id(instrument.id, &mut ids, &mut max_id)?;
-                Some(Device {
-                    comparison: instrument.comparison,
-                    id: DeviceId(instrument.id),
-                    state: instrument.state,
-                    bypassed: instrument.bypassed,
-                })
+                Some(source.binding()?)
             } else {
                 None
             };
@@ -1011,6 +1134,9 @@ impl Project {
                     if total_clips > MAX_CLIPS {
                         return Err(Invalid("clip limit reached"));
                     }
+                    if let Some(range) = clip.loop_range {
+                        range.validate_source(clip.source_start, clip.source_end)?;
+                    }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
                         active: clip.active,
                         flavor: clip.flavor,
@@ -1019,6 +1145,7 @@ impl Project {
                         asset: AssetId(clip.asset),
                         source_start: clip.source_start,
                         source_end: clip.source_end,
+                        loop_range: clip.loop_range,
                         gain: clip.gain,
                     })
                 }
@@ -1073,6 +1200,7 @@ impl Project {
                 }
             }
         }
+        project.validate_source_bindings()?;
         project.validate_track_hierarchy()?;
         if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {
             let mut candidate = project.snapshot();

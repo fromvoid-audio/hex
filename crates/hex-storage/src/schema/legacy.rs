@@ -501,5 +501,5 @@ fn restore_midi_boundaries(
     if !boundaries.is_empty() {
         return Err(StorageError::Invalid("unmatched historical MIDI policy"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }

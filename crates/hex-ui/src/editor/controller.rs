@@ -1054,6 +1054,8 @@ impl EditorView {
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
+                    visible_change |= self.retire_pending_clip_loop();
+                    visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
                     visible_change |= self.retire_pending_track_reorder();
@@ -1080,6 +1082,7 @@ impl EditorView {
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_detail_request = self.audio_clip_controls.matches(&request);
                 let audio_events_request = self.pending_audio_events_matches(&request);
+                let clip_loop_request = self.pending_clip_loop_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
                 let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -1111,6 +1114,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             self.audio_events_submitted();
+                        }
+                        if clip_loop_request {
+                            self.clip_loop_submitted();
                         }
                         if clip_move_request {
                             self.clip_move_submitted();
@@ -1158,6 +1164,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
+                        }
+                        if clip_loop_request {
+                            visible_change |= self.retire_pending_clip_loop();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -1229,6 +1238,9 @@ impl EditorView {
                         }
                         if audio_events_request {
                             visible_change |= self.retire_pending_audio_events();
+                        }
+                        if clip_loop_request {
+                            visible_change |= self.retire_pending_clip_loop();
                         }
                         if clip_move_request {
                             self.retire_pending_clip_move();
@@ -2008,6 +2020,7 @@ impl EditorView {
             self.retire_sample_bpm_control();
         }
         self.audio_events_request_complete(&event);
+        self.clip_loop_request_complete(&event);
         self.clip_move_request_complete(&event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
@@ -2090,6 +2103,7 @@ impl EditorView {
             self.audio_batch = None;
             self.audio_batch_progress = None;
         }
+        self.reconcile_rendered_group_selection(&event);
         if event.bounce_complete.as_ref().is_some_and(|completed| {
             self.bounce_control
                 .as_ref()
@@ -3221,6 +3235,7 @@ impl EditorView {
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_detail_request = self.audio_clip_controls.matches(&request);
         let audio_events_request = self.pending_audio_events_matches(&request);
+        let clip_loop_request = self.pending_clip_loop_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
         let track_reorder_request = self.pending_track_reorder_matches(&request);
@@ -3247,6 +3262,9 @@ impl EditorView {
                 }
                 if audio_events_request {
                     self.audio_events_submitted();
+                }
+                if clip_loop_request {
+                    self.clip_loop_submitted();
                 }
                 if clip_move_request {
                     self.clip_move_submitted();

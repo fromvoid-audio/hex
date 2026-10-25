@@ -126,9 +126,10 @@ fn delay_canonical_track_return_edit_bypass_reorder_history_and_save_reopen() {
     assert!(session.undo());
     assert_eq!(session.project(), &before);
     let bytes = hex_storage::encode(session.project()).unwrap();
+    let container: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
-        hex_storage::CURRENT_SCHEMA_VERSION,
-        45,
+        container["version"].as_u64(),
+        Some(u64::from(hex_storage::CURRENT_SCHEMA_VERSION)),
         "delay uses the current container without adding saved container fields"
     );
     let reopened = hex_storage::decode(&bytes).unwrap();

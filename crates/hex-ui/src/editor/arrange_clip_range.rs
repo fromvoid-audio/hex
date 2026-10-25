@@ -282,19 +282,18 @@ impl EditorView {
     }
     pub(super) fn arrange_audio_highlights(
         &self,
+        source_frame_origin: u64,
         start: u64,
         length: u64,
     ) -> impl Iterator<Item = Stateful<Div>> + use<> {
         let intervals = match self.reflected_ranges() {
             Some(Ranges::Audio {
-                frame_intervals,
-                frame_bounds,
-                ..
+                frame_intervals, ..
             }) => frame_intervals.map(|range| {
                 range.and_then(|(a, b)| {
                     Some((
-                        a.checked_sub(frame_bounds.0)?,
-                        b.checked_sub(frame_bounds.0)?,
+                        a.checked_sub(source_frame_origin)?,
+                        b.checked_sub(source_frame_origin)?,
                     ))
                 })
             }),

@@ -1360,6 +1360,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
     let mut snapshot = editor.project().snapshot();
+    let first_note = snapshot.next_id;
     let hex_project::TrackSnapshot { content, .. } = &mut snapshot.tracks[0];
     let TrackContentSnapshot::Hybrid {
         midi_clips: clips, ..
@@ -1370,7 +1371,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let frame_beat = beat(1, 24_000).raw();
     clips[0].notes = (0..hex_project::MAX_NOTES)
         .map(|index| MidiNoteSnapshot {
-            id: 4 + index as u64,
+            id: first_note + index as u64,
             start_raw: index as u64 * frame_beat,
             duration_raw: frame_beat,
             pitch: 60,
@@ -1378,7 +1379,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
             velocity: 100,
         })
         .collect();
-    snapshot.next_id = 4 + hex_project::MAX_NOTES as u64;
+    snapshot.next_id = first_note + hex_project::MAX_NOTES as u64;
     let project = Project::from_snapshot(snapshot).expect("maximum valid note count");
     let events = midi_events(&project).expect("exact maximum event count");
     assert_eq!(events.len(), MAX_MIDI_EVENT_EDGES);
@@ -1387,7 +1388,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
         assert_eq!(pair[0].frame, index as u64);
         assert_eq!(pair[1].kind, MidiEventKind::NoteOff);
         assert_eq!(pair[1].frame, index as u64 + 1);
-        assert_eq!(pair[0].note.value(), 4 + index as u64);
+        assert_eq!(pair[0].note.value(), first_note + index as u64);
         assert_eq!(pair[1].note, pair[0].note);
     }
     assert_eq!(clip, project.tracks()[0].midi_clips()[0].id());

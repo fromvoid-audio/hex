@@ -141,7 +141,7 @@ impl Editor {
         let section_publication = command.requires_section_publication();
         let stopped_bounce = matches!(
             &command,
-            Command::CommitArrangementBounce { in_place: true, .. }
+            Command::CommitArrangementBounce { target, in_place, .. } if target.bakes_devices(*in_place)
         );
         let plan = crate::midi_history::Plan::capture(&command, &self.project);
         let plan = if require_midi {
@@ -154,6 +154,7 @@ impl Editor {
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
