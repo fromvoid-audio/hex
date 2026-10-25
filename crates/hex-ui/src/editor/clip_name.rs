@@ -209,6 +209,7 @@ impl EditorView {
             cx,
         )
     }
+    // A passive drag clone must never mount the live rename input a second time.
     pub(super) fn clip_name_drag_header(
         &self,
         clip: ClipId,
@@ -218,7 +219,8 @@ impl EditorView {
         clip_name_surface(fill)
             .id(("clip-drag-name", clip.value()))
             .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
-            .child(clip_name_text(name))
+            .truncate()
+            .child(theme::text(name))
     }
 
     fn clip_name_strip(
@@ -230,7 +232,11 @@ impl EditorView {
         interactive: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        clip_name_surface(fill)
+        let editing = self
+            .clip_name_edit
+            .as_ref()
+            .is_some_and(|edit| edit.clip == clip && edit.generation == self.project_generation);
+        let header = clip_name_surface(fill)
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
             .when(interactive, |header| {
@@ -253,8 +259,14 @@ impl EditorView {
                         cx.notify();
                     },
                 ))
-            })
-            .child(self.clip_name_label(clip, name))
+            });
+        if editing {
+            header.child(self.clip_name_label(clip, name))
+        } else {
+            // The positioned strip already owns the text style and content
+            // width. Static names need no second block-layout container.
+            header.truncate().child(theme::text(name))
+        }
     }
 }
 
@@ -274,7 +286,6 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
         .text_color(rgb(text))
 }
 
-// A passive drag clone must never mount the live rename input a second time.
 fn clip_name_text(name: &str) -> gpui::Div {
     div().min_w_0().flex_1().truncate().child(theme::text(name))
 }
@@ -308,6 +319,7 @@ mod tests {
             .debug_bounds("clip-name-input")
             .expect("in-place input");
         assert!(header.intersects(&input));
+        assert_eq!(visual.debug_bounds(selector), Some(header));
         visual.simulate_input("Verse S 🎹");
         visual.simulate_keystrokes("space l backspace");
         editor.read_with(cx, |v, cx| {
@@ -329,6 +341,7 @@ mod tests {
         });
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(selector), Some(header));
         editor.read_with(cx, |v, _| {
             assert!(v.clip_name_edit.is_none());
             assert_eq!(
