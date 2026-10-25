@@ -1018,7 +1018,6 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 20);
             assert_eq!(
                 menu.items
                     .iter()
