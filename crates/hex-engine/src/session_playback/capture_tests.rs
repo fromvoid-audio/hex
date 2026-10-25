@@ -1260,3 +1260,30 @@ fn live_project_selection_refuses_unsorted_duplicate_and_unbounded_id_lists() {
     assert!(ProjectOutputTap::new(&[1; hex_project::MAX_TRACKS + 1], &mut observer).is_none());
     assert!(ProjectOutputTap::new(&[], &mut observer).is_some());
 }
+
+#[test]
+fn solo_overrides_mute_for_launched_session_audio_without_changing_authored_flags() {
+    for solo in [false, true] {
+        let mut snapshot = audio_project(0, 32, 4).snapshot();
+        snapshot.tracks[0].muted = true;
+        snapshot.tracks[0].soloed = solo;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let prepared = prepare_audio(&project);
+        let clip = prepared.session().audio_clips()[0].id;
+        let mut runtime = SessionPlayback::new(prepared).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pcm = [[0.; 2]; 8];
+        for chunk in pcm.chunks_mut(3) {
+            runtime.render(chunk).unwrap();
+        }
+        assert_eq!(pcm, [if solo { [0.4, -0.2] } else { [0., 0.] }; 8]);
+        assert!(project.tracks()[0].muted());
+        assert_eq!(project.tracks()[0].soloed(), solo);
+    }
+}

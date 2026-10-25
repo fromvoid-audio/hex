@@ -838,6 +838,14 @@ pub(crate) struct ReturnBus {
     pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
 }
 
+/// Resolve playback audibility without changing authored activation/mute state.
+/// Solo wins over that track's mute; otherwise any solo suppresses this track.
+/// Shared by resident compilation and prepared/streamed Arrangement tracks;
+/// Session routes borrow those same effective mixes.
+pub(crate) fn effective_track_mute(track: &hex_project::Track, any_soloed: bool) -> bool {
+    !track.soloed() && (track.muted() || any_soloed)
+}
+
 /// Validated per-track stereo coefficients shared by independent source paths.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedTrackMix {
