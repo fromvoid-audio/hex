@@ -9,7 +9,18 @@ use crate::{
 use std::{collections::BTreeSet, sync::Arc};
 
 pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, Invalid> {
-    if !(2..=MAX_CLIPS).contains(&ids.len()) {
+    group(project, ids, None)
+}
+
+/// A time selection supplies the container bounds before source materialization,
+/// so audio events, MIDI occurrences and volume points retain their song timing.
+fn group(
+    project: &mut Project,
+    ids: Vec<ClipId>,
+    range: Option<&crate::TimeRange>,
+) -> Result<Created, Invalid> {
+    let minimum = if range.is_some() { 1 } else { 2 };
+    if !(minimum..=MAX_CLIPS).contains(&ids.len()) {
         return Err(Invalid("select at least two clips to group"));
     }
     let selected: BTreeSet<_> = ids.iter().copied().collect();
@@ -53,7 +64,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
     }
     let track = owner.ok_or(Invalid("selected track no longer exists"))?;
     if audio {
-        return self::audio(project, track, &selected);
+        return self::audio(project, track, &selected, range);
     }
     let row = project
         .track(track)
@@ -65,7 +76,10 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no midi clips selected"))?;
-    let start = first.start().raw();
+    let start = match range {
+        Some(range) => project.tempo_map().frame_to_beat(range.start())?.raw(),
+        None => first.start().raw(),
+    };
     let end = clips.iter().try_fold(start, |end, c| {
         c.start()
             .raw()
@@ -73,7 +87,15 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
             .map(|n| end.max(n))
             .ok_or(Invalid("grouped midi end overflow"))
     })?;
-    let length = BeatTime::from_raw(end - start);
+    let end = match range {
+        Some(range) => project.tempo_map().frame_to_beat(range.end())?.raw(),
+        None => end,
+    };
+    let length = BeatTime::from_raw(
+        end.checked_sub(start)
+            .ok_or(Invalid("grouped midi bounds reversed"))?,
+    );
+    crate::midi::validate_clip(BeatTime::from_raw(start), length)?;
     let active = first.active();
     if clips.iter().any(|c| c.active() != active) {
         return Err(Invalid("grouped clips must have the same activation state"));
@@ -189,6 +211,7 @@ fn audio(
     project: &mut Project,
     track: crate::TrackId,
     selected: &BTreeSet<ClipId>,
+    range: Option<&crate::TimeRange>,
 ) -> Result<Created, Invalid> {
     use crate::{
         AudioClipEdit, AudioEvent, AudioEvents, ClipFade, ClipGain, MAX_AUDIO_EVENTS,
@@ -204,14 +227,17 @@ fn audio(
         .collect();
     clips.sort_by_key(|c| (c.start(), c.id()));
     let first = clips.first().ok_or(Invalid("no audio clips selected"))?;
-    let start = first.start();
+    let start = range.map_or(first.start(), crate::TimeRange::start);
     let end = clips.iter().try_fold(start, |end, clip| {
         clip.start()
             .checked_add(clip.duration())
             .map(|n| end.max(n))
             .ok_or(Invalid("grouped audio end overflow"))
     })?;
-    let duration = end - start;
+    let end = range.map_or(end, crate::TimeRange::end);
+    let duration = end
+        .checked_sub(start)
+        .ok_or(Invalid("grouped audio bounds reversed"))?;
     if duration > crate::MAX_AUDIO_DOMAIN_FRAMES {
         return Err(Invalid("grouped audio exceeds bounded preparation length"));
     }
@@ -435,7 +461,8 @@ pub(crate) fn event_range(
 }
 
 /// Use the ordinary split owners so retained source windows, processing and MIDI
-/// gates follow the same law as explicit cuts. Publish only after every row groups.
+/// gates follow the same law as explicit cuts. Each populated row spans the full
+/// selection, including empty margins. Publish only after every row groups.
 pub(crate) fn time_range(
     project: &mut Project,
     range: &crate::TimeRange,
@@ -496,8 +523,21 @@ pub(crate) fn time_range(
         }
         match ids.as_slice() {
             [] => (),
-            [id] => result = Some(Created::Clip(*id)),
-            _ => result = Some(apply(&mut candidate, ids)?),
+            // An exact single-clip selection already has the requested bounds.
+            // Preserve its source representation, including directed/processed groups.
+            [id] if row.clips().iter().any(|clip| {
+                clip.id() == *id
+                    && clip.start() == range.start()
+                    && clip.duration() == range.end() - range.start()
+            }) || row.midi_clips().iter().any(|clip| {
+                clip.id() == *id
+                    && clip.start() == left
+                    && clip.length().raw() == right.raw() - left.raw()
+            }) =>
+            {
+                result = Some(Created::Clip(*id));
+            }
+            _ => result = Some(group(&mut candidate, ids, Some(range))?),
         }
     }
     let result = result.ok_or(Invalid("selected time range contains no clips"))?;

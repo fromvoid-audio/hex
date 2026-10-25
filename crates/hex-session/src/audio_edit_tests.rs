@@ -709,59 +709,77 @@ fn directed_clip_previews_share_the_total_waveform_leaf_budget() {
 
 #[test]
 fn time_range_group_prepares_identical_audio_and_roundtrips_complete_state() {
-    let (mut session, first, previous) = fixture();
-    let (_, previous) = session
-        .command_prepared_revision(
-            Command::SplitClip {
-                clip: first,
-                frame: 4_000,
-            },
-            Some(&previous),
-        )
-        .unwrap();
-    let before = session.project().clone();
-    let track = before.tracks()[0].id();
-    let render = |revision: &hex_engine::PreparedRevision, block| {
-        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
-        renderer.play();
-        let mut out = vec![[0.0; 2]; 8_000];
-        for chunk in out.chunks_mut(block) {
-            renderer.render(chunk).unwrap();
-        }
-        out
-    };
-    let expected = render(&previous, 63);
-    let (Created::Clip(group), changed) = session
-        .command_prepared_revision(
-            Command::GroupTimeRange(
-                hex_project::TimeRange::new(vec![track], 1_000, 7_000).unwrap(),
+    for (start, end) in [(500, 4_500), (1_000, 11_000), (500, 11_000)] {
+        let (mut session, first, previous) = fixture();
+        let (_, previous) = session
+            .command_prepared_revision(
+                Command::MoveClip {
+                    track: session.project().tracks()[0].id(),
+                    clip: first,
+                    start: 1_000,
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let (_, previous) = session
+            .command_prepared_revision(
+                Command::SplitClip {
+                    clip: first,
+                    frame: 5_000,
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let before = session.project().clone();
+        let track = before.tracks()[0].id();
+        let render = |revision: &hex_engine::PreparedRevision, block| {
+            let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+            renderer.play();
+            let mut out = vec![[0.0; 2]; 12_000];
+            for chunk in out.chunks_mut(block) {
+                renderer.render(chunk).unwrap();
+            }
+            out
+        };
+        let expected = render(&previous, 63);
+        let (Created::Clip(group), changed) = session
+            .command_prepared_revision(
+                Command::GroupTimeRange(
+                    hex_project::TimeRange::new(vec![track], start, end).unwrap(),
+                ),
+                Some(&previous),
+            )
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        assert_eq!(
+            (
+                session.project().clip(group).unwrap().start(),
+                session.project().clip(group).unwrap().duration()
             ),
-            Some(&previous),
-        )
-        .unwrap()
-    else {
-        panic!("group")
-    };
-    assert_eq!(session.project().clip(group).unwrap().duration(), 6_000);
-    assert_eq!(render(&changed, 257), expected);
-    let after = session.project().clone();
-    assert_eq!(
-        hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
-        after
-    );
-    let undone = session
-        .undo_prepared_revision(Some(&changed))
-        .unwrap()
-        .unwrap();
-    let restored = session.project().snapshot();
-    let mut expected_before = before.snapshot();
-    expected_before.next_id = restored.next_id;
-    assert_eq!(restored, expected_before);
-    assert_eq!(render(&undone, 63), expected);
-    let redone = session
-        .redo_prepared_revision(Some(&undone))
-        .unwrap()
-        .unwrap();
-    assert_eq!(session.project(), &after);
-    assert_eq!(render(&redone, 127), expected);
+            (start, end - start)
+        );
+        assert_eq!(render(&changed, 257), expected);
+        let after = session.project().clone();
+        assert_eq!(
+            hex_storage::decode(&hex_storage::encode(&after).unwrap()).unwrap(),
+            after
+        );
+        let undone = session
+            .undo_prepared_revision(Some(&changed))
+            .unwrap()
+            .unwrap();
+        let restored = session.project().snapshot();
+        let mut expected_before = before.snapshot();
+        expected_before.next_id = restored.next_id;
+        assert_eq!(restored, expected_before);
+        assert_eq!(render(&undone, 63), expected);
+        let redone = session
+            .redo_prepared_revision(Some(&undone))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &after);
+        assert_eq!(render(&redone, 127), expected);
+    }
 }
