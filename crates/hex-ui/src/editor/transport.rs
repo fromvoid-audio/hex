@@ -150,7 +150,7 @@ impl EditorView {
                     },
                 )),
             )
-            .child(self.icon("✂", "split at playback cursor · cmd+e", SplitClip, cx))
+            .child(self.icon("✂", "split at playback cursor · e", SplitClip, cx))
             .child(
                 self.icon("↶", "undo · cmd+z", Undo, cx)
                     .opacity(if can_undo { 1.0 } else { 0.45 }),

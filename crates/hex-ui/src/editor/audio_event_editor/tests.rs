@@ -113,7 +113,7 @@ fn event_ruler_selection_grid_and_shortcuts_stay_inside_clip_editor(cx: &mut Tes
         assert_eq!(view.audio_event_editor.grid, SnapGrid::Off);
         assert_eq!(view.snap_grid, SnapGrid::Adaptive);
     });
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx,|view,_|assert!(matches!(view.last_enqueued_edit,Some(Command::EditAudioEvents{clip:id,operation:AudioEventEdit::SplitRange{start:_,end}}) if id==clip && end==cursor)));
 }
 

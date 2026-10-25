@@ -62,7 +62,7 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
         "0",
         "c",
         "cmd-d",
-        "cmd-e",
+        "e",
         "b",
         "cmd-b",
         "r",
