@@ -237,8 +237,7 @@ impl EditorView {
                 },
             });
         }
-        if self.mode == super::EditorMode::Arrangement
-            && let Some(track) = after_track
+        if let Some(track) = after_track
             && let Some(menu) = &mut self.context_menu
         {
             menu.items.push(MenuItem {
@@ -673,8 +672,7 @@ impl EditorView {
                     revision,
                     track,
                 } => {
-                    self.mode != super::EditorMode::Arrangement
-                        || *generation != self.project_generation
+                    *generation != self.project_generation
                         || self.state.as_ref().is_none_or(|s| {
                             s.revision != *revision || s.project.track(*track).is_none()
                         })
