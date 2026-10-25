@@ -440,6 +440,12 @@ all controls use undo/redo and survive save/reopen. device-parameter automation
 lanes are not currently offered. the functional control set does not establish
 sound parity with another application's reverb.
 
+overdrive filters the signal before distortion. use **frequency** and **bandwidth**
+to choose the input band; the graph shows this filter response. **drive** adds
+distortion, **tone** adjusts its brightness, and **dynamics** restores more of the
+input's level changes as it increases. **dry/wet** blends the original signal with
+the processed sound. the effect is available on track, return and main chains.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
