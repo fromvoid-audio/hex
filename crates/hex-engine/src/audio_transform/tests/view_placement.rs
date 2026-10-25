@@ -761,3 +761,49 @@ fn section_repeat_seam_keeps_global_tempo_editable_and_undo_restores_exact_pcm()
         changed
     );
 }
+
+#[test]
+fn pasted_frame_placements_and_reverse_views_reuse_pcm_across_onsets_and_tempo() {
+    for reversed in [false, true] {
+        let (mut editor, clip, media) = placed(AudioViewMode::Repeat, 500);
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
+        let context = isolated(1024 * 1024, 512 * 1024, 16);
+        let original = prepare(&editor, &media, &context);
+        let retained = context.retained_pcm_bytes();
+        let audio = original.arrangement().audio_clip_views()[0].audio.clone();
+        let length = editor.project().clip(clip).unwrap().duration();
+        let expected = render(&original, 0, length as usize, 127);
+        let track = editor.project().tracks()[0].id();
+        let clipboard = Arc::new(editor.project().capture_clips(&[clip]).unwrap());
+        editor
+            .execute(Command::PasteClips {
+                clipboard,
+                track,
+                frame: length * 2,
+                insert: false,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(90_000_000).unwrap(),
+            })
+            .unwrap();
+        let copied = prepare(&editor, &media, &context);
+        assert_eq!(
+            context.retained_pcm_bytes(),
+            retained,
+            "frame output is independent of destination tempo/onset"
+        );
+        assert!(
+            copied
+                .arrangement()
+                .audio_clip_views()
+                .iter()
+                .all(|view| view.audio.shares_pcm_with(&audio))
+        );
+        assert_eq!(render(&copied, length * 2, length as usize, 63), expected);
+    }
+}

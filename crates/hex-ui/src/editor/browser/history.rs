@@ -287,32 +287,52 @@ impl EditorView {
 
     pub(super) fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
         let files = self.browser_visible_entries(cx);
-        if let Some(entry) = files.get(index) {
-            return Some(BrowserItemKey::File(entry.path.clone()));
-        }
         let devices = self.browser_visible_devices(cx);
-        let index = index.checked_sub(files.len())?;
-        if let Some((class, entry)) = devices.get(index) {
-            return Some(BrowserItemKey::Device(*class, entry.type_id));
+        let plugins = self.browser_visible_plugins(cx);
+        let rows = BrowserRows::new(
+            files.len(),
+            devices.len(),
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
+        if rows.files.contains(&index) {
+            return files
+                .get(index - rows.files.start)
+                .map(|entry| BrowserItemKey::File(entry.path.clone()));
         }
-        self.browser_visible_plugins(cx)
-            .get(index.checked_sub(devices.len())?)
+        if rows.devices.contains(&index) {
+            return devices
+                .get(index - rows.devices.start)
+                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id));
+        }
+        plugins
+            .get(index.checked_sub(rows.plugins.start)?)
             .map(|row| BrowserItemKey::Plugin(row.module.clone(), row.cid))
     }
+
     pub(super) fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
         let files = self.browser_visible_entries(cx);
         let devices = self.browser_visible_devices(cx);
+        let plugins = self.browser_visible_plugins(cx);
+        let rows = BrowserRows::new(
+            files.len(),
+            devices.len(),
+            plugins.len(),
+            self.browser_devices_first(cx),
+        );
         match key {
-            BrowserItemKey::File(path) => files.iter().position(|entry| &entry.path == path),
+            BrowserItemKey::File(path) => files
+                .iter()
+                .position(|entry| &entry.path == path)
+                .map(|i| rows.files.start + i),
             BrowserItemKey::Device(class, id) => devices
                 .iter()
                 .position(|(candidate, entry)| candidate == class && entry.type_id == *id)
-                .map(|i| files.len() + i),
-            BrowserItemKey::Plugin(path, id) => self
-                .browser_visible_plugins(cx)
+                .map(|i| rows.devices.start + i),
+            BrowserItemKey::Plugin(path, id) => plugins
                 .iter()
                 .position(|row| &row.module == path && row.cid == *id)
-                .map(|i| files.len() + devices.len() + i),
+                .map(|i| rows.plugins.start + i),
         }
     }
 
