@@ -12,6 +12,11 @@ impl Project {
                     .flat_map(|track| track.devices()),
             )
             .chain(self.main_devices())
+            .chain(
+                self.native_sources()
+                    .iter()
+                    .flat_map(|source| source.devices()),
+            )
     }
 
     /// Resolve identities only; this performs no file access or PCM admission.

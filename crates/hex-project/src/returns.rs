@@ -240,6 +240,14 @@ pub(crate) fn device_count(project: &Project) -> Result<usize, Invalid> {
                 .and_then(|sum| sum.checked_add(usize::from(track.instrument.is_some())))
                 .ok_or(Invalid("device count overflow"))
         })?;
+    let regular = project
+        .native_sources
+        .iter()
+        .try_fold(regular, |count, source| {
+            count
+                .checked_add(source.devices.len())
+                .ok_or(Invalid("device count overflow"))
+        })?;
     project.returns.iter().try_fold(regular, |count, track| {
         count
             .checked_add(track.devices.len())
