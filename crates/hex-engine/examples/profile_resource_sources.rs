@@ -71,7 +71,7 @@ fn fixture(source_count: usize, frames: usize) -> Result<Fixture, Box<dyn Error>
         sources.push((
             asset,
             OwnedAudioSource::try_resident(RATE, pcm)
-                .map_err(|e| format!("supported original constructor refused: {e:?}"))?,
+                .map_err(|e| format!("supported original constructor refused: {:?}", e.reason))?,
         ));
         expected.push(OriginalResourceSource {
             asset,
@@ -98,10 +98,11 @@ fn fixture(source_count: usize, frames: usize) -> Result<Fixture, Box<dyn Error>
         caller_retained_bytes: 0,
         caller_construction_bytes: 0,
     };
+    // Generated benchmark sources are reclaimed on control on any refusal.
     let bank = OwnedAudioInputs::try_new(sources, reservation)
-        .map_err(|e| format!("profile input admission refused: {e:?}"))?
+        .map_err(|e| format!("profile input admission refused: {:?}", e.reason))?
         .prepare_input_storage_on_control()
-        .map_err(|e| format!("profile input storage refused: {e:?}"))?;
+        .map_err(|e| format!("profile input storage refused: {:?}", e.reason))?;
     Ok(Fixture {
         bank,
         expected,
