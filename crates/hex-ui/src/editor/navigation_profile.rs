@@ -1,21 +1,96 @@
 //! Manual optimized input-to-CPU-frame measurements. TestPlatform has no native
 //! text shaping, GPU presentation or audio output; these are framework timings.
+//! Set HEX_NAVIGATION_PROJECT_PATH to a disposable project copy with resolved
+//! media paths to profile its actual rate/state instead of generated fixtures.
+//! The probe never saves or edits that document; omit the override to retain the
+//! original generated workload and its density assertions.
 use super::*;
 use crate::editor::navigation_metrics;
 use gpui::{ScrollDelta, ScrollWheelEvent, size};
 
+// A project override must point at a disposable copy with media references
+// already resolved. Opening is read-only; this probe never submits Save/Edit.
+struct ProfileInput {
+    path: PathBuf,
+    tracks: usize,
+    content: &'static str,
+    sample_rate: u32,
+    memory_bytes: u64,
+    original_bytes: Option<Vec<u8>>,
+}
+
+fn profile_inputs() -> Vec<(ProfileInput, Vec<bool>)> {
+    if let Some(path) = std::env::var_os("HEX_NAVIGATION_PROJECT_PATH") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_absolute(),
+            "absolute disposable project copy required"
+        );
+        let bytes = std::fs::read(&path).expect("read disposable project copy");
+        // Test setup metadata only; the real Service Open below owns full saved
+        // format validation, migration and media admission.
+        let header: serde_json::Value = serde_json::from_slice(&bytes).expect("project metadata");
+        let sample_rate = header["sample_rate"]
+            .as_u64()
+            .and_then(|rate| u32::try_from(rate).ok())
+            .expect("project sample rate");
+        let tracks = header["tracks"].as_array().expect("project tracks").len();
+        assert!(tracks > 0, "navigation probe needs an ordinary track");
+        return vec![(
+            ProfileInput {
+                path,
+                tracks,
+                content: "project",
+                sample_rate,
+                // Control-side diagnostic budget, not production admission.
+                memory_bytes: 1024 * 1024 * 1024,
+                original_bytes: Some(bytes),
+            },
+            vec![false, true],
+        )];
+    }
+    let directory = PathBuf::from(
+        std::env::var_os("HEX_NAVIGATION_FIXTURE_DIR").expect("absolute fixture directory"),
+    );
+    assert!(directory.is_absolute());
+    let mut directories = vec![(directory, "mixed")];
+    if let Some(path) = std::env::var_os("HEX_NAVIGATION_AUDIO_FIXTURE_DIR") {
+        let path = PathBuf::from(path);
+        assert!(path.is_absolute());
+        directories.push((path, "audio"));
+    }
+    directories
+        .into_iter()
+        .flat_map(|(directory, content)| {
+            [1, 100].into_iter().map(move |tracks| {
+                (
+                    ProfileInput {
+                        path: directory.join(format!("{tracks}.hex")),
+                        tracks,
+                        content,
+                        sample_rate: 48_000,
+                        memory_bytes: 8_000_000,
+                        original_bytes: None,
+                    },
+                    if tracks == 1 {
+                        vec![false]
+                    } else {
+                        vec![false, true]
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
 fn fixture(
     cx: &mut TestAppContext,
-    directory: &std::path::Path,
-    tracks: usize,
-    audio_only: bool,
+    input: &ProfileInput,
     profile_phases: bool,
 ) -> (VisualTestContext, Entity<EditorView>, Scratch) {
-    let path = directory.join(format!("{tracks}.hex"));
-    assert!(
-        path.is_file(),
-        "generate the create-new time-selection fixtures"
-    );
+    let path = input.path.clone();
+    let tracks = input.tracks;
+    assert!(path.is_file(), "existing profile fixture required");
     let mut scratch = Scratch {
         path: std::env::temp_dir().join(format!(
             "hex-navigation-framework-{}-{}",
@@ -32,7 +107,7 @@ fn fixture(
     scratch.created = true;
     theme::apply_preferences(hex_preferences::ThemePreferences::default());
     cx.update(crate::editor::bind_editor_keys);
-    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    let service = Service::new(input.sample_rate, 8, input.memory_bytes).unwrap();
     let handle = cx.add_window(|window, cx| ProfileRoot {
         profile_phases,
         editor: cx.new(|cx| {
@@ -72,6 +147,13 @@ fn fixture(
         }) {
             break;
         }
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.opening_project || view.error.is_none(),
+                "profile open refused: {:?}",
+                view.error
+            );
+        });
         assert!(
             Instant::now() < deadline,
             "bounded profile open: {:?}",
@@ -81,15 +163,35 @@ fn fixture(
     }
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
-        assert_eq!(state.project.sample_rate(), 48_000);
-        assert!(state.project.tracks().iter().all(|track| {
-            track.clips().len() == 50
-                && track.midi_clips().len() == if audio_only { 0 } else { 50 }
-                && track
-                    .midi_clips()
-                    .iter()
-                    .all(|clip| clip.notes().len() == 8)
-        }));
+        assert_eq!(state.project.sample_rate(), input.sample_rate);
+        println!(
+            "NAV_PROJECT,tracks={},assets={},audio_clips={},midi_clips={},sample_rate={}",
+            state.project.tracks().len(),
+            state.project.assets().count(),
+            state
+                .project
+                .tracks()
+                .iter()
+                .map(|track| track.clips().len())
+                .sum::<usize>(),
+            state
+                .project
+                .tracks()
+                .iter()
+                .map(|track| track.midi_clips().len())
+                .sum::<usize>(),
+            state.project.sample_rate()
+        );
+        if input.content != "project" {
+            assert!(state.project.tracks().iter().all(|track| {
+                track.clips().len() == 50
+                    && track.midi_clips().len() == if input.content == "audio" { 0 } else { 50 }
+                    && track
+                        .midi_clips()
+                        .iter()
+                        .all(|clip| clip.notes().len() == 8)
+            }));
+        }
     });
     visual.update(|window, cx| {
         assert_eq!(window.scale_factor(), 2.0);
@@ -168,17 +270,13 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
 }
 
 #[gpui::test]
-#[ignore = "manual optimized pan/zoom framework profile; generate time_selection_fixture first"]
+#[ignore = "manual optimized pan/zoom framework profile; requires generated fixtures or a project copy"]
 fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
     let smoke = std::env::var_os("HEX_NAVIGATION_PROFILE_SMOKE").is_some_and(|value| value == "1");
     assert!(
         !cfg!(debug_assertions) || smoke,
         "timing requires --release; debug smoke must be explicit"
     );
-    let directory = PathBuf::from(
-        std::env::var_os("HEX_NAVIGATION_FIXTURE_DIR").expect("absolute fixture directory"),
-    );
-    assert!(directory.is_absolute());
     let rounds = if smoke { 4 } else { 48 };
     let warmup = if smoke { 1 } else { 8 };
     let stage_timing =
@@ -194,17 +292,19 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
             "NAV_STAGE_CSV,phase,content,tracks,row_mode,density,action,iteration,warmup,editor_us,row_us,clip_model_us,wave_lookup_us,wave_build_us,wave_provider_us,diagnostic_us,request_layout_us,prepaint_us,paint_us,editor_calls,row_calls,clip_model_calls,wave_lookup_calls,wave_build_calls,wave_provider_calls,diagnostic_calls,request_layout_calls,prepaint_calls,paint_calls"
         );
     }
-    let mut inputs = vec![(directory, "mixed")];
-    if let Some(path) = std::env::var_os("HEX_NAVIGATION_AUDIO_FIXTURE_DIR") {
-        let path = PathBuf::from(path);
-        assert!(path.is_absolute());
-        inputs.push((path, "audio"));
-    }
-    for (directory, content) in inputs {
-        for (tracks, single_row) in [(1, false), (100, false), (100, true)] {
+    for (input, row_modes) in profile_inputs() {
+        let tracks = input.tracks;
+        let content = input.content;
+        for single_row in row_modes {
+            println!(
+                "NAV_INPUT,content={content},tracks={tracks},sample_rate={},memory_bytes={}",
+                input.sample_rate, input.memory_bytes
+            );
             let cx = &mut cx.new_app();
-            let (mut visual, editor, _scratch) =
-                fixture(cx, &directory, tracks, content == "audio", stage_timing);
+            let (mut visual, editor, _scratch) = fixture(cx, &input, stage_timing);
+            let initial_project = editor.read_with(cx, |view, _| {
+                std::sync::Arc::clone(&view.state.as_ref().unwrap().project)
+            });
             if single_row {
                 let (track, body) = editor.read_with(cx, |view, _| {
                     (
@@ -230,9 +330,9 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                     visual.update(|window, cx| {
                         editor.update(cx, |view, cx| {
                             let horizon = view.state.as_ref().unwrap().timeline_frames;
-                            let length = horizon * 4 / 5 / divisor;
+                            let length = ((horizon - horizon.div_ceil(5)) / divisor).max(1);
                             view.viewport = Some(Viewport {
-                                start: (horizon - length) / 2,
+                                start: horizon.saturating_sub(length) / 2,
                                 length,
                             });
                             cx.notify();
@@ -426,7 +526,19 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                     "navigation must not author edits"
                 );
                 assert!(!view.edit_pending());
+                assert_eq!(
+                    view.state.as_ref().unwrap().project.as_ref(),
+                    initial_project.as_ref(),
+                    "navigation must preserve the complete project"
+                );
             });
+        }
+        if let Some(bytes) = input.original_bytes {
+            assert_eq!(
+                std::fs::read(&input.path).unwrap(),
+                bytes,
+                "navigation must not rewrite the project copy"
+            );
         }
     }
 }
