@@ -551,7 +551,7 @@ fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_c
             let n = t + 12_000;
             let context = AudioTransformPreparation::default();
             let source = render(&prepare(&seed, &media, &context), 0, n, 113);
-            for operation in 0..5 {
+            for operation in 0..6 {
                 let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
                 let before = editor.project().snapshot();
                 let mut expected = source.clone();
@@ -583,12 +583,23 @@ fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_c
                             length: BeatTime::from_ratio(5, 16).unwrap(),
                         }
                     }
-                    _ => {
+                    4 => {
                         expected.drain(s..e);
                         expected.splice(t - (e - s)..t - (e - s), source[s..e].iter().copied());
                         Command::ReorderSectionAfter {
                             section,
                             after: target,
+                        }
+                    }
+                    _ => {
+                        let begin = old
+                            .beat_to_frame(BeatTime::from_ratio(17, 16).unwrap())
+                            .unwrap() as usize;
+                        expected.drain(begin..t);
+                        expected.splice(s..s, source[begin..t].iter().copied());
+                        Command::ReorderSectionBefore {
+                            section: target,
+                            before: section,
                         }
                     }
                 };

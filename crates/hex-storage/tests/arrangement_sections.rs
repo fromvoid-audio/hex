@@ -218,10 +218,7 @@ fn schema47_accepts_but_historical_schemas_reject_frozen_empty_outer_intro() {
         .max_by_key(|clip| clip.start())
         .unwrap();
     let projection = hex_project::AudioViewProjection::new(clip, project.tempo_map()).unwrap();
-    assert_eq!(
-        projection.logical_first_boundary(),
-        i128::from(clip.start())
-    );
+    assert!(projection.has_subframe_intro());
     let bytes = hex_storage::encode(&project).unwrap();
     let current: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(current["version"], 47);
@@ -232,6 +229,72 @@ fn schema47_accepts_but_historical_schemas_reject_frozen_empty_outer_intro() {
     let error = hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap_err();
     assert!(error.to_string().contains("historical project schema"));
 }
+
+#[test]
+fn schema46_accepts_frozen_directed_repeat_trimmed_to_its_base_seam() {
+    let project = fixture();
+    let tempo = project.tempo_map().clone();
+    let mut snapshot = project.snapshot();
+    let audio = snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .iter_mut()
+        .max_by_key(|clip| clip.start)
+        .unwrap();
+    let edit = audio.edit.as_mut().unwrap();
+    let start = edit.reference_start_raw().unwrap();
+    let cycle = edit.view_end - edit.view_start;
+    let phase = cycle / 3;
+    let base_length = cycle * 2;
+    let seam = cycle - phase;
+    let window_length = cycle;
+    edit.timing = hex_project::AudioClipTiming::Frozen {
+        reference_start_raw: start,
+        tempo: std::sync::Arc::new(tempo.clone()),
+    };
+    edit.processing_projection = None;
+    edit.placement_start_offset = 0;
+    edit.placement_end_offset = 0;
+    edit.placement = Some(hex_project::AudioViewPlacement {
+        mode: hex_project::AudioViewMode::Repeat,
+        outer_length: hex_project::AudioDomainClock::Beats(BeatTime::from_raw(window_length)),
+        cycle_phase: 0,
+    });
+    edit.content_view = Some(hex_project::AudioContentView {
+        restore_plain: false,
+        base_view_start: edit.view_start,
+        base_view_end: edit.view_end,
+        base_placement: Some(hex_project::AudioViewPlacement {
+            mode: hex_project::AudioViewMode::Repeat,
+            outer_length: hex_project::AudioDomainClock::Beats(BeatTime::from_raw(base_length)),
+            cycle_phase: phase,
+        }),
+        base_start_delta: 0,
+        window: hex_project::ContentWindow::new(seam, seam + window_length, false).unwrap(),
+    });
+    let displacement =
+        i128::from(audio.start) - hex_project::audio_projection_frame(&tempo, start).unwrap();
+    let end = hex_project::audio_projection_frame(&tempo, start + i128::from(window_length))
+        .unwrap()
+        + displacement;
+    audio.duration = u64::try_from(end - i128::from(audio.start)).unwrap();
+    audio.fade = hex_project::ClipFade::neutral(audio.duration).unwrap();
+
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let clip = project.tracks()[0]
+        .clips()
+        .iter()
+        .max_by_key(|clip| clip.start())
+        .unwrap();
+    let projection = hex_project::AudioViewProjection::new(clip, project.tempo_map()).unwrap();
+    assert!(!projection.has_subframe_intro());
+    let mut historical: serde_json::Value =
+        serde_json::from_slice(&hex_storage::encode(&project).unwrap()).unwrap();
+    historical["version"] = 46.into();
+    let decoded = hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap();
+    assert_eq!(decoded.snapshot(), project.snapshot());
+}
+
 #[test]
 fn marker_move_split_roundtrips_without_changing_music_or_processing() {
     let mut editor = Editor::new(fixture(), 8).unwrap();

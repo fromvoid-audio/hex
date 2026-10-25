@@ -511,6 +511,12 @@ impl<'a> AudioViewProjection<'a> {
             self.cycle,
         )
     }
+    /// Whether the authored first partial cycle rounds to no samples. Retained
+    /// reads skip it without changing the cursor; historical codecs use this
+    /// query to preserve their stricter first-occurrence admission contract.
+    pub fn has_subframe_intro(&self) -> bool {
+        self.first_index != 0
+    }
     pub fn occurrence_count(&self) -> u64 {
         self.count
     }

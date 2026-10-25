@@ -326,25 +326,12 @@ fn has_retained_outer_processing(project: &Project) -> Result<bool, StorageError
             if edit.processing_projection.is_some() && edit.placement.is_some() {
                 return Ok(true);
             }
-            let Some(placement) = edit
-                .placement
-                .filter(|_| matches!(edit.timing, hex_project::AudioClipTiming::Frozen { .. }))
-            else {
-                return Ok(false);
-            };
-            let cycle = edit
-                .view_end
-                .checked_sub(edit.view_start)
-                .filter(|length| *length > 0)
-                .ok_or(StorageError::Invalid(
-                    "audio outer placement cycle is invalid",
-                ))?;
-            if placement.cycle_phase == 0 || placement.cycle_phase >= cycle {
+            if !matches!(edit.timing, hex_project::AudioClipTiming::Frozen { .. }) {
                 return Ok(false);
             }
             let projection = hex_project::AudioViewProjection::new(clip, tempo)
                 .map_err(|error| StorageError::Invalid(error.0))?;
-            Ok(projection.logical_first_boundary() == i128::from(clip.start()))
+            Ok(projection.has_subframe_intro())
         };
     for track in project.tracks() {
         for clip in track.clips() {
