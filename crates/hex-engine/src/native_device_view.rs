@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 7);
+        assert_eq!(catalog.len(), 8);
         let utility = catalog
             .iter()
             .find(|entry| entry.name == "utility")
@@ -650,7 +650,7 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 7);
+        assert_eq!(effects.len(), 8);
         assert!(effects.iter().any(|entry| entry.name == "utility"));
         assert!(effects.iter().any(|entry| entry.name == "eq"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
@@ -658,6 +658,7 @@ mod tests {
         assert!(effects.iter().any(|entry| entry.name == "gate"));
         assert!(effects.iter().any(|entry| entry.name == "auto pan"));
         assert!(effects.iter().any(|entry| entry.name == "overdrive"));
+        assert!(effects.iter().any(|entry| entry.name == "delay"));
         assert_eq!(instruments.len(), 4);
         assert!(instruments.iter().any(|entry| entry.name == "sampler"));
         let sine = instruments
