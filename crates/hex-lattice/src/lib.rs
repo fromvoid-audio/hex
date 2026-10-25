@@ -291,7 +291,7 @@ pub trait NativeProcessorAudition: Send {
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 /// Maximum control-declared storage for one effect runtime twin. Mutable
 /// instrument limits are supplied separately by the engine's aggregate policy.
-pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
+pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 262_144;
 /// Maximum TOTAL owned transaction storage (both histories and all capacities).
 /// Owned providers synchronize written intervals, unlike full-copy legacy twins.
 /// Sixteen seconds of stereo history at 192 kHz fits below this 64-MiB limit.
@@ -551,6 +551,16 @@ impl NativeRuntimeEntryStorage<'_> {
             .runtime
             .legacy()
             .map(|(_, v)| std::mem::size_of_val(v))
+    }
+    /// Read-only typed borrow of both actual legacy runtime owners. This never
+    /// adopts a declaration/provider, clones history, or establishes native
+    /// source custody; closed constructors retain that independent obligation.
+    pub fn runtime_pair<T: NativeProcessorRuntime>(&self) -> Option<(&T, &T)> {
+        let (primary, scratch) = self.entry.runtime.legacy()?;
+        Some((
+            primary.as_any().downcast_ref::<T>()?,
+            scratch.as_any().downcast_ref::<T>()?,
+        ))
     }
     pub fn runtime_types_are<T: NativeProcessorRuntime>(&self) -> bool {
         self.entry

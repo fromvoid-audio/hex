@@ -8,6 +8,7 @@
 use hex_project::{Command, Editor};
 use hex_storage::{CURRENT_SCHEMA_VERSION, decode, encode, load_with_token, save_new};
 use serde_json::{Value, json};
+mod common;
 
 // 85e6dfe2181b9b1d9ad5bc3af34843b179a536a5
 const V34: &[u8] = include_bytes!("fixtures/migrations/schema34-85e6dfe2.json");
@@ -34,6 +35,7 @@ fn bytes(value: &Value) -> Vec<u8> {
 }
 
 fn assert_migrated_defaults(current: &mut Value, old: &Value) {
+    common::restore_pre_binding_instruments(current);
     let hierarchy: Vec<_> = old["tracks"]
         .as_array()
         .unwrap()
@@ -43,10 +45,6 @@ fn assert_migrated_defaults(current: &mut Value, old: &Value) {
     assert_eq!(
         current.as_object_mut().unwrap().remove("track_hierarchy"),
         Some(json!(hierarchy))
-    );
-    assert_eq!(
-        current.as_object_mut().unwrap().remove("native_sources"),
-        Some(serde_json::json!([]))
     );
     let groups: Vec<_> = old["tracks"]
         .as_array()

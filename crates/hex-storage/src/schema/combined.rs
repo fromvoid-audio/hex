@@ -10,6 +10,6 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         ));
     }
     document.version = 22;
-    Project::from_snapshot(document.into_snapshot()?)
+    Project::from_legacy_snapshot(document.into_snapshot()?)
         .map_err(|error| StorageError::Invalid(error.0))
 }

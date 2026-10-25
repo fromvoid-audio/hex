@@ -135,7 +135,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         Ok(())
     })?;
     let legacy =
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
+        Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
     let base = crate::encode_document(&super::midi_one_shot::encode(&legacy)?)?;
     let mut value: serde_json::Value = serde_json::from_slice(&base)?;
     let object = value
@@ -185,7 +185,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "clip activation references a missing clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
 }
 
 #[cfg(test)]
@@ -255,7 +255,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        Project::from_snapshot(snapshot).unwrap()
+        Project::from_legacy_snapshot(snapshot).unwrap()
     }
     #[test]
     fn activation40_complete_roundtrip_and_historical39_defaults() {
@@ -277,7 +277,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let neutral = Project::from_snapshot(neutral).unwrap();
+        let neutral = Project::from_legacy_snapshot(neutral).unwrap();
         let old = crate::encode_document(&super::super::midi_one_shot::encode(&neutral).unwrap())
             .unwrap();
         assert_eq!(crate::decode(&old).unwrap(), neutral);

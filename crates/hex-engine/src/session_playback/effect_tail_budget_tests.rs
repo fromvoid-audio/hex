@@ -115,12 +115,12 @@ fn seed(playback: &mut SessionPlayback, slot: usize, entries: usize, bounds: &[u
 fn finite_tail_horizon_and_overflow_refuse_without_moving_live_owners() {
     for (bounds, accepted, error) in [
         (
-            vec![400_000, 80_000],
+            vec![28_000_000, 800_000],
             true,
             SessionPlaybackError::ReleaseBankFull,
         ),
         (
-            vec![400_000, 80_001],
+            vec![28_000_000, 800_001],
             false,
             SessionPlaybackError::ReleaseBankFull,
         ),

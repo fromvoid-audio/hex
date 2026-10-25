@@ -195,7 +195,15 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'tail)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component:
+        # Reverb's grouped panel passes bound controls and provider plot data;
+        # titles and numeric/toggle labels normalize through theme::text.
+        reverb_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/reverb_panel.rs'
+            and suffix.startswith(('row(', 'title(', 'graph(', 'graph_column)',
+                                   'contour)', 'early)', 'diffusion)', 'chorus)',
+                                   'top)', 'bottom)', 'smooth)', 'density)', 'freeze)', 'high)', 'low)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
