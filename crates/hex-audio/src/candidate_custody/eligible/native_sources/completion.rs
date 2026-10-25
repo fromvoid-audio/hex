@@ -26,6 +26,9 @@ impl Custody {
         if source.binding() != binding || slot.identity != Some(source.identity()) {
             return Err("native source metadata binding differs".into());
         }
+        // Work retains the actual source. Keep the ordinary bank available
+        // for close/cancellation while allocating the bounded copied strings.
+        drop(bank);
         source
             .source_metadata()
             .try_copy_on_control()
