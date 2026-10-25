@@ -199,7 +199,7 @@ fn sort_entries(entries: &mut [LibraryEntry], with_path: bool) {
         .enumerate()
         .map(|(index, entry)| (rank(entry.kind), entry.name.to_lowercase(), index))
         .collect();
-    keys.sort_unstable_by(|a, b| {
+    keys.sort_by(|a, b| {
         a.0.cmp(&b.0)
             .then_with(|| a.1.cmp(&b.1))
             .then_with(|| entries[a.2].name.cmp(&entries[b.2].name))
