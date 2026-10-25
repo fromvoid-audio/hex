@@ -468,6 +468,25 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
     pcm_at_cursor(&mut h, &again_removed, &mut applied, &mut request_id, 0.25);
     h.run(Request::Undo);
     (applied, _) = h.applied(applied);
+    // A provider change under the same retained source/device identity has no
+    // DSP-history transfer proof. Acknowledge Stop before replacement and Undo;
+    // the explicit seek below starts the restored source again.
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Stop)
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
     let vector = hex_engine::default_native_device_state_for_class(
         hex_engine::NativeDeviceClass::Instrument,
         hex_session::device_gesture::DeviceTypeId::from_static("hex.instrument.fm4"),

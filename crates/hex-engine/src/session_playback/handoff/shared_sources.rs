@@ -535,7 +535,9 @@ mod tests {
     use crate::native_device_resources::{
         PreparedDeviceResources, ResidentDeviceAssets, ResourcePreparationError,
     };
-    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    use hex_lattice_contract::{
+        DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceMetadata,
+    };
     use hex_project::{Command, Created, Editor};
     use std::{
         collections::BTreeMap,
@@ -2042,6 +2044,60 @@ mod tests {
             let mut candidate = playback(&f);
             assert!(candidate.try_inherit_state_from(&mut old).is_err());
             check_pcm(&mut old, 7, 19, 0.5);
+        });
+    }
+    #[test]
+    fn shared_provider_replacement_requires_stop_and_undo_restores_one_source() {
+        on_control(|| {
+            let mut f = fixture();
+            let mut old = started(&f);
+            let device = f
+                .editor
+                .project()
+                .native_source(f.source)
+                .unwrap()
+                .instrument()
+                .id();
+            let replacement = hex_devices::operator_state::OPERATOR_METADATA
+                .default_state()
+                .unwrap();
+            f.editor
+                .execute(Command::ReplaceDeviceState {
+                    device,
+                    state: replacement,
+                })
+                .unwrap();
+            let mut candidate = playback(&f);
+            assert_eq!(
+                candidate.try_inherit_state_from(&mut old),
+                Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "shared source configuration changed while notes are active",
+                ))
+            );
+            assert_eq!(old.performance_frame(), 7);
+            check_pcm(&mut old, 7, 19, 0.5);
+            old.apply(SessionPlaybackCommand::Stop).unwrap();
+            candidate.try_inherit_state_from(&mut old).unwrap();
+            let mut output = [[1.0; 2]; 7];
+            candidate.render(&mut output).unwrap();
+            assert_eq!(output, [[0.0; 2]; 7]);
+            assert_eq!(candidate.performance_frame(), 0);
+            assert_eq!(
+                f.editor
+                    .project()
+                    .native_source(f.source)
+                    .unwrap()
+                    .instrument()
+                    .id(),
+                device
+            );
+            assert!(f.editor.undo());
+            let mut restored = playback(&f);
+            restored.try_inherit_state_from(&mut candidate).unwrap();
+            assert_eq!(restored.mutable_instruments.iter().flatten().count(), 1);
+            restored.apply(SessionPlaybackCommand::Play).unwrap();
+            check_pcm(&mut restored, 0, 19, 0.5);
+            assert_eq!(f.editor.project().source_contributors(f.source).count(), 2);
         });
     }
 }
