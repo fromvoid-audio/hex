@@ -125,14 +125,14 @@ fn matches_path_terms(path: &Path, terms: &[&str], folded: &mut String) -> bool 
 }
 
 /// Reuse query-local ASCII capacity. Full Unicode lowering stays with `str` so
-/// contextual mappings (such as final Greek sigma) remain identical to the index.
+/// contextual mappings (such as final Greek sigma) retain existing search semantics.
 fn lowercase_into<'a>(value: &str, folded: &'a mut String) -> &'a str {
-    folded.clear();
     if value.is_ascii() {
+        folded.clear();
         folded.push_str(value);
         folded.make_ascii_lowercase();
     } else {
-        folded.push_str(&value.to_lowercase());
+        *folded = value.to_lowercase();
     }
     folded.as_str()
 }
