@@ -917,7 +917,7 @@ fn deep_element_id_paths_keep_distinct_click_state_and_focus_across_repaints(
                             cx.notify();
                         }
                     }))
-                    .child(theme::text(&format!(
+                    .child(theme::text(format!(
                         "identity {index} · {}",
                         self.counts[index]
                     )));
