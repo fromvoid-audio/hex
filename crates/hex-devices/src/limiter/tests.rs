@@ -628,3 +628,163 @@ fn release_regression_mid_side_physical_guard_has_independent_recovery() {
     );
     assert_eq!(actual[0], actual[1]);
 }
+
+fn attenuated_quiet_runtime(
+    f: &dyn PreparedOwnedProcessorRuntime,
+) -> Box<dyn OwnedProcessorRuntime> {
+    let mut runtime = f.create_runtime().unwrap();
+    render(runtime.as_mut(), &[[4.0, -2.0]; 200], &[17, 64]);
+    let latency = f.algorithmic_latency_frames().unwrap() as usize;
+    render(runtime.as_mut(), &vec![[0.0; 2]; latency], &[1, 19]);
+    assert!(runtime.committed_is_quiescent());
+    // Silence exhausted pending output, but did not erase attenuation memory.
+    let mut continuation = f.create_runtime().unwrap();
+    continuation.inherit_from(runtime.as_ref());
+    let output = render(
+        continuation.as_mut(),
+        &vec![[0.1, -0.03]; latency + 20],
+        &[17],
+    );
+    assert!(output[latency][0] > 0.0 && output[latency][0] < 0.05);
+    runtime
+}
+
+#[test]
+fn quiet_layout_handoffs_reset_preused_histories_in_both_directions() {
+    for (old_edits, new_edits) in [
+        (
+            vec![(LOOKAHEAD, ParameterValue::Choice(0))],
+            vec![(LOOKAHEAD, ParameterValue::Choice(2))],
+        ),
+        (
+            vec![(LOOKAHEAD, ParameterValue::Choice(2))],
+            vec![(LOOKAHEAD, ParameterValue::Choice(0))],
+        ),
+        (
+            vec![(ROUTING, ParameterValue::Choice(0))],
+            vec![(ROUTING, ParameterValue::Choice(1))],
+        ),
+        (
+            vec![(ROUTING, ParameterValue::Choice(1))],
+            vec![(ROUTING, ParameterValue::Choice(0))],
+        ),
+        (
+            vec![(MODE, ParameterValue::Choice(0))],
+            vec![(MODE, ParameterValue::Choice(2))],
+        ),
+        (
+            vec![(MODE, ParameterValue::Choice(2))],
+            vec![(MODE, ParameterValue::Choice(0))],
+        ),
+    ] {
+        let mut old_settings = old_edits;
+        old_settings.push((RELEASE, ParameterValue::Float(3000.0)));
+        let old_factory = factory(8000, &old_settings);
+        let old = attenuated_quiet_runtime(old_factory.as_ref());
+        let mut new_settings = new_edits;
+        new_settings.push((AUTO_RELEASE, ParameterValue::Bool(true)));
+        let new_factory = factory(8000, &new_settings);
+        let latency = new_factory.algorithmic_latency_frames().unwrap() as usize;
+        let mut candidate = new_factory.create_runtime().unwrap();
+        render(candidate.as_mut(), &[[8.0, -4.0]; 200], &[19]);
+        assert!(!candidate.committed_is_quiescent());
+        candidate.begin_block();
+        candidate.process_block(&mut [[9.0; 2]; 77], &EMPTY_DEVICE_RESOURCES);
+        candidate.rollback_block();
+        assert!(candidate.can_inherit_from(old.as_ref()));
+        assert!(candidate.can_retarget_parameters_from(old.as_ref()));
+        candidate.inherit_from(old.as_ref());
+        assert!(candidate.committed_is_quiescent());
+        assert!(candidate.speculative_is_quiescent());
+        assert_eq!(
+            candidate.take_dynamics_meter().unwrap(),
+            hex_lattice::DynamicsMeter::default()
+        );
+        assert_eq!(
+            candidate.fixed_storage_pair_bytes(),
+            Some(new_factory.declared_pair_bytes())
+        );
+        // Reopened speculation and cancellation must start from the candidate's
+        // reset history, even though both buffers had previously carried audio.
+        candidate.begin_block();
+        candidate.process_block(&mut [[99.0; 2]; 31], &EMPTY_DEVICE_RESOURCES);
+        candidate.rollback_block();
+        let mut input = vec![[0.1, -0.03]; latency * 2 + 4];
+        input.extend_from_slice(&[[3.0, 2.0]; 13]);
+        input.resize(input.len() + latency + 100, [0.1, -0.03]);
+        let mut fresh = new_factory.create_runtime().unwrap();
+        assert_eq!(
+            render(candidate.as_mut(), &input, &[1, 17, 64]),
+            render(fresh.as_mut(), &input, &[input.len()])
+        );
+    }
+}
+
+#[test]
+fn layout_handoffs_refuse_pending_final_stage_open_transactions_and_other_rates() {
+    let ms_factory = factory(8000, &[(ROUTING, ParameterValue::Choice(1))]);
+    let mut old = ms_factory.create_runtime().unwrap();
+    let stage_delay = ms_factory.algorithmic_latency_frames().unwrap() as usize / 2;
+    let mut input = vec![[0.0; 2]; stage_delay + 1];
+    input[0] = [4.0, 0.0];
+    assert!(
+        render(old.as_mut(), &input, &[1, 7])
+            .iter()
+            .all(|v| *v == [0.0; 2])
+    );
+    // The equivalent encoded first stage has drained; only the final m/s
+    // physical-output guard still owns the impulse.
+    let lr_factory = factory(8000, &[]);
+    let mut encoded = lr_factory.create_runtime().unwrap();
+    input[0] = [2.0; 2];
+    render(encoded.as_mut(), &input, &[input.len()]);
+    assert!(encoded.committed_is_quiescent());
+    assert!(!old.committed_is_quiescent());
+    let mut candidate = lr_factory.create_runtime().unwrap();
+    assert!(!candidate.can_inherit_from(old.as_ref()));
+    assert!(!candidate.can_retarget_parameters_from(old.as_ref()));
+    candidate.inherit_from(old.as_ref());
+    assert!(candidate.committed_is_quiescent());
+    let drained = render(old.as_mut(), &vec![[0.0; 2]; stage_delay], &[1]);
+    assert!(drained.iter().any(|v| *v != [0.0; 2]));
+    assert!(old.committed_is_quiescent());
+    assert!(candidate.can_inherit_from(old.as_ref()));
+    old.begin_block();
+    assert!(!candidate.can_inherit_from(old.as_ref()));
+    old.rollback_block();
+    candidate.begin_block();
+    assert!(!candidate.can_inherit_from(old.as_ref()));
+    candidate.rollback_block();
+    assert!(candidate.can_inherit_from(old.as_ref()));
+    let other_rate = factory(16000, &[]).create_runtime().unwrap();
+    assert!(!other_rate.can_inherit_from(old.as_ref()));
+}
+
+#[test]
+fn compatible_quiet_handoffs_preserve_envelopes_and_gain_ramps() {
+    let f = factory(8000, &[(RELEASE, ParameterValue::Float(3000.0))]);
+    let old = attenuated_quiet_runtime(f.as_ref());
+    let changed = factory(
+        8000,
+        &[
+            (RELEASE, ParameterValue::Float(3000.0)),
+            (GAIN, ParameterValue::Float(12.0)),
+        ],
+    );
+    let mut ramping = changed.create_runtime().unwrap();
+    ramping.inherit_from(old.as_ref());
+    render(ramping.as_mut(), &[[0.0; 2]], &[1]);
+    assert!(ramping.committed_is_quiescent());
+    let mut candidate = changed.create_runtime().unwrap();
+    render(candidate.as_mut(), &[[7.0; 2]; 100], &[17]);
+    assert!(candidate.can_inherit_from(ramping.as_ref()));
+    candidate.inherit_from(ramping.as_ref());
+    let input = [[0.01, -0.003]; 150];
+    let continuation = render(ramping.as_mut(), &input, &[input.len()]);
+    assert_eq!(
+        render(candidate.as_mut(), &input, &[1, 17, 64]),
+        continuation
+    );
+    let mut fresh = changed.create_runtime().unwrap();
+    assert_ne!(render(fresh.as_mut(), &input, &[17]), continuation);
+}

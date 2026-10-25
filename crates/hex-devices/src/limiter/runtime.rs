@@ -32,6 +32,14 @@
 //! Both stages' delays are declared. No final
 //! hard clamp is used. Histories, queues and telemetry commit atomically; buffer
 //! copies are bounded by the prepared rate/lookahead, not callback duration.
+//!
+//! Closed transactions at the same rate retain full history for a compatible
+//! layout, including silent attenuation and parameter ramps. A layout change
+//! (lookahead, routing or true-peak latency) is admitted only when the donor has
+//! no queued output in either stage; it explicitly resets both candidate
+//! histories to the new configuration. That transition discards only silent
+//! future gain/program influence. In-flight transactions and rate changes
+//! refuse; the host retains its existing PDC, publication and retirement rules.
 use super::state::{Settings, parameter::*};
 use hex_lattice::{
     DynamicsMeter, OutputTail, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, StereoFrame,
@@ -438,6 +446,13 @@ struct Runtime {
     scratch: History,
     open: bool,
 }
+impl Runtime {
+    fn same_history_layout(&self, previous: &Self) -> bool {
+        self.config.delay == previous.config.delay
+            && self.config.mid_side == previous.config.mid_side
+            && self.config.true_peak == previous.config.true_peak
+    }
+}
 impl OwnedProcessorRuntime for Runtime {
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>()
@@ -549,9 +564,7 @@ impl OwnedProcessorRuntime for Runtime {
             !self.open
                 && !old.open
                 && self.config.rate == old.config.rate
-                && self.config.delay == old.config.delay
-                && self.config.mid_side == old.config.mid_side
-                && self.config.true_peak == old.config.true_peak
+                && (self.same_history_layout(old) || old.primary.quiet())
         })
     }
     fn inherit_from(&mut self, previous: &dyn OwnedProcessorRuntime) {
@@ -559,8 +572,15 @@ impl OwnedProcessorRuntime for Runtime {
             return;
         }
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
-            self.primary.copy_from(&old.primary);
-            self.scratch.copy_from(&old.primary);
+            if self.same_history_layout(old) {
+                self.primary.copy_from(&old.primary);
+                self.scratch.copy_from(&old.primary);
+            } else {
+                // Admission proved that no donor audio remains queued. A new
+                // layout starts with its own configuration, including both
+                // histories even when this candidate was previously rendered.
+                self.reset();
+            }
         }
     }
     fn can_retarget_parameters_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
