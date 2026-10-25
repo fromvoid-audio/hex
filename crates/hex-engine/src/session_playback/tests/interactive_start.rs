@@ -24,7 +24,7 @@ fn start_fixture(start: u64, duration: u64, limiter: Option<bool>) -> Arc<Prepar
     }
     revision_with_instrument_registry(
         &Project::from_snapshot(snapshot).unwrap(),
-        Arc::new(SineTable::new()),
+        Arc::new(hex_devices::SineTable::new()),
         &registry,
     )
 }
