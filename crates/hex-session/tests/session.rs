@@ -918,6 +918,97 @@ fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
 }
 
 #[test]
+fn musical_repeat_handle_extension_prepares_pcm_history_and_reopens_without_empty_occurrences() {
+    use hex_project::AudioViewResizeOperation as Resize;
+    let directory = TempDir::new();
+    let samples: Vec<[i16; 2]> = (0..1_006)
+        .map(|i| {
+            let value = ((i % 17) as i16 - 8) * 1_000;
+            [value, -value]
+        })
+        .collect();
+    let mut session = Session::new(48_000, 32, 16_384).unwrap();
+    let (created, mut previous) = session
+        .import_prepared_revision(
+            prepare(&directory, "fractional-cycle.wav", 48_000, &samples),
+            None,
+        )
+        .unwrap();
+    let (_, asset, clip) = imported_ids(created);
+    for command in [
+        Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        },
+        Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+    ] {
+        (_, previous) = session
+            .command_prepared_revision(command, Some(&previous))
+            .unwrap();
+    }
+    for repeats in [2, 3, 8] {
+        let before = session.project().clone();
+        // Keep a genuinely audible one-frame final repeat in the last case.
+        let end = 1_006 * repeats + u64::from(repeats == 8);
+        (_, previous) = session
+            .command_prepared_revision(
+                Command::ResizeAudioClipView {
+                    clip,
+                    operation: Resize::RepeatOuterEnd { project_frame: end },
+                },
+                Some(&previous),
+            )
+            .unwrap();
+        let expected: Vec<_> = samples
+            .iter()
+            .cycle()
+            .take(end as usize)
+            .map(|frame| frame.map(|sample| f32::from(sample) / 32_768.0))
+            .collect();
+        for block in [1, 127, 257] {
+            let mut renderer = hex_engine::Renderer::new(previous.arrangement());
+            renderer.play();
+            assert_eq!(render_blocks(&mut renderer, end as usize, block), expected);
+        }
+        let after = session.project().clone();
+        previous = session
+            .undo_prepared_revision(Some(&previous))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &before);
+        previous = session
+            .redo_prepared_revision(Some(&previous))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project(), &after);
+    }
+    let path = directory.path().join("musical-loop.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(&loaded, session.project());
+    let pcm = decode_wav_file(
+        directory.path().join("fractional-cycle.wav"),
+        Limits::new(65_536, 8_192),
+    )
+    .unwrap();
+    let reopened = Session::from_loaded(loaded, 8, 16_384, vec![(asset, pcm)]).unwrap();
+    let graph = reopened.compile().unwrap();
+    let mut renderer = hex_engine::Renderer::new(&graph);
+    renderer.play();
+    let expected: Vec<_> = samples
+        .iter()
+        .cycle()
+        .take(8_049)
+        .map(|frame| frame.map(|sample| f32::from(sample) / 32_768.0))
+        .collect();
+    assert_eq!(render_blocks(&mut renderer, expected.len(), 31), expected);
+}
+
+#[test]
 fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_history() {
     use hex_project::{AudioViewResizeOperation as Resize, TrimEdge};
     let directory = TempDir::new();
