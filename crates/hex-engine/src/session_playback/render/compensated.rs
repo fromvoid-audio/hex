@@ -1,26 +1,18 @@
-//! Shared compensated/typed-route path. One frame keeps content clocks exact;
-//! zero-latency projects without typed routes retain the original chunk kernel.
+//! Shared compensated/typed-route path. Upstream latency and typed audio routes
+//! use single-frame routing. Serial Main-only latency retains batched upstream
+//! rendering; its stamps, Main processors and retained tails still advance one
+//! sample at a time through the same compensation owner.
 use super::*;
 
 impl SessionPlayback {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn render_compensated_route_frame<P: MediaPages + ?Sized>(
+    /// Publish one transport origin immediately before processing its Main
+    /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
+    pub(super) fn push_compensated_stamp(
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
         loop_pass: u64,
-        output: &mut [Frame],
-        mut pages: Option<&mut P>,
-        frame_offset: usize,
-        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
-        capture: &mut Option<&mut dyn CaptureSink>,
-        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
-        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
-        if output.len() != 1 {
-            return Err(SessionPlaybackError::DeviceRuntime);
-        }
-        let region = self.active_loop_region();
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         let beat = timing
             .frame_to_beat(performance_frame)
@@ -45,6 +37,29 @@ impl SessionPlayback {
                     .map(|beat| beat.raw()),
             })
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_compensated_route_frame<P: MediaPages + ?Sized>(
+        &mut self,
+        performance_frame: u64,
+        arrangement_frame: u64,
+        loop_pass: u64,
+        output: &mut [Frame],
+        mut pages: Option<&mut P>,
+        frame_offset: usize,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        if output.len() != 1 {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        let region = self.active_loop_region();
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
         for scratch in &mut self.return_scratch {
             scratch[0] = [0.0; 2];
         }
