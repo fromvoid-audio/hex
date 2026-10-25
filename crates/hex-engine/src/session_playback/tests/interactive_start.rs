@@ -50,13 +50,12 @@ fn repeated_play_from_invalidates_a_projected_stream_action_at_the_same_clock() 
 
 #[test]
 fn play_from_mutable_cursor_before_inside_and_after_loop_keeps_absolute_transport() {
-    let project = super::super::source_loop_tests::arrangement_loop_project();
+    let project = super::source_loop_tests::arrangement_loop_project();
     let region = LoopRegion::new(48_000, 96_000, true).unwrap();
     let mut snapshot = project.snapshot();
     snapshot.loop_region = Some(region);
-    let prepared = super::super::source_loop_tests::prepare_mutable(
-        &Project::from_snapshot(snapshot).unwrap(),
-    );
+    let prepared =
+        super::source_loop_tests::prepare_mutable(&Project::from_snapshot(snapshot).unwrap());
     for destination in [0, 47_999, 48_000, 72_000, 95_999, 96_000, 120_000] {
         let mut runtime = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
         runtime.play_from(destination).unwrap();
@@ -104,7 +103,7 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 
 #[test]
 fn play_from_invalid_destination_is_atomic_and_strict_seek_still_refuses_chase() {
-    let (prepared, _) = mutable_checkpoint_fixture(1 << 32);
+    let (prepared, track) = mutable_checkpoint_fixture(1 << 32);
     let mut runtime = SessionPlayback::new(prepared).unwrap();
     assert_eq!(
         runtime.apply(SessionPlaybackCommand::Seek(12_000)),
@@ -124,6 +123,19 @@ fn play_from_invalid_destination_is_atomic_and_strict_seek_still_refuses_chase()
         before
     );
     assert!(runtime.playing());
+    let plan = runtime
+        .output_capture_plan(&[OutputCaptureId::Track(track)], 1)
+        .unwrap();
+    let mut main = [[0.0; 2]; 2];
+    let mut tapped = main;
+    let mut buffers: [&mut [Frame]; 1] = [&mut tapped];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    assert!(
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .is_err()
+    );
+    assert_eq!(runtime.performance_frame(), 12_000);
     let mut actual = [[0.0; 2]; 32];
     runtime.render(&mut actual).unwrap();
     assert!(actual.iter().flatten().any(|v| *v != 0.0));
