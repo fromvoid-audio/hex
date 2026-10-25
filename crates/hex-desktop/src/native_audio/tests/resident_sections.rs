@@ -666,7 +666,11 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
 #[test]
 fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
-    for micro_bpm in [143_000_000, 180_000_000] {
+    for (micro_bpm, copy_before_self) in [
+        (143_000_000, false),
+        (180_000_000, false),
+        (143_000_000, true),
+    ] {
         let files = Files::new();
         let mut h = ResidentHarness::with_frame_limit(8_000_000);
         assert!(h.next().error.is_none());
@@ -980,15 +984,21 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
         }
         let original = event.state.project.snapshot();
         let flags = (event.state.can_undo, event.state.can_redo);
+        let relocation = if copy_before_self {
+            Command::DuplicateArrangementSectionAt {
+                section: intro,
+                target: intro,
+                after: false,
+            }
+        } else {
+            Command::ReorderSectionAfter {
+                section: intro,
+                after: chorus,
+            }
+        };
         let refused = run_callback(
             &mut h,
-            section_request(
-                event.state.revision,
-                Command::ReorderSectionAfter {
-                    section: intro,
-                    after: chorus,
-                },
-            ),
+            section_request(event.state.revision, relocation.clone()),
         );
         assert!(
             refused
@@ -1041,16 +1051,7 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .command(PlaybackCommand::Stop)
             .unwrap();
         assert!(h.render().iter().flatten().all(|s| *s == 0.0));
-        let moved = run_callback(
-            &mut h,
-            section_request(
-                refused.state.revision,
-                Command::ReorderSectionAfter {
-                    section: intro,
-                    after: chorus,
-                },
-            ),
-        );
+        let moved = run_callback(&mut h, section_request(refused.state.revision, relocation));
         assert!(moved.error.is_none(), "{:?}", moved.error);
         (applied, _) = h.applied(applied);
         // Transport admission resumes only after control and callback retire

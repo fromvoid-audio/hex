@@ -138,6 +138,9 @@ before or after another section, or beside the source. changing option during th
 switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
+some section edits involving sampler midi require stopped playback. if hex asks,
+stop playback and repeat the edit; the refused edit leaves the project and history unchanged.
+
 hold **command** before or during a drag to adjust only the marker; the music stays
 in place. command-resize an edge to trim or remove overlapping section markers, or
 use **command-delete** to remove the selected marker only. releasing command keeps
