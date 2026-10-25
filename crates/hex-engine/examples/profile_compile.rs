@@ -32,12 +32,10 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                     let start = if active {
                         0
                     } else {
-                        20_000
-                            + ((track_index * 1_619
-                                + clip_index * 4_093
-                                + track_index * clip_index * 31)
-                                as u64
-                                % (ARRANGEMENT_FRAMES - 20_000))
+                        // Canonical Arrangement clips cannot overlap on a track.
+                        // Keep sparse clips after the sustained loop, spaced
+                        // beyond their maximum 64-frame duration.
+                        ARRANGEMENT_FRAMES + clip_index as u64 * 128
                     };
                     let duration = if active {
                         ARRANGEMENT_FRAMES
