@@ -39,6 +39,8 @@ fn inventory_shape(
         .unwrap();
     let mut snapshot = editor.project().snapshot();
     let template = snapshot.tracks.remove(0);
+    // Synthetic inventory below assigns every source/device identity afresh.
+    snapshot.native_sources.clear();
     let operator = crate::operator_legacy_test::legacy_operator_state();
     let operator = crate::patch_native_device_parameter_for_class(
         crate::NativeDeviceClass::Instrument,
@@ -142,7 +144,7 @@ fn inventory_shape(
             });
     }
     snapshot.next_id = next;
-    let project = Project::from_snapshot(snapshot)?;
+    let project = Project::from_legacy_snapshot(snapshot)?;
     Ok(Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),

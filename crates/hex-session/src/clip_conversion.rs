@@ -244,6 +244,22 @@ fn isolated_source(
             .transpose()
             .map_err(|e| e.to_string())?;
     }
+    // This is a disposable render extraction. Normalize its canonical source
+    // and read projection together; the live retained definition stays untouched.
+    snapshot
+        .native_sources
+        .retain(|source| Some(source.id) == owner.source_id().map(|id| id.value()));
+    if let Some(instrument) = &track.instrument {
+        let source = snapshot
+            .native_sources
+            .first_mut()
+            .ok_or("clip source no longer exists")?;
+        let definition = source
+            .devices
+            .get_mut(source.instrument_index)
+            .ok_or("clip instrument no longer exists")?;
+        *definition = instrument.clone();
+    }
     track.instrument_position = track.instrument.as_ref().map(|_| 0);
     track.gain = 1.0;
     track.balance = 0.0;

@@ -65,7 +65,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             sends: Vec::new(),
         });
     }
-    Project::from_snapshot(Snapshot {
+    Project::from_legacy_snapshot(Snapshot {
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

@@ -128,7 +128,7 @@ fn delay_canonical_track_return_edit_bypass_reorder_history_and_save_reopen() {
     let bytes = hex_storage::encode(session.project()).unwrap();
     assert_eq!(
         hex_storage::CURRENT_SCHEMA_VERSION,
-        45,
+        46,
         "delay uses the current container without adding saved container fields"
     );
     let reopened = hex_storage::decode(&bytes).unwrap();
