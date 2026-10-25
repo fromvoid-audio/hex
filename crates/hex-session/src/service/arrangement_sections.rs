@@ -20,6 +20,7 @@ pub(super) fn is_command(command: &Command) -> bool {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::DuplicateArrangementSectionAt { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)
     )
@@ -96,6 +97,7 @@ pub(super) fn command(
             Command::ReorderSectionBefore { .. }
                 | Command::ReorderSectionAfter { .. }
                 | Command::DuplicateArrangementSection(_)
+                | Command::DuplicateArrangementSectionAt { .. }
         ),
     )?;
     let result = session.section_snapshot(

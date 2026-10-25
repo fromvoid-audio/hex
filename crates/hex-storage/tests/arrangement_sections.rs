@@ -1,5 +1,7 @@
 use hex_project::{BeatTime, Command, Created, Editor, ElementColor, Project};
 use serde_json::json;
+#[allow(dead_code)]
+mod common;
 fn b(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
@@ -169,13 +171,19 @@ fn schema47_roundtrips_retained_musical_repeat_after_section_reorder() {
     let project = Project::from_snapshot(snapshot).unwrap();
     let bytes = hex_storage::encode(&project).unwrap();
     let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(document["version"], 47);
+    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
         hex_storage::decode(&bytes).unwrap().snapshot(),
         project.snapshot()
     );
 
     let mut prior = document;
+    common::remove_audio_cycles(&mut prior);
+    prior["version"] = 47.into();
+    assert_eq!(
+        hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap(),
+        project
+    );
     prior["version"] = 46.into();
     let error = hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap_err();
     assert!(error.to_string().contains("historical project schema"));
@@ -237,6 +245,12 @@ fn schema47_accepts_but_historical_schemas_reject_musical_directed_empty_base_in
     let bytes = hex_storage::encode(&project).unwrap();
     assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
     let mut historical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    common::remove_audio_cycles(&mut historical);
+    historical["version"] = 47.into();
+    assert_eq!(
+        hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap(),
+        project
+    );
     historical["version"] = 46.into();
     let error = hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap_err();
     assert!(error.to_string().contains("historical project schema"));
@@ -295,10 +309,16 @@ fn schema47_accepts_but_historical_schemas_reject_empty_intro_for_both_timing_mo
         assert!(projection.has_subframe_intro());
         let bytes = hex_storage::encode(&project).unwrap();
         let current: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(current["version"], 47);
+        assert_eq!(current["version"], hex_storage::CURRENT_SCHEMA_VERSION);
         assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
 
         let mut prior = current;
+        common::remove_audio_cycles(&mut prior);
+        prior["version"] = 47.into();
+        assert_eq!(
+            hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap(),
+            project
+        );
         prior["version"] = 46.into();
         let error = hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap_err();
         assert!(error.to_string().contains("historical project schema"));
@@ -365,6 +385,12 @@ fn schema46_accepts_frozen_directed_repeat_trimmed_to_its_base_seam() {
     assert!(!projection.has_subframe_intro());
     let mut historical: serde_json::Value =
         serde_json::from_slice(&hex_storage::encode(&project).unwrap()).unwrap();
+    common::remove_audio_cycles(&mut historical);
+    historical["version"] = 47.into();
+    assert_eq!(
+        hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap(),
+        project
+    );
     historical["version"] = 46.into();
     let decoded = hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap();
     assert_eq!(decoded.snapshot(), project.snapshot());
@@ -491,6 +517,8 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
     for operation in [
         "resize",
         "duplicate",
+        "duplicate-before",
+        "duplicate-after",
         "delete",
         "merge",
         "shared",
@@ -576,6 +604,31 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 assert_eq!(duplicate.start(), source.end());
                 assert_eq!(duplicate.name(), source.name());
                 assert_eq!(duplicate.color(), source.color());
+            }
+            "duplicate-before" | "duplicate-after" => {
+                let after_target = operation == "duplicate-after";
+                let Created::ArrangementSection(copy) = editor
+                    .execute(Command::DuplicateArrangementSectionAt {
+                        section: ids[0],
+                        target: ids[1],
+                        after: after_target,
+                    })
+                    .unwrap()
+                else {
+                    panic!("destination copy identity");
+                };
+                let source = editor.project().arrangement_section(ids[0]).unwrap();
+                let target = editor.project().arrangement_section(ids[1]).unwrap();
+                let copied = editor.project().arrangement_section(copy).unwrap();
+                assert_eq!(
+                    (copied.name(), copied.color()),
+                    (source.name(), source.color())
+                );
+                if after_target {
+                    assert_eq!(copied.start(), target.end());
+                } else {
+                    assert_eq!(copied.end(), target.start());
+                }
             }
             "delete" => {
                 editor

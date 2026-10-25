@@ -443,6 +443,7 @@ impl Command {
                 ClipCommandScope::FocusedSnapshot { clip: *clip }
             }
             Self::EditAudioEvents { clip, .. }
+            | Self::SetSessionAudioClipLoop { clip, .. }
             | Self::SetSessionAudioClipSource { clip, .. }
             | Self::SetSessionMidiClipSource { clip, .. }
             | Self::SetMidiClipSource { clip, .. }
@@ -524,6 +525,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::DuplicateArrangementSectionAt { .. }
             | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)

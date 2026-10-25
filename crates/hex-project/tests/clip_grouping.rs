@@ -831,6 +831,7 @@ fn processed_repeated_audio_group_has_a_bounded_prepared_adoption_and_one_histor
         target: target.clone(),
         in_place: true,
         files: vec![hex_project::BounceFile {
+            source: hex_project::BounceSource::Arrangement,
             track,
             start: 0,
             frames,

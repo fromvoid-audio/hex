@@ -224,3 +224,211 @@ fn ordinary_existing_authored_identity_marker_or_owner_changes_remain_strict() {
         assert_eq!(old.performance_frame(), 64);
     });
 }
+
+#[test]
+fn section_duplicate_undo_restores_prefix_without_chasing_a_past_gate() {
+    registry_test(|registry, id| {
+        for looped in [false, true] {
+            for elapsed in [64, 48_064] {
+                let mut snapshot =
+                    with_test_instrument(&project(1.0, 0, 6 << 32), id, 0).snapshot();
+                if looped {
+                    snapshot.loop_region = Some(LoopRegion::new(0, 48_000, true).unwrap());
+                }
+                let mut editor =
+                    Editor::new(Project::from_legacy_snapshot(snapshot).unwrap(), 8).unwrap();
+                let Created::ArrangementSection(section) = editor
+                    .execute(Command::AddArrangementSection {
+                        name: "intro".into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start: BeatTime::ZERO,
+                        end: BeatTime::from_quarters(2).unwrap(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("section")
+                };
+                let full = editor.project().clone();
+                let mut old = ordinary_mutable_playback(&full, registry);
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                old.render(&mut [[0.0; 2]; 64]).unwrap();
+                editor
+                    .execute(Command::DuplicateArrangementSection(section))
+                    .unwrap();
+                let mut shortened = ordinary_mutable_playback(editor.project(), registry);
+                shortened.try_inherit_state_from(&mut old).unwrap();
+                shortened.render(&mut vec![[0.0; 2]; elapsed]).unwrap();
+                assert!(editor.undo());
+                let clock = (shortened.arrangement_frame(), shortened.performance_frame());
+                let mut conflicting = editor.project().snapshot();
+                arrangement(&mut conflicting)[0].notes[0].pitch += 1;
+                let mut refused = ordinary_mutable_playback(
+                    &Project::from_legacy_snapshot(conflicting).unwrap(),
+                    registry,
+                );
+                assert_eq!(
+                    refused.try_inherit_state_from(&mut shortened),
+                    Err(SessionPlaybackError::MutableInstrumentChase)
+                );
+                let mut restored = ordinary_mutable_playback(editor.project(), registry);
+                restored.release_capacity = 0;
+                assert_eq!(
+                    restored.try_inherit_state_from(&mut shortened),
+                    Err(SessionPlaybackError::ReleaseBankFull)
+                );
+                assert_eq!(
+                    (shortened.arrangement_frame(), shortened.performance_frame()),
+                    clock
+                );
+                assert_eq!(restored.performance_frame(), 0);
+                assert!(restored.suppressions.is_empty());
+                restored.release_capacity = SESSION_RELEASE_CAPACITY;
+                restored.try_inherit_state_from(&mut shortened).unwrap();
+                let mut output = [[0.0; 2]; 64];
+                restored.render(&mut output).unwrap();
+                if looped || elapsed == 64 {
+                    assert!(
+                        output.iter().any(|frame| frame[0] > 0.0),
+                        "retain the still-gated old occurrence"
+                    );
+                } else {
+                    let original = full.tracks()[0].midi_clips()[0].id();
+                    let ended = |proof: crate::mutable_instrument::MutableOccurrence| {
+                        proof.signature.key().clip != original || proof.note_off_sent
+                    };
+                    assert!(
+                        restored
+                            .mutable_instruments
+                            .iter()
+                            .flatten()
+                            .all(|runtime| runtime.proofs().all(ended))
+                    );
+                    assert!(
+                        restored
+                            .tail_mutable_instruments
+                            .iter()
+                            .flatten()
+                            .all(|tail| tail.runtime.proofs().all(ended)),
+                        "an ended prefix gate must not be resurrected; later copied clips may still sound"
+                    );
+                }
+                // A later publication retains the suppression, rather than chasing again.
+                let mut successor = ordinary_mutable_playback(editor.project(), registry);
+                successor.try_inherit_state_from(&mut restored).unwrap();
+                if looped {
+                    let remainder = 48_000 - successor.arrangement_frame();
+                    successor
+                        .render(&mut vec![[0.0; 2]; remainder as usize])
+                        .unwrap();
+                    successor.render(&mut output).unwrap();
+                    assert!(
+                        output.iter().any(|frame| frame[0] > 0.0),
+                        "the next pass uses the restored authored occurrence"
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn live_section_midi_guard_distinguishes_prefixes_from_relocation_and_exposed_onsets() {
+    registry_test(|registry, id| {
+        for later_note in [false, true] {
+            let base = with_test_instrument(&project(1.0, 0, 6 << 32), id, 0);
+            let clip = base.tracks()[0].midi_clips()[0].id();
+            let mut editor = Editor::new(base, 16).unwrap();
+            if later_note {
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_quarters(3).unwrap(),
+                        duration: BeatTime::from_quarters(1).unwrap(),
+                        pitch: 64,
+                        channel: 0,
+                        velocity: 100,
+                    })
+                    .unwrap();
+            }
+            let Created::ArrangementSection(intro) = editor
+                .execute(Command::AddArrangementSection {
+                    name: "intro".into(),
+                    color: hex_project::ElementColor::Cyan,
+                    start: BeatTime::ZERO,
+                    end: BeatTime::from_quarters(2).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            let Created::ArrangementSection(chorus) = editor
+                .execute(Command::AddArrangementSection {
+                    name: "chorus".into(),
+                    color: hex_project::ElementColor::Rose,
+                    start: BeatTime::from_quarters(4).unwrap(),
+                    end: BeatTime::from_quarters(7).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            let full = ordinary_mutable_playback(editor.project(), registry);
+            let legacy = SessionPlayback::new(revision_with_instrument_registry(
+                editor.project(),
+                Arc::new(hex_devices::SineTable::new()),
+                registry,
+            ))
+            .unwrap();
+            assert!(
+                legacy
+                    .revision
+                    .section_midi_relocation_requires_stop(&full.revision)
+            );
+            editor
+                .execute(Command::RenameArrangementSection {
+                    section: intro,
+                    name: "renamed".into(),
+                })
+                .unwrap();
+            let metadata = ordinary_mutable_playback(editor.project(), registry);
+            assert!(
+                !full
+                    .revision
+                    .section_midi_relocation_requires_stop(&metadata.revision)
+            );
+            editor
+                .execute(Command::DuplicateArrangementSection(intro))
+                .unwrap();
+            let prefix = ordinary_mutable_playback(editor.project(), registry);
+            assert!(
+                !metadata
+                    .revision
+                    .section_midi_relocation_requires_stop(&prefix.revision)
+            );
+            assert_eq!(
+                prefix
+                    .revision
+                    .section_midi_relocation_requires_stop(&metadata.revision),
+                later_note
+            );
+            assert!(editor.undo());
+            editor
+                .execute(Command::ReorderSectionAfter {
+                    section: intro,
+                    after: chorus,
+                })
+                .unwrap();
+            let moved = ordinary_mutable_playback(editor.project(), registry);
+            assert!(
+                metadata
+                    .revision
+                    .section_midi_relocation_requires_stop(&moved.revision)
+            );
+            assert!(
+                moved
+                    .revision
+                    .section_midi_relocation_requires_stop(&metadata.revision)
+            );
+        }
+    });
+}

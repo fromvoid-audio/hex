@@ -69,7 +69,9 @@ mod appearance;
 mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
-pub use bounce::{BounceFile, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES};
+pub use bounce::{
+    BounceFile, BounceSource, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES,
+};
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;
 pub use track_clipboard::TrackClipboard;
@@ -148,8 +150,8 @@ mod session;
 mod snapshot;
 mod split_tracks;
 pub use session::{
-    Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
-    SessionSceneTarget,
+    Scene, SessionAudioClip, SessionAudioLoop, SessionCell, SessionCellContent, SessionGrid,
+    SessionMidiClip, SessionSceneTarget,
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};

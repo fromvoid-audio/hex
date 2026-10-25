@@ -1643,6 +1643,50 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
 }
 
 #[gpui::test]
+fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            window.focus(&view.focus);
+            // Native resident metadata deliberately carries no graph handle.
+            // Its stateful flag formerly forced Space through the seek worker.
+            view.audible_playback = Some(super::PlaybackCandidate {
+                worker_requires_preroll: Some(true),
+                observation: None,
+                audio_revision: 1,
+                project_generation: view.project_generation,
+                state: Arc::clone(view.state.as_ref().unwrap()),
+                prepared_revision: None,
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            view.time_selection = None;
+            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track: source,
+                frame: 48_000_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+                pulse_started: Instant::now(),
+            });
+        });
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(48_000_000))
+        );
+        assert!(view.prepared_seek.is_none());
+        assert!(view.latched_seek_intent.is_none());
+    });
+}
+
+#[gpui::test]
 fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let mut model = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();

@@ -155,9 +155,7 @@ impl AudioTransformPreparation {
         };
         let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio) = self.lookup_key(source, asset, |key| {
-            matches!(key, EntryKey::View { edit: retained, tempo, start, duration }
-                if retained == edit && tempo.as_ref() == tempo_map
-                    && *start == clip.start() && *duration == clip.duration())
+            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
         })? {
             return placed_clip(audio, clip);
         }

@@ -2,6 +2,7 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod interactive_start;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -1019,6 +1020,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 track: 1,
                 scene: 2,
                 content: SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                    loop_range: None,
                     active: true,
                     flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
@@ -3171,6 +3173,14 @@ fn mutable_checkpoint_fixture_with_release(
     note_duration: u64,
     release_frames: u64,
 ) -> (Arc<PreparedRevision>, hex_project::TrackId) {
+    mutable_checkpoint_fixture_at(0, note_duration, release_frames)
+}
+
+fn mutable_checkpoint_fixture_at(
+    note_start: u64,
+    note_duration: u64,
+    release_frames: u64,
+) -> (Arc<PreparedRevision>, hex_project::TrackId) {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -3182,7 +3192,7 @@ fn mutable_checkpoint_fixture_with_release(
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     let table = Arc::new(hex_devices::SineTable::new());
-    let project = with_test_instrument(&project(1.0, 0, note_duration), id, 0);
+    let project = with_test_instrument(&project(1.0, note_start, note_duration), id, 0);
     let revision = revision_with_instrument_registry(&project, table, &registry);
     let track = revision.arrangement().tracks()[0]
         .canonical_track_id()
@@ -12060,3 +12070,68 @@ fn analytic_clip_volume_survives_track_stop_and_removed_track_handoffs() {
 
 #[path = "delay_tests.rs"]
 mod delay_tests;
+
+#[test]
+fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
+    let source: Vec<Frame> = (0..32)
+        .map(|i| [i as f32 / 64.0, -(i as f32) / 64.0])
+        .collect();
+    let audio = crate::Audio::new(48_000, source.clone()).unwrap();
+    for (first, last) in [(7, 13), (7, 8)] {
+        let mut snapshot = audio_project(3, 29, 4).snapshot();
+        let SessionCellContentSnapshot::Audio(clip) = &mut snapshot.session.cells[0].content else {
+            panic!("audio")
+        };
+        clip.loop_range = Some(hex_project::SessionAudioLoop::new(first, last).unwrap());
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let media = audio_media(&project, &audio, &audio);
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                &project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let clip = revision.session().audio_clips()[0].id;
+        let expected: Vec<_> = (0..97)
+            .map(|i| {
+                source[if i < last - 3 {
+                    3 + i
+                } else {
+                    first + (i - (last - 3)) % (last - first)
+                } as usize]
+            })
+            .collect();
+        for block in [1, 7, 32, 97] {
+            let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            playback
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut actual = vec![[0.0; 2]; 97];
+            for chunk in actual.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(actual, expected, "cycle {first}..{last}, block {block}");
+            let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            candidate.try_inherit_state_from(&mut playback).unwrap();
+            let mut next = [[0.0; 2]; 3];
+            candidate.render(&mut next).unwrap();
+            for (j, frame) in next.iter().enumerate() {
+                assert_eq!(
+                    *frame,
+                    source[(first + (97 + j as u64 - (last - 3)) % (last - first)) as usize]
+                );
+            }
+            candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+            let mut stopped = [[1.0; 2]; 3];
+            candidate.render(&mut stopped).unwrap();
+            assert_eq!(stopped, [[0.0; 2]; 3]);
+        }
+    }
+}

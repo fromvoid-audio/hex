@@ -122,6 +122,109 @@ fn events(project: &Project) -> Vec<(u64, u64, u8)> {
     out.sort();
     out
 }
+
+#[test]
+fn section_drag_copies_use_stable_destinations_fresh_identity_and_one_history_step() {
+    for (copy_chorus, target_chorus, after, intro, chorus, copy_range) in [
+        (false, false, false, (4, 6), (9, 12), (2, 4)),
+        (false, false, true, (2, 4), (9, 12), (4, 6)),
+        (false, true, false, (2, 4), (9, 12), (7, 9)),
+        (false, true, true, (2, 4), (7, 10), (10, 12)),
+        (true, false, false, (5, 7), (10, 13), (2, 5)),
+        (true, false, true, (2, 4), (10, 13), (4, 7)),
+    ] {
+        let (mut editor, a, c) = fixture();
+        let source = if copy_chorus { c } else { a };
+        let original = editor
+            .project()
+            .arrangement_section(source)
+            .unwrap()
+            .clone();
+        let before = editor.project().clone();
+        let command = Command::DuplicateArrangementSectionAt {
+            section: source,
+            target: if target_chorus { c } else { a },
+            after,
+        };
+        assert!(command.requires_section_publication());
+        let preview = editor
+            .project()
+            .preview_arrangement_section_edit(&command)
+            .unwrap();
+        let Created::ArrangementSection(copy) = editor.execute(command).unwrap() else {
+            panic!("copy identity");
+        };
+        assert!(copy != a && copy != c);
+        for (id, range) in [(a, intro), (c, chorus), (copy, copy_range)] {
+            let marker = editor.project().arrangement_section(id).unwrap();
+            assert_eq!((marker.start(), marker.end()), (b(range.0), b(range.1)));
+        }
+        let copied = editor.project().arrangement_section(copy).unwrap();
+        assert_eq!(
+            (copied.name(), copied.color()),
+            (original.name(), original.color())
+        );
+        let shape = |markers: &[hex_project::ArrangementSection]| {
+            markers
+                .iter()
+                .map(|s| (s.name().to_owned(), s.color(), s.start(), s.end()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shape(preview.sections()),
+            shape(editor.project().arrangement_sections())
+        );
+        assert_eq!(preview.tempo_map(), editor.project().tempo_map());
+        let after = editor.project().clone();
+        assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+        assert!(editor.undo());
+        let mut restored = editor.project().snapshot();
+        assert!(
+            restored.next_id >= after.snapshot().next_id,
+            "undo must not reuse allocated IDs"
+        );
+        restored.next_id = before.snapshot().next_id;
+        assert_eq!(restored, before.snapshot());
+        assert!(
+            !editor.can_undo(),
+            "copy and insertion share one history entry"
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+    }
+}
+
+#[test]
+fn stale_section_copy_destinations_preserve_the_project_and_redo() {
+    let (mut editor, source, stale) = fixture();
+    editor
+        .execute(Command::RemoveArrangementSection(stale))
+        .unwrap();
+    editor
+        .execute(Command::RenameArrangementSection {
+            section: source,
+            name: "temporary".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    for (section, target) in [(source, stale), (stale, source)] {
+        let command = Command::DuplicateArrangementSectionAt {
+            section,
+            target,
+            after: true,
+        };
+        assert!(
+            editor
+                .project()
+                .preview_arrangement_section_edit(&command)
+                .is_err()
+        );
+        assert!(editor.execute(command).is_err());
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.can_redo());
+    }
+}
 #[test]
 fn metadata_is_marker_only_and_overlap_refusals_preserve_redo() {
     let (mut e, a, c) = fixture();

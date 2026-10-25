@@ -139,6 +139,20 @@ fn mutable_prefix_shortening(
         .flatten()
 }
 
+/// Restoring an unchanged source beyond its retained prefix authorizes only
+/// suppression of an already-started candidate. Its old runtime keeps the
+/// admitted cutoff; an ended gate is never chased or given a new NoteOn.
+fn mutable_prefix_restoration(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    span: MutableCandidateSpan,
+) -> bool {
+    let (onset, gate, ..) = span.signature.details();
+    candidate
+        .retained_midi_prefix_end(&previous.revision, span.signature.key())
+        .is_some_and(|(prefix_end, _)| onset < prefix_end && gate > prefix_end)
+}
+
 impl SessionPlayback {
     #[allow(clippy::too_many_arguments)] // Explicit old/candidate timing, identity and disjoint span-buffer borrows.
     fn mutable_candidates_at_cut<T: MidiTiming + ?Sized>(
@@ -1313,6 +1327,13 @@ impl SessionPlayback {
                     )
                 })
                 .flatten();
+                let restoration = !timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && new_route.pending.is_none()
+                    && old_route.is_some_and(|route| route.pending.is_none())
+                    && matches!(candidate_owner, RouteOwner::Arrangement)
+                    && mutable_prefix_restoration(previous, &self.revision, candidate);
                 let same_key =
                     mutable_key_has_live_proof(previous, new_route.id, candidate.signature.key())
                         || previous.suppressions.iter().any(|entry| {
@@ -1330,6 +1351,7 @@ impl SessionPlayback {
                     && exact.is_none()
                     && !carried
                     && shortening.is_none()
+                    && !restoration
                     && !fresh_mutable_install[new_index]
                     && !(newly_authored_notes[new_index]
                         && previous.revision.newly_authored_mutable_note(
@@ -1340,7 +1362,7 @@ impl SessionPlayback {
                 {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
-                if same_key && exact.is_none() && !carried && shortening.is_none() {
+                if same_key && exact.is_none() && !carried && shortening.is_none() && !restoration {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
             }
@@ -2015,6 +2037,28 @@ impl SessionPlayback {
                 &mut self.spans,
             )?;
             for candidate in candidates[..candidate_count].iter().flatten().copied() {
+                if !timing_changed
+                    && old_loop == new_loop
+                    && !midi_layout_changed
+                    && route.pending.is_none()
+                    && previous
+                        .routes
+                        .iter()
+                        .any(|old| old.id == route.id && old.pending.is_none())
+                    && matches!(route.owner, RouteOwner::Arrangement)
+                    && candidate.source_frame < source_frame
+                    && mutable_prefix_restoration(previous, &self.revision, candidate)
+                {
+                    add_or_extend_suppression(
+                        &mut self.suppression_scratch,
+                        self.release_capacity,
+                        MidiOccurrenceSuppression::mutable(
+                            candidate.signature,
+                            candidate.end_frame,
+                        ),
+                    )?;
+                    continue;
+                }
                 let shortening = (!timing_changed
                     && old_loop == new_loop
                     && !midi_layout_changed
@@ -3526,6 +3570,7 @@ impl SessionPlayback {
         self.performance_frame = previous.performance_frame;
         self.arrangement_frame = previous.arrangement_frame;
         self.arrangement_loop_pass = previous.arrangement_loop_pass;
+        self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
         self.capture_epoch = capture_epoch;
         previous.capture_epoch = previous_capture_epoch;
