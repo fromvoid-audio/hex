@@ -694,3 +694,70 @@ fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_c
         }
     }
 }
+
+#[test]
+fn section_repeat_seam_keeps_global_tempo_editable_and_undo_restores_exact_pcm() {
+    let (mut editor, _, media) = musical_placement(WarpMode::RePitch);
+    let mut add = |start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: "part".into(),
+                color: hex_project::ElementColor::Cyan,
+                start: BeatTime::from_ratio(start, 16).unwrap(),
+                end: BeatTime::from_ratio(end, 16).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    // The first repeat seam is 5/8 beats; its nearest frame inverses just before
+    // that authored seam. Preserve the sub-frame cursor across relocation/BPM.
+    let section = add(10, 15);
+    let target = add(17, 23);
+    let clock = editor.project().tempo_map();
+    let s = clock
+        .beat_to_frame(BeatTime::from_ratio(10, 16).unwrap())
+        .unwrap() as usize;
+    let e = clock
+        .beat_to_frame(BeatTime::from_ratio(15, 16).unwrap())
+        .unwrap() as usize;
+    let t = clock
+        .beat_to_frame(BeatTime::from_ratio(23, 16).unwrap())
+        .unwrap() as usize;
+    let context = AudioTransformPreparation::default();
+    let original = render(&prepare(&editor, &media, &context), 0, t + 12_000, 113);
+    let mut expected = original.clone();
+    expected.drain(s..e);
+    expected.splice(t - (e - s)..t - (e - s), original[s..e].iter().copied());
+    editor
+        .execute(Command::ReorderSectionAfter {
+            section,
+            after: target,
+        })
+        .unwrap();
+    assert!(
+        editor.project().tracks()[0].clips().iter().any(|clip| {
+            hex_project::AudioViewProjection::new(clip, editor.project().tempo_map())
+                .unwrap()
+                .has_subframe_intro()
+        }),
+        "fixture must retain a zero-frame partial first occurrence"
+    );
+    assert!(render(&prepare(&editor, &media, &context), 0, expected.len(), 127) == expected);
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: Tempo::DEFAULT,
+        })
+        .unwrap();
+    let changed = render(&prepare(&editor, &media, &context), 0, expected.len(), 257);
+    assert!(changed.iter().any(|frame| *frame != [0.0; 2]));
+    assert!(editor.undo());
+    assert!(render(&prepare(&editor, &media, &context), 0, expected.len(), 31) == expected);
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, changed.len(), 31),
+        changed
+    );
+}

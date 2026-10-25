@@ -40,8 +40,9 @@ pub struct AudioViewOccurrence {
 /// Validated metadata projection. Indexing performs constant work, allocates
 /// nothing and never prepares DSP. Consumers must admit aggregate work before
 /// iterating the occurrence count. A final partial musical repeat whose two
-/// boundaries round to the same outer end frame contributes no occurrence;
-/// its authored beat extent remains unchanged. Full cycles and all other
+/// boundaries round to the same outer end frame contributes no occurrence.
+/// A partial first cycle with no output frames is also skipped, preserving its
+/// authored cursor so later tempo edits remain defined. Full cycles and all other
 /// invalid/empty projections retain their existing validation.
 #[derive(Clone, Copy)]
 pub struct AudioViewProjection<'a> {
@@ -282,14 +283,10 @@ impl<'a> AudioViewProjection<'a> {
                 count -= 1;
             }
         }
-        // A trim can leave less than one frame before the first cycle seam.
-        // Keep its authored cursor, but never admit an empty audible occurrence.
+        // A positive beat-clock intro can round to no samples. Preserve its
+        // authored cursor while skipping that inaudible first occurrence.
         let mut first_index = 0;
         if beat_clock
-            && clip.audio_edit().is_some_and(|edit| {
-                edit.processing_projection.is_some()
-                    || matches!(edit.timing, AudioClipTiming::Frozen { .. })
-            })
             && count > 0
             && phase > 0
             && first_end <= end
@@ -511,9 +508,9 @@ impl<'a> AudioViewProjection<'a> {
             self.cycle,
         )
     }
-    /// Whether the authored first partial cycle rounds to no samples. Retained
-    /// reads skip it without changing the cursor; historical codecs use this
-    /// query to preserve their stricter first-occurrence admission contract.
+    /// Whether the authored first partial cycle rounds to no samples. Current
+    /// projections skip it without changing the cursor; storage uses this query
+    /// to preserve the stricter validity contract of historical schemas.
     pub fn has_subframe_intro(&self) -> bool {
         self.first_index != 0
     }

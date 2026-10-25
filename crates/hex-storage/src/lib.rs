@@ -251,7 +251,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
-/// Schema47 allows retained processing projections on outer musical views;
+/// Schema47 allows retained processing projections on outer musical views and
+/// skips inaudible partial first cycles without rewriting their authored cursor;
 /// historical readers retain their prior validity contract. Schemas46/47 retain
 /// native source definitions and one binding row per track. Schema45 retains
 /// independent sources. Schemas1–44 migrate inline instruments
@@ -305,19 +306,20 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
-    if header.version < 47 && has_retained_outer_processing(&project)? {
+    if header.version < 47 && requires_schema47_audio_placement(&project)? {
         return Err(StorageError::Invalid(
-            "historical project schema does not support retained processing on outer audio placement",
+            "historical project schema contains unsupported audio placement; open a copy with the hex build that saved it; original file unchanged",
         ));
     }
     Ok(project)
 }
 
 /// Historical schemas admitted retained processing and outer placements as
-/// separate states. Apply that frozen contract after decoding into validated
+/// separate states, and required a non-exhausted first occurrence to contain
+/// frames. Apply that frozen contract after decoding into validated
 /// project objects, including grouped retained source clips; opaque device state
 /// is intentionally outside this audio-model check.
-fn has_retained_outer_processing(project: &Project) -> Result<bool, StorageError> {
+fn requires_schema47_audio_placement(project: &Project) -> Result<bool, StorageError> {
     let has_state =
         |clip: &hex_project::Clip, tempo: &hex_project::TempoMap| -> Result<bool, StorageError> {
             let Some(edit) = clip.audio_edit() else {
@@ -326,7 +328,7 @@ fn has_retained_outer_processing(project: &Project) -> Result<bool, StorageError
             if edit.processing_projection.is_some() && edit.placement.is_some() {
                 return Ok(true);
             }
-            if !matches!(edit.timing, hex_project::AudioClipTiming::Frozen { .. }) {
+            if edit.placement.is_none() && edit.content_view.is_none() {
                 return Ok(false);
             }
             let projection = hex_project::AudioViewProjection::new(clip, tempo)

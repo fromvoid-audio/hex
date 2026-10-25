@@ -1,5 +1,6 @@
 //! Schema45 adds mandatory retained native source definitions to strict schema44.
-//! Schema47 permits retained processing projections on outer musical views.
+//! Schema47 permits retained processing projections on outer musical views and
+//! skips inaudible partial first cycles while retaining their authored cursor.
 //! Schema46 adds an ordered source-binding row for every track and removes inline
 //! instrument copies from its core. Older schemas still migrate through their
 //! frozen codecs; decoding is in-memory only. Private stripped cores compose those

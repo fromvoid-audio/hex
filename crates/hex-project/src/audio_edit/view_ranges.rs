@@ -21,10 +21,21 @@ impl AudioViewProjection<'_> {
         if first >= last || self.count == 0 {
             return Ok([None, None]);
         }
+        // A skipped sub-frame intro has no source visits, even though its
+        // authored beat cursor precedes the first audible cycle.
+        let audible_start = if self.has_subframe_intro() {
+            self.occurrence(0)?.elapsed_start
+        } else {
+            0
+        };
         if let Some((window, _, _)) = self.content {
             let first = self.elapsed_at_frame(first)?.min(window.length()?);
             let last = self.elapsed_at_frame(last)?.min(window.length()?);
             let read = window.read_range(first..last)?;
+            let read = read.start.max(audible_start)..read.end;
+            if read.start >= read.end {
+                return Ok([None, None]);
+            }
             if let Some(edit) = self.clip.audio_edit().filter(|e| {
                 e.processing_projection.is_some()
                     && e.placement.is_none()
@@ -104,7 +115,7 @@ impl AudioViewProjection<'_> {
             u128::try_from(position(frame)? - self.start)
                 .map_err(|_| Invalid("audio selection clock overflow"))
         };
-        let start = u128::from(self.phase) + elapsed(first)?;
+        let start = u128::from(self.phase) + elapsed(first)?.max(u128::from(audible_start));
         let end = u128::from(self.phase) + elapsed(last)?;
         let source_end = self
             .view_start
