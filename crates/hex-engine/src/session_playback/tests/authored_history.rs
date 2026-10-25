@@ -55,7 +55,7 @@ fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atom
             let mut old_snapshot = full.snapshot();
             arrangement(&mut old_snapshot)[0].notes.remove(0);
             session(&mut old_snapshot).notes.remove(0);
-            let before = Project::from_snapshot(old_snapshot).unwrap();
+            let before = Project::from_legacy_snapshot(old_snapshot).unwrap();
             let mut old = ordinary_mutable_playback(&before, registry);
             warm(&mut old, selected_session);
             let owner = old.owner(full.tracks()[0].id());
@@ -100,7 +100,8 @@ fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atom
         // An entirely absent old Arrangement clip is complete evidence too.
         let mut absent = full.snapshot();
         arrangement(&mut absent).clear();
-        let mut old = ordinary_mutable_playback(&Project::from_snapshot(absent).unwrap(), registry);
+        let mut old =
+            ordinary_mutable_playback(&Project::from_legacy_snapshot(absent).unwrap(), registry);
         warm(&mut old, false);
         let mut restored = ordinary_mutable_playback(&full, registry);
         restored.try_inherit_state_from(&mut old).unwrap();
@@ -115,14 +116,16 @@ fn ordinary_restored_or_added_authored_notes_suppress_past_and_admit_future_atom
                 session(&mut looped).looping = true;
                 session(&mut looped).loop_end_raw = 1 << 32;
             }
-            let full = Project::from_snapshot(looped.clone()).unwrap();
+            let full = Project::from_legacy_snapshot(looped.clone()).unwrap();
             if transport_loop {
                 arrangement(&mut looped)[0].notes.clear();
             } else {
                 session(&mut looped).notes.clear();
             }
-            let mut old =
-                ordinary_mutable_playback(&Project::from_snapshot(looped).unwrap(), registry);
+            let mut old = ordinary_mutable_playback(
+                &Project::from_legacy_snapshot(looped).unwrap(),
+                registry,
+            );
             warm(&mut old, !transport_loop);
             let mut added = ordinary_mutable_playback(&full, registry);
             added.try_inherit_state_from(&mut old).unwrap();
@@ -175,11 +178,15 @@ fn ordinary_existing_authored_identity_marker_or_owner_changes_remain_strict() {
                         session(&mut after).loop_end_raw = 31 << 32;
                     }
                 }
-                let mut old =
-                    ordinary_mutable_playback(&Project::from_snapshot(before).unwrap(), registry);
+                let mut old = ordinary_mutable_playback(
+                    &Project::from_legacy_snapshot(before).unwrap(),
+                    registry,
+                );
                 warm(&mut old, selected_session);
-                let mut next =
-                    ordinary_mutable_playback(&Project::from_snapshot(after).unwrap(), registry);
+                let mut next = ordinary_mutable_playback(
+                    &Project::from_legacy_snapshot(after).unwrap(),
+                    registry,
+                );
                 assert_eq!(
                     next.try_inherit_state_from(&mut old),
                     Err(SessionPlaybackError::MutableInstrumentChase),
@@ -205,9 +212,11 @@ fn ordinary_existing_authored_identity_marker_or_owner_changes_remain_strict() {
             &mut after.tracks[0].content,
             TrackContentSnapshot::Instrument(Vec::new()),
         );
-        let mut old = ordinary_mutable_playback(&Project::from_snapshot(before).unwrap(), registry);
+        let mut old =
+            ordinary_mutable_playback(&Project::from_legacy_snapshot(before).unwrap(), registry);
         warm(&mut old, false);
-        let mut next = ordinary_mutable_playback(&Project::from_snapshot(after).unwrap(), registry);
+        let mut next =
+            ordinary_mutable_playback(&Project::from_legacy_snapshot(after).unwrap(), registry);
         assert_eq!(
             next.try_inherit_state_from(&mut old),
             Err(SessionPlaybackError::MutableInstrumentChase)

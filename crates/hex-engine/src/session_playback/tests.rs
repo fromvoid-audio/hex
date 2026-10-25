@@ -952,7 +952,7 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
             track.instrument_position = Some(0);
         }
     }
-    Project::from_snapshot(snapshot)
+    Project::from_legacy_snapshot(snapshot)
 }
 
 fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
@@ -1556,11 +1556,11 @@ fn removed_track_release_retains_its_original_device_matrix() {
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
         comparison: None,
-        id: 9,
+        id: 10,
         bypassed: false,
         state,
     });
-    snapshot.next_id = 10;
+    snapshot.next_id = 11;
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
@@ -1604,11 +1604,11 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
         comparison: None,
-        id: 9,
+        id: 10,
         bypassed: false,
         state,
     });
-    old_snapshot.next_id = 10;
+    old_snapshot.next_id = 11;
     let old_project = legacy_project_from_snapshot(old_snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
@@ -1665,19 +1665,19 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
             comparison: None,
-            id: 9,
+            id: 10,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
             comparison: None,
-            id: 10,
+            id: 11,
             bypassed: false,
             state: suffix,
         },
     ];
     snapshot.tracks[0].instrument_position = Some(1);
-    snapshot.next_id = 11;
+    snapshot.next_id = 12;
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
@@ -1733,19 +1733,19 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
             comparison: None,
-            id: 9,
+            id: 10,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
             comparison: None,
-            id: 10,
+            id: 11,
             bypassed: false,
             state: suffix,
         },
     ];
     snapshot.tracks[0].instrument_position = Some(1);
-    snapshot.next_id = 11;
+    snapshot.next_id = 12;
     let project = legacy_project_from_snapshot(snapshot).unwrap();
     let mut playback = SessionPlayback::new(revision(&project, table)).unwrap();
     let clip = playback.revision.session().midi_clips()[0].id;
@@ -2772,7 +2772,7 @@ fn with_instrument_bypassed(project: &Project, bypassed: bool) -> Project {
         .as_mut()
         .expect("MIDI fixture has a canonical instrument slot");
     instrument.bypassed = bypassed;
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 
 fn session_only_project(project: &Project) -> Project {
@@ -2856,7 +2856,7 @@ fn with_second_arrangement_note(project: &Project) -> Project {
         channel: 0,
         velocity: 100,
     });
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 
 fn with_session_note_at(project: &Project, start_raw: u64) -> Project {
@@ -2894,7 +2894,7 @@ fn with_test_instrument(
         .expect("MIDI fixture has an instrument slot");
     instrument.state =
         hex_lattice_contract::NativeDeviceState::new(type_id, 1, vec![state_value]).unwrap();
-    Project::from_snapshot(snapshot).unwrap()
+    Project::from_legacy_snapshot(snapshot).unwrap()
 }
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
@@ -3159,7 +3159,7 @@ fn mutable_hundred_track_preroll_revision() -> Arc<PreparedRevision> {
         snapshot.tracks.push(track);
     }
     snapshot.next_id = next_id;
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
     revision_with_instrument_registry(&project, table, &registry)
 }
 
@@ -3285,7 +3285,7 @@ fn shared_context_table_is_common_to_arrangement_session_and_reuses_exact_config
     moved_snapshot.tracks[0].id = moved_snapshot.next_id;
     moved_snapshot.next_id += 1;
     moved_snapshot.session = Default::default();
-    let moved = Project::from_snapshot(moved_snapshot).unwrap();
+    let moved = Project::from_legacy_snapshot(moved_snapshot).unwrap();
     let moved = PreparedRevision::prepare_with_instrument_registry(
         &moved,
         &BTreeMap::new(),
@@ -3515,7 +3515,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
     }
     snapshot.next_id = next_id;
     snapshot.return_tracks = return_tracks;
-    let base = Project::from_snapshot(snapshot).unwrap();
+    let base = Project::from_legacy_snapshot(snapshot).unwrap();
     let return_track = base.return_tracks().last().unwrap().id();
     let mut editor = Editor::new(base, 16).unwrap();
     editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
@@ -4142,7 +4142,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     }];
     snapshot.tracks[0].instrument_position = Some(0);
     routed_midi_fixture::separate_midi(&mut snapshot, 0);
-    let project = Project::from_snapshot(snapshot).unwrap();
+    let project = Project::from_legacy_snapshot(snapshot).unwrap();
     let asset_id = project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5309,7 +5309,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     };
     source.tracks[0].instrument_position = Some(1);
     routed_midi_fixture::separate_midi(&mut source, 0);
-    let old_project = Project::from_snapshot(source).unwrap();
+    let old_project = Project::from_legacy_snapshot(source).unwrap();
     let asset_id = old_project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5369,7 +5369,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         midi_clips.clear();
     }
     tail_snapshot.session.cells.clear();
-    let tail_project = Project::from_snapshot(tail_snapshot).unwrap();
+    let tail_project = Project::from_legacy_snapshot(tail_snapshot).unwrap();
     let mut tail_candidate =
         SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
     tail_candidate
@@ -5388,7 +5388,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         midi_clips.clear();
     }
     candidate_snapshot.session.cells.clear();
-    let candidate_source = Project::from_snapshot(candidate_snapshot).unwrap();
+    let candidate_source = Project::from_legacy_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(empty_revision).unwrap();
@@ -7161,7 +7161,7 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
         .as_mut()
         .unwrap()
         .bypassed = true;
-    let bypassed = Project::from_snapshot(bypassed_snapshot).unwrap();
+    let bypassed = Project::from_legacy_snapshot(bypassed_snapshot).unwrap();
 
     let old_revision = revision_with_instrument_registry(&enabled, Arc::clone(&table), &registry);
     let mut previous = Playback::from_prepared(old_revision);
@@ -7799,7 +7799,6 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
             velocity: 90,
         }];
     }
-    snapshot.next_id = 9;
     let original = legacy_project_from_snapshot(snapshot).unwrap();
     let mut old = SessionPlayback::new(revision(&original, Arc::clone(&table))).unwrap();
     let clip = old.revision.session().midi_clips()[0].id;
@@ -8971,7 +8970,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     let base = project(0.5, 0, 8 << 32);
     let mut snapshot = base.snapshot();
     snapshot.next_id = 15;
-    for (track_id, clip_id, note_id, gain) in [(7, 9, 14, 0.25), (10, 11, 12, 0.75)] {
+    for (track_id, clip_id, note_id, gain) in [(7, 13, 14, 0.25), (10, 11, 12, 0.75)] {
         snapshot.tracks.push(TrackSnapshot {
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
@@ -10379,7 +10378,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
     let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
     snapshot.tracks[0].instrument.as_mut().unwrap().state = operator_state;
     let operator = revision(
-        &Project::from_snapshot(snapshot).unwrap(),
+        &Project::from_legacy_snapshot(snapshot).unwrap(),
         Arc::clone(&table),
     );
     assert!(!operator.arrangement_seek_requires_preroll());
@@ -10427,7 +10426,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
     });
     track_snapshot.next_id += 1;
     let stateful_track = revision(
-        &Project::from_snapshot(track_snapshot).unwrap(),
+        &Project::from_legacy_snapshot(track_snapshot).unwrap(),
         Arc::clone(&table),
     );
     assert!(stateful_track.arrangement_seek_requires_preroll());
@@ -10456,7 +10455,10 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
                 state: filter_state,
             }],
         });
-    let stateful_return = revision(&Project::from_snapshot(return_snapshot).unwrap(), table);
+    let stateful_return = revision(
+        &Project::from_legacy_snapshot(return_snapshot).unwrap(),
+        table,
+    );
     assert!(stateful_return.arrangement_seek_requires_preroll());
 }
 
@@ -10522,15 +10524,15 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             panic!("fixture has Session MIDI content");
         };
         session_clip.source.notes.push(MidiNoteSnapshot {
-            id: 9,
+            id: snapshot.next_id,
             start_raw: 1 << 24,
             duration_raw: 1 << 32,
             pitch: 67,
             channel: 0,
             velocity: 88,
         });
-        snapshot.next_id = 10;
-        let source_project = Project::from_snapshot(snapshot).unwrap();
+        snapshot.next_id += 1;
+        let source_project = Project::from_legacy_snapshot(snapshot).unwrap();
         let old_revision = Arc::new(
             PreparedRevision::prepare(&source_project, &BTreeMap::new(), Arc::clone(&table), None)
                 .unwrap(),
@@ -10704,7 +10706,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             velocity: 100,
         });
         snapshot.next_id += 1;
-        Project::from_snapshot(snapshot).unwrap()
+        Project::from_legacy_snapshot(snapshot).unwrap()
     }
 
     fn unsupported_candidate(
@@ -10862,7 +10864,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             velocity: 100,
         });
         snapshot.next_id += 1;
-        Project::from_snapshot(snapshot).unwrap()
+        Project::from_legacy_snapshot(snapshot).unwrap()
     };
     let instrument_id = source.tracks()[0].instrument().unwrap().id();
     let old_revision = Arc::new(
@@ -11024,7 +11026,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
             }],
         });
     edit(&mut snapshot);
-    let source = Project::from_snapshot(snapshot).unwrap();
+    let source = Project::from_legacy_snapshot(snapshot).unwrap();
     revision_with_instrument_registry(&source, table, &registry)
 }
 
@@ -11113,7 +11115,7 @@ fn section_loop_readmits_rounded_timing_without_rebuilding_note_resources() {
         assert_eq!(actual.session_work_envelope(), prepared.session().work());
         let mut snapshot = source.snapshot();
         snapshot.loop_region = Some(region);
-        let oracle_source = Project::from_snapshot(snapshot).unwrap();
+        let oracle_source = Project::from_legacy_snapshot(snapshot).unwrap();
         let mut expected = SessionPlayback::new(revision(&oracle_source, Arc::new(hex_devices::SineTable::new()))).unwrap();
         for runtime in [&mut actual, &mut expected] {
             runtime.apply(SessionPlaybackCommand::LaunchClip { clip: original.id, quantization: LaunchQuantization::Immediate }).unwrap();
@@ -11135,7 +11137,7 @@ fn section_loop_readmits_rounded_timing_without_rebuilding_note_resources() {
         clip.source.source_length_raw = 1 << 32;
         clip.source.loop_end_raw = 1 << 32;
         clip.source.looping = true;
-        let dense_source = Project::from_snapshot(snapshot).unwrap();
+        let dense_source = Project::from_legacy_snapshot(snapshot).unwrap();
         let dense = revision(&dense_source, Arc::new(hex_devices::SineTable::new()));
         assert!(matches!(dense.session().midi_clips()[0].source_template().reprepare_for_timing_on_control(2_000_000_000_000), Err(crate::MidiTemplateError::TooManyEdges | crate::MidiTemplateError::TooManyOnsets)));
     }).unwrap().join().unwrap();
@@ -11295,7 +11297,7 @@ fn assert_loop_preroll_continuation(
 fn interactive_arrangement_preroll_accepts_loops_and_checks_cancellation() {
     let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
     looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
-    let looped_project = Project::from_snapshot(looped_snapshot).unwrap();
+    let looped_project = Project::from_legacy_snapshot(looped_snapshot).unwrap();
     let looped = revision(&looped_project, Arc::new(hex_devices::SineTable::new()));
     const SEEK_STACK_BYTES: usize = 8 * 1024 * 1024;
     thread::Builder::new()
@@ -11478,7 +11480,7 @@ fn arrangement_preroll_accepts_zero_frame_and_refuses_transport_loop() {
 
     let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
     looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
-    let looped = Project::from_snapshot(looped_snapshot).unwrap();
+    let looped = Project::from_legacy_snapshot(looped_snapshot).unwrap();
     let looped = revision(&looped, Arc::new(hex_devices::SineTable::new()));
     let looped_caller = SessionPlayback::new(Arc::clone(&looped)).unwrap();
     assert_eq!(
@@ -11874,7 +11876,7 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         } else {
             instrument.state.clone().with_output_gain_db(-12.0).unwrap()
         };
-        let changed = Project::from_snapshot(snapshot).unwrap();
+        let changed = Project::from_legacy_snapshot(snapshot).unwrap();
         let prepared = Arc::new(
             PreparedRevision::prepare(
                 &changed,

@@ -167,7 +167,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             sends: Vec::new(),
         });
     }
-    Ok(Project::from_snapshot(Snapshot {
+    Ok(Project::from_legacy_snapshot(Snapshot {
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

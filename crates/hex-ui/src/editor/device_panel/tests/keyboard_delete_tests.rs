@@ -770,14 +770,19 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
         .expect("remove control");
     visual.simulate_click(remove.center(), Modifiers::default());
     pump_until(&editor, cx, |view| {
+        let project = &view.state.as_ref().unwrap().project;
         settled(view)
-            && view
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .is_none()
+            && if kind == 1 {
+                project.track(track).unwrap().instrument().is_none()
+            } else {
+                project.device(device).is_none()
+            }
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.native_sources(),
+            original.native_sources()
+        );
     });
     visual.run_until_parked();
     let focused = visual.update(|window, cx| window.focused(cx).is_some());
@@ -787,14 +792,7 @@ fn pointer_remove_retains_keyboard(cx: &mut TestAppContext, kind: u8) {
         "pointer X retired the focused card and blurred the editor before real Cmd-Z"
     );
     pump_until(&editor, cx, |view| {
-        settled(view)
-            && view
-                .state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .is_some()
+        settled(view) && view.state.as_ref().unwrap().project == original
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original)

@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 45;
+pub const CURRENT_SCHEMA_VERSION: u32 = 46;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -147,7 +147,8 @@ impl From<serde_json::Error> for StorageError {
 }
 
 /// Encode the current schema with complete hierarchy, audio roots, event fades,
-/// directed views, activation, MIDI, tuning, device state and retained native sources.
+/// directed views, activation, MIDI, tuning, device state and retained native sources
+/// with explicit per-track source bindings.
 /// There is no blanket
 /// byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
@@ -250,8 +251,10 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
-/// Schema45 retains independent native sources; schemas1–44 initialize an empty
-/// inventory and preserve existing track instruments. Schema44 retains track hierarchy.
+/// Schema46 retains native source definitions and one binding row per track;
+/// schema45 retains independent sources. Schemas1–44 migrate inline instruments
+/// into retained singleton sources, preserving their device identities. Schema44
+/// retains track hierarchy.
 /// Schema43 retains independent audio sources and their captured processing tempos.
 /// Schema42 adds source-clock event fades; schema41 inventories directed content views. The evidenced unmerged
 /// grouped41 branch is selected by its disjoint complete inventory; mixed layouts refuse.
@@ -281,6 +284,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     match header.version {
         CURRENT_SCHEMA_VERSION => schema::native_sources::decode(bytes),
+        45 => schema::native_sources::decode45(bytes),
         44 => schema::track_groups::decode(bytes),
         43 => schema::grouped_audio::decode(bytes),
         42 => schema::event_fades::decode(bytes),
