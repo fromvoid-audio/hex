@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub native_sources: Vec<crate::NativeSourceSnapshot>,
     pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
@@ -230,6 +231,11 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            native_sources: self
+                .native_sources
+                .iter()
+                .map(crate::NativeSourceSnapshot::from)
+                .collect(),
             arrangement_sections: self
                 .arrangement_sections
                 .iter()
@@ -578,6 +584,42 @@ impl Project {
             });
         }
         let mut total_devices = main_devices.len();
+        if snapshot.native_sources.len() > crate::MAX_NATIVE_SOURCES {
+            return Err(Invalid("native source limit reached"));
+        }
+        for source in snapshot.native_sources {
+            insert_id(source.id, &mut ids, &mut max_id)?;
+            crate::native_sources::validate_chain(
+                &source.name,
+                source.devices.len(),
+                source.instrument_index,
+            )?;
+            let mut devices = Vec::with_capacity(source.devices.len());
+            for device in source.devices {
+                insert_id(device.id, &mut ids, &mut max_id)?;
+                total_devices = total_devices
+                    .checked_add(1)
+                    .ok_or(Invalid("device count overflow"))?;
+                if total_devices > MAX_DEVICES {
+                    return Err(Invalid("project device limit reached"));
+                }
+                if let Some(comparison) = &device.comparison {
+                    comparison.validate(&device.state)?;
+                }
+                devices.push(Device {
+                    id: DeviceId(device.id),
+                    state: device.state,
+                    bypassed: device.bypassed,
+                    comparison: device.comparison,
+                });
+            }
+            project.native_sources.push(crate::NativeSource {
+                id: crate::SourceId(source.id),
+                name: source.name,
+                devices,
+                instrument_index: source.instrument_index,
+            });
+        }
         let mut total_notes = 0_usize;
         let mut return_ids = BTreeSet::new();
         let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
