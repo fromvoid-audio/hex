@@ -551,7 +551,7 @@ fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_c
             let n = t + 12_000;
             let context = AudioTransformPreparation::default();
             let source = render(&prepare(&seed, &media, &context), 0, n, 113);
-            for operation in 0..6 {
+            for operation in 0..8 {
                 let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
                 let before = editor.project().snapshot();
                 let mut expected = source.clone();
@@ -591,7 +591,7 @@ fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_c
                             after: target,
                         }
                     }
-                    _ => {
+                    5 => {
                         let begin = old
                             .beat_to_frame(BeatTime::from_ratio(17, 16).unwrap())
                             .unwrap() as usize;
@@ -600,6 +600,26 @@ fn section_outer_placements_preserve_pcm_through_splices_reorders_and_repeated_c
                         Command::ReorderSectionBefore {
                             section: target,
                             before: section,
+                        }
+                    }
+                    6 => {
+                        let boundary = BeatTime::from_ratio(10, 16).unwrap();
+                        let frame = old.beat_to_frame(boundary).unwrap() as usize;
+                        expected[frame..e].fill([0.0; 2]);
+                        Command::ResizeArrangementSectionEdge {
+                            section,
+                            edge: hex_project::TrimEdge::Right,
+                            boundary,
+                        }
+                    }
+                    _ => {
+                        let boundary = BeatTime::from_ratio(8, 16).unwrap();
+                        let frame = old.beat_to_frame(boundary).unwrap() as usize;
+                        expected[s..frame].fill([0.0; 2]);
+                        Command::ResizeArrangementSectionEdge {
+                            section,
+                            edge: hex_project::TrimEdge::Left,
+                            boundary,
                         }
                     }
                 };

@@ -136,7 +136,7 @@ fn schema47_roundtrips_retained_musical_repeat_after_section_reorder() {
     let tempo = project.tempo_map().clone();
     let mut snapshot = project.snapshot();
     let clip = snapshot.tracks[0]
-        .audio_clips()
+        .audio_clips_mut()
         .unwrap()
         .iter()
         .max_by_key(|clip| clip.start)
