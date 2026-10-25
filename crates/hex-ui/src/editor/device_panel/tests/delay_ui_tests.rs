@@ -447,3 +447,132 @@ fn delay_filter_refused_begin_retires_capture_without_moving_another_gesture(
     });
     pump_until(&editor, cx, settled);
 }
+
+#[gpui::test]
+fn delay_catalog_growth_keeps_all_add_choices_clickable_on_track_return_and_main(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, bus, _, _gate) = fixture(cx);
+    let track = editor.read_with(cx, |v, _| v.selected_track.unwrap());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [960.0, 1500.0] {
+        visual.simulate_resize(size(px(width), px(650.0)));
+        for owner in [
+            None,
+            Some(EffectBusOwner::Return(bus)),
+            Some(EffectBusOwner::Main),
+        ] {
+            editor.update(cx, |v, cx| {
+                v.focused_return = match owner {
+                    Some(EffectBusOwner::Return(id)) => Some(id),
+                    _ => None,
+                };
+                v.selected_track = owner.is_none().then_some(track);
+                v.device_panel.main_selected =
+                    (owner == Some(EffectBusOwner::Main)).then_some(v.project_generation);
+                v.device_panel.add_menu_open = true;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let panel = visual.debug_bounds("device-panel").unwrap();
+            let menu = visual.debug_bounds("device-add-menu").unwrap();
+            assert!(
+                menu.left() >= panel.left()
+                    && menu.right() <= panel.right()
+                    && menu.top() >= panel.top()
+                    && menu.bottom() <= panel.bottom(),
+                "{width}/{owner:?}: {menu:?} in {panel:?}"
+            );
+            let mut choices: Vec<Bounds<Pixels>> = Vec::new();
+            for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
+                if class == NativeDeviceClass::Instrument && owner.is_some() {
+                    continue;
+                }
+                for entry in hex_engine::native_device_catalog_for_class(class).unwrap() {
+                    let selector = if let Some(owner) = owner {
+                        format!(
+                            "add-{}-effect-{}",
+                            owner.prefix(),
+                            entry.type_id.as_str().unwrap()
+                        )
+                    } else {
+                        format!(
+                            "add-native-{}-{}",
+                            if class == NativeDeviceClass::Effect {
+                                "effect"
+                            } else {
+                                "instrument"
+                            },
+                            entry.type_id.as_str().unwrap()
+                        )
+                    };
+                    let bounds = visual
+                        .debug_bounds(Box::leak(selector.into_boxed_str()))
+                        .unwrap();
+                    assert!(
+                        bounds.left() >= menu.left()
+                            && bounds.right() <= menu.right()
+                            && bounds.top() >= menu.top()
+                            && bounds.bottom() <= menu.bottom(),
+                        "{width}/{owner:?}: {bounds:?} in {menu:?}"
+                    );
+                    for other in &choices {
+                        assert!(
+                            bounds.right() <= other.left()
+                                || bounds.left() >= other.right()
+                                || bounds.bottom() <= other.top()
+                                || bounds.top() >= other.bottom()
+                        );
+                    }
+                    choices.push(bounds);
+                }
+            }
+            let count = |v: &EditorView| {
+                let p = &v.state.as_ref().unwrap().project;
+                if let Some(owner) = owner {
+                    owner.devices(p).unwrap().len()
+                } else {
+                    p.track(track).unwrap().devices().len()
+                }
+            };
+            let before = editor.read_with(cx, |v, _| count(v));
+            let before_project =
+                editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+            let selector = if let Some(owner) = owner {
+                format!("add-{}-effect-hex.delay", owner.prefix())
+            } else {
+                "add-native-effect-hex.delay".into()
+            };
+            let bounds = visual
+                .debug_bounds(Box::leak(selector.into_boxed_str()))
+                .unwrap();
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            pump_until(&editor, cx, settled);
+            editor.read_with(cx, |v, _| {
+                assert!(v.error.is_none(), "{width}/{owner:?}: {:?}", v.error);
+                assert_eq!(
+                    count(v),
+                    before + 1,
+                    "{width}/{owner:?}: add={:?} message={:?} open={}",
+                    v.last_enqueued_native_device_add,
+                    v.device_panel.message,
+                    v.device_panel.add_menu_open
+                );
+            });
+            editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump_until(&editor, cx, settled);
+            visual.run_until_parked();
+            editor.read_with(cx, |v, _| {
+                assert_eq!(count(v), before);
+                let actual = &v.state.as_ref().unwrap().project;
+                let mut expected = before_project.snapshot();
+                expected.next_id = actual.next_identity();
+                assert_eq!(
+                    actual.snapshot(),
+                    expected,
+                    "a menu click must not also edit a control underneath it"
+                );
+            });
+        }
+    }
+}

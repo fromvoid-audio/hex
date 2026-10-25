@@ -410,12 +410,17 @@ fn render_return_add_menu(
         .debug_selector(|| "device-add-menu".into())
         .absolute()
         .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .left(px(4.0))
         .right(px(4.0))
-        .h(px(23.0))
+        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .overflow_y_scroll()
+        .occlude()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
+        .py(px(2.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     match effects {
         Ok(entries) if !entries.is_empty() => {
@@ -432,6 +437,8 @@ fn render_return_add_menu(
                         .id(ElementId::Name(id.clone().into()))
                         .debug_selector(move || id.clone())
                         .h(px(18.0))
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
                         .px(px(5.0))
                         .flex()
                         .items_center()
