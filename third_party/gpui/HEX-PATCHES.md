@@ -308,3 +308,11 @@ contract changes. Deep identical-prefix click/focus and held-click repaint tests
 plus keys built in ordinary/forced-dynamic storage, exercise the retained values
 and state through the existing root-locked UI test-support graph. Source size
 alone is not navigation performance or native acceptance evidence.
+
+25 October text measurement: acquire the existing pooled line wrapper only when
+an effective truncation width is present. Ordinary and unconstrained text still
+use the same shape_text path and line-layout cache for wrapping. Truncated text
+uses the same font, size, source, suffix and mutable run sequence. No text layout,
+paint, cache-key, native or public API contract changes. This avoids a redundant
+pool borrow/return and wrapper copies for labels that do not need truncation.
+The change is confined to src/elements/text.rs.

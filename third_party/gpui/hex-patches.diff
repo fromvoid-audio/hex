@@ -4838,3 +4838,17 @@ diff --git a/src/element.rs b/src/element.rs
 
  impl Display for GlobalElementId {
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+diff --git a/src/elements/text.rs b/src/elements/text.rs
+--- a/src/elements/text.rs
++++ b/src/elements/text.rs
+@@ -377,8 +377,9 @@
+                     return text_layout.size.unwrap();
+                 }
+
+-                let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
+                 let text = if let Some(truncate_width) = truncate_width {
++                    let mut line_wrapper =
++                        cx.text_system().line_wrapper(text_style.font(), font_size);
+                     line_wrapper.truncate_line(
+                         text.clone(),
+                         truncate_width,
