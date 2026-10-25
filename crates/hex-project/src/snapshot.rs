@@ -65,6 +65,7 @@ pub struct SessionAudioClipSnapshot {
     pub asset: u64,
     pub source_start: u64,
     pub source_end: u64,
+    pub loop_range: Option<crate::SessionAudioLoop>,
     pub gain: crate::ClipGain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,6 +471,7 @@ impl Project {
                                     asset: clip.asset().value(),
                                     source_start: clip.source_start(),
                                     source_end: clip.source_end(),
+                                    loop_range: clip.loop_range(),
                                     gain: clip.gain(),
                                 })
                             }
@@ -1132,6 +1134,9 @@ impl Project {
                     if total_clips > MAX_CLIPS {
                         return Err(Invalid("clip limit reached"));
                     }
+                    if let Some(range) = clip.loop_range {
+                        range.validate_source(clip.source_start, clip.source_end)?;
+                    }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
                         active: clip.active,
                         flavor: clip.flavor,
@@ -1140,6 +1145,7 @@ impl Project {
                         asset: AssetId(clip.asset),
                         source_start: clip.source_start,
                         source_end: clip.source_end,
+                        loop_range: clip.loop_range,
                         gain: clip.gain,
                     })
                 }

@@ -250,15 +250,20 @@ transport and audible result; a selected item is not evidence that it is playing
 
 ## arrangement automation view
 
-press **a** or use the toolbar's **a** control to show track-gain automation over
-faded clips. repeat to return to clip editing. switching views preserves clips,
-selection, automation and undo history. **c** and **0** toggle contextual
-activation outside automation view: the focused device, track, selected clips,
-or selected time span. a partial time span splits clips at its edges. text fields
-and the computer midi keyboard keep their own input.
+press **a** or use the toolbar's **a** control to show track-gain automation across
+the entire arranger, including unselected tracks. audio and midi clips fade into
+the background while the curves own editing. the toolbar control stays highlighted
+while this mode is on; the key and toolbar always switch the same view.
+repeat to return to clip editing. switching views preserves clips, selection,
+automation and undo history. **c** and **0** keep contextual activation for focused
+devices and track headers; in clip editing they affect the selected clips or time
+span. a partial time span splits clips at its edges. automation lanes prevent
+activation of the retained background clips. text fields and the computer midi
+keyboard keep their own input.
 
 click a gain curve to add a point, drag a point to change its time or value, and
-release to apply the edit. **command** gives free beat placement. **escape**
+release to apply the edit. editing another track's curve keeps the background
+clip selection. **command** gives free beat placement. **escape**
 cancels a held edit; **backspace** removes the selected automation point.
 one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.

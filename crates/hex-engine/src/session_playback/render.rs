@@ -2442,12 +2442,9 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                         let Some(elapsed) = absolute.checked_sub(launch_frame) else {
                             continue;
                         };
-                        let Some(source_frame) = prepared.source_start.checked_add(elapsed) else {
+                        let Some(source_frame) = prepared.source_frame(elapsed) else {
                             continue;
                         };
-                        if source_frame >= prepared.source_end {
-                            continue;
-                        }
                         let source_index = usize::try_from(source_frame)
                             .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
                         let mut sample = *frames
@@ -2465,13 +2462,15 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                     let Some(mut elapsed) = performance_frame.checked_sub(launch_frame) else {
                         return Ok(());
                     };
-                    let Some(mut source_frame) = prepared.source_start.checked_add(elapsed) else {
-                        return Ok(());
-                    };
                     let mut output_offset = 0_usize;
-                    while output_offset < output.len() && source_frame < prepared.source_end {
+                    // Every iteration renders at least one frame or stops. A
+                    // one-frame cycle is bounded by the admitted block length.
+                    while output_offset < output.len() {
+                        let Some(source_frame) = prepared.source_frame(elapsed) else {
+                            break;
+                        };
                         let remaining =
-                            usize::try_from(prepared.source_end.saturating_sub(source_frame))
+                            usize::try_from(prepared.playback_end().saturating_sub(source_frame))
                                 .unwrap_or(usize::MAX);
                         let count = (output.len() - output_offset).min(remaining);
                         let offset = u64::try_from(output_offset)
@@ -2500,10 +2499,6 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
                             .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
                         elapsed = elapsed
                             .checked_add(rendered)
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                        source_frame = prepared
-                            .source_start
-                            .checked_add(elapsed)
                             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                         output_offset = output_offset
                             .checked_add(

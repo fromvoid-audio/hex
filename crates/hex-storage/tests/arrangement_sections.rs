@@ -1,5 +1,7 @@
 use hex_project::{BeatTime, Command, Created, Editor, ElementColor, Project};
 use serde_json::json;
+#[allow(dead_code)]
+mod common;
 fn b(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
@@ -169,13 +171,19 @@ fn schema47_roundtrips_retained_musical_repeat_after_section_reorder() {
     let project = Project::from_snapshot(snapshot).unwrap();
     let bytes = hex_storage::encode(&project).unwrap();
     let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(document["version"], 47);
+    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(
         hex_storage::decode(&bytes).unwrap().snapshot(),
         project.snapshot()
     );
 
     let mut prior = document;
+    common::remove_audio_cycles(&mut prior);
+    prior["version"] = 47.into();
+    assert_eq!(
+        hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap(),
+        project
+    );
     prior["version"] = 46.into();
     let error = hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap_err();
     assert!(error.to_string().contains("historical project schema"));
@@ -237,6 +245,12 @@ fn schema47_accepts_but_historical_schemas_reject_musical_directed_empty_base_in
     let bytes = hex_storage::encode(&project).unwrap();
     assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
     let mut historical: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    common::remove_audio_cycles(&mut historical);
+    historical["version"] = 47.into();
+    assert_eq!(
+        hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap(),
+        project
+    );
     historical["version"] = 46.into();
     let error = hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap_err();
     assert!(error.to_string().contains("historical project schema"));
@@ -295,10 +309,16 @@ fn schema47_accepts_but_historical_schemas_reject_empty_intro_for_both_timing_mo
         assert!(projection.has_subframe_intro());
         let bytes = hex_storage::encode(&project).unwrap();
         let current: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(current["version"], 47);
+        assert_eq!(current["version"], hex_storage::CURRENT_SCHEMA_VERSION);
         assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
 
         let mut prior = current;
+        common::remove_audio_cycles(&mut prior);
+        prior["version"] = 47.into();
+        assert_eq!(
+            hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap(),
+            project
+        );
         prior["version"] = 46.into();
         let error = hex_storage::decode(&serde_json::to_vec(&prior).unwrap()).unwrap_err();
         assert!(error.to_string().contains("historical project schema"));
@@ -365,6 +385,12 @@ fn schema46_accepts_frozen_directed_repeat_trimmed_to_its_base_seam() {
     assert!(!projection.has_subframe_intro());
     let mut historical: serde_json::Value =
         serde_json::from_slice(&hex_storage::encode(&project).unwrap()).unwrap();
+    common::remove_audio_cycles(&mut historical);
+    historical["version"] = 47.into();
+    assert_eq!(
+        hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap(),
+        project
+    );
     historical["version"] = 46.into();
     let decoded = hex_storage::decode(&serde_json::to_vec(&historical).unwrap()).unwrap();
     assert_eq!(decoded.snapshot(), project.snapshot());

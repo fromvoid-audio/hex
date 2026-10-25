@@ -64,6 +64,7 @@ pub(crate) struct ClipPlan {
     pub(crate) asset: AssetId,
     pub(crate) start: u64,
     pub(crate) end: u64,
+    pub(crate) loop_range: Option<hex_project::SessionAudioLoop>,
     pub(crate) gain: hex_project::ClipGain,
 }
 pub(crate) struct SceneRangePlan {
@@ -112,6 +113,7 @@ impl AudioTarget {
             asset: self.plan.asset,
             source_start: self.plan.start,
             source_end: self.plan.end,
+            loop_range: self.plan.loop_range,
             gain: self.plan.gain.linear(),
             source,
         });
@@ -135,6 +137,7 @@ impl AudioTarget {
             || clip.asset != self.plan.asset
             || clip.source_start != self.plan.start
             || clip.source_end != self.plan.end
+            || clip.loop_range != self.plan.loop_range
             || clip.gain != self.plan.gain.linear()
         {
             return Err(AudioStorageError::SourceMismatch);
@@ -1012,6 +1015,7 @@ impl SessionAssembly {
                     asset,
                     source_start,
                     source_end,
+                    loop_range,
                     gain,
                     source,
                 } = clip;
@@ -1022,6 +1026,7 @@ impl SessionAssembly {
                     || *asset != plan.asset
                     || *source_start != plan.start
                     || *source_end != plan.end
+                    || *loop_range != plan.loop_range
                     || *gain != plan.gain.linear()
                     || *actual_handle != Some(plan.handle)
                 {

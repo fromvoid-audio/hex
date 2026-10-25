@@ -14,6 +14,7 @@ impl SessionSourceConstruction {
             asset: row.asset,
             start: row.start,
             end: row.end,
+            loop_range: row.loop_range,
             gain: row.gain,
         })
     }
@@ -48,6 +49,7 @@ impl SessionSourceConstruction {
             || row.asset != plan.asset
             || row.start != plan.start
             || row.end != plan.end
+            || row.loop_range != plan.loop_range
             || row.gain != plan.gain
             || *asset != plan.asset
             || cache.source != plan.bank_source
