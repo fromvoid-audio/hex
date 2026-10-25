@@ -4543,19 +4543,6 @@ mod tests {
     #[cfg(feature = "allocation-probe")]
     fn gate_track_and_return_graph(floor_db: f32) -> Playback {
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-        use hex_project::{
-            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
-            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
-            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
-        };
-
-        const TRACK_ID: u64 = 1;
-        const ASSET_ID: u64 = 4;
-        const CLIP_ID: u64 = 5;
-        const TRACK_DEVICE_ID: u64 = 6;
-        const RETURN_ID: u64 = 7;
-        const RETURN_DEVICE_ID: u64 = 8;
-        const FRAMES: u64 = 512;
         let make_state = || {
             let mut state = hex_engine::default_native_device_state_for_class(
                 hex_engine::NativeDeviceClass::Effect,
@@ -4581,6 +4568,25 @@ mod tests {
             )
             .expect("gate floor")
         };
+        native_track_and_return_graph(make_state())
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn native_track_and_return_graph(state: hex_lattice_contract::NativeDeviceState) -> Playback {
+        use hex_project::{
+            AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
+            Project as CanonicalProject, ReturnTrackSnapshot, SendLevelSnapshot, SessionSnapshot,
+            Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+        };
+
+        const TRACK_ID: u64 = 1;
+        const ASSET_ID: u64 = 4;
+        const CLIP_ID: u64 = 5;
+        const TRACK_DEVICE_ID: u64 = 6;
+        const RETURN_ID: u64 = 7;
+        const RETURN_DEVICE_ID: u64 = 8;
+        const FRAMES: u64 = 512;
+        let make_state = || state.clone();
         let project = CanonicalProject::from_snapshot(Snapshot {
             arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
@@ -5213,6 +5219,77 @@ mod tests {
         assert_eq!(output.as_slice(), expected_after.as_slice());
         control.request_shutdown();
         callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn reverb_track_return_render_edit_stop_seek_and_shutdown_allocate_nothing() {
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+        let state =
+            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.reverb"))
+                .unwrap();
+        let changed = hex_engine::patch_native_device_parameter(
+            &state,
+            ParameterId::from_static(1),
+            ParameterValue::Float(2.5),
+        )
+        .unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut block = [[0.0; 2]; 127];
+        for state in [state, changed] {
+            control
+                .publish(native_track_and_return_graph(state))
+                .unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            let counts = allocation_counter::measure(|| {
+                for _ in 0..40 {
+                    callback.begin_block();
+                    callback.render(&mut block).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(block.iter().flatten().any(|v| v.abs() > 0.0));
+            control.reclaim();
+        }
+        for command in [PlaybackCommand::Seek(0), PlaybackCommand::Stop] {
+            control.command(command).unwrap();
+            let counts = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut block).unwrap();
+            });
+            assert_eq!(
+                (
+                    counts.count_total,
+                    counts.bytes_total,
+                    counts.count_current,
+                    counts.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert_eq!(block, [[0.0; 2]; 127]);
+        control.request_shutdown();
+        let counts = allocation_counter::measure(|| {
+            callback.begin_block();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
         control.reclaim();
     }
 

@@ -423,6 +423,15 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+reverb adds a stereo room decay. **decay** sets its nominal decay time from
+0.1 to 2.5 seconds; **dry/wet** blends the original signal with the room from
+0 to 100 percent. on a return, start with dry/wet at 100 percent and adjust the
+track's send level. edits support undo/redo and settings survive save/reopen.
+bypass passes the dry signal while the room keeps running privately. loop wraps
+keep the room continuous; stop and seek clear it. removing a device lets its
+existing tail drain through the host. device-parameter automation lanes are not
+currently offered.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes

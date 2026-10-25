@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 6);
+        assert_eq!(catalog.len(), 7);
         let utility = catalog
             .iter()
             .find(|entry| entry.name == "utility")
@@ -527,6 +527,13 @@ mod tests {
             .expect("registered Gate appears in the generic effect catalog");
         let state = crate::default_native_device_state(gate.type_id).unwrap();
         assert_eq!(native_device_view(&state).unwrap().name, "gate");
+        let reverb = catalog
+            .iter()
+            .find(|entry| entry.name == "reverb")
+            .expect("registered reverb in browser catalog");
+        assert_eq!(reverb.parameters.len(), 2);
+        let state = crate::default_native_device_state(reverb.type_id).unwrap();
+        assert_eq!(native_device_view(&state).unwrap().name, "reverb");
         let auto_pan = catalog
             .iter()
             .find(|entry| entry.name == "auto pan")
