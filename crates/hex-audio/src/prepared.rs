@@ -2870,6 +2870,14 @@ impl Callback {
                         }
                     }
                     Some(Ok(None)) => {
+                        if self.active.is_some()
+                            && let Some(streams) = next.streams.as_mut()
+                        {
+                            // Pending wanted extents reserve pool capacity too.
+                            // Yield speculation before the predecessor renders
+                            // its next chunk, as eligible publications do.
+                            streams.cancel_install(&mut self.domain_pages);
+                        }
                         self.deferred = Some(next);
                         return;
                     }
