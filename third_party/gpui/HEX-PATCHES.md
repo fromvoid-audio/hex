@@ -294,3 +294,17 @@ can improve the result. No new geometric predicate or placement-path pruning,
 topology, storage, allocation, reservation or painter-order change. The locked
 independent leaf-scan oracle includes higher-child misses, tied maxima and
 already-satisfied queries, retaining numeric union/clear/overflow coverage.
+
+### Compact element identities
+
+`GlobalElementId` and Window's active/deferred ID stacks use eight inline
+`ElementId` entries instead of 32. The existing SmallVec dynamic spill retains
+longer paths without a depth limit or truncation. This reduces inline payloads
+moved through Drawable phases and state-map keys. It changes the concrete inline
+capacity exposed through GlobalElementId's derived Deref target; callers retain
+the same complete sequence, equality/hash/display and push/pop semantics. No
+identity interning, shared ownership, lifecycle, dispatch, layout or painter
+contract changes. Deep identical-prefix click/focus and held-click repaint tests,
+plus keys built in ordinary/forced-dynamic storage, exercise the retained values
+and state through the existing root-locked UI test-support graph. Source size
+alone is not navigation performance or native acceptance evidence.
