@@ -268,3 +268,39 @@ fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
         assert_eq!(restored, before.snapshot());
     });
 }
+
+#[gpui::test]
+fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestAppContext) {
+    let (_files, handle, editor, clips) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, clips[2], false);
+    editor.update(&mut visual, |v, _| {
+        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+        v.time_selection = Some(super::super::time_selection::TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: 36_000,
+            end_frame: 132_000,
+        });
+    });
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+    visual.simulate_keystrokes("g");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let p = &v.state.as_ref().unwrap().project;
+        let group = p.clip(v.selected_clip.unwrap()).unwrap();
+        assert_eq!((group.start(), group.duration()), (36_000, 96_000));
+        assert_eq!(
+            group
+                .audio_events()
+                .events
+                .iter()
+                .map(|event| (event.start, event.end))
+                .collect::<Vec<_>>(),
+            vec![(12_000, 36_000), (60_000, 84_000)]
+        );
+        assert_eq!(p.clip(clips[2]).unwrap().start(), 144_000);
+        assert_eq!(p.tracks()[0].clips().len(), 2);
+    });
+}

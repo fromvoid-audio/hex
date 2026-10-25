@@ -562,7 +562,8 @@ pub enum Command {
     DuplicateClips(Vec<ClipId>),
     /// Wrap one same-track, same-kind selection atomically; never replace nonselected material.
     GroupClips(Vec<ClipId>),
-    /// Split selection edges and group included material independently per track.
+    /// Split selection edges and group included material independently per track,
+    /// retaining the full selected extent including empty margins and internal gaps.
     /// Empty tracks are skipped; returns the last populated track's resulting clip.
     /// All fragments and groups form one atomic edit; mixed media on a row refuses.
     GroupTimeRange(crate::TimeRange),
