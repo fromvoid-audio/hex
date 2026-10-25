@@ -739,3 +739,55 @@ fn grouped_child_and_event_fades_keep_source_phase_through_move_and_history() {
         moved
     );
 }
+
+#[test]
+fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original = prepare(&editor, &media, &context);
+    let pcm_bytes = context.retained_pcm_bytes();
+    let audio = original.arrangement().audio_clip_views()[0].audio.clone();
+    let expected = render(&original, 0, 15_000, 127);
+    let track = editor.project().tracks()[0].id();
+    let clipboard = Arc::new(editor.project().capture_clips(&[group]).unwrap());
+    for index in 1..=1_000_u64 {
+        editor
+            .execute(Command::PasteClips {
+                clipboard: Arc::clone(&clipboard),
+                track,
+                frame: index * 15_000,
+                insert: false,
+            })
+            .unwrap();
+        if index == 1 || index == 1_000 {
+            let prepared = prepare(&editor, &media, &context);
+            assert_eq!(
+                context.retained_pcm_bytes(),
+                pcm_bytes,
+                "copying a frame group must retain references, not new destination-sized PCM"
+            );
+            assert!(
+                prepared
+                    .arrangement()
+                    .audio_clip_views()
+                    .iter()
+                    .all(|view| view.audio.shares_pcm_with(&audio))
+            );
+            assert_eq!(render(&prepared, index * 15_000, 15_000, 63), expected);
+        }
+    }
+    assert!(editor.undo());
+    let undone = prepare(&editor, &media, &context);
+    assert!(
+        render(&undone, 15_000_000, 15_000, 257)
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+    assert!(editor.redo());
+    let redone = prepare(&editor, &media, &context);
+    assert_eq!(render(&redone, 15_000_000, 15_000, 257), expected);
+    assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
+}
