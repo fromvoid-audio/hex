@@ -150,13 +150,32 @@ fn selected_bounce_keeps_actual_release_pcm_and_one_history_step_without_double_
                     .is_none()
             );
             let actual = pcm(bounced, 80_000);
-            let max = actual
+            let retained_end = usize::try_from(audio.start() + audio.duration()).unwrap();
+            assert!(
+                retained_end < expected.len(),
+                "fixture exercises trimmed residuals"
+            );
+            let max = actual[..retained_end]
                 .iter()
                 .flatten()
-                .zip(expected.iter().flatten())
+                .zip(expected[..retained_end].iter().flatten())
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0_f32, f32::max);
             assert!(max < 1e-5, "baked device host gains apply once: {max}");
+            assert!(
+                actual[retained_end..]
+                    .iter()
+                    .flatten()
+                    .all(|sample| *sample == 0.0)
+            );
+            // The original track's 0.7 mixer gain remains live. Only residuals
+            // at/below the bounce's -80 dBFS pre-mixer threshold may disappear.
+            assert!(
+                expected[retained_end..]
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= 0.7 * 0.0001)
+            );
         } else {
             assert!(session.project().midi_clip(clip).is_some());
         }
