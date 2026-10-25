@@ -67,13 +67,7 @@ impl RendererRuntime {
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
                             if track.audio_content_enabled() {
-                                crate::render_track_audio_raw(
-                                    track,
-                                    frame,
-                                    end,
-                                    &mut audio,
-                                    pages.as_deref_mut(),
-                                );
+                                track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
                             }
                             crate::render_source_generators(
                                 project,

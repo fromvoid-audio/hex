@@ -63,6 +63,163 @@ fn try_compile(f: &Fixture) -> Result<Project, Invalid> {
     )
     .map(|(project, _)| project)
 }
+
+#[test]
+fn shared_source_main_only_latency_preserves_receiver_mix_and_partitions() {
+    for mutable in [false, true] {
+        let kind = if mutable {
+            hex_devices::operator_state::OPERATOR_TYPE_ID
+        } else {
+            hex_devices::SINE_INSTRUMENT_TYPE_ID
+        };
+        let mut state = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            kind,
+        )
+        .unwrap();
+        if mutable {
+            state = crate::patch_native_device_parameter_for_class(
+                crate::NativeDeviceClass::Instrument,
+                &state,
+                hex_devices::operator_state::parameter::feedback(1),
+                ParameterValue::Float(0.24),
+            )
+            .unwrap();
+        }
+        let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "shared".into(),
+                devices: vec![state],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        let mut tracks = Vec::new();
+        for (index, pitch) in [60, 67].into_iter().enumerate() {
+            let Created::Track(track) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "midi".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor
+                .execute(Command::BindTrackSource {
+                    track,
+                    source: Some(source),
+                })
+                .unwrap();
+            editor
+                .execute(Command::Gain {
+                    track,
+                    gain: if index == 1 { 0.37 } else { 1.7 },
+                })
+                .unwrap();
+            editor
+                .execute(Command::Balance {
+                    track,
+                    balance: -0.3,
+                })
+                .unwrap();
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: BeatTime::ONE,
+                    pitch,
+                    channel: 0,
+                    velocity: 96,
+                })
+                .unwrap();
+            tracks.push(track);
+        }
+        editor
+            .execute(Command::SetNativeSourceReceiver {
+                source,
+                track: Some(tracks[1]),
+            })
+            .unwrap();
+        let table = Arc::new(SineTable::new());
+        let media = std::collections::BTreeMap::new();
+        let dry_project = editor.project().clone();
+        let dry_revision = Arc::new(
+            PreparedRevision::prepare(&dry_project, &media, Arc::clone(&table), None).unwrap(),
+        );
+        assert_eq!(dry_revision.has_arrangement_mutable_instruments(), mutable);
+        let dry = session(dry_revision, 4096, 63);
+        assert!(dry.iter().flatten().any(|sample| sample.abs() > 1e-6));
+        let limiter = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Effect,
+            DeviceTypeId::from_static("hex.limiter"),
+        )
+        .unwrap();
+        let limiter = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Effect,
+            &limiter,
+            ParameterId::from_static(6),
+            ParameterValue::Choice(2),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: limiter,
+            })
+            .unwrap();
+        let revision =
+            Arc::new(PreparedRevision::prepare(editor.project(), &media, table, None).unwrap());
+        assert!(
+            !revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .unwrap()
+                .needs_upstream_frame_routing()
+        );
+        let delay = revision.arrangement().main_latency_frames() as usize;
+        assert_eq!(delay, 288);
+        // Main batching does not admit a new live-monitoring capability.
+        let mut monitor =
+            crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+                .unwrap();
+        let error = monitor
+            .prepare_computer_keyboard(
+                editor.project(),
+                tracks[0],
+                Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default()),
+            )
+            .unwrap_err();
+        assert!(error.0.contains("unavailable with positive latency"));
+        for partition in [1, 63, 257] {
+            let output = session(Arc::clone(&revision), dry.len(), partition);
+            assert!(output[..delay].iter().all(|frame| *frame == [0.0; 2]));
+            let error = output[delay..]
+                .iter()
+                .flatten()
+                .zip(dry[..dry.len() - delay].iter().flatten())
+                .map(|(actual, expected)| (actual - expected).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                error < 1e-6,
+                "mutable={mutable}, partition={partition}: {error}"
+            );
+        }
+    }
+}
 #[test]
 fn shared_source_has_one_generator_and_preserves_both_local_chains_and_midi_banks() {
     let (f, _, clips) = shared_fixture();
