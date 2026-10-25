@@ -219,7 +219,7 @@ impl NumericControlConfig {
         style: ControlStyle,
     ) -> Result<Self, NumericError> {
         let presentation = presentation.into();
-        spec.validate(value)?;
+        let value = spec.validate(value)?;
         style.validate().map_err(|_| NumericError::InvalidStyle)?;
         let text = spec.format(value)?;
         Ok(Self {
@@ -502,7 +502,7 @@ impl NumericControl {
         value: f64,
         cx: &mut Context<Self>,
     ) -> Result<(), NumericError> {
-        self.spec.validate(value)?;
+        let value = self.spec.validate(value)?;
         if !self.is_interacting() && self.value != value {
             self.value = value;
             self.draft = value;
@@ -981,9 +981,12 @@ impl NumericControl {
     }
 
     fn emit_accessible_value(&mut self, value: f64, cx: &mut Context<Self>) -> bool {
-        if !self.availability.interactive() || self.editing || self.spec.validate(value).is_err() {
+        if !self.availability.interactive() || self.editing {
             return false;
         }
+        let Ok(value) = self.spec.validate(value) else {
+            return false;
+        };
         if value != self.draft {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
@@ -1035,9 +1038,9 @@ impl NumericControl {
             _ => return false,
         };
         value.is_ok_and(|value| {
-            let changed = value != self.draft;
+            let previous = self.draft;
             let accepted = self.emit_accessible_value(value, cx);
-            if accepted && changed && self.accessibility_binding.is_some() {
+            if accepted && self.draft != previous && self.accessibility_binding.is_some() {
                 self.accessibility_pending = true;
                 cx.notify();
             }

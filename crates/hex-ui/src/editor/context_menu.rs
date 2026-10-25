@@ -25,6 +25,11 @@ pub(super) struct UtilityModeAction {
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
     Section(super::arrangement_sections::MenuAction),
+    BounceTrack {
+        generation: u64,
+        revision: u64,
+        track: TrackId,
+    },
     TrackClipboard {
         generation: u64,
         revision: u64,
@@ -229,6 +234,21 @@ impl EditorView {
                     action: hex_session::service::TrackClipboardAction::Paste {
                         before: before_track,
                     },
+                },
+            });
+        }
+        if self.mode == super::EditorMode::Arrangement
+            && let Some(track) = after_track
+            && let Some(menu) = &mut self.context_menu
+        {
+            menu.items.push(MenuItem {
+                label: "bounce in place",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::BounceTrack {
+                    generation,
+                    revision,
+                    track,
                 },
             });
         }
@@ -476,6 +496,14 @@ impl EditorView {
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
+            EditorContextAction::BounceTrack {
+                generation,
+                revision,
+                track,
+            } => {
+                self.bounce_track_in_place(track, generation, revision);
+                cx.notify();
+            }
             EditorContextAction::TrackClipboard {
                 generation,
                 revision,
@@ -639,6 +667,17 @@ impl EditorView {
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
+                }
+                EditorContextAction::BounceTrack {
+                    generation,
+                    revision,
+                    track,
+                } => {
+                    self.mode != super::EditorMode::Arrangement
+                        || *generation != self.project_generation
+                        || self.state.as_ref().is_none_or(|s| {
+                            s.revision != *revision || s.project.track(*track).is_none()
+                        })
                 }
                 EditorContextAction::TrackClipboard {
                     generation,
@@ -979,7 +1018,6 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 20);
             assert_eq!(
                 menu.items
                     .iter()

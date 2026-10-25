@@ -58,6 +58,9 @@ pub use plugin_effect::{
 mod effect_bus_tests;
 #[cfg(test)]
 mod format_upgrade_tests;
+#[cfg(test)]
+#[path = "service/limiter_tests.rs"]
+mod limiter_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]

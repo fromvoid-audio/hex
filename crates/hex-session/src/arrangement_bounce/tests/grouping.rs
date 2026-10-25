@@ -2,7 +2,7 @@
 //! playback laws, not a synthetic event-flattening oracle.
 use super::*;
 use hex_project::{AudioViewResizeOperation, ClipFade, TimeRange};
-fn write_fixture(path: &Path, rate: u32, frames: &[hex_engine::Frame]) {
+pub(super) fn write_fixture(path: &Path, rate: u32, frames: &[hex_engine::Frame]) {
     use std::io::Write;
     let bytes = (frames.len() * 8) as u32;
     let mut f = fs::OpenOptions::new()

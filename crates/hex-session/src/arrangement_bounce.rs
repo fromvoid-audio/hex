@@ -151,7 +151,7 @@ impl Session {
                 if control.is_cancelled() || self.shutdown.load(Ordering::Acquire) {
                     return Err("bounce cancelled".into());
                 }
-                let tails = matches!(target, BounceTarget::Clips(_));
+                let tails = target.includes_tails();
                 let maximum = (item.end - item.start)
                     .checked_add(if tails {
                         u64::from(self.project().sample_rate())
