@@ -2525,7 +2525,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
             }
@@ -2601,8 +2601,7 @@ impl SessionPlayback {
                     .checked_add(old_chain.declared_pair_bytes())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                    || tail_runtime_bytes
-                        > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                    || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
                     || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 {
                     return Err(SessionPlaybackError::ReleaseBankFull);
@@ -2701,7 +2700,7 @@ impl SessionPlayback {
                 .checked_add(old_chain.declared_pair_bytes())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
             {
                 return Err(SessionPlaybackError::ReleaseBankFull);
@@ -2819,7 +2818,7 @@ impl SessionPlayback {
                 .checked_add(runtime.max_active_occurrences())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
+                || tail_runtime_bytes > crate::mutable_instrument::MAX_GRAPH_RUNTIME_PAIR_BYTES
                 || suffix_entry_count > MAX_RETAINED_SUFFIX_ENTRIES
                 || reserved_tail_voices > self.release_capacity
             {

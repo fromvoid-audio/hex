@@ -423,6 +423,13 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+the delay effect provides independent stereo repeats. **time** selects 1–1000 ms;
+**feedback** selects 0–0.85 and **dry/wet** selects 0–1. changing time glides the
+pitch briefly. bypass keeps the delay history warm while passing dry audio.
+removing a playing delay lets its existing repeats decay; stop and seek clear
+that history. tempo sync, ping-pong, freeze and automation lanes are not currently
+available for delay. settings use the ordinary device undo and save workflow.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes

@@ -1,7 +1,7 @@
 use super::*;
 use crate::mutable_instrument::{
-    MAX_STATEFUL_RUNTIME_PAIR_BYTES, MutableInstrumentRuntimeError, MutableInstrumentTrackRuntime,
-    validate_mutable_graph_budget,
+    MAX_GRAPH_RUNTIME_PAIR_BYTES, MAX_STATEFUL_RUNTIME_PAIR_BYTES, MutableInstrumentRuntimeError,
+    MutableInstrumentTrackRuntime, validate_mutable_graph_budget,
 };
 
 struct DeclaredBytesGuard(Option<usize>);
@@ -69,11 +69,11 @@ fn instrument_memory_budget_rejects_overflow_and_over_budget_before_construction
 
 #[test]
 fn instrument_memory_budget_preserves_combined_count_bytes_and_overflow_checks() {
-    let cap = MAX_STATEFUL_RUNTIME_PAIR_BYTES;
-    // The aggregate pool still admits 256 historical 4 KiB twins, even
-    // though an individual effect may now declare more.
+    let cap = MAX_GRAPH_RUNTIME_PAIR_BYTES;
+    // Count and byte limits remain independent: 256 equal shares reach
+    // the combined pool, while a 257th owner still refuses.
     let effect_pair = (hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES / 256) * 2;
-    assert_eq!(cap, 2 * 1024 * 1024);
+    assert_eq!(cap, 16 * 1024 * 1024);
     assert!(validate_mutable_graph_budget(255, 255 * effect_pair, 1, effect_pair).is_ok());
     assert!(validate_mutable_graph_budget(1, effect_pair, 1, cap - effect_pair).is_ok());
     for (effects, effect_bytes, instruments, instrument_bytes) in [
@@ -92,7 +92,7 @@ fn instrument_memory_budget_preserves_combined_count_bytes_and_overflow_checks()
 #[test]
 fn instrument_memory_budget_aggregate_refuses_before_any_runtime_is_constructed() {
     let revision = mutable_hundred_track_preroll_revision();
-    let _guard = DeclaredBytesGuard::new(MAX_STATEFUL_RUNTIME_PAIR_BYTES / 200 + 1);
+    let _guard = DeclaredBytesGuard::new(MAX_GRAPH_RUNTIME_PAIR_BYTES / 200 + 1);
     let counter = Arc::new(AtomicUsize::new(0));
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&counter)));
     assert!(matches!(
@@ -105,14 +105,25 @@ fn instrument_memory_budget_aggregate_refuses_before_any_runtime_is_constructed(
 
 #[test]
 fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() {
+    struct VoiceGuard(Option<usize>);
+    impl Drop for VoiceGuard {
+        fn drop(&mut self) {
+            MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|slot| slot.set(self.0));
+        }
+    }
+    // Keep occurrence admission independent: this fixture has one active note
+    // per donor and is specifically testing the aggregate byte boundary.
+    let _voices = VoiceGuard(MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|slot| slot.replace(Some(1))));
     for extra in [0, 1] {
-        // Two independently owned large tails reach exactly 2 MiB, then exceed
-        // it by four bytes. Count is only two: byte accounting must decide.
-        let _guard = DeclaredBytesGuard::new(MAX_STATEFUL_RUNTIME_PAIR_BYTES / 4 + extra);
+        // The independent complete candidate cap includes ~20 MiB of host
+        // ledgers. Eight one-MiB payloads fit; sixteen exceed that complete
+        // cap even though they meet the declared DSP-only pool exactly.
+        let tails = if extra == 0 { 8 } else { 16 };
+        let _guard = DeclaredBytesGuard::new(MAX_STATEFUL_RUNTIME_PAIR_BYTES / 4);
         let (revision, track) = mutable_checkpoint_fixture(8 << 32);
         let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut candidate = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-        for slot in 0..2 {
+        for slot in 0..tails {
             let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
             donor.apply(SessionPlaybackCommand::Play).unwrap();
             render_checkpoint_prefix(&mut donor, 1);
@@ -125,12 +136,20 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
                 });
             previous.tail_mixes[slot] = crate::PreparedTrackMix::identity();
         }
+        let complete = candidate.accounted_runtime_storage_bytes().unwrap()
+            + previous
+                .tail_mutable_instruments
+                .iter()
+                .flatten()
+                .map(|tail| tail.runtime.accounted_storage_bytes().unwrap())
+                .sum::<usize>();
+        assert_eq!(complete > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, extra != 0);
         let result = candidate.try_inherit_state_from(&mut previous);
         if extra == 0 {
             result.unwrap();
             assert_eq!(
                 candidate.tail_mutable_instruments.iter().flatten().count(),
-                2
+                tails
             );
             assert!(
                 previous
@@ -142,7 +161,7 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
             assert_eq!(result, Err(SessionPlaybackError::ReleaseBankFull));
             assert_eq!(
                 previous.tail_mutable_instruments.iter().flatten().count(),
-                2
+                tails
             );
             assert!(
                 candidate
@@ -151,7 +170,10 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
                     .all(Option::is_none)
             );
             previous.apply(SessionPlaybackCommand::Stop).unwrap();
-            candidate.try_inherit_state_from(&mut previous).unwrap();
+            // Complete-storage refusal occurs after candidate preparation;
+            // retry with a fresh candidate, retaining the untouched donor.
+            let mut retry = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            retry.try_inherit_state_from(&mut previous).unwrap();
         }
     }
 }

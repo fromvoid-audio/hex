@@ -292,9 +292,14 @@ pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 /// Maximum control-declared storage for one effect runtime twin. Mutable
 /// instrument limits are supplied separately by the engine's aggregate policy.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
+/// Maximum TOTAL owned transaction storage (both histories and all capacities).
+/// Owned providers synchronize written intervals, unlike full-copy legacy twins.
+/// One second of stereo history at 192 kHz fits below this four-MiB limit.
+pub const MAX_OWNED_PROCESSOR_PAIR_BYTES: usize = 4 * 1024 * 1024;
 /// Aggregate declared bytes in one runtime bank, counting one twin per instance.
-/// The actual paired runtime storage doubles this bound (2 MiB).
-pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 1_048_576;
+/// The actual paired runtime storage doubles this bound (16 MiB). Engine candidate
+/// and retained-owner budgets still account the entire declared allocation.
+pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 8 * 1024 * 1024;
 
 /// Borrowed signal boundary around an entire native effect entry.
 /// Input precedes host input trim; Output follows effect, routing and output trim.
@@ -639,7 +644,12 @@ impl NativeRuntimeChain {
                     let pair = factory
                         .declared_pair_bytes()
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
-                    if factory.runtime_version() == 0 || pair > MAX_PROCESSOR_RUNTIME_BYTES * 2 {
+                    let limit = if factory.is_owned() {
+                        MAX_OWNED_PROCESSOR_PAIR_BYTES
+                    } else {
+                        MAX_PROCESSOR_RUNTIME_BYTES * 2
+                    };
+                    if factory.runtime_version() == 0 || pair > limit {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
                     stateful_count = stateful_count
