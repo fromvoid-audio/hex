@@ -387,4 +387,63 @@ fn delay_filter_xy_release_keeps_final_display_across_three_repaints_until_real_
     editor.read_with(cx, |v, _| {
         assert_eq!(&v.state.as_ref().unwrap().project, &before)
     });
+    visual.run_until_parked();
+    assert_eq!(
+        graph.read_with(cx, |g, _| g.node_position(1).unwrap()),
+        original,
+        "escape restores the displayed node even without an intervening repaint"
+    );
+}
+
+#[gpui::test]
+fn delay_filter_refused_begin_retires_capture_without_moving_another_gesture(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, device, _, _, _gate) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let graph = editor.read_with(cx, |v, _| delay_panel::graph_for_test(v, device));
+    let (plot, original) = graph.read_with(cx, |g, _| {
+        (g.plot_bounds().unwrap(), g.node_position(1).unwrap())
+    });
+    editor.update(cx, |v, _| {
+        v.begin_device_gesture(
+            GestureTarget::DeviceParameter {
+                device,
+                parameter: FEEDBACK,
+            },
+            ParameterValue::Float(0.5),
+        )
+        .unwrap()
+    });
+    let key = editor.read_with(cx, |v, _| v.device_gesture.snapshot().unwrap().key);
+    let point_at = |p: [f32; 2]| {
+        point(
+            plot.left() + plot.size.width * p[0],
+            plot.bottom() - plot.size.height * p[1],
+        )
+    };
+    visual.simulate_mouse_down(point_at(original), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point_at([0.3, 0.3]),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point_at([0.3, 0.3]),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        graph.read_with(cx, |g, _| g.node_position(1).unwrap()),
+        original
+    );
+    assert!(!graph.read_with(cx, |g, _| g.is_dragging()));
+    editor.update(cx, |v, _| {
+        assert_eq!(v.device_gesture.snapshot().unwrap().key, key);
+        v.cancel_device_gesture().unwrap();
+    });
+    pump_until(&editor, cx, settled);
 }
