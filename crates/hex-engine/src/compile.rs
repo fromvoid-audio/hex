@@ -530,7 +530,7 @@ fn compile_project_inner<'a>(
             .into_iter()
             .flatten()
             .collect();
-        let muted = track.muted() || (any_soloed && !track.soloed());
+        let muted = crate::effective_track_mute(track, any_soloed);
         if source_index != track_index && previews.is_some() && !track.midi_clips().is_empty() {
             // Authored preview remains on its canonical owner even when that owner's
             // instrument listens to a different root.

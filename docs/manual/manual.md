@@ -86,6 +86,10 @@ arrange places clips along a time ruler. console provides the clip/scene workspa
 these views share the project; switching views does not create another document.
 tracks can contain both audio and midi clips under the same mixer controls.
 
+solo takes precedence over track mute or deactivation. a muted track sounds while
+soloed; turning solo off restores its muted state. solo does not change the stored
+track activator setting.
+
 in arrange, select a track or clip before editing it. drag a clip to move it and
 use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
