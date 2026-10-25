@@ -37,7 +37,10 @@ pub struct AudioViewOccurrence {
 
 /// Validated metadata projection. Indexing performs constant work, allocates
 /// nothing and never prepares DSP. Consumers must admit aggregate work before
-/// iterating the occurrence count.
+/// iterating the occurrence count. A final partial musical repeat whose two
+/// boundaries round to the same outer end frame contributes no occurrence;
+/// its authored beat extent remains unchanged. Full cycles and all other
+/// invalid/empty projections retain their existing validation.
 pub struct AudioViewProjection<'a> {
     clip: &'a Clip,
     tempo: &'a TempoMap,
@@ -208,7 +211,7 @@ impl<'a> AudioViewProjection<'a> {
         // phase from cycle or form a physical in-root position in this branch.
         let exhausted = mode == AudioViewMode::Once && phase >= cycle;
         let first_end = start + i128::from(cycle) - i128::from(phase);
-        let count = if exhausted {
+        let mut count = if exhausted {
             0
         } else if mode == AudioViewMode::Repeat && length > cycle - phase {
             1 + (length - (cycle - phase)).div_ceil(cycle)
@@ -237,6 +240,19 @@ impl<'a> AudioViewProjection<'a> {
         );
         if outer_frames.0 >= outer_frames.1 {
             return Err(Invalid("audio outer placement has no frames"));
+        }
+        if beat_clock && count > 1 && end_offset == 0 {
+            let last_begin = i128::from(count - 2)
+                .checked_mul(i128::from(cycle))
+                .and_then(|offset| first_end.checked_add(offset))
+                .ok_or(Invalid("audio last occurrence origin overflow"))?;
+            // Frame-to-beat rounding can leave a sub-frame remainder beyond
+            // complete repeats. It has no samples when its boundaries project
+            // to the same frame. Do not remove a full cycle, a one-frame tail
+            // or a retained terminal frame residual.
+            if end - last_begin < i128::from(cycle) && frame(last_begin)? == outer_frames.1 {
+                count -= 1;
+            }
         }
         let value = Self {
             clip,
