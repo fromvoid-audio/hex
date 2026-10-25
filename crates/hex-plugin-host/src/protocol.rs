@@ -5,11 +5,13 @@ use crate::{Error, Result};
 use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
+mod capture;
+pub use capture::{capture_request, captured_state};
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
 pub const PACKET_LIMIT: usize = CONFIG_LIMIT + 12;
-/// Explicit protocol DATA during the existing preparation/completion sequence:
+/// Explicit protocol DATA during preparation/completion and quiescent capture:
 /// at most two outgoing frames, or a presentation frame plus both bounded
 /// Vec/Arc state payloads during capture. Fixed incoming Packet storage belongs
 /// to its enclosing owner. Source/configuration, file/inventory workspaces,

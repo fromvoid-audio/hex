@@ -468,6 +468,34 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 8)
                 self.assertEqual(self.observation()[10], 0)
 
+    def test_current_capture_requires_quiescence_exact_prefix_and_new_operation(self):
+        base = struct.pack("<4sHHH6x7Q", b"HXVC", 1, 0, 0, *BINDING, 0, 0, 1)
+        for mode in ("live", "ordinal", "duplicate", "prefix", "binding", "zero"):
+            with self.subTest(mode=mode):
+                session = self.session()
+                self.ready(session)
+                if mode != "live":
+                    session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
+                    self.assertEqual(session.message()[0], b"HXVIQF02")
+                packet = bytearray(base)
+                if mode == "duplicate":
+                    session.socket.sendall(packet)
+                    magic, body = session.message()
+                    self.assertEqual(magic, b"HXVICS01")
+                    self.assertEqual(struct.unpack_from("<H7Q", body), (1, *BINDING, 0, 0, 1))
+                elif mode == "ordinal":
+                    struct.pack_into("<Q", packet, 64, 2)
+                elif mode == "zero":
+                    struct.pack_into("<Q", packet, 64, 0)
+                elif mode == "prefix":
+                    struct.pack_into("<Q", packet, 48, 1)
+                elif mode == "binding":
+                    struct.pack_into("<Q", packet, 40, BINDING[3] + 1)
+                session.socket.sendall(packet)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
     def test_epoch_control_rejects_bad_prefix_and_resume_before_quiescence(self):
         base = bytearray(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
         cases = []

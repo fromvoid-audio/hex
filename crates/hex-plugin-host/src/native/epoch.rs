@@ -5,11 +5,13 @@ use super::*;
 
 /// Actual configured child with processing stopped and its completed PCM prefix
 /// acknowledged. No PCM exchange API is exposed until a matching resume ACK.
-/// Original startup capture is historical; this transition never recaptures or
-/// restores state. Component/controller/source custody stays in the same lease.
+/// Original startup capture is historical. Explicit capture returns fresh bytes;
+/// resume itself never recaptures or restores state. Component/controller/source
+/// custody stays in the same lease.
 pub struct Quiescent {
     instance: Prepared,
     facts: Facts,
+    capture_sequence: u64,
 }
 impl Prepared {
     /// Check the actual child and cancellation state before transferring this
@@ -72,12 +74,66 @@ impl Prepared {
             Ok(facts) => Ok(Quiescent {
                 instance: self,
                 facts,
+                capture_sequence: 0,
             }),
             Err(cause) => Err(self.refuse_epoch_retained(cause)),
         }
     }
 }
 impl Quiescent {
+    /// Capture component/controller on the helper control lane while the same
+    /// actual processor is quiescent. A successful reply grants neither resume
+    /// nor publication; startup/canonical envelopes are not replaced. Failure
+    /// retains the cancelled original lease for independent disposal, so callers
+    /// must keep their last confirmed state and never substitute defaults.
+    pub fn capture_state_retained_on_control(
+        mut self,
+    ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
+        let result = (|| {
+            self.instance.require_live_epoch()?;
+            let operation = self
+                .capture_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("capture operation exhausted"))?;
+            let request = protocol::capture_request(
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+            )?;
+            let until = end_after(self.instance.limits.startup)?;
+            let token = self.instance.lease.cancellation.clone();
+            self.instance
+                .lease
+                .channel
+                .send(&request, until, &mut || token.check())?;
+            self.instance
+                .lease
+                .channel
+                .read(&mut self.instance.packet, until, &mut || token.check())?;
+            if self.instance.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.instance.packet.body()?,
+                    self.instance.config.binding,
+                )?));
+            }
+            if self.instance.packet.magic() != b"HXVICS01" {
+                return Err(Error::Protocol("missing actual capture acknowledgement"));
+            }
+            let state = protocol::captured_state(
+                self.instance.packet.body()?,
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+            )?;
+            self.instance.require_live_epoch()?;
+            self.capture_sequence = operation;
+            Ok(state)
+        })();
+        match result {
+            Ok(state) => Ok((self, state)),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
     pub fn facts(&self) -> Facts {
         self.facts
     }

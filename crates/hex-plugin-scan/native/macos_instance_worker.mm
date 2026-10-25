@@ -211,9 +211,10 @@ int main(int argc,char** argv) {
             // One serialized epoch mailbox, never a second request reader. The
             // processing lane is stopped and waiting at every main-lane SDK
             // step. Mutex/condition waits live only in this isolated helper.
-            enum EpochStage { Idle,FactsRequested,FactsSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
+            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
             EpochStage epoch_stage=Idle;
             uint64_t next_graph=0,next_epoch=0;
+            uint64_t capture_operation=0;
             std::optional<wire::Presentation> next_presentation;
             std::thread worker([&] {
                 bool started=false;
@@ -243,7 +244,21 @@ int main(int argc,char** argv) {
                                 startup_changed.wait(lock,[&]{return epoch_stage==FactsSent;});
                             }
                             phase.store(1,std::memory_order_release);
-                            const auto resumed=packet.read(channel,*config,blocks,frames);
+                            auto resumed=packet.read(channel,*config,blocks,frames);
+                            uint64_t captures=0;
+                            while(resumed==5) {
+                                if(captures==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=captures+1) {
+                                    worker_failure.store(ProtocolFailure);break;
+                                }
+                                {
+                                    std::unique_lock<std::mutex> lock(startup_mutex);
+                                    capture_operation=packet.capture_operation;epoch_stage=CaptureRequested;
+                                    startup_changed.notify_all();
+                                    startup_changed.wait(lock,[&]{return epoch_stage==CaptureSent;});
+                                }
+                                ++captures;resumed=packet.read(channel,*config,blocks,frames);
+                            }
+                            if(worker_failure.load()) break;
                             if(resumed==2) { normal_stop=true;break; }
                             if(resumed==0) std::_Exit(Cancelled);
                             if(resumed!=4) { worker_failure.store(ProtocolFailure);break; }
@@ -320,6 +335,22 @@ int main(int argc,char** argv) {
                         if(!wire::send(channel,"HXVIQF02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=FactsSent;startup_changed.notify_all();
+                    } else if(stage==CaptureRequested) {
+                        hex_instance::CapturedState current{};
+                        if(!instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
+                        instance.dispatch_host_callbacks();
+                        const auto current_latency=instance.reported_latency_on_control();
+                        const auto current_tail=instance.reported_tail_on_control();
+                        if(instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
+                            error(channel,&*config,Capture);std::_Exit(Capture);
+                        }
+                        wire::Bytes body;config->stamp(body);
+                        wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,capture_operation,8);
+                        const auto payload=state_payload(*config,current);wire::number(body,payload.size(),2);
+                        body.insert(body.end(),payload.begin(),payload.end());
+                        if(!wire::send(channel,"HXVICS01",body)) std::_Exit(Cancelled);
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=CaptureSent;startup_changed.notify_all();
                     } else if(stage==ResumeRequested) {
                         supplied=next_presentation;
                         presentation=hex_instance::Instance::PresentationResult::Absent;

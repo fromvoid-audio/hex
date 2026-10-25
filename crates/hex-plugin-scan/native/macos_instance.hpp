@@ -215,11 +215,21 @@ public:
     // One initial stopped capture; later project restore/capture transactions
     // must reuse the same actual instance owner, not create a competing state path.
     bool capture_initial_state_on_control(CapturedState& result) {
-        if (![NSThread isMainThread] || !configured || !active || processing.load() ||
-            component_stream || controller_stream || quarantined.load()) return false;
+        return capture_state_on_control(result,true);
+    }
+    // Existing activated instance after acknowledged processing quiescence.
+    // Reuse only exclusive control streams; never initialize/synchronize the
+    // controller again or replace the original startup capture.
+    bool capture_current_state_on_control(CapturedState& result) {
+        return capture_state_on_control(result,false) && result.component;
+    }
+private:
+    bool capture_state_on_control(CapturedState& result,bool initial) {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load() ||
+            (initial && (component_stream || controller_stream))) return false;
         CapturedState captured{};
-        component_stream=new(std::nothrow) StateStream(StateStream::capacity);
-        if (!component_stream) return false;
+        if(initial) component_stream=new(std::nothrow) StateStream(StateStream::capacity);
+        if (!component_stream || (!initial && !component_stream->reset_write_on_control(StateStream::capacity))) return false;
         const auto first=component->getState(component_stream);
         if (!component_stream->valid() || !component_stream->exclusive()) return false;
         if (first==kResultOk) {
@@ -227,15 +237,15 @@ public:
             std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
         } else if (first!=kNotImplemented && first!=kResultFalse) return false;
         if (controller) {
-            if (!restored && captured.component) {
+            if (initial && !restored && captured.component) {
                 if (!component_stream->rewind_read_only_on_control() ||
                     controller->setComponentState(component_stream)!=kResultOk ||
                     !component_stream->valid() || !component_stream->exclusive()) return false;
                 if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
                     host->refusal_flags()) return false;
             }
-            controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
-            if (!controller_stream) return false;
+            if(initial) controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
+            if (!controller_stream || (!initial && !controller_stream->reset_write_on_control(StateStream::capacity-captured.component_bytes))) return false;
             const auto second=controller->getState(controller_stream);
             if (!controller_stream->valid() || !controller_stream->exclusive()) return false;
             if (second==kResultOk) {
@@ -245,6 +255,7 @@ public:
         }
         result=captured;return true;
     }
+public:
 
     enum class PresentationResult { Absent, Applied, Refused, InvalidState };
     // SDK optional UI-thread & Activated interface. The graph/control owner

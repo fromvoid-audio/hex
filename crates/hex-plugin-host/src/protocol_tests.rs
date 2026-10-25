@@ -29,6 +29,58 @@ fn config() -> Configuration {
         restore: None,
     }
 }
+
+#[test]
+fn quiescent_capture_binds_source_pcm_prefix_and_operation_before_copying_state() {
+    let config = config();
+    let state = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: Some(b"current component"),
+        controller: Some(b"current controller"),
+    })
+    .unwrap();
+    let request = capture_request(&config, 3, 2).unwrap();
+    assert_eq!(&request[..4], b"HXVC");
+    assert_eq!(&request[48..56], &3_u64.to_le_bytes());
+    assert_eq!(&request[56..64], &24_u64.to_le_bytes());
+    assert_eq!(&request[64..], &2_u64.to_le_bytes());
+    assert!(capture_request(&config, 3, 0).is_err());
+    assert!(capture_request(&config, u64::MAX, 1).is_err());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for word in [3_u64, 24, 2] {
+        body.extend(word.to_le_bytes());
+    }
+    body.extend((state.payload().len() as u16).to_le_bytes());
+    body.extend(state.payload());
+    assert_eq!(captured_state(&body, &config, 3, 2).unwrap(), state);
+    assert!(captured_state(&body, &config, 3, 1).is_err());
+    assert!(captured_state(&body, &config, 2, 2).is_err());
+    let mut other = config.clone();
+    other.binding.epoch += 1;
+    assert!(captured_state(&body, &other, 3, 2).is_err());
+    other = config.clone();
+    other.identity.binary.info_sha256[0] ^= 1;
+    assert!(captured_state(&body, &other, 3, 2).is_err());
+    for end in 0..body.len() {
+        assert!(captured_state(&body[..end], &config, 3, 2).is_err());
+    }
+    body.push(0);
+    assert!(captured_state(&body, &config, 3, 2).is_err());
+    let absent = hex_plugin_state::encode(State {
+        identity: config.identity,
+        component: None,
+        controller: Some(b"controller only"),
+    })
+    .unwrap();
+    body.truncate(58);
+    body.extend((absent.payload().len() as u16).to_le_bytes());
+    body.extend(absent.payload());
+    assert!(
+        captured_state(&body, &config, 3, 2).is_err(),
+        "never replace confirmed component state with absence"
+    );
+}
 fn hex(s: &str) -> Vec<u8> {
     s.as_bytes()
         .chunks_exact(2)

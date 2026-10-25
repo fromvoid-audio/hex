@@ -246,6 +246,12 @@ public:
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !active || processing || !stream) return kResultFalse;
         ++restoration.component_get;
+        // Original current-state capture fault controls leave startup valid.
+        if(restoration.component_get>1) {
+            if(fault==69) return kResultFalse;
+            if(fault==70) throw std::runtime_error("original SDK current capture exception");
+            if(fault==71) fault_hang(22);
+        }
         if (fault==35) arm_main_thread_tail();
         if (fault==34) fault_hang(12);
         if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
@@ -483,7 +489,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>68) return false;next_fault=value;
+        if (value>71) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
