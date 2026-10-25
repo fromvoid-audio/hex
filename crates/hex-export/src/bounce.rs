@@ -6,6 +6,10 @@ use super::*;
 /// Unfinished tails are truncated at this cap; exact-range bounces add no tail.
 pub const MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS: u64 = 30;
 
+// -80 dBFS peak per channel is a conservative offline trimming policy, not a
+// runtime quiescence claim or a universal threshold of human hearing.
+const BOUNCE_TAIL_SILENCE_PEAK: f32 = 0.0001;
+
 /// Render an isolated source revision to lossless float32 PCM. Preroll chases
 /// mutable instrument history at nonzero placements; no mix clamp/quantization.
 /// Source loops retain phase; transport wrapping and Session commands are disabled.
@@ -78,6 +82,10 @@ impl BlockRenderer for BounceRenderer {
 /// rendering actual releases until the isolated runtime is quiescent, up to
 /// `MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS` after the selected span. A tail still
 /// sounding at that cap is truncated and published successfully without a fade.
+/// Final tail length ignores peaks at/below -80 dBFS in both channels, keeping
+/// up to 50 ms after the last louder tail frame. The selected span and retained PCM
+/// are unchanged. Render through quiescence or the cap before trimming, so a
+/// quiet gap cannot hide a later audible echo; noise can still cost full rendering.
 /// Nonzero-latency paths refuse until bounce has an origin-aligned capture tap.
 /// The control may cancel rendering/publication; the session seals it only at
 /// the final model-adoption boundary, after all files are prepared.
@@ -148,6 +156,32 @@ pub fn render_arrangement_bounce_new(
         }
     }
     drop(playback);
+    if include_tails {
+        let selected = usize::try_from(frames)
+            .map_err(|_| ExportError::Invalid("bounce sample offset overflows"))?;
+        let tail = audio
+            .get(selected..)
+            .ok_or(ExportError::Invalid("bounce samples are incomplete"))?;
+        let last_audible = tail.iter().rposition(|frame| {
+            frame
+                .iter()
+                .any(|sample| sample.abs() > BOUNCE_TAIL_SILENCE_PEAK)
+        });
+        let end = if let Some(last) = last_audible {
+            // Round the 50 ms padding up to a whole frame, bounded by audio
+            // already rendered. This never extends the original 30-second cap.
+            let padding = usize::try_from(rate.div_ceil(20))
+                .map_err(|_| ExportError::Invalid("bounce tail padding overflows"))?;
+            (selected + last + 1)
+                .saturating_add(padding)
+                .min(audio.len())
+        } else {
+            selected
+        };
+        audio.truncate(end);
+        rendered =
+            u64::try_from(end).map_err(|_| ExportError::Invalid("bounce frame count overflows"))?;
+    }
     let mut cursor = 0;
     struct Samples<'a> {
         audio: &'a [hex_engine::Frame],

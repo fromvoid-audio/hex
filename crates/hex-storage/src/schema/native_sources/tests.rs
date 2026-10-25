@@ -106,9 +106,16 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        47
+        48
     );
     assert_eq!(decode(&bytes).unwrap(), project);
+    let mut schema46: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    schema46["version"] = 46.into();
+    assert_eq!(
+        decode(&serde_json::to_vec(&schema46).unwrap()).unwrap(),
+        project,
+        "schema46 retains its in-memory migration path"
+    );
     assert_eq!(project.tracks()[0].devices().len(), 2);
     assert_eq!(project.tracks()[0].instrument_position(), Some(1));
     assert!(
@@ -116,6 +123,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
         "explicit older encoding must not discard sources"
     );
 }
+
 #[test]
 fn schema44_promotes_legacy_instrument_and_preserves_original_bytes() {
     // Frozen output of the preserved schema44 encoder from baseline3a2ff464,
@@ -464,7 +472,7 @@ fn current_binding_inventory_is_mandatory_ordered_and_resolves_source_projection
 }
 
 #[test]
-fn schema47_shared_source_roundtrips_and_schema46_migration_is_single_binding_only() {
+fn schema48_shared_source_roundtrips_and_schema46_migration_is_single_binding_only() {
     let project = fixture();
     let mut snapshot = project.snapshot();
     let source_id = snapshot.tracks[0].instrument.as_ref().unwrap().id;
@@ -480,7 +488,7 @@ fn schema47_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
     assert_eq!(
         decode(&encode(&shared).unwrap()).unwrap(),
         shared,
-        "schema47 preserves one source shared by two contributors"
+        "schema48 preserves one source shared by two contributors"
     );
     let mut no_receiver_snapshot = shared.snapshot();
     let shared_source = shared.tracks()[0].source_id().unwrap().value();
@@ -649,4 +657,88 @@ fn saved_unassigned_source_reopens_without_history_and_failed_publication_preser
     save_new(&copy, editor.project()).unwrap();
     assert_eq!(&load(&copy).unwrap(), editor.project());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn authentic_schema47_audio_and_source_migration_preserves_complete_state_and_bytes() {
+    // Captured by the unmodified schema47 writer at main 1b6095688b40722e20554e463c466026caa3c057.
+    // SHA-256: ce5b8fbe5670ad30669370bf9273d47a7456c3e7342889c87c5010a35b3c162e.
+    // Includes two retained source definitions, one singleton track binding with local effects,
+    // an unbound track, an audio clip with pitch and musical timing, and its media manifests.
+    let bytes = include_bytes!(
+        "../../../tests/fixtures/native-sources/schema47-audio-and-sources-1b6095688b4.json"
+    );
+    let original = bytes.to_vec();
+    let wire: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(wire["version"], 47);
+    assert!(wire["native_sources"][0].get("receiver").is_none());
+    assert!(wire["native_sources"][1].get("receiver").is_none());
+
+    let migrated = decode(bytes).unwrap();
+    assert_eq!(migrated.native_sources().len(), 2);
+    assert_eq!(
+        migrated
+            .native_sources()
+            .iter()
+            .map(|source| source.id().value())
+            .collect::<Vec<_>>(),
+        vec![2, 7]
+    );
+    assert_eq!(migrated.native_sources()[0].receiver(), None);
+    assert_eq!(
+        migrated.native_sources()[0]
+            .devices()
+            .map(|device| device.id().value())
+            .collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    let bound = &migrated.native_sources()[1];
+    assert_eq!(
+        bound
+            .devices()
+            .map(|device| device.id().value())
+            .collect::<Vec<_>>(),
+        vec![6]
+    );
+    assert_eq!(bound.receiver().map(|track| track.value()), Some(5));
+    assert_eq!(migrated.tracks()[0].source_id(), Some(bound.id()));
+    assert_eq!(migrated.tracks()[0].instrument_position(), Some(1));
+    assert_eq!(migrated.tracks()[0].devices().len(), 2);
+    assert!(
+        migrated
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .any(|clip| {
+                clip.audio_edit()
+                    .is_some_and(|edit| edit.domain.pitch_cents == 137)
+            })
+    );
+    let mut shared_legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    shared_legacy["track_source_bindings"][1]["source"] = 7.into();
+    shared_legacy["track_source_bindings"][1]["instrument_position"] = 0.into();
+    assert!(
+        decode(&serde_json::to_vec(&shared_legacy).unwrap()).is_err(),
+        "historical schema47 remains one-binding-per-source"
+    );
+    let mut receiver_forgery: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    receiver_forgery["native_sources"][0]["receiver"] = serde_json::Value::Null;
+    assert!(
+        decode(&serde_json::to_vec(&receiver_forgery).unwrap()).is_err(),
+        "schema47's frozen source DTO has no receiver field"
+    );
+    let current: serde_json::Value = serde_json::from_slice(&encode(&migrated).unwrap()).unwrap();
+    assert_eq!(current["version"], 48);
+    assert_eq!(current["audio_clip_state"], wire["audio_clip_state"]);
+    assert_eq!(decode(&encode(&migrated).unwrap()).unwrap(), migrated);
+    assert_eq!(bytes, original.as_slice());
+
+    let path = std::env::temp_dir().join(format!("hex-schema47-upgrade-{}", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let (loaded, token) = load_with_token(&path).unwrap();
+    assert_eq!(loaded, migrated);
+    assert!(token.requires_format_upgrade());
+    assert!(token.requires_save_confirmation(&loaded).unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    std::fs::remove_file(path).unwrap();
 }
