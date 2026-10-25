@@ -111,6 +111,8 @@ fn headless_pointer_hover_profile(cx: &mut TestAppContext) {
                 );
                 window.draw(cx).clear();
             }
+            let elapsed = start.elapsed().as_secs_f64() * 1_000_000.;
+            // Release/reset is outside the measured held-pointer move scope.
             window.dispatch_input(
                 PlatformInput::MouseUp(MouseUpEvent {
                     position: at,
@@ -120,7 +122,7 @@ fn headless_pointer_hover_profile(cx: &mut TestAppContext) {
                 cx,
             );
             window.draw(cx).clear();
-            start.elapsed().as_secs_f64() * 1_000_000.
+            elapsed
         });
         visual.run_until_parked();
         if round >= warmup {
@@ -130,7 +132,7 @@ fn headless_pointer_hover_profile(cx: &mut TestAppContext) {
     timings.sort_by(f64::total_cmp);
     let percentile = |percent: usize| timings[(timings.len() - 1) * percent / 100];
     println!(
-        "POINTER_PROFILE controls=64 cached_children=64 size=1240x760 scale={scale} warmup={warmup} samples={samples} debug_smoke={smoke} moves_per_sample=8 release_frames_per_sample=1 headless_cpu_only=true p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
+        "POINTER_PROFILE controls=64 cached_children=64 size=1240x760 scale={scale} warmup={warmup} samples={samples} debug_smoke={smoke} moves_per_sample=8 release_frames_per_sample=0 headless_cpu_only=true p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
         percentile(50),
         percentile(95),
         percentile(99),
