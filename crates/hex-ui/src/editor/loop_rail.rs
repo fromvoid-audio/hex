@@ -15,6 +15,8 @@ pub(super) struct PendingLoop {
     generation: u64,
     region: LoopRegion,
     remaining: Option<usize>,
+    // Selection intent for automatic focus after a successful section-loop ACK.
+    focus_intent: Option<u64>,
 }
 
 const RAIL_HEIGHT: f32 = 18.0;
