@@ -1,5 +1,7 @@
 //! Allocation-free placement of one retained processing cycle.
 use super::*;
+#[path = "view_content.rs"]
+mod content_projection;
 #[path = "view_ranges.rs"]
 mod ranges;
 
@@ -41,6 +43,7 @@ pub struct AudioViewOccurrence {
 /// boundaries round to the same outer end frame contributes no occurrence;
 /// its authored beat extent remains unchanged. Full cycles and all other
 /// invalid/empty projections retain their existing validation.
+#[derive(Clone, Copy)]
 pub struct AudioViewProjection<'a> {
     clip: &'a Clip,
     tempo: &'a TempoMap,
@@ -52,6 +55,7 @@ pub struct AudioViewProjection<'a> {
     cycle: u64,
     phase: u64,
     count: u64,
+    first_index: u64,
     outer_frames: (u64, u64),
     first_boundary: i128,
     displacement: i128,
@@ -71,31 +75,50 @@ impl<'a> AudioViewProjection<'a> {
     }
 
     pub(super) fn from_clip(clip: &'a Clip, tempo: &'a TempoMap) -> Result<Self, Invalid> {
-        let displacement = clip
-            .audio_edit()
-            .map_or(Ok(0), |edit| edit.destination_displacement(clip))?;
-        let tempo = clip
-            .audio_edit()
-            .map_or(tempo, |edit| edit.effective_tempo(tempo));
-        let (clock, view_start, view_end, reference_start_raw, placement) =
-            clip.audio_edit().map_or(
+        let edit = clip.audio_edit();
+        let retained_outer = edit
+            .filter(|edit| edit.placement.is_some())
+            .and_then(|edit| edit.processing_projection.as_ref().map(|p| (edit, p)));
+        // Outer repeats and directed reads retain their entire old clock, not
+        // just the first cycle. Translate its integer frames to the new onset;
+        // destination tempo prefixes must never quantize internal seams again.
+        let (tempo, reference_start_raw, displacement) =
+            if let Some((edit, projection)) = retained_outer {
+                let reference = edit.reference_for_processing_origin(projection.origin_beat_raw)?;
+                let live = edit
+                    .live_musical_start()
+                    .ok_or(Invalid("retained outer audio needs musical placement"))?;
+                let destination =
+                    super::offset_frame(tempo.beat_to_frame(live)?, edit.placement_start_offset)?;
+                let source = audio_projection_frame(&projection.tempo, reference)?;
                 (
-                    AudioDomainClock::Frames(clip.duration),
-                    0,
-                    clip.duration,
-                    None,
-                    None,
-                ),
-                |edit| {
-                    (
-                        edit.domain.clock,
-                        edit.view_start,
-                        edit.view_end,
-                        edit.reference_start_raw(),
-                        edit.placement,
-                    )
-                },
-            );
+                    &*projection.tempo,
+                    Some(reference),
+                    i128::from(destination) - source,
+                )
+            } else {
+                (
+                    edit.map_or(tempo, |edit| edit.effective_tempo(tempo)),
+                    edit.and_then(|edit| edit.reference_start_raw()),
+                    edit.map_or(Ok(0), |edit| edit.destination_displacement(clip))?,
+                )
+            };
+        let (clock, view_start, view_end, placement) = edit.map_or(
+            (
+                AudioDomainClock::Frames(clip.duration),
+                0,
+                clip.duration,
+                None,
+            ),
+            |edit| {
+                (
+                    edit.domain.clock,
+                    edit.view_start,
+                    edit.view_end,
+                    edit.placement,
+                )
+            },
+        );
         if matches!(clock, AudioDomainClock::Beats(_)) != reference_start_raw.is_some() {
             return Err(Invalid("audio clock and placement disagree"));
         }
@@ -232,7 +255,12 @@ impl<'a> AudioViewProjection<'a> {
             .map_err(|_| Invalid("audio destination exceeds project frame range"))
         };
         let (start_offset, end_offset) = clip.audio_edit().map_or((0, 0), |edit| {
-            (edit.placement_start_offset, edit.placement_end_offset)
+            if edit.processing_projection.is_some() && edit.placement.is_some() {
+                // The saved clock is translated to the residual-adjusted onset.
+                (0, 0)
+            } else {
+                (edit.placement_start_offset, edit.placement_end_offset)
+            }
         });
         let outer_frames = (
             super::offset_frame(frame(start)?, start_offset)?,
@@ -254,6 +282,22 @@ impl<'a> AudioViewProjection<'a> {
                 count -= 1;
             }
         }
+        // A trim can leave less than one frame before the first cycle seam.
+        // Keep its authored cursor, but never admit an empty audible occurrence.
+        let mut first_index = 0;
+        if beat_clock
+            && clip.audio_edit().is_some_and(|edit| {
+                edit.processing_projection.is_some()
+                    || matches!(edit.timing, AudioClipTiming::Frozen { .. })
+            })
+            && count > 0
+            && phase > 0
+            && first_end <= end
+            && frame(first_end)? == outer_frames.0
+        {
+            count -= 1;
+            first_index = 1;
+        }
         let value = Self {
             clip,
             tempo,
@@ -265,6 +309,7 @@ impl<'a> AudioViewProjection<'a> {
             cycle,
             phase,
             count,
+            first_index,
             outer_frames,
             placed_frames: outer_frames,
             content: None,
@@ -283,6 +328,20 @@ impl<'a> AudioViewProjection<'a> {
             value.occurrence(0)?;
         }
         Ok(value)
+    }
+
+    /// Clock used by the finite outer read, including retained tempo seams.
+    pub fn placement_tempo(&self) -> &TempoMap {
+        self.tempo
+    }
+    /// Current outer reference in that clock; destination translation is separate.
+    pub fn placement_reference(&self) -> i128 {
+        self.content.map_or(self.start, |(_, current, _)| current)
+    }
+
+    /// Current directed read window in the retained placement clock.
+    pub fn content_window(&self) -> Option<crate::ContentWindow> {
+        self.content.map(|(window, _, _)| window)
     }
 
     pub fn clip(&self) -> &'a Clip {
@@ -330,6 +389,20 @@ impl<'a> AudioViewProjection<'a> {
     }
     /// Elapsed destination clock at a project frame; the exact end is permitted.
     pub fn elapsed_at_frame(&self, frame: u64) -> Result<u64, Invalid> {
+        // A rounded frame endpoint can invert to one raw beat tick outside
+        // its authored endpoint. Preserve the finite window's exact identity.
+        if frame == self.placed_frames.0 {
+            return Ok(0);
+        }
+        if frame == self.placed_frames.1 {
+            return self.content.map_or_else(
+                || {
+                    u64::try_from(self.end - self.start)
+                        .map_err(|_| Invalid("audio elapsed length overflow"))
+                },
+                |(window, _, _)| window.length(),
+            );
+        }
         let (_, start, displacement) = self.content.unwrap_or((
             crate::ContentWindow {
                 start: 0,
@@ -461,11 +534,14 @@ impl<'a> AudioViewProjection<'a> {
         if index >= self.count {
             return Err(Invalid("audio occurrence index exceeds placement"));
         }
-        let offset = i128::from(index)
+        let source_index = index
+            .checked_add(self.first_index)
+            .ok_or(Invalid("audio occurrence index overflow"))?;
+        let offset = i128::from(source_index)
             .checked_mul(i128::from(self.cycle))
             .ok_or(Invalid("audio occurrence origin overflow"))?;
         let root_origin = self.root_origin() + offset;
-        let begin = if index == 0 {
+        let begin = if source_index == 0 {
             self.start
         } else {
             root_origin + i128::from(self.view_start)
@@ -520,7 +596,7 @@ impl<'a> AudioViewProjection<'a> {
                 } else {
                     destination_start
                 },
-                destination_end: if index + 1 == self.count {
+                destination_end: if end == self.end {
                     self.outer_frames.1
                 } else {
                     destination_end

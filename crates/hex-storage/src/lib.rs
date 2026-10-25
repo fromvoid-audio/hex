@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 46;
+pub const CURRENT_SCHEMA_VERSION: u32 = 47;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -251,8 +251,10 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// Schemas1–33 select frozen readers and branch-aware adapters using the version
 /// and complete field inventories. Only absent-by-design fields acquire their
 /// original defaults; authored metadata is never discarded to accept a file.
-/// Schema46 retains native source definitions and one binding row per track;
-/// schema45 retains independent sources. Schemas1–44 migrate inline instruments
+/// Schema47 allows retained processing projections on outer musical views;
+/// historical readers retain their prior validity contract. Schemas46/47 retain
+/// native source definitions and one binding row per track. Schema45 retains
+/// independent sources. Schemas1–44 migrate inline instruments
 /// into retained singleton sources, preserving their device identities. Schema44
 /// retains track hierarchy.
 /// Schema43 retains independent audio sources and their captured processing tempos.
@@ -282,8 +284,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
     }
-    match header.version {
-        CURRENT_SCHEMA_VERSION => schema::native_sources::decode(bytes),
+    let project = match header.version {
+        CURRENT_SCHEMA_VERSION => schema::native_sources::decode47(bytes),
+        46 => schema::native_sources::decode46(bytes),
         45 => schema::native_sources::decode45(bytes),
         44 => schema::track_groups::decode(bytes),
         43 => schema::grouped_audio::decode(bytes),
@@ -301,5 +304,64 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         _ => Err(StorageError::Invalid(
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
+    }?;
+    if header.version < 47 && has_retained_outer_processing(&project)? {
+        return Err(StorageError::Invalid(
+            "historical project schema does not support retained processing on outer audio placement",
+        ));
     }
+    Ok(project)
+}
+
+/// Historical schemas admitted retained processing and outer placements as
+/// separate states. Apply that frozen contract after decoding into validated
+/// project objects, including grouped retained source clips; opaque device state
+/// is intentionally outside this audio-model check.
+fn has_retained_outer_processing(project: &Project) -> Result<bool, StorageError> {
+    let has_state =
+        |clip: &hex_project::Clip, tempo: &hex_project::TempoMap| -> Result<bool, StorageError> {
+            let Some(edit) = clip.audio_edit() else {
+                return Ok(false);
+            };
+            if edit.processing_projection.is_some() && edit.placement.is_some() {
+                return Ok(true);
+            }
+            let Some(placement) = edit
+                .placement
+                .filter(|_| matches!(edit.timing, hex_project::AudioClipTiming::Frozen { .. }))
+            else {
+                return Ok(false);
+            };
+            let cycle = edit
+                .view_end
+                .checked_sub(edit.view_start)
+                .filter(|length| *length > 0)
+                .ok_or(StorageError::Invalid(
+                    "audio outer placement cycle is invalid",
+                ))?;
+            if placement.cycle_phase == 0 || placement.cycle_phase >= cycle {
+                return Ok(false);
+            }
+            let projection = hex_project::AudioViewProjection::new(clip, tempo)
+                .map_err(|error| StorageError::Invalid(error.0))?;
+            Ok(projection.logical_first_boundary() == i128::from(clip.start()))
+        };
+    for track in project.tracks() {
+        for clip in track.clips() {
+            if has_state(clip, project.tempo_map())? {
+                return Ok(true);
+            }
+            if let Some(events) = clip
+                .audio_edit()
+                .and_then(|edit| edit.domain.events.as_ref())
+            {
+                for source in &events.sources {
+                    if has_state(&source.clip, &source.tempo)? {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    Ok(false)
 }

@@ -404,19 +404,6 @@ fn apply_transform(
     transform: Transform,
     purpose: TransformPurpose,
 ) -> Result<(), Invalid> {
-    if project
-        .tracks
-        .iter()
-        .flat_map(|track| track.clips())
-        .any(|clip| {
-            clip.audio_edit()
-                .is_some_and(|edit| edit.placement.is_some())
-        })
-    {
-        return Err(Invalid(
-            "section splice does not yet support outer audio once/repeat placements; original source loops are supported",
-        ));
-    }
     let mut next_id = project.next_id;
     let purpose = match purpose {
         TransformPurpose::Duplicate(source, mut marker) => {
