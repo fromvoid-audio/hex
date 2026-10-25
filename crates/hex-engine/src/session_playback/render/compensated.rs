@@ -154,6 +154,8 @@ impl SessionPlayback {
                                 performance_frame,
                                 arrangement_frame,
                                 arrangement_loop_pass: loop_pass,
+                                chase_at_start: self.interactive_start_frame
+                                    == Some(performance_frame),
                                 loop_region: if self.linear_arrangement_export {
                                     None
                                 } else {

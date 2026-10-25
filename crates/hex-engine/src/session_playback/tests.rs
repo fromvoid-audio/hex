@@ -2,6 +2,7 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod interactive_start;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -3171,6 +3172,14 @@ fn mutable_checkpoint_fixture_with_release(
     note_duration: u64,
     release_frames: u64,
 ) -> (Arc<PreparedRevision>, hex_project::TrackId) {
+    mutable_checkpoint_fixture_at(0, note_duration, release_frames)
+}
+
+fn mutable_checkpoint_fixture_at(
+    note_start: u64,
+    note_duration: u64,
+    release_frames: u64,
+) -> (Arc<PreparedRevision>, hex_project::TrackId) {
     let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
@@ -3182,7 +3191,7 @@ fn mutable_checkpoint_fixture_with_release(
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
     let table = Arc::new(hex_devices::SineTable::new());
-    let project = with_test_instrument(&project(1.0, 0, note_duration), id, 0);
+    let project = with_test_instrument(&project(1.0, note_start, note_duration), id, 0);
     let revision = revision_with_instrument_registry(&project, table, &registry);
     let track = revision.arrangement().tracks()[0]
         .canonical_track_id()

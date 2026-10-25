@@ -1700,10 +1700,6 @@ impl EditorView {
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
-            arrangement_seek::ToggleAction::PreparedPlayFrom(frame) => {
-                self.request_prepared_seek(frame, true);
-                return;
-            }
             arrangement_seek::ToggleAction::Unavailable => {
                 self.error = Some("playback source is unavailable · cannot seek safely".into());
                 return;
