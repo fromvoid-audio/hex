@@ -142,14 +142,19 @@ impl StateView<'_> {
                     &mut visit,
                 ) {
                     Ok(window) => window,
-                    Err(hex_engine::PlaybackHandoffError::Session(
-                        hex_engine::SessionPlaybackError::ForeignTailSourceBusy,
-                    )) => {
-                        // The original endpoint remains with the real outgoing
-                        // tail. Retain this exact candidate through the existing
-                        // deferred-publication carrier, render the predecessor,
-                        // then replan at its actual next boundary. No page stamp
-                        // or graph/native acceptance is fabricated here.
+                    Err(error)
+                        if error.is_transient()
+                            || matches!(
+                                error,
+                                hex_engine::PlaybackHandoffError::Session(
+                                    hex_engine::SessionPlaybackError::ForeignTailSourceBusy
+                                )
+                            ) =>
+                    {
+                        // Preview has the same temporary release/tail pressure
+                        // as the actual handoff. Keep the exact candidate in its
+                        // deferred carrier and let the predecessor drain before
+                        // replanning; this is not a page-readiness rejection.
                         workspace.cancel_pending(refs, request.domains);
                         return Ok(None);
                     }
@@ -209,9 +214,14 @@ impl StateView<'_> {
                 let Some(failure) = loan.take_failure() else {
                     break;
                 };
-                failed_window |= rows
-                    .iter()
-                    .any(|row| row.source == failure.key && row.page_index == failure.page_index);
+                // Pool pressure is retryable after ready pages are pumped and
+                // stale buffers returned. Consuming its receipt releases the
+                // failed pending key; continue bounded service below. Actual
+                // source/read failures still refuse the affected window.
+                failed_window |= failure.kind != hex_stream::StreamFailureKind::CapacityExhausted
+                    && rows.iter().any(|row| {
+                        row.source == failure.key && row.page_index == failure.page_index
+                    });
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {

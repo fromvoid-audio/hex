@@ -601,6 +601,7 @@ impl Command {
             | Self::BalanceBy { .. }
             | Self::MasterGainBy { .. }
             | Self::ToggleMute(..)
+            | Self::ToggleTracksMute(..)
             | Self::AddMidiTrack { .. }
             | Self::AddScene { .. }
             | Self::InsertScene { .. }
@@ -616,6 +617,7 @@ impl Command {
             | Self::ClearSessionCell { .. }
             | Self::SetSessionStopCell { .. }
             | Self::PlaceMidiClip { .. }
+            | Self::BindTrackSource { .. }
             | Self::CreateNativeSource { .. }
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)

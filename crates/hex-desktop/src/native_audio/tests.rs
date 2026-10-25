@@ -9,6 +9,7 @@ mod resident_export;
 mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
+mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod sampler;

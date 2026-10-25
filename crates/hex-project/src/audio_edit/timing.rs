@@ -6,7 +6,10 @@ use super::*;
 /// `Clip::start` owns its destination. These maps are control-owned and shared
 /// across clips/history; they never introduce a callback clock or PCM owner.
 /// Only `Musical` may also carry a section `processing_projection` and its
-/// bounded placement residuals. `Frozen` is the sole processing clock, requires
+/// bounded placement residuals. Retained outer Once/Repeat reads use the saved
+/// processing map for every occurrence and translate its exact frames to that
+/// live onset; outer endpoints still obey the musical residual contract.
+/// `Frozen` is the sole processing clock, requires
 /// warp off, and carries neither override nor residuals. Its destination
 /// displacement is separate from its immutable reference/source coordinates.
 /// `Frames` carries neither override nor residuals.

@@ -86,6 +86,10 @@ arrange places clips along a time ruler. console provides the clip/scene workspa
 these views share the project; switching views does not create another document.
 tracks can contain both audio and midi clips under the same mixer controls.
 
+solo takes precedence over track mute or deactivation. a muted track sounds while
+soloed; turning solo off restores its muted state. solo does not change the stored
+track activator setting.
+
 in arrange, select a track or clip before editing it. drag a clip to move it and
 use its edges to adjust its extent. work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
@@ -96,7 +100,11 @@ track and press **g** to group them. select only audio clips or only midi clips.
 hex keeps gaps and refuses a group that would cover unselected material. midi
 clips become one finite midi clip with their played notes and volume curves.
 audio clips become events inside one clip; original files and source processing
-remain retained. grouped audio keeps its source timing at the grouping tempo.
+remain retained. when an existing group has repeats or outer processing, hex
+renders its audible span to one ordinary audio clip. this includes partial repeats
+and gaps, keeps original media, and leaves track effects and routing live.
+rendered grouping supports one track at a time; press escape to cancel preparation.
+grouped audio keeps its source timing at the grouping tempo.
 use undo to restore the original clips in one step. grouping requires resident
 audio; unsupported streamed sources refuse before the edit is committed.
 
@@ -173,10 +181,16 @@ bounce writes float audio before the track mixer. mixer automation, sends, retur
 and main processing remain live. in-place bounce removes the baked devices, so it
 refuses if that would change unselected material or a tail would overlap it; use
 **command+b** instead. routed inputs, verified streaming and nonzero-latency device
-paths currently refuse. a release that does not finish within ten seconds refuses
-without applying an edit. source files remain unchanged. while editing text,
-numeric values or midi notes, or using the computer midi keyboard, these arrange
-bounce shortcuts do not run.
+paths currently refuse. clip bounces keep up to 30 seconds of release after the
+selected span. if the tail is still sounding then, hex cuts it at that limit and
+finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
+counts as silence for tail length. hex retains up to 50 ms after the last louder
+tail sample, without trimming the selected span or changing retained audio. it checks
+the bounded tail for later echoes before trimming, so a quiet gap does not hide a
+repeat. persistent noise can still require rendering the full 30 seconds. source
+files remain unchanged.
+while editing text, numeric values or midi notes, or using the computer midi keyboard,
+these arrange bounce shortcuts do not run.
 
 right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a darker, more saturated fill. selection
@@ -422,6 +436,23 @@ does not imply complete compatibility with another application's device.
 click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
+
+reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
+use predelay to separate the room from the source; size, decay, diffusion and
+scale shape its space. spin moves the early reflections, while chorus modulates
+the late network. low/high controls shape frequency-dependent decay. reflect and
+diffuse set the two wet components; stereo sets their width. dry/wet blends the
+room with the original. on a return, start at 100 percent wet and use the send.
+
+freeze holds the network. flat removes its decay shaping and cut blocks new
+excitation. stop and seek clear the room; loop wraps continue it. bypass passes
+dry while history advances privately. removing a device drains its old history;
+a removed frozen tail persists until stop. retained tails use bounded host banks;
+a full bank refuses another edit rather than discarding an existing tail. smooth
+sets none, fast or slow parameter transitions; density selects scattering depth.
+all controls use undo/redo and survive save/reopen. device-parameter automation
+lanes are not currently offered. the functional control set does not establish
+sound parity with another application's reverb.
 
 the delay effect has independent left and right timing. **sync** selects a
 multiple of a sixteenth note; **time** selects 1–5000 ms. sync is bounded to

@@ -1527,7 +1527,7 @@ fn legacy_promotion_does_not_fence_an_already_disabled_instrument() {
         .as_mut()
         .expect("MIDI track has an instrument slot")
         .bypassed = true;
-    let muted_project = Project::from_snapshot(snapshot).expect("valid disabled instrument");
+    let muted_project = Project::from_legacy_snapshot(snapshot).expect("valid disabled instrument");
     let muted_revision = Arc::new(
         PreparedRevision::prepare(
             &muted_project,

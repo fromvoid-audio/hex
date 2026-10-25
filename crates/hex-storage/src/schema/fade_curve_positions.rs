@@ -117,7 +117,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "fade curve position references a non-arrangement audio clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]

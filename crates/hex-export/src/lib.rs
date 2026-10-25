@@ -32,7 +32,8 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 mod bounce;
 mod controlled;
 pub use bounce::{
-    render_arrangement_bounce_new, render_bounce_new, render_bounce_new_with_device_resources,
+    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new, render_bounce_new,
+    render_bounce_new_with_device_resources,
 };
 mod pages;
 pub use pages::PreparedExportPages;

@@ -16,34 +16,73 @@ pub(crate) fn isolated(
     item: &BounceTrack,
 ) -> Result<Project, String> {
     let mut snapshot = project.snapshot();
-    snapshot
-        .tracks
-        .retain(|track| track.id == item.track.value());
-    let track = snapshot.tracks.first_mut().ok_or("bounce track changed")?;
-    if matches!(target, BounceTarget::Clips(_)) {
-        let selected = item
-            .clips
-            .iter()
-            .map(|id| id.value())
-            .collect::<std::collections::BTreeSet<_>>();
-        match &mut track.content {
-            TrackContentSnapshot::Hybrid {
-                audio_clips,
-                midi_clips,
-            } => {
-                audio_clips.retain(|c| selected.contains(&c.id));
-                midi_clips.retain(|c| selected.contains(&c.id));
-            }
-            _ => return Err("bounce requires a hybrid track".into()),
+    if target.is_audio_group() {
+        let selected: std::collections::BTreeSet<_> =
+            item.clips.iter().map(|id| id.value()).collect();
+        // Keep the group hierarchy valid, but remove every non-source signal.
+        // Grouping bakes clip processing only; track/source devices, mixer
+        // automation, sends, routing and activation remain live on adoption.
+        for track in &mut snapshot.tracks {
+            let audio = if track.id == item.track.value() {
+                track
+                    .audio_clips_mut()
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .filter(|c| selected.contains(&c.id))
+                    .cloned()
+                    .map(|mut c| {
+                        c.active = true;
+                        c
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            track.content = TrackContentSnapshot::Hybrid {
+                audio_clips: audio,
+                midi_clips: Vec::new(),
+            };
+            track.devices.clear();
+            track.instrument = None;
+            track.instrument_position = None;
+            track.gain = 1.0;
+            track.balance = 0.0;
+            track.muted = false;
+            track.soloed = false;
+            track.gain_envelope.clear();
+            track.gain_touch_spans.clear();
+            track.sends.clear();
         }
+    } else {
+        snapshot
+            .tracks
+            .retain(|track| track.id == item.track.value());
+        let track = snapshot.tracks.first_mut().ok_or("bounce track changed")?;
+        if matches!(target, BounceTarget::Clips(_)) {
+            let selected = item
+                .clips
+                .iter()
+                .map(|id| id.value())
+                .collect::<std::collections::BTreeSet<_>>();
+            match &mut track.content {
+                TrackContentSnapshot::Hybrid {
+                    audio_clips,
+                    midi_clips,
+                } => {
+                    audio_clips.retain(|c| selected.contains(&c.id));
+                    midi_clips.retain(|c| selected.contains(&c.id));
+                }
+                _ => return Err("bounce requires a hybrid track".into()),
+            }
+        }
+        track.gain = 1.0;
+        track.balance = 0.0;
+        track.muted = false;
+        track.soloed = false;
+        track.gain_envelope.clear();
+        track.gain_touch_spans.clear();
+        track.sends.clear();
     }
-    track.gain = 1.0;
-    track.balance = 0.0;
-    track.muted = false;
-    track.soloed = false;
-    track.gain_envelope.clear();
-    track.gain_touch_spans.clear();
-    track.sends.clear();
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();
     snapshot.main_devices.clear();
@@ -115,7 +154,9 @@ impl Session {
                 let tails = matches!(target, BounceTarget::Clips(_));
                 let maximum = (item.end - item.start)
                     .checked_add(if tails {
-                        u64::from(self.project().sample_rate()) * 10
+                        u64::from(self.project().sample_rate())
+                            .checked_mul(hex_export::MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS)
+                            .ok_or("bounce tail budget overflows")?
                     } else {
                         0
                     })

@@ -222,7 +222,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
         },
     )?;
     audio_rows.extend(midi_rows);
-    let legacy = Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
+    let legacy = Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))?;
     let mut value = super::clip_activation::encode(&legacy)?;
     let object = value
         .as_object_mut()
@@ -299,7 +299,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "directed content references a missing arrangement clip",
         ));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 #[cfg(test)]
@@ -346,7 +346,7 @@ mod tests {
             outer_length: AudioDomainClock::Frames(8_000),
             cycle_phase: 0,
         });
-        let project = Project::from_snapshot(snapshot).unwrap();
+        let project = Project::from_legacy_snapshot(snapshot).unwrap();
         let original = crate::encode(&project).unwrap();
         let document: serde_json::Value = serde_json::from_slice(&original).unwrap();
         for delta in [i128::MIN + 1, -2 * i128::from(u64::MAX) - 1, i128::MAX] {

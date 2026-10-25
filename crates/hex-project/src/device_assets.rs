@@ -5,7 +5,7 @@ impl Project {
     fn asset_devices(&self) -> impl Iterator<Item = &Device> {
         self.tracks()
             .iter()
-            .flat_map(|track| track.devices().iter().chain(track.instrument()))
+            .flat_map(|track| track.devices().iter())
             .chain(
                 self.return_tracks()
                     .iter()
