@@ -15,6 +15,7 @@ mod restore;
 use restore::Restore;
 mod edits;
 mod reopen;
+mod save;
 use reopen::Reopen;
 
 enum SourceOperation {

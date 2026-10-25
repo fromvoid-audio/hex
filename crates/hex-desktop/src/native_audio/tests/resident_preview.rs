@@ -22,6 +22,12 @@ struct ResidentSink {
     pending_observation_generation: Arc<AtomicU64>,
 }
 impl WorkerAudioSink for ResidentSink {
+    fn capture_plugin_states_for_save(
+        &mut self,
+        input: hex_session::service::PluginStateSaveInput<'_>,
+    ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
+        self.inner.capture_plugin_states_for_save(input)
+    }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.inner.begin_request(cancellation);
     }

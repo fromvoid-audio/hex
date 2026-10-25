@@ -14,8 +14,10 @@ pub(super) enum NativeEpochRuntimeTarget {
 }
 
 impl PublicationControl {
-    /// Admit one live capture through the original Root-held effect/control,
-    /// including an active callback loan. No graph/endpoint is returned or
+    /// Admit one capture through the original Root-held effect/control,
+    /// including an active callback loan or normally ended transport. Stopped
+    /// capture requires the original worker's joined healthy terminal and leaves
+    /// transport revoked. No graph/endpoint is returned or
     /// replaced. The caller owns/accounting for its correlation token and must
     /// retire it on the exact terminal, including source close/refusal.
     pub fn begin_native_source_state_capture_on_control(

@@ -4,6 +4,40 @@
 use super::*;
 use hex_session::service::NativeDeviceState;
 mod edits;
+mod save;
+
+#[test]
+#[ignore = "explicit original SDK helper/source receipts required"]
+fn native_effect_save_captures_processed_state_without_mutating_history() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let (mut h, files, before) = fixture(Start::Saved);
+    let path = files.0.join("effect.hex");
+    let original = fs::read(&path).unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..4 {
+        h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > block);
+    }
+    let saved = h.run(Request::SaveCurrent);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(saved.save_complete);
+    assert_eq!(saved.state.project, before.project);
+    assert_eq!(saved.state.revision, before.revision);
+    assert_eq!(saved.state.can_undo, before.can_undo);
+    assert_eq!(saved.state.can_redo, before.can_redo);
+    assert_ne!(fs::read(&path).unwrap(), original);
+    let loaded = hex_storage::load(&path).unwrap();
+    let current = hex_plugin_state::decode(loaded.main_devices()[0].state()).unwrap();
+    let previous = hex_plugin_state::decode(before.project.main_devices()[0].state()).unwrap();
+    assert_eq!(current.identity, previous.identity);
+    assert_ne!(current.component, previous.component);
+    assert_eq!(loaded.tracks(), before.project.tracks());
+}
 
 struct SavedEffectFixture {
     files: Files,
@@ -589,6 +623,7 @@ fn native_effect_saved_project_without_resolved_source_retains_opaque_state() {
 }
 
 enum Start {
+    Unsaved,
     Saved,
     Reopened,
     EmptyThenReopened,
@@ -620,6 +655,9 @@ fn fixture(start: Start) -> (ResidentHarness, Files, Arc<hex_session::service::V
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
     assert!(accepted.plugin_effect_complete[0].accepted);
     h.applied(applied);
+    if matches!(start, Start::Unsaved) {
+        return (h, files, accepted.state);
+    }
     let expected = accepted.state.project.main_devices()[0].state().clone();
     let path = files.0.join("effect.hex");
     let saved = h.run(Request::SaveNew(path.clone()));

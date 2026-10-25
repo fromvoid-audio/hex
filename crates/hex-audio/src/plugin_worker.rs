@@ -398,7 +398,8 @@ impl NativeWorker {
         self.reaper.completed_blocks()
     }
     /// Join, retain the exact old ring endpoints, and consume the returned
-    /// native processor into its actual quiescent protocol. Unwind/refusal is
+    /// native processor into its actual quiescent protocol. An admitted capture
+    /// first drains through its existing bounded terminal. Unwind/refusal is
     /// terminal and cannot become a retry. Old callback custody stays separate.
     pub fn quiesce_on_control(
         &mut self,
@@ -416,6 +417,12 @@ impl NativeWorker {
             .ok_or(hex_plugin_host::Error::Protocol(
                 "native worker terminal missing",
             ))?;
+        if joined.is_ok()
+            && state.native_error.is_none()
+            && let Err(error) = state.drain_capture_before_quiescence(&self.reaper.completed)
+        {
+            state.native_error = Some(error);
+        }
         let failure = state.native_error.take().or_else(|| {
             joined
                 .err()

@@ -8,8 +8,15 @@ use hex_lattice_contract::{MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceState};
 use hex_plugin_host::Error;
 use std::sync::{TryLockError, Weak};
 use std::time::Instant;
+mod stopped;
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Live,
+    Stopped,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -34,6 +41,7 @@ impl Default for Payload {
 pub(super) struct Slot {
     ordinal: u64,
     phase: Phase,
+    mode: Mode,
     payload: Payload,
 }
 impl Default for Slot {
@@ -41,6 +49,7 @@ impl Default for Slot {
         Self {
             ordinal: 0,
             phase: Phase::Idle,
+            mode: Mode::Live,
             payload: Payload::default(),
         }
     }
@@ -73,6 +82,7 @@ pub struct NativeWorkerCapture {
     source: Weak<Signal>,
     binding: Binding,
     ordinal: u64,
+    mode: Mode,
 }
 /// Data/progress only, never a canonical edit, save or graph acknowledgement.
 #[derive(Debug)]
@@ -86,14 +96,23 @@ pub enum NativeWorkerCaptureProgress {
 
 impl NativeWorker {
     /// Reserve one current-state capture while the original callback may be
-    /// loaned. This scalar request does no SDK/socket work. The original worker
-    /// starts/polls it between PCM exchanges, at most one control exchange per
+    /// loaned. Live requests do no SDK/socket work here. The original worker
+    /// starts/polls them between PCM exchanges, at most one control exchange per
     /// iteration and one status poll per millisecond. Full/contended admission
-    /// refuses without disturbing an existing capture or callback.
+    /// refuses without disturbing an existing capture or callback. After normal
+    /// transport revocation, joining control first observes the original thread's
+    /// terminal and services that same retained State/channel. This does not
+    /// revive transport, return a callback or grant graph publication.
     pub fn begin_state_capture_on_control(&mut self) -> Result<NativeWorkerCapture, &'static str> {
-        if !self.transport_is_live_on_control() || !self.retains_original_source_on_control() {
+        if self.retirement_requested || !self.retains_original_source_on_control() {
             return Err("native capture source is not live");
         }
+        let mode = if self.transport_is_live_on_control() {
+            Mode::Live
+        } else {
+            self.prepare_stopped_capture()?;
+            Mode::Stopped
+        };
         let mut slot = self
             .reaper
             .completed
@@ -109,57 +128,97 @@ impl NativeWorker {
             .ok_or("native capture ordinal exhausted")?;
         slot.ordinal = ordinal;
         slot.phase = Phase::Requested;
+        slot.mode = mode;
         self.reaper.completed.capture_requested.store(true, Release);
         Ok(NativeWorkerCapture {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
             ordinal,
+            mode,
         })
     }
 
     /// Poll exactly the admitted operation. A stale/foreign/consumed token
     /// refuses without consuming the current result. Callback revocation wins
-    /// over a completed result, so late data cannot resurrect a returned source.
+    /// over a live token's completed result. A separately admitted stopped token
+    /// copies data only after the healthy original worker returns; neither mode
+    /// resurrects transport or a returned source.
     /// Payload reconstruction runs on joining control; host gains/asset state
     /// are not captured and remain the canonical snapshot owner's responsibility.
+    /// A completed matching result is consumed even if caller allocation fails;
+    /// that refusal cannot occupy the original mailbox indefinitely.
     /// Pending also includes shared-slot contention before its exact state check.
     pub fn poll_state_capture_on_control(
         &mut self,
         request: &NativeWorkerCapture,
+    ) -> Result<NativeWorkerCaptureProgress, &'static str> {
+        self.poll_state_capture_using(request, |bytes| {
+            let mut payload = Vec::new();
+            payload
+                .try_reserve_exact(bytes.len())
+                .map_err(|_| "native capture state allocation failed")?;
+            payload.extend_from_slice(bytes);
+            NativeDeviceState::new(
+                hex_plugin_state::TYPE_ID,
+                hex_plugin_state::STATE_VERSION,
+                payload,
+            )
+            .map_err(|_| "native capture state is invalid")
+        })
+    }
+
+    fn poll_state_capture_using(
+        &mut self,
+        request: &NativeWorkerCapture,
+        materialize: impl FnOnce(&[u8]) -> Result<NativeDeviceState, &'static str>,
     ) -> Result<NativeWorkerCaptureProgress, &'static str> {
         if request.binding != self.binding
             || request.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
         {
             return Err("native capture source differs");
         }
+        if request.mode == Mode::Stopped {
+            // Validate before servicing: an old/foreign token must not advance
+            // another operation. The guard never spans native channel I/O.
+            match self.reaper.completed.capture.try_lock() {
+                Ok(slot)
+                    if slot.ordinal == request.ordinal
+                        && slot.phase != Phase::Idle
+                        && slot.mode == request.mode => {}
+                Ok(_) => return Err("native capture operation differs"),
+                Err(TryLockError::WouldBlock) => return Ok(NativeWorkerCaptureProgress::Pending),
+                Err(TryLockError::Poisoned(_)) => return Err("native capture mailbox failed"),
+            }
+            match self.service_stopped_capture() {
+                Ok(()) => {}
+                Err("native preparation is busy") => {
+                    return Ok(NativeWorkerCaptureProgress::Pending);
+                }
+                Err(_) => return Ok(NativeWorkerCaptureProgress::Failed),
+            }
+        }
         let mut slot = match self.reaper.completed.capture.try_lock() {
             Ok(slot) => slot,
             Err(TryLockError::WouldBlock) => return Ok(NativeWorkerCaptureProgress::Pending),
             Err(TryLockError::Poisoned(_)) => return Err("native capture mailbox failed"),
         };
-        if slot.ordinal != request.ordinal || slot.phase == Phase::Idle {
+        if slot.ordinal != request.ordinal || slot.phase == Phase::Idle || slot.mode != request.mode
+        {
             return Err("native capture operation differs");
         }
-        if !self.transport_is_live_on_control() {
+        if request.mode == Mode::Live && !self.transport_is_live_on_control() {
             return Ok(NativeWorkerCaptureProgress::Failed);
         }
         if slot.phase != Phase::Complete {
             return Ok(NativeWorkerCaptureProgress::Pending);
         }
-        let mut payload = Vec::new();
-        payload
-            .try_reserve_exact(slot.payload.len)
-            .map_err(|_| "native capture state allocation failed")?;
-        payload.extend_from_slice(&slot.payload.bytes[..slot.payload.len]);
+        // The matching operation is terminal even if constructing the caller's
+        // owned envelope fails. Release its fixed slot before fallible allocation
+        // so a refused save cannot strand the original worker's only mailbox.
+        let completed = slot.payload;
         slot.phase = Phase::Idle;
         drop(slot);
-        NativeDeviceState::new(
-            hex_plugin_state::TYPE_ID,
-            hex_plugin_state::STATE_VERSION,
-            payload,
-        )
-        .map(NativeWorkerCaptureProgress::Captured)
-        .map_err(|_| "native capture state is invalid")
+        materialize(&completed.bytes[..completed.len]).map(NativeWorkerCaptureProgress::Captured)
     }
 }
 

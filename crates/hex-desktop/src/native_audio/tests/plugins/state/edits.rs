@@ -18,7 +18,7 @@ fn with_gain(state: &NativeDeviceState, gain: f32) -> NativeDeviceState {
     })
     .unwrap()
 }
-fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
+pub(super) fn ordinary_terminal(h: &mut ResidentHarness) -> Event {
     let end = Instant::now() + Duration::from_secs(10);
     loop {
         h.pump();
@@ -345,7 +345,7 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
     );
     let mut state = h.next().state;
     let (mut applied, _) = h.applied(0);
-    for _ in 0..2 {
+    for gain in [0.75_f32, 1.25] {
         let imported = h.run(Request::Import(wave.clone()));
         (applied, _) = h.applied(applied);
         let track = imported.state.project.tracks().last().unwrap().id();
@@ -359,6 +359,18 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
         let inserted = terminal(&mut h);
         assert!(inserted.error.is_none(), "{:?}", inserted.error);
         state = inserted.state;
+        (applied, _) = h.applied(applied);
+        let device = state.project.track(track).unwrap().devices()[0].id();
+        let replacement = with_gain(state.project.device(device).unwrap().state(), gain);
+        h.service
+            .submit(Request::Edit(Command::ReplaceDeviceState {
+                device,
+                state: replacement,
+            }))
+            .unwrap();
+        let changed = ordinary_terminal(&mut h);
+        assert!(changed.error.is_none(), "{:?}", changed.error);
+        state = changed.state;
         (applied, _) = h.applied(applied);
     }
     let source_tracks = state.project.tracks().to_vec();
@@ -433,7 +445,7 @@ fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_re
         let scale = 0.5 + ((index - 512) / 256) as f32 * 0.125;
         assert_eq!(
             *frame,
-            [0.25 * 3.75 * scale; 2],
+            [0.25 * 3.5 * scale; 2],
             "independent copy sample {index}"
         );
     }

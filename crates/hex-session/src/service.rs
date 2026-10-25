@@ -49,6 +49,8 @@ pub use sampler_parameter::SamplerEdit;
 mod device_comparison;
 mod effect_bus;
 mod plugin_effect;
+mod plugin_state_save;
+pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 mod request_cancellation;
 pub use plugin_effect::{
     NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
@@ -69,10 +71,10 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
+use recovery::absolute_document_path;
 pub use recovery::{
     ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
 };
-use recovery::{absolute_document_path, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -5409,7 +5411,24 @@ fn run_worker(
                 },
                 Request::SaveNew(path) => {
                     save_complete = true;
-                    match project_for_save(&session, media_base.as_deref()) {
+                    // Earlier source intent may cancel the edit ahead of Save,
+                    // but FIFO still saves its resulting canonical project.
+                    // Only a new intent during this capture cancels this Save.
+                    let save_cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
+                    match plugin_state_save::project_for_save_with_capture(
+                        &session,
+                        media_base.as_deref(),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        &save_cancellation,
+                        events.sampler_edit_audio(),
+                    ) {
                         Ok(project) => match absolute_document_path(&path) {
                             Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
                                 Ok(token) => {
@@ -5437,6 +5456,14 @@ fn run_worker(
                 }
                 request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
                     save_complete = true;
+                    // Earlier source intent may cancel the edit ahead of Save,
+                    // but FIFO still saves its resulting canonical project.
+                    // Only a new intent during this capture cancels this Save.
+                    let save_cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
                     let consent = match &request {
                         Request::SaveCurrentWithFormatUpgrade {
                             project_generation: expected,
@@ -5449,10 +5476,23 @@ fn run_worker(
                     };
                     let stale_consent =
                         matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
-                    match (
-                        document.as_mut(),
-                        project_for_save(&session, media_base.as_deref()),
-                    ) {
+                    let save_project = if stale_consent {
+                        Err("project changed · format upgrade cancelled".to_owned())
+                    } else if document.is_none() {
+                        Err("cannot save current project before it has a file path".to_owned())
+                    } else {
+                        plugin_state_save::project_for_save_with_capture(
+                            &session,
+                            media_base.as_deref(),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            &save_cancellation,
+                            events.sampler_edit_audio(),
+                        )
+                    };
+                    match (document.as_mut(), save_project) {
                         (None, _) => {
                             error =
                                 Some("cannot save current project before it has a file path".into())

@@ -2,6 +2,7 @@
 use super::*;
 use crate::plugin_worker::native_tests::original_instance;
 use std::{fs, path::PathBuf, process::Command};
+mod stopped;
 
 fn fixture_child(fault: u32, name: &str) -> bool {
     if std::env::var_os("HEX_WORKER_CAPTURE_CHILD").is_some() {
@@ -34,6 +35,10 @@ fn fixture_child(fault: u32, name: &str) -> bool {
         "child: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "fixture child must execute the exact requested test"
     );
     true
 }
@@ -113,7 +118,7 @@ fn begin(owner: &mut NativeWorker) -> NativeWorkerCapture {
     loop {
         match owner.begin_state_capture_on_control() {
             Ok(request) => return request,
-            Err("native capture mailbox is busy") => {
+            Err("native capture mailbox is busy" | "native preparation is busy") => {
                 assert!(Instant::now() < until);
                 thread::yield_now();
             }
@@ -166,6 +171,30 @@ fn actual_worker_capture_preserves_pair_storage_and_exact_operation() {
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert!(other.retire_on_control().unwrap().native.status.success());
     assert!(owner.begin_state_capture_on_control().is_err());
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_worker_capture_projection_failure_releases_exact_operation() {
+    let (mut owner, mut callback) = NativeWorker::start_on_control(original_instance()).unwrap();
+    let first = begin(&mut owner);
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match owner.poll_state_capture_using(&first, |_| Err("fixture allocation refusal")) {
+            Ok(NativeWorkerCaptureProgress::Pending) => {
+                assert!(Instant::now() < until);
+                thread::yield_now();
+            }
+            Err("fixture allocation refusal") => break,
+            result => panic!("unexpected capture result: {result:?}"),
+        }
+    }
+    refused(&mut owner, &first);
+    let next = begin(&mut owner);
+    complete(&mut owner, &next);
+    callback_block(&owner, &mut callback, 0);
+    let retired = owner.retire_on_control().unwrap();
+    assert!(retired.failure.is_none() && retired.native.status.success());
 }
 
 #[test]

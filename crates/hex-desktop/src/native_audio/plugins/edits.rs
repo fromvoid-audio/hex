@@ -126,6 +126,10 @@ impl Plugins {
             return Ok(());
         }
         let identity = Hosting::saved_identity_on_control(state)?;
+        // Resolve code only: provider identity is class + binary hashes, not a
+        // path or another device's instance (hex-plugin-state owns that contract).
+        // begin_on_control below always mints the target device's fresh binding
+        // and restores its candidate bytes; this never shares the old processor.
         let mut original = None;
         for source in &self.sources {
             if source.project_generation == context.project_generation
@@ -265,7 +269,7 @@ pub(super) fn poll_control(control: &mut PublicationControl) {
     // native ACK, timeout-based acceptance or an audio callback wait.
     std::thread::sleep(std::time::Duration::from_millis(5));
 }
-fn original_state(
+pub(super) fn original_state(
     control: &mut PublicationControl,
     binding: Binding,
     cancellation: Option<&RequestCancellation>,

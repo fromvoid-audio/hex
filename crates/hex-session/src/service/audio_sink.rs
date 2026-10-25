@@ -179,6 +179,19 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Capture every active hosted instance required by this exact canonical
+    /// save input. The existing worker retains request order while the adapter
+    /// drains each admitted native token to its matching terminal, including
+    /// failure/cancellation. No stop, canonical edit or source owner transfer.
+    /// An output without native hosting has no runtime states to capture and
+    /// preserves the project's opaque unavailable state. Native hosts must
+    /// override this method; failed capture must never fall back to empty data.
+    fn capture_plugin_states_for_save(
+        &mut self,
+        _input: PluginStateSaveInput<'_>,
+    ) -> Result<Vec<PluginStateCapture>, String> {
+        Ok(Vec::new())
+    }
     /// Current ordered worker request's read-only shutdown/document-intent
     /// cancellation. Hosts may poll it during bounded native preparation; it
     /// never authorizes an edit or changes ordinary FIFO completion order.

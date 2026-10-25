@@ -2781,6 +2781,7 @@ dependencies = [
  "hex-export",
  "hex-lattice-contract",
  "hex-media",
+ "hex-plugin-state",
  "hex-project",
  "hex-storage",
  "hex-tuning",
