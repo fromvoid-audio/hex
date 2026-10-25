@@ -1083,9 +1083,9 @@ impl EditorView {
                 self.sections.selection = vec![kept.id()];
             }
             let copy_source = self.sections.pending.as_ref().and_then(|pending| {
-                if !pending
+                if pending
                     .selection_intent_epoch
-                    .is_some_and(|epoch| Some(epoch) == self.selection_intent_epoch)
+                    .is_none_or(|epoch| Some(epoch) != self.selection_intent_epoch)
                 {
                     return None;
                 }
