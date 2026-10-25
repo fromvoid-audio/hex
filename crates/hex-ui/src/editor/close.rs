@@ -94,6 +94,7 @@ impl EditorView {
             self.opening_project,
             self.export_pending,
             self.device_gesture_pending()
+                || self.pending_plugin_effect.is_some()
                 || self.device_panel.has_pending_draft(cx)
                 || self.tuning.client.snapshot().is_some(),
         )
@@ -137,6 +138,7 @@ impl EditorView {
                 editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
+                        view.cancel_plugin_effect();
                         view.cancel_browser_sample_playback();
                         if let Some(control) = &view.export_control {
                             control.cancel();

@@ -1227,6 +1227,9 @@ impl EditorView {
 
 impl Drop for EditorView {
     fn drop(&mut self) {
+        // Request cancellation before Service shutdown; native custody remains
+        // with its worker even when publication admission has already won.
+        self.cancel_plugin_effect();
         if let Some(control) = &self.bounce_control {
             control.cancel();
         }

@@ -37,6 +37,7 @@ mod clip_selection;
 mod delete_ui_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
+mod plugin_effect;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
@@ -810,6 +811,7 @@ pub(super) struct EditorView {
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
@@ -1471,6 +1473,7 @@ impl EditorView {
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
+            pending_plugin_effect: None,
             export_control: None,
             export_window: None,
             export_dialog_open: false,

@@ -479,7 +479,12 @@ impl Catalog {
                                         format!("source unavailable · rescan required · {error} · ")
                                     },
                                 );
-                                format!("{source}{state}vst3 {kind} · hosting unavailable")
+                                let action = if matches!(kind, "effect" | "instrument and effect") {
+                                    "enter to insert · source validation required"
+                                } else {
+                                    "hosting unavailable"
+                                };
+                                format!("{source}{state}vst3 {kind} · {action}")
                             },
                         });
                     }
@@ -824,7 +829,11 @@ mod tests {
             let loaded = Catalog::load(&fixture.catalog()).unwrap();
             assert_eq!(
                 loaded.rows("")[0].status,
-                format!("vst3 {expected} · hosting unavailable")
+                if matches!(categories, "Fx|Delay" | "Fx|Instrument") {
+                    format!("vst3 {expected} · enter to insert · source validation required")
+                } else {
+                    format!("vst3 {expected} · hosting unavailable")
+                }
             );
             assert_eq!(loaded.rows("CLASS VENDOR")[0].vendor, "Class Vendor");
             assert_eq!(loaded.rows(expected).len(), 1);
